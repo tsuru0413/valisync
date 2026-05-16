@@ -7,7 +7,7 @@
 | 順位 | 場所 | 内容 |
 |---|---|---|
 | 1 | `.kiro/specs/<spec>/{requirements,design,tasks}.md` | 要件・設計・実装計画 (**一次情報源**) |
-| 2 | `.kiro/steering/{product,tech,structure}.md` | プロダクト原則・技術選定・ディレクトリ構造 |
+| 2 | `.kiro/steering/{product,tech,structure,spec-authoring}.md` | プロダクト原則・技術選定・ディレクトリ構造・spec 生成ルール |
 | 3 | `docs/<topic>.md` | spec 化されていない実装ノート・運用メモ |
 | 4 | このファイル | 上記で発見できないハマりどころと方針概要 |
 
