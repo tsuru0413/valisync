@@ -30,5 +30,19 @@ Thumbs.db
 # uv
 .python-version
 
+# Local environment overrides (potential secrets)
+.env
+.env.*
+!.env.example
+
+# Node.js / frontend (uncomment if frontend stack is added)
+# node_modules/
+# frontend/dist/
+# frontend/.vite/
+# frontend/coverage/
+
 # Data (uncomment if needed)
 # data/plans/*.json
+
+# Migration script auto-backups (uncomment if scripts auto-create backups)
+# data/*_backup_*/

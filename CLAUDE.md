@@ -7,7 +7,7 @@
 | 順位 | 場所 | 内容 |
 |---|---|---|
 | 1 | `.kiro/specs/<spec>/{requirements,design,tasks}.md` | 要件・設計・実装計画 (**一次情報源**) |
-| 2 | `.kiro/steering/{product,tech,structure,spec-authoring}.md` | プロダクト原則・技術選定・ディレクトリ構造・spec 生成ルール |
+| 2 | `.kiro/steering/{product,tech,structure,spec-authoring,workflow}.md` | プロダクト原則・技術選定・ディレクトリ構造・spec 生成ルール・ブランチ運用 |
 | 3 | `docs/<topic>.md` | spec 化されていない実装ノート・運用メモ |
 | 4 | このファイル | 上記で発見できないハマりどころと方針概要 |
 
@@ -31,6 +31,15 @@
 - **Kiro Spec** で要件→設計→タスクを生成し、**Claude Code** で tasks.md を消化する
 - CLAUDE.md はエントリポイント (薄く保つ)。詳細は `.kiro/` と `docs/` に分散
 - steering/ は常時適用ルール、specs/ は機能単位の一次情報源、docs/ は横断的運用知識
+
+## ブランチ運用 (常時適用)
+
+詳細: `.kiro/steering/workflow.md`
+
+- **main は本番ブランチ** — 直接編集は禁止 (緊急 hotfix を除く)
+- **新機能・修正は `feature/<spec-name>` ブランチで実装** — spec 単位でブランチを切るのが原則
+- **フロー**: feature ブランチで実装 → ローカル品質ゲート通過 → push → `gh pr create` → CI 通過 → `gh pr merge --auto` → `git fetch --prune`
+- **Claude Code / Kiro の振る舞い**: 新規 spec 実装に着手する際は最初に `git checkout -b feature/<spec-name>` する
 
 ## Phase 状況
 
