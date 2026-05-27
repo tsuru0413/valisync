@@ -36,6 +36,22 @@ uv run pytest -k "test_name"           # 名前一致で絞り込み
 
 新規モジュールを実装したら必ず対応する pytest テストを追加すること。
 
+### プロパティベーステスト (Hypothesis)
+
+- `pytestmark = pytest.mark.property` を付与し `uv run pytest -m property` で抽出できるようにする
+- 検証するプロパティの一次情報源は `.kiro/specs/<spec>/design.md` の **Correctness Properties**。`test_pbt_*.py` の各テストはそこの Property 番号に対応させる（トレーサビリティ）
+- 共有 strategy は `tests/conftest.py` に集約: `monotonic_timestamps`（厳密単調増加・有限 float64）、`valid_signals`（Signal 不変条件を満たす生成）。`settings` プロファイルは `default`(200 examples) / `ci`(500)
+- 一時ファイルを使う往復テストは **function-scoped fixture を避け**、テスト内で `tempfile.TemporaryDirectory()` を使う（Hypothesis の `function_scoped_fixture` health check 回避 + example 間の分離）
+
+### MDF4 / CSV テストデータ
+
+静的なサンプルファイルはコミットせず、テスト内で**プログラム生成**する:
+
+- **CSV**: `tmp_path` にテキストを書き出すだけ
+- **MDF4**: `tests/mdf4_helpers.py` の `write_mdf4()` が asammdf 書き込み API で生成。`Source(bus_type=...)` で CAN/Ethernet、source 名に `xcp` を含めると XCP を合成できる
+
+利点: git に binary blob を置かない / プロトコル・チャンネルグループ・同名信号をパラメトライズできる / 往復 Property（読込→書出→再読込）はそもそも書き込み能力を要求する。
+
 ## Lint / Format (Ruff)
 
 `pyproject.toml` の `[tool.ruff]` で集中管理。

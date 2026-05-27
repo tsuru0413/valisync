@@ -3,13 +3,18 @@
 ## Language & Runtime
 
 - Python 3.12+ (requires-python >= 3.12)
-- <!-- TODO: runtime 依存の方針 (例: 標準ライブラリのみ / 最小限の外部依存) -->
+- 最小限の外部依存（コアロジックは標準ライブラリ + numpy のみ）
+- GUI 層は PyQt6/PySide6 + PyQtGraph（別 spec で管理）
 
 ## Build & Package Management
 
 - **uv** — dependency manager (pyproject.toml + uv.lock)
 - **setuptools** — build backend
 - Package is installable via `pip install -e .`
+
+## Core Dependencies
+
+- **numpy** — 高速な時系列データ操作（Signal のタイムスタンプ・値配列）
 
 ## Testing
 
@@ -54,6 +59,8 @@ uv run pytest && uv run ruff check && uv run ruff format --check && uv run mypy 
 
 ## Key Conventions
 
-- <!-- TODO: プロジェクト固有の慣習 -->
-- CLI entry point: <!-- TODO: エントリポイント -->
-- Data files stored in `data/` directory as JSON
+- Signal データは frozen dataclass + numpy array で表現
+- 全ての変換処理は新しいオブジェクトを返す（元データ不変）
+- Protocol でインターフェースを定義し、具象クラスで実装
+- Format_Definition の永続化は JSON ファイル（`data/` ディレクトリ）
+- GUI entry point: `src/valisync/gui/app.py`（Phase 2 で実装）

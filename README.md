@@ -1,6 +1,6 @@
-# Project Name
+# ValiSync
 
-<!-- TODO: プロジェクト名と概要 -->
+ADAS ソフトウェア開発向けの時系列信号データ統合・同期・解析デスクトップ GUI アプリケーション。CAN・XCP・Ethernet・CSV フォーマットの信号を統一時間軸上で可視化・分析する。
 
 ## Overview
 

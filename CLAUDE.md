@@ -15,13 +15,13 @@
 
 ## プロジェクト概要
 
-<!-- TODO: 1-2行でプロジェクトの概要を記述 -->
+ADAS ソフトウェア開発向けの時系列信号データ統合・同期・解析デスクトップ GUI アプリケーション。CAN・XCP・Ethernet・CSV フォーマットの信号を統一時間軸上で可視化・分析する。
 
 詳細: `.kiro/steering/product.md`
 
 ## リポジトリ
 
-- **Remote**: <!-- TODO: git remote URL -->
+- **Remote**: `git@github.com:tsuru0413/kiro-claude-template.git`
 - **CI**: GitHub Actions (push to main / 全 PR で品質ゲート自動実行)
 
 ## 開発ワークフロー (Kiro + Claude Code 併用)
@@ -45,7 +45,7 @@
 
 | Phase | スコープ | 状況 | 一次情報源 |
 |---|---|---|---|
-| <!-- Phase名 --> | <!-- スコープ --> | <!-- 状況 --> | <!-- spec パス --> |
+| Phase 1 / valisync-core | Signal・Loader・Sync・Formula・補間・統計・Downsampler・Export・Session | 実装中 | `.kiro/specs/valisync-core/` |
 
 実装時は **必ず該当 spec の `tasks.md` に従って番号順 / 依存グラフ順** に進める。完了タスクは `tasks.md` のチェックボックスを `[x]` に更新。
 
@@ -70,8 +70,6 @@ uv run mypy src/             # 型チェック
 コミット前に上記全てを通すのが本プロジェクトの品質ゲート。詳細は `docs/development.md` を参照。
 
 ## 開発環境の落とし穴
-
-<!-- TODO: 環境固有のハマりどころを記述 (例: Windows の python スタブ問題等) -->
 
 詳細: `docs/development.md` 末尾参照。
 
