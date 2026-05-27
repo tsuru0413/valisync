@@ -4,7 +4,7 @@
 
 - Python 3.12+ (requires-python >= 3.12)
 - 最小限の外部依存（コアロジックは標準ライブラリ + numpy のみ）
-- GUI 層は PyQt6/PySide6 + PyQtGraph（別 spec で管理）
+- GUI 層は PySide6（LGPL）+ PyQtGraph（別 spec で管理）
 
 ## Build & Package Management
 

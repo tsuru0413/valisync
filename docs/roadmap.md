@@ -68,9 +68,21 @@ gantt
 
 **目標**: PyQt6/PySide6 + PyQtGraph による高速波形可視化デスクトップアプリケーションを完成させる。
 
-| Spec | 状態 | 概要 |
-|------|------|------|
-| `valisync-gui` | requirements 完備、design + tasks 未作成 | ドッキング UI、波形/テーブル/棒グラフ/コンター表示、カーソル、D&D、Formula エディタ、Script Console、LOD レンダリング |
+巨大な親 spec `valisync-gui`（requirements.md に 29 要件）を、統合リスクを早期検証する **MVP 垂直スライス**方針で **6 つの sub-spec** に分解する（2026-05-27 決定）。親 `valisync-gui/requirements.md` を一次情報源として保持し、各 sub-spec は該当要件を抽出して requirements/design/tasks を持つ。
+
+| sub-spec | 担当要件（親 R番号） | 状態 | 概要 |
+|------|------|------|------|
+| `valisync-gui-mvp` | R1, R3, R4, R5, R6, R7, R8.1–8.5, R12, R13, R21, R22, R27, R28, R29(最小) | requirements + design 作成済、tasks 未 | 歩く骨格: シェル/ドッキング・データ取込/閲覧・タブ/パネル分割・基本Y-T波形・X/Yズーム/パン・**動的LOD** |
+| `valisync-gui-axes` | R8.6–8.18 | 未作成 | 複数Y軸レイアウト（独立スケール・高さ比率・自由配置）+ X-Yプロットモード |
+| `valisync-gui-analysis` | R14, R15, R16, R17 | 未作成 | Global/Deltaカーソル・範囲統計表示・Drag-offset（時間オフセット） |
+| `valisync-gui-derived` | R18, R19 | 未作成 | Calcbar UI + Formula エディタ（構文ハイライト・補完） |
+| `valisync-gui-views` | R9, R10, R11 | 未作成 | Table / 棒グラフ / コンタープロット |
+| `valisync-gui-script` | R20 | 未作成 | Python Script Console（スクリプティング統合） |
+
+**境界判断**:
+- **LOD（R21）は MVP に統合**（当初は独立 spec 案）。静的DSはズームイン時に生データ細部・スパイクが見えず ADAS 解析に不十分なため、viewport 連動の動的DSを最初から導入し実用精度を確保
+- **Layout_Template 保存/復元（親 R2）は Phase3 `valisync-persistence` へ委譲**（ワークスペース直列化＝セッション永続化と同責務）。GUI 側には R28 の最小の起動時復元のみ残す
+- 親 R23–26（Interpolator/RangeStats/Downsampler/Calcbar 演算のコア拡張）は Phase 1 `valisync-core` で実装済み（依存先・充足済み）
 
 ### スコープ
 
@@ -176,9 +188,18 @@ gantt
 
 ```mermaid
 graph LR
-    CORE[valisync-core<br/>Phase 1] --> GUI[valisync-gui<br/>Phase 2]
-    GUI --> PERSIST[valisync-persistence<br/>Phase 3]
-    GUI --> THEME[valisync-theme<br/>Phase 3]
+    CORE[valisync-core<br/>Phase 1] --> MVP[valisync-gui-mvp<br/>Phase 2]
+    MVP --> AXES[valisync-gui-axes]
+    MVP --> ANALYSIS[valisync-gui-analysis]
+    MVP --> DERIVED[valisync-gui-derived]
+    MVP --> VIEWS[valisync-gui-views]
+    MVP --> SCRIPT[valisync-gui-script]
+    AXES --> PERSIST[valisync-persistence<br/>Phase 3]
+    ANALYSIS --> PERSIST
+    DERIVED --> PERSIST
+    VIEWS --> PERSIST
+    SCRIPT --> PERSIST
+    MVP --> THEME[valisync-theme<br/>Phase 3]
     PERSIST --> I18N[valisync-i18n<br/>Phase 4]
     THEME --> PKG[valisync-packaging<br/>Phase 4]
     I18N --> PKG
