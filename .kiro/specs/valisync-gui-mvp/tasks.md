@@ -20,44 +20,44 @@ ValiSync GUI の「歩く骨格（walking skeleton）」を実装する。PySide
 
 ## Tasks
 
-- [ ] 0. プロジェクト基盤・依存追加
-  - [ ] 0.1 GUI 依存の追加
+- [x] 0. プロジェクト基盤・依存追加
+  - [x] 0.1 GUI 依存の追加
     - `pyproject.toml` の dependencies に `PySide6>=6.7`, `pyqtgraph>=0.13` を追加
     - dev に `pytest-qt>=4.4` を追加。`uv sync --extra dev` で反映、`uv.lock` 更新
     - `[project.scripts]` に `valisync = "valisync.gui.app:main"` を有効化
     - _Requirements: 13.4_
-  - [ ] 0.2 pytest の Qt 設定
+  - [x] 0.2 pytest の Qt 設定
     - `pyproject.toml` の `[tool.pytest.ini_options]` に Qt offscreen 用設定（`env = ["QT_QPA_PLATFORM=offscreen"]` 相当、または conftest で `os.environ` 設定）を追加
     - `tests/gui/` ディレクトリと `tests/gui/conftest.py`（`qapp` / `qtbot` の前提、offscreen 設定）を作成
     - _Requirements: 13.1, 13.6_
 
-- [ ] 1. ViewModel 基盤とオブザーバ
-  - [ ] 1.1 Observable 基盤の実装
+- [x] 1. ViewModel 基盤とオブザーバ
+  - [x] 1.1 Observable 基盤の実装
     - `src/valisync/gui/__init__.py`（既存・空）はそのまま、`src/valisync/gui/viewmodels/__init__.py` を作成
     - `src/valisync/gui/viewmodels/observable.py` に `Observable`（`subscribe(cb)->unsubscribe`, `_notify(change: str)`）を実装。Qt 非依存
     - `tests/gui/test_observable.py`: 購読・通知・解除のユニットテスト
     - _Requirements: 13.1_
-  - [ ] 1.2 AppViewModel の実装
+  - [x] 1.2 AppViewModel の実装
     - `src/valisync/gui/viewmodels/app_viewmodel.py` に `AppViewModel(Observable)` を実装。`Session` を保持し、読込済みファイル一覧・アクティブ Graph_Area タブ・登録データソース一覧の状態を公開
     - `request_load(path, format_def?)`（後段で LoadTask 経由）、`inspect()->dict`（検査用状態）
     - `tests/gui/test_app_viewmodel.py`: 状態公開・通知のテスト（Session はテンポラリ CSV で実体使用、モック不使用）
     - _Requirements: 13.1, 13.2, 13.6_
 
-- [ ] 2. データ取込・閲覧 VM と永続化
-  - [ ] 2.1 データソース永続化の実装
+- [x] 2. データ取込・閲覧 VM と永続化
+  - [x] 2.1 データソース永続化の実装
     - `src/valisync/gui/persistence/__init__.py` と `src/valisync/gui/persistence/data_sources.py` を作成
     - 登録データソース（フォルダパス一覧）を JSON で保存/読込（`save(paths, file)`, `load(file)->list[Path]`）。検査容易性のため平易な JSON
     - `tests/gui/test_data_sources.py`: 保存→読込ラウンドトリップ、不存在ファイル時は空リスト
     - _Requirements: 3.5_
-  - [ ] 2.2 ChannelBrowserVM の実装
+  - [x] 2.2 ChannelBrowserVM の実装
     - `src/valisync/gui/viewmodels/channel_browser_vm.py` に `ChannelBrowserVM(Observable)` を実装
     - Session の信号から「ソースファイル > 信号名」階層・メタ（型・サンプル数・時間範囲）を構成。`set_filter(text)` でインクリメンタル絞り込み、複数選択状態、表示/非表示トグル状態を保持
     - `tree()->構造化データ`, `visible_signal_keys()`, `inspect()`
     - `tests/gui/test_channel_browser_vm.py`: ツリー構成・検索絞り込み・選択・トグルのテスト
     - _Requirements: 4.1, 4.2, 4.4, 4.5, 4.6, 13.6_
 
-- [ ] 3. グラフ ViewModel（パネル・エリア・LOD）
-  - [ ] 3.1 GraphPanelVM と動的 LOD の実装
+- [x] 3. グラフ ViewModel（パネル・エリア・LOD）
+  - [x] 3.1 GraphPanelVM と動的 LOD の実装
     - `src/valisync/gui/viewmodels/graph_panel_vm.py` に `GraphPanelVM(Observable)` を実装
     - 状態: 表示信号（signal_key, 色, 表示/非表示）、`x_range`, `y_range`, `panel_width_px`, `lod_active`, `last_rendered_points`
     - 操作: `add_signal/remove_signal/toggle_visibility`, `set_x_range/set_y_range/reset_x/reset_y`, `set_panel_width`
@@ -65,21 +65,21 @@ ValiSync GUI の「歩く骨格（walking skeleton）」を実装する。PySide
     - 色は固定パレット巡回割当。`inspect()` で表示信号・範囲・色・lod_active・点数を構造化公開
     - `tests/gui/test_graph_panel_vm.py`: 信号追加→render の点数有界性、可視範囲スライス、lod_active 判定、リセット、キャッシュ
     - _Requirements: 8.1, 8.2, 8.3, 8.5, 9.x（範囲計算）, 10.x（範囲計算）, 11.1, 11.3, 11.4, 11.5, 11.6, 13.2, 13.6_
-  - [ ] 3.2 GraphAreaVM の実装
+  - [x] 3.2 GraphAreaVM の実装
     - `src/valisync/gui/viewmodels/graph_area_vm.py` に `GraphAreaVM(Observable)` を実装
     - タブ群（各タブが GraphPanelVM のリスト）、アクティブタブ、`x_sync_enabled` を保持
     - `add_tab/remove_tab(最後の1つは拒否)/rename_tab(1-32文字)`, `add_panel(最大8)/remove_panel(最後の1つ拒否)`, `set_x_sync(bool)`, `propagate_x_range(range)`（同期時に全パネルへ）
     - `tests/gui/test_graph_area_vm.py`: タブ追加/削除/最後の1つ拒否/リネーム検証、パネル追加/最大8/削除再分配、X同期伝播
     - _Requirements: 5.2, 5.3, 5.4, 5.6, 6.2, 6.3, 6.5, 6.6, 7.1, 7.2, 7.3, 7.4_
 
-- [ ] 4. ワーカー読込（VM 側状態）
-  - [ ] 4.1 LoadTask の実装
+- [x] 4. ワーカー読込（VM 側状態）
+  - [x] 4.1 LoadTask の実装
     - `src/valisync/gui/viewmodels/load_task.py` に `LoadTask(Observable)` を実装。状態: `idle/loading/done/error`、結果 key またはエラーメッセージ
     - 実行関数は注入可能（テストでは同期関数を渡す）。AppViewModel.request_load から呼ばれ、完了/失敗を通知
     - `tests/gui/test_load_task.py`: 成功遷移（idle→loading→done）、失敗遷移（→error）。実 Session.load を使用
     - _Requirements: 2.4, 2.5, 13.5_
 
-- [ ] 5. チェックポイント — ViewModel 層（ヘッドレス）
+- [x] 5. チェックポイント — ViewModel 層（ヘッドレス）
   - 全 VM テストが Qt/ディスプレイ無しで green。`uv run pytest tests/gui -q`（View 未実装分を除く）・ruff・mypy 通過
 
 - [ ] 6. シェル・ドッキング・エントリポイント
