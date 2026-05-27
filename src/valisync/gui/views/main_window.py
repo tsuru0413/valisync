@@ -7,7 +7,7 @@ by AppViewModel; MainWindow only wires Qt signals/slots and dock layout.
 from __future__ import annotations
 
 from PySide6.QtCore import QSettings, Qt
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QDockWidget,
     QLabel,
@@ -92,6 +92,11 @@ class MainWindow(QMainWindow):
         settings = QSettings(_ORG, _APP)
         settings.setValue("geometry", self.saveGeometry())
         settings.setValue("windowState", self.saveState())
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Persist window state on close so it can be restored next launch (R2.3)."""
+        self.save_state()
+        super().closeEvent(event)
 
     def _restore_state(self) -> None:
         """Restore geometry/dock state saved by a previous session.

@@ -217,3 +217,24 @@ class TestDependencyInjection:
         window = MainWindow(app_vm, graph_area_widget=custom_ga)
         qtbot.addWidget(window)
         assert window.graph_dock.widget() is custom_ga
+
+
+# ---------------------------------------------------------------------------
+# State is persisted on window close (R2.3 — restore requires save-on-close)
+# ---------------------------------------------------------------------------
+
+
+class TestSaveOnClose:
+    def test_close_event_persists_state(self, qtbot: QtBot) -> None:
+        window = _make_window(qtbot)
+        calls: list[int] = []
+        # Spy on save_state to verify closeEvent wires through to it.
+        original = window.save_state  # type: ignore[attr-defined]
+
+        def _spy() -> None:
+            calls.append(1)
+            original()
+
+        window.save_state = _spy  # type: ignore[attr-defined,method-assign]
+        window.close()
+        assert calls, "closeEvent must call save_state so geometry persists"
