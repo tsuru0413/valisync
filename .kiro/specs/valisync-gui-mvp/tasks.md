@@ -82,14 +82,14 @@ ValiSync GUI の「歩く骨格（walking skeleton）」を実装する。PySide
 - [x] 5. チェックポイント — ViewModel 層（ヘッドレス）
   - 全 VM テストが Qt/ディスプレイ無しで green。`uv run pytest tests/gui -q`（View 未実装分を除く）・ruff・mypy 通過
 
-- [ ] 6. シェル・ドッキング・エントリポイント
-  - [ ] 6.1 MainWindow の実装
+- [x] 6. シェル・ドッキング・エントリポイント
+  - [x] 6.1 MainWindow の実装
     - `src/valisync/gui/views/__init__.py` と `src/valisync/gui/views/main_window.py` を作成
     - `QMainWindow`: Channel_Browser と Graph_Area を独立 QDockWidget として配置（左/右）、central はプレースホルダ。メニュー/ツールバー（Data_Explorer 起動、閉じたドック再表示 = `toggleViewAction`）
     - 起動時に QSettings からウィンドウ位置・サイズ復元、終了時保存
     - `tests/gui/test_main_window.py`（pytest-qt）: ドック存在・フロート可能・閉→再表示、QSettings 復元
     - _Requirements: 1.1, 1.2, 1.3, 1.4, 2.1, 2.3_
-  - [ ] 6.2 app.py エントリポイントの実装
+  - [x] 6.2 app.py エントリポイントの実装
     - `src/valisync/gui/app.py` に `main()`: QApplication 生成 → Session 生成 → AppViewModel → MainWindow 表示
     - `tests/gui/test_app.py`（pytest-qt）: `main()` 相当の組み立てでウィンドウが 3 秒以内に表示可能な状態になる（起動スモーク）
     - _Requirements: 2.1, 2.2_
