@@ -95,7 +95,7 @@ ValiSync GUI の「歩く骨格（walking skeleton）」を実装する。PySide
     - _Requirements: 2.1, 2.2_
 
 - [ ] 7. データ閲覧 View
-  - [ ] 7.1 純VM→QAbstractItemModel アダプタの実装
+  - [x] 7.1 純VM→QAbstractItemModel アダプタの実装
     - `src/valisync/gui/adapters/__init__.py` と `src/valisync/gui/adapters/qt_signal_models.py` を作成
     - `ChannelBrowserVM` のツリー状態を `QAbstractItemModel` に橋渡し（信号メタを列に提供）
     - `tests/gui/test_qt_signal_models.py`（pytest-qt）: モデルの行/列/データが VM ツリーと一致

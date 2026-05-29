@@ -58,6 +58,11 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B011", "SIM117", "SIM108"]
 
+[tool.ruff.lint.flake8-bugbear]
+# QModelIndex() is the idiomatic invalid-index default in Qt model overrides;
+# an invalid index is stateless, so the B008 mutable-default concern is moot.
+extend-immutable-calls = ["PySide6.QtCore.QModelIndex"]
+
 [tool.mypy]
 python_version = "3.12"
 disallow_incomplete_defs = true
