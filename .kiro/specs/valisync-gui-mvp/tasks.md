@@ -110,7 +110,7 @@ ValiSync GUI の「歩く骨格（walking skeleton）」を実装する。PySide
     - _Requirements: 1.5, 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 12.1_
 
 - [ ] 8. グラフ View（タブ・分割・波形・ズーム/パン・LOD 描画）
-  - [ ] 8.1 Graph_Area View（タブ + パネル分割）の実装
+  - [x] 8.1 Graph_Area View（タブ + パネル分割）の実装
     - `src/valisync/gui/views/graph_area_view.py`: QDockWidget 内に `QTabWidget`、各タブは `QSplitter`（垂直）で GraphPanelView を配置。タブ追加/削除/リネーム、パネル追加/削除、高さ比率ドラッグ
     - `tests/gui/test_graph_area_view.py`（pytest-qt）: タブ操作・パネル分割・最後の1つ拒否が VM と連動
     - _Requirements: 5.1, 5.2, 5.3, 5.5, 6.1, 6.2, 6.3, 6.4, 6.6_
