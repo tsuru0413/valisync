@@ -11,10 +11,11 @@ import contextlib
 import json
 import os
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 
 
-def save(paths: list[str | Path], file: Path) -> None:
+def save(paths: Sequence[str | Path], file: Path) -> None:
     """Persist *paths* to *file* as a JSON array of strings.
 
     Parent directories are created when they do not exist.  The write is

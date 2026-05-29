@@ -94,7 +94,7 @@ ValiSync GUI の「歩く骨格（walking skeleton）」を実装する。PySide
     - `tests/gui/test_app.py`（pytest-qt）: `main()` 相当の組み立てでウィンドウが 3 秒以内に表示可能な状態になる（起動スモーク）
     - _Requirements: 2.1, 2.2_
 
-- [ ] 7. データ閲覧 View
+- [x] 7. データ閲覧 View
   - [x] 7.1 純VM→QAbstractItemModel アダプタの実装
     - `src/valisync/gui/adapters/__init__.py` と `src/valisync/gui/adapters/qt_signal_models.py` を作成
     - `ChannelBrowserVM` のツリー状態を `QAbstractItemModel` に橋渡し（信号メタを列に提供）
@@ -104,7 +104,7 @@ ValiSync GUI の「歩く骨格（walking skeleton）」を実装する。PySide
     - `src/valisync/gui/views/channel_browser_view.py`: QDockWidget 内に QTreeView + アダプタ + 検索ボックス。検索→`set_filter`、選択→VM、トグル UI、信号 D&D の MimeData 生成（signal_key 群）
     - `tests/gui/test_channel_browser_view.py`（pytest-qt）: 検索絞り込み反映、複数選択、ドラッグ MimeData 生成
     - _Requirements: 4.3, 4.4, 4.5, 4.6, 12.2, 12.3_
-  - [ ] 7.3 Data_Explorer View の実装
+  - [x] 7.3 Data_Explorer View の実装
     - `src/valisync/gui/views/data_explorer_view.py`: ツールバーから開く独立 `QMainWindow`。`QFileSystemModel` ベースのツリー、拡張子アイコン簡易判定、ダブルクリック/Enter/コンテキストメニューで `AppViewModel.request_load`、ソース追加/削除（persistence 連携）、OS からのファイル D&D 受理
     - `tests/gui/test_data_explorer_view.py`（pytest-qt）: ソース登録→ツリー表示、ダブルクリックで request_load 呼出、永続化往復
     - _Requirements: 1.5, 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 12.1_
