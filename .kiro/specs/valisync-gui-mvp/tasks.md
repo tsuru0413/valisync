@@ -100,7 +100,7 @@ ValiSync GUI の「歩く骨格（walking skeleton）」を実装する。PySide
     - `ChannelBrowserVM` のツリー状態を `QAbstractItemModel` に橋渡し（信号メタを列に提供）
     - `tests/gui/test_qt_signal_models.py`（pytest-qt）: モデルの行/列/データが VM ツリーと一致
     - _Requirements: 4.1, 4.2_
-  - [ ] 7.2 Channel_Browser View の実装
+  - [x] 7.2 Channel_Browser View の実装
     - `src/valisync/gui/views/channel_browser_view.py`: QDockWidget 内に QTreeView + アダプタ + 検索ボックス。検索→`set_filter`、選択→VM、トグル UI、信号 D&D の MimeData 生成（signal_key 群）
     - `tests/gui/test_channel_browser_view.py`（pytest-qt）: 検索絞り込み反映、複数選択、ドラッグ MimeData 生成
     - _Requirements: 4.3, 4.4, 4.5, 4.6, 12.2, 12.3_

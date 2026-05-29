@@ -16,6 +16,7 @@ from typing import Any
 
 from PySide6.QtCore import (
     QAbstractItemModel,
+    QMimeData,
     QModelIndex,
     QObject,
     QPersistentModelIndex,
@@ -27,6 +28,28 @@ from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
 # Qt's overridable model methods accept either index flavour; match the
 # supertype signature so mypy's Liskov check passes.
 _Index = QModelIndex | QPersistentModelIndex
+
+# Custom MIME type for dragging signal keys from the Channel_Browser to a
+# Graph_Panel.  The payload is the namespaced signal names, one per line.
+# Defined here (the adapter layer) so both the drag source and the drop sink
+# agree on the wire format without coupling two view modules to each other.
+SIGNAL_KEYS_MIME = "application/x-valisync-signal-keys"
+
+
+def encode_signal_keys(keys: list[str]) -> QMimeData:
+    """Pack *keys* into a QMimeData payload under :data:`SIGNAL_KEYS_MIME`."""
+    md = QMimeData()
+    md.setData(SIGNAL_KEYS_MIME, "\n".join(keys).encode("utf-8"))
+    return md
+
+
+def decode_signal_keys(md: QMimeData) -> list[str]:
+    """Extract signal keys from *md*; empty list if it carries no such payload."""
+    if not md.hasFormat(SIGNAL_KEYS_MIME):
+        return []
+    raw = bytes(md.data(SIGNAL_KEYS_MIME).data()).decode("utf-8")
+    return raw.split("\n") if raw else []
+
 
 # Column layout.  Column 0 is the tree/name column; the rest expose the
 # signal metadata the VM already computes from each Signal.
