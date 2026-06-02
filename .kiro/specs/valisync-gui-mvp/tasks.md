@@ -114,7 +114,7 @@ ValiSync GUI の「歩く骨格（walking skeleton）」を実装する。PySide
     - `src/valisync/gui/views/graph_area_view.py`: QDockWidget 内に `QTabWidget`、各タブは `QSplitter`（垂直）で GraphPanelView を配置。タブ追加/削除/リネーム、パネル追加/削除、高さ比率ドラッグ
     - `tests/gui/test_graph_area_view.py`（pytest-qt）: タブ操作・パネル分割・最後の1つ拒否が VM と連動
     - _Requirements: 5.1, 5.2, 5.3, 5.5, 6.1, 6.2, 6.3, 6.4, 6.6_
-  - [ ] 8.2 Graph_Panel View（PyQtGraph 波形 + 凡例 + LOD 描画）の実装
+  - [x] 8.2 Graph_Panel View（PyQtGraph 波形 + 凡例 + LOD 描画）の実装
     - `src/valisync/gui/views/graph_panel_view.py`: `pyqtgraph.PlotWidget` ラッパ。GraphPanelVM の `render_data()` 結果を `PlotDataItem.setData` で描画、凡例（信号名↔色）、空信号は空グラフ+凡例。パネル幅変更→`set_panel_width`→再 render。信号ドロップ受理→`add_signal`
     - `tests/gui/test_graph_panel_view.py`（pytest-qt）: 信号追加で曲線描画、凡例表示、空信号、`QWidget.grab()` スクショ取得が成功
     - _Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 11.2, 12.4_
