@@ -52,7 +52,11 @@ class GraphAreaView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.tabs)
 
-        self._unsubscribe = self.vm.subscribe(self._on_vm_change)
+        unsubscribe = self.vm.subscribe(self._on_vm_change)
+        self._unsubscribe = unsubscribe
+        # The VM outlives this widget; drop the subscription when the C++ object
+        # is destroyed so a later notify never calls into a deleted view.
+        self.destroyed.connect(lambda *_: unsubscribe())
         self._rebuild()
 
     # ─── VM reactions ──────────────────────────────────────────────────────────
@@ -67,7 +71,15 @@ class GraphAreaView(QWidget):
         """Re-project the whole VM tab/panel tree onto the QTabWidget."""
         self._syncing = True
         try:
+            # QTabWidget.clear() detaches pages without destroying them, leaking
+            # a QSplitter (and its panel widgets) on every rebuild.  Dispose the
+            # old pages explicitly.
+            old_pages = [self.tabs.widget(i) for i in range(self.tabs.count())]
             self.tabs.clear()
+            for page in old_pages:
+                if page is not None:
+                    page.setParent(None)
+                    page.deleteLater()
             for tab_index, tab in enumerate(self.vm.tabs()):
                 splitter = QSplitter(Qt.Orientation.Vertical)
                 for panel_vm in self.vm.panels(tab_index):

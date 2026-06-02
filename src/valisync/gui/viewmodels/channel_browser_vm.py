@@ -160,6 +160,9 @@ class ChannelBrowserVM(Observable):
         return {
             "filter_text": self._filter_text,
             "selection": list(self._selection),
-            "visibility_map": {k: k not in self._hidden for k in self._hidden},
+            "visibility_map": {
+                sig.name: sig.name not in self._hidden
+                for sig in self._session.signals()
+            },
             "tree_summary": tree_summary,
         }

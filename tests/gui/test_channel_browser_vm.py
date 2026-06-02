@@ -333,3 +333,18 @@ def test_inspect_returns_snapshot(tmp_path: Path) -> None:
     assert f"{key}::a" in snapshot["selection"]
     assert "visibility_map" in snapshot
     assert "tree_summary" in snapshot
+
+
+def test_visibility_map_lists_all_signals_with_correct_bool(tmp_path: Path) -> None:
+    """visibility_map maps EVERY loaded signal to its visibility, not just hidden.
+
+    Regression: the map was built as {k: k not in self._hidden for k in
+    self._hidden}, which is always False and omits visible signals entirely.
+    """
+    session, key = _loaded_session(tmp_path)
+    vm = ChannelBrowserVM(session)
+    vm.toggle_visibility(f"{key}::a")  # hide 'a'; 'b' stays visible
+
+    vis = vm.inspect()["visibility_map"]
+
+    assert vis == {f"{key}::a": False, f"{key}::b": True}

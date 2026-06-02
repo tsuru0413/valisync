@@ -53,7 +53,11 @@ class ChannelBrowserView(QWidget):
         # Re-render whenever the VM's state changes (filter typed, signals
         # loaded externally, etc.).  beginResetModel clears the selection, so
         # we re-expand to keep the tree usable after a refresh.
-        self._unsubscribe = self._vm.subscribe(self._on_vm_change)
+        unsubscribe = self._vm.subscribe(self._on_vm_change)
+        self._unsubscribe = unsubscribe
+        # The VM outlives this widget; drop the subscription when the C++ object
+        # is destroyed so a later notify never calls into a deleted view.
+        self.destroyed.connect(lambda *_: unsubscribe())
 
     # ─── VM reactions ──────────────────────────────────────────────────────────
 

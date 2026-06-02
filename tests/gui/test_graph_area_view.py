@@ -150,3 +150,38 @@ class TestPanelFactory:
         widget = _page_splitter(view, 0).widget(0)
         assert widget.property("is_custom_panel") is True
         assert len(built) == 1
+
+
+# ─── Lifecycle: no leaks, clean unsubscribe ────────────────────────────────────
+
+
+class TestLifecycle:
+    def test_rebuild_does_not_leak_pages(self, qtbot: QtBot) -> None:
+        """Each _rebuild must dispose old pages; QTabWidget.clear() alone leaks
+        a QSplitter per rebuild (it detaches pages without deleting them)."""
+        view = _make_area(qtbot)
+        for _ in range(5):
+            view.add_panel()  # type: ignore[attr-defined]
+        for _ in range(3):
+            view.add_tab()  # type: ignore[attr-defined]
+        qtbot.wait(50)  # let queued deleteLater run
+
+        splitters = view.tabs.findChildren(QSplitter)  # type: ignore[attr-defined]
+        assert len(splitters) == view.tabs.count()  # type: ignore[attr-defined]
+
+    def test_unsubscribes_when_destroyed(self, qtbot: QtBot) -> None:
+        """A destroyed view must not leave a live VM callback into a dead widget."""
+        from valisync.core.session import Session
+
+        vm = GraphAreaVM(Session())
+        from valisync.gui.views.graph_area_view import GraphAreaView
+
+        view = GraphAreaView(vm)
+        qtbot.addWidget(view)
+        assert len(vm._callbacks) == 1
+
+        view.deleteLater()
+        qtbot.wait(50)  # let the C++ object be destroyed (fires destroyed())
+
+        assert len(vm._callbacks) == 0
+        vm.add_tab()  # a notify after destruction must not raise

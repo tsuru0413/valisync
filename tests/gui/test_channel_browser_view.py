@@ -229,6 +229,24 @@ class TestExternalRefresh:
 # ─── Mime encode/decode round-trip (adapter helpers) ───────────────────────────
 
 
+class TestLifecycle:
+    def test_unsubscribes_when_destroyed(self, qtbot: QtBot, tmp_path: Path) -> None:
+        """A destroyed view must not leave a live VM callback into a dead widget."""
+        from valisync.gui.views.channel_browser_view import ChannelBrowserView
+
+        session, _ = _loaded_session(tmp_path)
+        vm = ChannelBrowserVM(session)
+        view = ChannelBrowserView(vm)
+        qtbot.addWidget(view)
+        assert len(vm._callbacks) == 1
+
+        view.deleteLater()
+        qtbot.wait(50)  # let the C++ object be destroyed (fires destroyed())
+
+        assert len(vm._callbacks) == 0
+        vm.refresh()  # a notify after destruction must not raise
+
+
 class TestMimeHelpers:
     def test_encode_decode_round_trip(self, qtbot: QtBot) -> None:
         from valisync.gui.adapters.qt_signal_models import (
