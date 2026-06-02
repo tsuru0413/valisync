@@ -182,3 +182,19 @@ ValiSync GUI の「歩く骨格（walking skeleton）」を実装する。PySide
 - **後続 sub-spec への申し送り**: 複数 Y 軸・X-Y プロット（`valisync-gui-axes`）導入時に GraphPanelVM の「単一共通 Y 軸」前提を Y 軸コレクションへ拡張する。信号→軸の関連を将来差し替え可能な形に保つ
 - **構造変更ポリシー**: `gui/` 配下のサブパッケージ（viewmodels/views/adapters/workers/persistence）は design.md で承認済みの構成。新規追加が必要になればユーザー承認を取る
 - 完了タスクは本ファイルのチェックボックスを `[x]` に更新する
+
+### UI 配線の申し送り（コードレビュー 2026-06-02 で抽出、後続タスクで対応）
+
+VM/ロジック層は完成・テスト済みだが、以下の**薄い UI トリガー配線が未了**。各担当タスクで対応する:
+
+- **MainWindow → Data_Explorer 起動**: `views/main_window.py` の `open_data_explorer()` は空スタブ（Task 6.1 時点で `DataExplorerView` 未実装のため）。`DataExplorerView` を生成・表示する配線を **Task 10（統合チェックポイント）**で行う（R1.5）
+- **Data_Explorer の Add Source ボタン**: `views/data_explorer_view.py` の `action_add_source` が未接続。フォルダ選択ダイアログ → `add_source()` の配線を **Task 9.2/9.3 の UI 配線**に含めて対応（R3.4）。※ロジック（`add_source`/`remove_source` + 永続化）は 7.3 で実装・テスト済み
+- **Data_Explorer の Remove/除外**: ファイル右クリック「データソースから除外」を **Task 9.3** で対応（R8.2、既定の行き先）
+- **GraphAreaView/ChannelBrowserView のジェスチャ未配線**: タブ閉じる（`tabCloseRequested`→`remove_tab`）・パネル追加/削除ボタン等の UI トリガーは **Task 8.x/9.3** で対応（VM コマンド自体は実装・テスト済み）
+
+### コードレビュー残課題（堅牢性・効率、2026-06-02）
+
+- **render キャッシュの Session 非追従**（`graph_panel_vm.py`）: 信号が初回 render 時に未ロード（`sig is None`→空カーブをキャッシュ）だと、後でロードされても同一キーで空のまま。エッジだが、読込完了時に該当パネルへ invalidate を伝播する設計を **Task 9.1（読込ワーカー統合）**で検討
+- **reset_x/reset_y の旧レンジ温存**（`graph_panel_vm.py`）: 対象信号が無いとき旧レンジを残す。`_auto_fit_ranges` が range=None 時のみ発火する前提と組み合わさり、古い窓が後続信号を切り取る。軽微
+- **`tree()` の `split("::",1)` 無防備**（`channel_browser_vm.py`）: 名前空間化されていない信号名で ValueError。現状 SignalGroupManager が保証するが、将来 Derived 信号導入時に要ガード
+- **GraphAreaView の全再構築**（`graph_area_view.py`）: notify 毎に全パネルを破棄→再生成（リーク自体は修正済み）。本物の GraphPanelView 投入後は差分更新が望ましい。**Task 8.2** で再検討
