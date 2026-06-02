@@ -22,6 +22,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QDragEnterEvent,
+    QDragLeaveEvent,
     QDragMoveEvent,
     QDropEvent,
     QMouseEvent,
@@ -124,6 +125,7 @@ class GraphPanelView(QWidget):
         self._items: dict[str, pg.PlotDataItem] = {}
         self._drag_zone: str | None = None
         self._drag_start: QPointF | None = None
+        self._drop_active = False
 
         self.plot_widget = pg.PlotWidget()
         self._plot_item = self.plot_widget.getPlotItem()
@@ -317,8 +319,19 @@ class GraphPanelView(QWidget):
 
     # ─── Drag-and-drop sink (R12.4) ────────────────────────────────────────────
 
+    def is_drop_highlighted(self) -> bool:
+        """Return True while a droppable drag is hovering (R12.5)."""
+        return self._drop_active
+
+    def _set_drop_highlight(self, active: bool) -> None:
+        self._drop_active = active
+        self.setStyleSheet(
+            "GraphPanelView { border: 2px solid #1f77b4; }" if active else ""
+        )
+
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasFormat(SIGNAL_KEYS_MIME):
+            self._set_drop_highlight(True)
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -329,7 +342,12 @@ class GraphPanelView(QWidget):
         else:
             event.ignore()
 
+    def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:
+        self._set_drop_highlight(False)
+        super().dragLeaveEvent(event)
+
     def dropEvent(self, event: QDropEvent) -> None:
+        self._set_drop_highlight(False)
         keys = decode_signal_keys(event.mimeData())
         if not keys:
             event.ignore()

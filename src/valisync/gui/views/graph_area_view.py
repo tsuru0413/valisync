@@ -18,7 +18,8 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QSplitter,
@@ -41,6 +42,10 @@ def _default_panel_factory(panel_vm: GraphPanelVM) -> QWidget:
 class GraphAreaView(QWidget):
     """Tabbed container projecting :class:`GraphAreaVM`."""
 
+    # Emitted when OS files are dropped onto the area; the integration layer
+    # connects this to the load pipeline (R12.1).
+    file_dropped = Signal(str)
+
     def __init__(
         self,
         vm: GraphAreaVM,
@@ -53,6 +58,8 @@ class GraphAreaView(QWidget):
         # Guards against re-entrancy when we programmatically set the current
         # tab during a rebuild (which would otherwise echo back into the VM).
         self._syncing = False
+        self._drop_active = False
+        self.setAcceptDrops(True)
 
         # X-sync toggle for the active tab (R7.3).
         self.sync_checkbox = QCheckBox("Sync X")
@@ -157,3 +164,44 @@ class GraphAreaView(QWidget):
 
     def _target_tab(self, tab_index: int | None) -> int:
         return self.vm.active_tab_index if tab_index is None else tab_index
+
+    # ─── OS file drop → load pipeline (R12.1) ──────────────────────────────────
+
+    def is_drop_highlighted(self) -> bool:
+        """Return True while a droppable file drag is hovering (R12.5)."""
+        return self._drop_active
+
+    def _set_drop_highlight(self, active: bool) -> None:
+        self._drop_active = active
+        self.setStyleSheet(
+            "GraphAreaView { border: 2px dashed #1f77b4; }" if active else ""
+        )
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasUrls():
+            self._set_drop_highlight(True)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:
+        self._set_drop_highlight(False)
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        self._set_drop_highlight(False)
+        mime = event.mimeData()
+        if not mime.hasUrls():
+            event.ignore()
+            return
+        for url in mime.urls():
+            local = url.toLocalFile()
+            if local:
+                self.file_dropped.emit(local)
+        event.acceptProposedAction()

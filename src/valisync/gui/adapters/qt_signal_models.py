@@ -12,6 +12,7 @@ VM stays Qt-free for headless testing.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from PySide6.QtCore import (
@@ -201,3 +202,32 @@ class ChannelTreeModel(QAbstractItemModel):
         ):
             return _HEADERS[section]
         return None
+
+    # ─── Drag source (signal leaves → Graph_Panel) ─────────────────────────────
+
+    def flags(self, index: _Index) -> Qt.ItemFlag:
+        if not index.isValid():
+            return Qt.ItemFlag.NoItemFlags
+        base = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        # Only signal leaves are draggable; group headers are not.
+        if self.signal_key_at(index) is not None:
+            base |= Qt.ItemFlag.ItemIsDragEnabled
+        return base
+
+    def mimeTypes(self) -> list[str]:
+        return [SIGNAL_KEYS_MIME]
+
+    def mimeData(self, indexes: Sequence[_Index]) -> QMimeData:
+        """Pack the selected signal-leaf keys into a drag payload (deduped).
+
+        Qt passes one index per column of each selected row; collapse them to
+        unique signal keys (group rows contribute nothing).
+        """
+        keys: list[str] = []
+        seen: set[str] = set()
+        for index in indexes:
+            key = self.signal_key_at(index)
+            if key is not None and key not in seen:
+                seen.add(key)
+                keys.append(key)
+        return encode_signal_keys(keys)

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import cast
 
 from PySide6.QtCore import QModelIndex
+from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
 from PySide6.QtWidgets import (
     QFileSystemModel,
     QMainWindow,
@@ -58,6 +59,7 @@ class DataExplorerView(QMainWindow):
         self.tree.setSelectionMode(QTreeView.SelectionMode.ExtendedSelection)
         self.tree.activated.connect(self._on_activated)
         self.setCentralWidget(self.tree)
+        self.setAcceptDrops(True)  # OS file-manager drops (R12.1)
 
         # ── Toolbar ──────────────────────────────────────────────────────────
         toolbar: QToolBar = self.addToolBar("Sources")
@@ -110,3 +112,28 @@ class DataExplorerView(QMainWindow):
         if not index.isValid() or self.fs_model.isDir(index):
             return
         self.load_path(self.fs_model.filePath(index))
+
+    # ─── OS file drop (R12.1) ───────────────────────────────────────────────────
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        mime = event.mimeData()
+        if not mime.hasUrls():
+            event.ignore()
+            return
+        for url in mime.urls():
+            local = url.toLocalFile()
+            if local:
+                self.load_path(local)
+        event.acceptProposedAction()

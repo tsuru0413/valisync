@@ -134,7 +134,7 @@ ValiSync GUI の「歩く骨格（walking skeleton）」を実装する。PySide
     - `src/valisync/gui/workers/__init__.py` と `src/valisync/gui/workers/load_worker.py`: `QRunnable` で `Session.load` をオフスレッド実行し queued signal で完了通知。AppViewModel/LoadTask と接続、読込中 BusyOverlay 表示
     - `tests/gui/test_load_worker.py`（pytest-qt）: ワーカー実行→完了通知でツリー更新、読込中ビジー表示
     - _Requirements: 2.4, 2.5, 12.1_
-  - [ ] 9.2 ファイル/信号 D&D ワークフローの実装
+  - [x] 9.2 ファイル/信号 D&D ワークフローの実装
     - OS ファイルマネージャ → Data_Explorer / Graph_Area への D&D 読込、Channel_Browser 信号 → Graph_Panel D&D（複数選択一括）、ドロップ領域ハイライト
     - `tests/gui/test_dnd_workflow.py`（pytest-qt）: 信号ドロップで波形追加、ファイルドロップで読込
     - _Requirements: 12.1, 12.2, 12.3, 12.4, 12.5_
@@ -188,7 +188,8 @@ ValiSync GUI の「歩く骨格（walking skeleton）」を実装する。PySide
 VM/ロジック層は完成・テスト済みだが、以下の**薄い UI トリガー配線が未了**。各担当タスクで対応する:
 
 - **MainWindow → Data_Explorer 起動**: `views/main_window.py` の `open_data_explorer()` は空スタブ（Task 6.1 時点で `DataExplorerView` 未実装のため）。`DataExplorerView` を生成・表示する配線を **Task 10（統合チェックポイント）**で行う（R1.5）
-- **Data_Explorer の Add Source ボタン**: `views/data_explorer_view.py` の `action_add_source` が未接続。フォルダ選択ダイアログ → `add_source()` の配線を **Task 9.2/9.3 の UI 配線**に含めて対応（R3.4）。※ロジック（`add_source`/`remove_source` + 永続化）は 7.3 で実装・テスト済み
+- **Data_Explorer の Add Source ボタン**: `views/data_explorer_view.py` の `action_add_source` が未接続。フォルダ選択ダイアログ → `add_source()` の配線を **Task 9.3 / 10 の UI 配線**に含めて対応（R3.4）。※ロジック（`add_source`/`remove_source` + 永続化）は 7.3 で実装・テスト済み。9.2 で OS ファイル D&D 受理は実装済み
+- **OS ファイル D&D の実機到達は要確認（Task 10 手動 verify）**: `GraphAreaView.file_dropped` / `DataExplorerView.dropEvent` はユニットでは直接呼んで検証済みだが、実機では子ウィジェット（QTabWidget の panel、QFileSystemModel の tree）がドロップを先取りする可能性。必要なら viewport への eventFilter / 子の setAcceptDrops(False) で対応
 - **Data_Explorer の Remove/除外**: ファイル右クリック「データソースから除外」を **Task 9.3** で対応（R8.2、既定の行き先）
 - **GraphAreaView/ChannelBrowserView のジェスチャ未配線**: タブ閉じる（`tabCloseRequested`→`remove_tab`）・パネル追加/削除ボタン等の UI トリガーは **Task 8.x/9.3** で対応（VM コマンド自体は実装・テスト済み）
 
