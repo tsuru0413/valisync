@@ -392,6 +392,74 @@ def test_propagate_x_range_does_not_affect_other_tabs() -> None:
         assert panel.x_range is None
 
 
+# ─── auto X-sync: a panel's range change drives its siblings (R7.1/R7.2) ────────
+
+
+def test_panel_range_change_propagates_when_sync_on() -> None:
+    session = _make_session()
+    vm = GraphAreaVM(session)
+    vm.add_panel(0)  # 2 panels
+    vm.set_x_sync(0, True)
+    p0, p1 = vm.panels(0)
+
+    p0.set_x_range(2.0, 4.0)  # a zoom on one panel
+
+    assert p1.x_range == (2.0, 4.0)
+
+
+def test_panel_range_change_independent_when_sync_off() -> None:
+    session = _make_session()
+    vm = GraphAreaVM(session)
+    vm.add_panel(0)
+    vm.set_x_sync(0, False)
+    p0, p1 = vm.panels(0)
+
+    p0.set_x_range(2.0, 4.0)
+
+    assert p1.x_range is None
+
+
+def test_panel_range_change_does_not_cross_tabs() -> None:
+    session = _make_session()
+    vm = GraphAreaVM(session)
+    vm.add_tab()  # tab 1
+    vm.set_x_sync(0, True)
+    vm.set_x_sync(1, True)
+    p_tab0 = vm.panels(0)[0]
+    p_tab1 = vm.panels(1)[0]
+
+    p_tab0.set_x_range(2.0, 4.0)
+
+    assert p_tab1.x_range is None
+
+
+def test_newly_added_panel_participates_in_sync() -> None:
+    session = _make_session()
+    vm = GraphAreaVM(session)
+    vm.set_x_sync(0, True)
+    p0 = vm.panels(0)[0]
+    vm.add_panel(0)  # subscribe the new panel
+    p1 = vm.panels(0)[1]
+
+    p0.set_x_range(3.0, 7.0)
+
+    assert p1.x_range == (3.0, 7.0)
+
+
+def test_sync_does_not_recurse_infinitely() -> None:
+    session = _make_session()
+    vm = GraphAreaVM(session)
+    vm.add_panel(0)
+    vm.set_x_sync(0, True)
+    p0, p1 = vm.panels(0)
+
+    # Must terminate (no RecursionError) and both end on the same range.
+    p0.set_x_range(1.0, 2.0)
+
+    assert p0.x_range == (1.0, 2.0)
+    assert p1.x_range == (1.0, 2.0)
+
+
 # ─── active_tab accessor ─────────────────────────────────────────────────────
 
 

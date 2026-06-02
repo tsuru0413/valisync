@@ -1,14 +1,16 @@
-"""Graph_Area view — tabbed, splittable panel container (Task 8.1).
+"""Graph_Area view — tabbed, splittable panel container (Tasks 8.1 / 8.4).
 
 A QTabWidget whose pages are vertical QSplitters, one child widget per
 GraphPanelVM.  Tab/panel structure mirrors GraphAreaVM; all mutation rules
-("reject the last tab/panel", "max 8 panels") live in the VM, so this widget
-just delegates and re-projects on notify.
+("reject the last tab/panel", "max 8 panels") and X-axis sync live in the VM,
+so this widget just delegates and re-projects on notify.
 
-The real per-panel widget (PyQtGraph plot) arrives in Task 8.2; until then a
-caller-supplied ``panel_factory`` builds the panel widgets, defaulting to a
-labelled placeholder.  Injecting the factory keeps this view decoupled from
-GraphPanelView and gives 8.2 a clean seam.
+Panel widgets are built by ``panel_factory`` (default: a real GraphPanelView).
+Injecting the factory keeps the container decoupled and testable.
+
+X-axis sync (Task 8.4): a sync toggle drives ``GraphAreaVM.set_x_sync``; the
+propagation itself is in the VM (a panel's X-range change drives its siblings),
+so zooming one GraphPanelView updates the others through the VM layer.
 """
 
 from __future__ import annotations
@@ -17,16 +19,23 @@ import contextlib
 from collections.abc import Callable
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QLabel, QSplitter, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QSplitter,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+from valisync.gui.views.graph_panel_view import GraphPanelView
 
 PanelFactory = Callable[[GraphPanelVM], QWidget]
 
 
-def _default_panel_factory(_panel_vm: GraphPanelVM) -> QWidget:
-    return QLabel("Graph Panel")
+def _default_panel_factory(panel_vm: GraphPanelVM) -> QWidget:
+    return GraphPanelView(panel_vm)
 
 
 class GraphAreaView(QWidget):
@@ -45,11 +54,16 @@ class GraphAreaView(QWidget):
         # tab during a rebuild (which would otherwise echo back into the VM).
         self._syncing = False
 
+        # X-sync toggle for the active tab (R7.3).
+        self.sync_checkbox = QCheckBox("Sync X")
+        self.sync_checkbox.toggled.connect(self._on_sync_toggled)
+
         self.tabs = QTabWidget(self)
         self.tabs.currentChanged.connect(self._on_current_changed)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.sync_checkbox)
         layout.addWidget(self.tabs)
 
         unsubscribe = self.vm.subscribe(self._on_vm_change)
@@ -64,7 +78,10 @@ class GraphAreaView(QWidget):
     def _on_vm_change(self, change: str) -> None:
         if change == "active":
             self._sync_current()
-        else:  # "tabs" | "panels" | "sync"
+            self._update_sync_checkbox()
+        elif change == "sync":
+            self._update_sync_checkbox()
+        else:  # "tabs" | "panels"
             self._rebuild()
 
     def _rebuild(self) -> None:
@@ -88,6 +105,7 @@ class GraphAreaView(QWidget):
             self.tabs.setCurrentIndex(self.vm.active_tab_index)
         finally:
             self._syncing = False
+        self._update_sync_checkbox()
 
     def _sync_current(self) -> None:
         self._syncing = True
@@ -100,6 +118,21 @@ class GraphAreaView(QWidget):
         if self._syncing or index < 0:
             return
         self.vm.set_active_tab(index)
+
+    # ─── X-sync toggle ─────────────────────────────────────────────────────────
+
+    def _on_sync_toggled(self, checked: bool) -> None:
+        self.vm.set_x_sync(self.vm.active_tab_index, checked)
+
+    def _update_sync_checkbox(self) -> None:
+        """Reflect the active tab's sync flag without echoing back to the VM."""
+        tabs = self.vm.tabs()
+        if not tabs:
+            return
+        enabled = tabs[self.vm.active_tab_index].x_sync_enabled
+        self.sync_checkbox.blockSignals(True)
+        self.sync_checkbox.setChecked(enabled)
+        self.sync_checkbox.blockSignals(False)
 
     # ─── Commands (delegate to VM; rejections are swallowed as UI no-ops) ───────
 

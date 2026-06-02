@@ -9,6 +9,7 @@ descriptive change tag so the Qt layer can decide what to refresh.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -38,9 +39,40 @@ class GraphAreaVM(Observable):
     def __init__(self, session: Session) -> None:
         super().__init__()
         self._session = session
+        # Guards re-entrancy while pushing a synced range to sibling panels.
+        self._propagating = False
+        self._panel_unsubs: dict[int, Callable[[], None]] = {}
         # Start with one tab containing one empty GraphPanelVM.
-        self._tabs: list[_Tab] = [_Tab(name="Tab 1", panels=[GraphPanelVM(session)])]
+        first_panel = GraphPanelVM(session)
+        self._tabs: list[_Tab] = [_Tab(name="Tab 1", panels=[first_panel])]
         self.active_tab_index: int = 0
+        self._subscribe_panel(first_panel)
+
+    # ─── X-sync wiring ────────────────────────────────────────────────────────
+
+    def _subscribe_panel(self, panel: GraphPanelVM) -> None:
+        """Watch *panel* so its X-range changes can drive synced siblings."""
+
+        def on_change(change: str) -> None:
+            self._on_panel_change(panel, change)
+
+        self._panel_unsubs[id(panel)] = panel.subscribe(on_change)
+
+    def _unsubscribe_panel(self, panel: GraphPanelVM) -> None:
+        unsub = self._panel_unsubs.pop(id(panel), None)
+        if unsub is not None:
+            unsub()
+
+    def _on_panel_change(self, panel: GraphPanelVM, change: str) -> None:
+        """Propagate a panel's new X-range to its tab's siblings when synced."""
+        if change != "range" or self._propagating:
+            return
+        for tab_index, tab in enumerate(self._tabs):
+            if panel in tab.panels:
+                if tab.x_sync_enabled and panel.x_range is not None:
+                    lo, hi = panel.x_range
+                    self.propagate_x_range(tab_index, lo, hi)
+                return
 
     # ─── Tab management ───────────────────────────────────────────────────────
 
@@ -51,7 +83,9 @@ class GraphAreaVM(Observable):
         """
         if name is None:
             name = f"Tab {len(self._tabs) + 1}"
-        self._tabs.append(_Tab(name=name, panels=[GraphPanelVM(self._session)]))
+        panel = GraphPanelVM(self._session)
+        self._tabs.append(_Tab(name=name, panels=[panel]))
+        self._subscribe_panel(panel)
         self.active_tab_index = len(self._tabs) - 1
         self._notify("tabs")
         return self.active_tab_index
@@ -64,7 +98,9 @@ class GraphAreaVM(Observable):
         """
         if len(self._tabs) == 1:
             raise ValueError("Cannot remove the last remaining tab")
-        self._tabs.pop(index)
+        removed = self._tabs.pop(index)
+        for panel in removed.panels:
+            self._unsubscribe_panel(panel)
         # Keep active index valid: if we removed the active tab or a tab
         # before it, clamp to the new length.
         if self.active_tab_index >= len(self._tabs):
@@ -101,7 +137,9 @@ class GraphAreaVM(Observable):
         tab = self._tabs[tab_index]
         if len(tab.panels) >= 8:
             raise ValueError("Tab already has 8 panels — the maximum allowed (R6.5)")
-        tab.panels.append(GraphPanelVM(self._session))
+        panel = GraphPanelVM(self._session)
+        tab.panels.append(panel)
+        self._subscribe_panel(panel)
         self._notify("panels")
         return len(tab.panels) - 1
 
@@ -113,7 +151,8 @@ class GraphAreaVM(Observable):
         tab = self._tabs[tab_index]
         if len(tab.panels) == 1:
             raise ValueError("Cannot remove the last remaining panel from a tab")
-        tab.panels.pop(panel_index)
+        panel = tab.panels.pop(panel_index)
+        self._unsubscribe_panel(panel)
         self._notify("panels")
 
     # ─── X-axis sync ─────────────────────────────────────────────────────────
@@ -131,8 +170,14 @@ class GraphAreaVM(Observable):
         tab = self._tabs[tab_index]
         if not tab.x_sync_enabled:
             return
-        for panel in tab.panels:
-            panel.set_x_range(lo, hi)
+        # Guard so each sibling's resulting "range" notify doesn't re-trigger
+        # _on_panel_change and recurse.
+        self._propagating = True
+        try:
+            for panel in tab.panels:
+                panel.set_x_range(lo, hi)
+        finally:
+            self._propagating = False
 
     # ─── Accessors ───────────────────────────────────────────────────────────
 
