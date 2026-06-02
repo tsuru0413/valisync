@@ -39,27 +39,40 @@ class LoadTask(Observable):
         self.result_key: str | None = None
         self.error_message: str | None = None
 
+    def begin(self) -> None:
+        """Enter the loading state and notify (call on the GUI thread)."""
+        self.state = "loading"
+        self._notify("loading")
+
+    def succeed(self, key: str) -> None:
+        """Record the result key, enter the done state, and notify."""
+        self.result_key = key
+        self.state = "done"
+        self._notify("done")
+
+    def fail(self, message: str) -> None:
+        """Record the error message, enter the error state, and notify."""
+        self.error_message = message
+        self.state = "error"
+        self._notify("error")
+
     def run(self, load_callable: Callable[[], str]) -> None:
         """Execute *load_callable* synchronously, driving state transitions.
 
         Transitions:
-          1. Set state → "loading", notify.
+          1. ``begin()`` → "loading".
           2. Invoke ``load_callable()``.
-          3a. On success: store result_key, state → "done", notify.
-          3b. On any exception: store error_message, state → "error", notify.
-             The exception is *not* re-raised; the caller continues normally.
+          3a. On success: ``succeed(key)`` → "done".
+          3b. On any exception: ``fail(message)`` → "error" (not re-raised).
+
+        The threaded path (``workers.LoadController``) drives the same
+        begin/succeed/fail transitions from queued signals instead.
         """
-        self.state = "loading"
-        self._notify("loading")
+        self.begin()
         try:
-            key = load_callable()
-            self.result_key = key
-            self.state = "done"
-            self._notify("done")
+            self.succeed(load_callable())
         except Exception as exc:
-            self.error_message = str(exc)
-            self.state = "error"
-            self._notify("error")
+            self.fail(str(exc))
 
     def inspect(self) -> dict[str, Any]:
         """Return a structured snapshot of the task state.
