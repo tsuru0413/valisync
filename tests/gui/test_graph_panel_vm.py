@@ -671,3 +671,39 @@ def test_palette_cycles_beyond_ten_signals(tmp_path: Path) -> None:
     colors = [p["color"] for p in snap["plotted_signals"]]
     # Color of 11th signal (index 10) should equal color of 1st (index 0)
     assert colors[10] == colors[0]
+
+
+# ─── reset with no fittable signals clears the range (review finding ⑦) ─────────
+
+
+def test_reset_x_clears_range_when_no_plotted_signals(tmp_path: Path) -> None:
+    """reset_x with nothing to fit must clear x_range to None, not keep a stale one.
+
+    Regression: a leftover range from a previous signal set would otherwise
+    suppress _auto_fit_ranges (which only fires when x_range is None) and clip
+    any later-added signal to the stale window.
+    """
+    session, _ = _loaded_session(tmp_path)
+    key = _first_signal_key(session)
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    vm.set_x_range(0.1, 0.2)
+    vm.remove_signal(key)
+
+    vm.reset_x()
+
+    assert vm.x_range is None
+
+
+def test_reset_y_clears_range_when_no_plotted_signals(tmp_path: Path) -> None:
+    """reset_y with nothing to fit must clear y_range to None, not keep a stale one."""
+    session, _ = _loaded_session(tmp_path)
+    key = _first_signal_key(session)
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    vm.set_y_range(-5.0, 5.0)
+    vm.remove_signal(key)
+
+    vm.reset_y()
+
+    assert vm.y_range is None

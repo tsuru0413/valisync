@@ -141,8 +141,9 @@ class GraphPanelVM(Observable):
             tsN = float(sig.timestamps[-1])
             lo = ts0 if lo is None else min(lo, ts0)
             hi = tsN if hi is None else max(hi, tsN)
-        if lo is not None and hi is not None:
-            self.x_range = (lo, hi)
+        # Clear to None when nothing is fittable so a later add_signal can
+        # auto-fit instead of being clipped to a stale window.
+        self.x_range = (lo, hi) if lo is not None and hi is not None else None
         self._invalidate_cache()
         self._notify("range")
 
@@ -167,8 +168,9 @@ class GraphPanelVM(Observable):
             v_hi = float(finite_vals.max())
             lo = v_lo if lo is None else min(lo, v_lo)
             hi = v_hi if hi is None else max(hi, v_hi)
-        if lo is not None and hi is not None:
-            self.y_range = (lo, hi)
+        # Clear to None when nothing is fittable so a later add_signal can
+        # auto-fit instead of being clipped to a stale window.
+        self.y_range = (lo, hi) if lo is not None and hi is not None else None
         self._invalidate_cache()
         self._notify("range")
 

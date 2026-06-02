@@ -69,7 +69,15 @@ class ChannelBrowserVM(Observable):
         groups: dict[str, list[dict[str, Any]]] = {}
 
         for sig in self._session.signals():
-            key, orig_name = sig.name.split(_SEP, 1)
+            parts = sig.name.split(_SEP, 1)
+            if len(parts) == 2:
+                key, orig_name = parts
+            else:
+                # Defensive: a name without the "::" namespace separator cannot
+                # arise today (SignalGroupManager namespaces every signal) but a
+                # future Derived signal might — group it under its full name
+                # rather than crash the whole browser.
+                key = orig_name = sig.name
 
             if filter_lower and filter_lower not in orig_name.lower():
                 continue

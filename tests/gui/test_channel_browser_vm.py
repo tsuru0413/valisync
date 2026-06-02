@@ -348,3 +348,36 @@ def test_visibility_map_lists_all_signals_with_correct_bool(tmp_path: Path) -> N
     vis = vm.inspect()["visibility_map"]
 
     assert vis == {f"{key}::a": False, f"{key}::b": True}
+
+
+def test_tree_does_not_crash_on_non_namespaced_signal_name() -> None:
+    """tree() must defend the '::' namespace contract instead of raising ValueError.
+
+    Regression: `key, orig_name = sig.name.split('::', 1)` raised
+    'not enough values to unpack' for any name lacking the separator, blanking
+    the whole browser.  Such names cannot arise today (SignalGroupManager
+    namespaces every signal), but a future Derived/formula signal could.
+    """
+    import numpy as np
+
+    from valisync.core.models import Signal
+
+    lonely = Signal(
+        name="lonely",
+        timestamps=np.array([0.0, 1.0]),
+        values=np.array([1.0, 2.0]),
+        file_format="Derived",
+        bus_type="",
+        source_file="",
+    )
+
+    class _FakeSession:
+        def signals(self) -> list[Signal]:
+            return [lonely]
+
+    vm = ChannelBrowserVM(_FakeSession())  # type: ignore[arg-type]
+
+    tree = vm.tree()  # must not raise
+
+    leaves = [leaf for group in tree for leaf in group["signals"]]
+    assert any(leaf["name"] == "lonely" for leaf in leaves)
