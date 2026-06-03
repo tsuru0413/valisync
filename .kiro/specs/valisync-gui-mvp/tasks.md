@@ -146,8 +146,8 @@ ValiSync GUI の「歩く骨格（walking skeleton）」を実装する。PySide
 - [x] 10. チェックポイント — 統合
   - 全 GUI テスト（VM + pytest-qt offscreen）green。`uv run pytest`・ruff・ruff format・mypy 通過。`valisync` エントリポイントで起動し、CSV/MDF4 読込→D&D→波形→ズーム/パン→LOD が動作
 
-- [ ] 11. 性能検証
-  - [ ] 11.1 LOD 描画性能ベンチ
+- [x] 11. 性能検証
+  - [x] 11.1 LOD 描画性能ベンチ
     - 100 万点合成 Signal で `GraphPanelVM.render_data()` の所要時間とフレーム時間を計測するテスト/ベンチ。描画点数が `~2*panel_width_px` に有界であることを確認
     - _Requirements: 11.1, 11.2, 11.3, 11.4_
 
