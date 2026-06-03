@@ -12,6 +12,8 @@ concurrency:
 
 env:
   PYTHONIOENCODING: utf-8
+  # Headless Qt: render to an offscreen surface (no display on CI runners).
+  QT_QPA_PLATFORM: offscreen
 
 jobs:
   quality:
@@ -22,6 +24,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # PySide6 links against EGL/GL/xkbcommon even under the offscreen
+      # platform; ubuntu-latest does not ship these by default.
+      - name: Install Qt system libraries (PySide6 headless)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libxkbcommon0 libdbus-1-3
 
       - uses: astral-sh/setup-uv@v3
         with:
