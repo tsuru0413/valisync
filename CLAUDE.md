@@ -21,7 +21,7 @@ ADAS ソフトウェア開発向けの時系列信号データ統合・同期・
 
 ## リポジトリ
 
-- **Remote**: `git@github.com:tsuru0413/kiro-claude-template.git`
+- **Remote**: `git@github.com:tsuru0413/valisync.git`
 - **CI**: GitHub Actions (push to main / 全 PR で品質ゲート自動実行)
 
 ## 開発ワークフロー (Kiro + Claude Code 併用)
