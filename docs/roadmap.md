@@ -72,7 +72,7 @@ gantt
 
 | sub-spec | 担当要件（親 R番号） | 状態 | 概要 |
 |------|------|------|------|
-| `valisync-gui-mvp` | R1, R3, R4, R5, R6, R7, R8.1–8.5, R12, R13, R21, R22, R27, R28, R29(最小) | requirements + design 作成済、tasks 未 | 歩く骨格: シェル/ドッキング・データ取込/閲覧・タブ/パネル分割・基本Y-T波形・X/Yズーム/パン・**動的LOD** |
+| `valisync-gui-mvp` | R1, R3, R4, R5, R6, R7, R8.1–8.5, R12, R13, R21, R22, R27, R28, R29(最小) | **実装完了**（tasks 0〜11 全 `[x]`・454 tests green・`feature/valisync-gui-mvp`・PR 未作成） | 歩く骨格: シェル/ドッキング・データ取込/閲覧・タブ/パネル分割・基本Y-T波形・X/Yズーム/パン・**動的LOD**・X 軸同期・D&D・コンテキストメニュー |
 | `valisync-gui-axes` | R8.6–8.18 | 未作成 | 複数Y軸レイアウト（独立スケール・高さ比率・自由配置）+ X-Yプロットモード |
 | `valisync-gui-analysis` | R14, R15, R16, R17 | 未作成 | Global/Deltaカーソル・範囲統計表示・Drag-offset（時間オフセット） |
 | `valisync-gui-derived` | R18, R19 | 未作成 | Calcbar UI + Formula エディタ（構文ハイライト・補完） |
