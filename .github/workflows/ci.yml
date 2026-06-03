@@ -17,6 +17,10 @@ env:
   # we use xcb + xvfb instead. (tests/gui/conftest.py defaults to "offscreen"
   # for local headless runs; this env overrides it on CI.)
   QT_QPA_PLATFORM: xcb
+  # CI has no GPU; force pure software rendering so window paints don't crash
+  # in Mesa's GLX/EGL path (window.show() segfaulted otherwise).
+  QT_XCB_GL_INTEGRATION: none
+  LIBGL_ALWAYS_SOFTWARE: "1"
 
 jobs:
   quality:
