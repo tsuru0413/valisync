@@ -105,6 +105,16 @@ class GraphPanelVM(Observable):
         self._invalidate_cache()
         self._notify("signals")
 
+    def refresh(self) -> None:
+        """Drop the render cache and re-emit so the view re-reads Session data.
+
+        Called after a load completes: a signal added before its data existed
+        cached an empty curve under an unchanged key; invalidating lets the now
+        present data render (review finding ⑥).
+        """
+        self._invalidate_cache()
+        self._notify("signals")
+
     def toggle_visibility(self, signal_key: str) -> None:
         """Flip the visibility of *signal_key*."""
         for entry in self._plotted:

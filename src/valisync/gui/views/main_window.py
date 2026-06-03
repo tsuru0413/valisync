@@ -1,59 +1,70 @@
-"""MainWindow — top-level application shell (Task 6.1).
+"""MainWindow — top-level application shell and integration hub (Tasks 6.1 / 10).
 
-This is a THIN Qt adapter: no business logic lives here.  All state is owned
-by AppViewModel; MainWindow only wires Qt signals/slots and dock layout.
+Builds the shared ViewModels off the AppViewModel's Session, mounts the real
+Channel_Browser and Graph_Area views in dockable panels, and wires the
+cross-view workflow:
+
+- a load (file drop, Data Explorer) runs off-thread via LoadController with a
+  BusyOverlay, then refreshes the channel tree and re-renders the panels;
+- "add to active panel" from the channel browser plots on the active panel;
+- the toolbar opens the Data Explorer window.
+
+It stays thin: all state lives in the ViewModels; this class only constructs
+collaborators and connects their signals.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction, QCloseEvent
-from PySide6.QtWidgets import (
-    QDockWidget,
-    QLabel,
-    QMainWindow,
-    QToolBar,
-    QWidget,
-)
+from PySide6.QtWidgets import QDockWidget, QMainWindow, QToolBar
 
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
+from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
+from valisync.gui.views.busy_overlay import BusyOverlay
+from valisync.gui.views.channel_browser_view import ChannelBrowserView
+from valisync.gui.views.data_explorer_view import DataExplorerView
+from valisync.gui.views.graph_area_view import GraphAreaView
+from valisync.gui.workers.load_worker import LoadController
 
 _ORG = "ValiSync"
 _APP = "ValiSync"
 
 
 class MainWindow(QMainWindow):
-    """Application shell: two dockable panels + toolbar + settings persistence.
+    """Application shell: dockable Channel_Browser + Graph_Area, wired together.
 
     Parameters
     ----------
     app_vm:
-        The application-level ViewModel this window observes.
-    channel_browser_widget:
-        Widget to embed inside the Channel Browser dock.  A placeholder
-        ``QLabel`` is used when *None* (later waves inject the real view).
-    graph_area_widget:
-        Widget to embed inside the Graph Area dock.  Same placeholder rule.
+        The application-level ViewModel.  Its ``session`` is shared with the
+        Channel_Browser and Graph_Area ViewModels so loaded data is visible
+        everywhere.
     """
 
-    def __init__(
-        self,
-        app_vm: AppViewModel,
-        channel_browser_widget: QWidget | None = None,
-        graph_area_widget: QWidget | None = None,
-    ) -> None:
+    def __init__(self, app_vm: AppViewModel) -> None:
         super().__init__()
-        self._app_vm = app_vm
+        self.app_vm = app_vm
+        session = app_vm.session
         self.setWindowTitle("ValiSync")
 
-        # ── Dock contents ────────────────────────────────────────────────────
-        cb_widget = channel_browser_widget or QLabel("Channel Browser")
-        ga_widget = graph_area_widget or QLabel("Graph Area")
+        # ── Shared ViewModels (one Session) ──────────────────────────────────
+        self.channel_browser_vm = ChannelBrowserVM(session)
+        self.graph_area_vm = GraphAreaVM(session)
 
-        # ── Channel Browser dock (left area by default) ──────────────────────
+        # ── Views ────────────────────────────────────────────────────────────
+        self.channel_browser_view = ChannelBrowserView(self.channel_browser_vm)
+        self.graph_area_view = GraphAreaView(self.graph_area_vm)
+        self.busy_overlay = BusyOverlay(self)
+        self._load_controller = LoadController(parent=self)
+        self.data_explorer: DataExplorerView | None = None
+
+        # ── Channel Browser dock (left) ──────────────────────────────────────
         self.channel_dock = QDockWidget("Channel Browser", self)
-        self.channel_dock.setWidget(cb_widget)
-        # Floatable + Closable + Movable (default Qt flags, kept explicit)
+        self.channel_dock.setWidget(self.channel_browser_view)
         self.channel_dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetFloatable
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
@@ -61,9 +72,9 @@ class MainWindow(QMainWindow):
         )
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.channel_dock)
 
-        # ── Graph Area dock (right area by default) ──────────────────────────
+        # ── Graph Area dock (right) ──────────────────────────────────────────
         self.graph_dock = QDockWidget("Graph Area", self)
-        self.graph_dock.setWidget(ga_widget)
+        self.graph_dock.setWidget(self.graph_area_view)
         self.graph_dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetFloatable
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
@@ -71,7 +82,7 @@ class MainWindow(QMainWindow):
         )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.graph_dock)
 
-        # ── View menu (dock toggle actions, R1.4) ────────────────────────────
+        # ── View menu (dock toggles, R1.4) ───────────────────────────────────
         view_menu = self.menuBar().addMenu("View")
         view_menu.addAction(self.channel_dock.toggleViewAction())
         view_menu.addAction(self.graph_dock.toggleViewAction())
@@ -82,8 +93,65 @@ class MainWindow(QMainWindow):
         self.action_data_explorer.triggered.connect(self.open_data_explorer)
         toolbar.addAction(self.action_data_explorer)
 
-        # ── Restore geometry / dock state from previous session (R2.3) ───────
+        # ── Cross-view wiring ────────────────────────────────────────────────
+        self.channel_browser_view.add_to_panel_requested.connect(
+            self._add_to_active_panel
+        )
+        self.graph_area_view.file_dropped.connect(self._load_file)
+        self._app_unsubscribe = self.app_vm.subscribe(self._on_app_change)
+
         self._restore_state()
+
+    # ─── Load pipeline ─────────────────────────────────────────────────────────
+
+    def _load_file(self, path: str | Path) -> None:
+        """Load *path* off-thread (MDF4; CSV needs a format picker, deferred)."""
+        session = self.app_vm.session
+        target = Path(path)
+        self._load_controller.submit(
+            lambda: session.load(target, None),
+            busy=self.busy_overlay,
+            on_success=self._on_loaded,
+            on_error=self._on_load_error,
+        )
+
+    def _on_loaded(self, key: str) -> None:
+        # Runs on the GUI thread; register_loaded notifies "loaded".
+        self.app_vm.register_loaded(key)
+
+    def _on_load_error(self, _message: str) -> None:
+        # MVP: keep running; a status surface for errors is a later refinement.
+        pass
+
+    def _on_app_change(self, change: str) -> None:
+        if change == "loaded":
+            self.channel_browser_vm.refresh()
+            self._refresh_panels()
+
+    def _refresh_panels(self) -> None:
+        """Invalidate every panel's render cache so new data is drawn (⑥)."""
+        for tab_index in range(len(self.graph_area_vm.tabs())):
+            for panel in self.graph_area_vm.panels(tab_index):
+                panel.refresh()
+
+    def _add_to_active_panel(self, keys: list[str]) -> None:
+        """Plot *keys* on the first panel of the active tab (the 'active' panel)."""
+        panels = self.graph_area_vm.panels(self.graph_area_vm.active_tab_index)
+        if not panels:
+            return
+        for key in keys:
+            panels[0].add_signal(key)
+
+    # ─── Actions ────────────────────────────────────────────────────────────────
+
+    def open_data_explorer(self, *_: object) -> None:
+        """Open (or re-show) the standalone Data Explorer window (R1.5)."""
+        if self.data_explorer is None:
+            self.data_explorer = DataExplorerView(
+                self.app_vm, load_handler=self._load_file
+            )
+        self.data_explorer.show()
+        self.data_explorer.raise_()
 
     # ─── State persistence ────────────────────────────────────────────────────
 
@@ -111,12 +179,3 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(geometry)
         if state:
             self.restoreState(state)
-
-    # ─── Actions ──────────────────────────────────────────────────────────────
-
-    def open_data_explorer(self) -> None:
-        """Placeholder: open the Data Explorer panel.
-
-        Later waves will implement the real Data Explorer view and override
-        this method (or connect the action differently).
-        """

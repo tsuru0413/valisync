@@ -33,6 +33,11 @@ class AppViewModel(Observable):
         self._active_tab: int = 0
         self._data_sources: list[str] = []
 
+    @property
+    def session(self) -> Session:
+        """The shared Session (so sibling ViewModels read the same data)."""
+        return self._session
+
     # ─── Load ────────────────────────────────────────────────────────────────
 
     def request_load(
@@ -40,10 +45,10 @@ class AppViewModel(Observable):
         path: Path | str,
         format_def: FormatDefinition | None = None,
     ) -> str:
-        """Load *path* via the Session and record the returned group key.
+        """Load *path* synchronously via the Session and record the group key.
 
-        NOTE: async worker-thread loading is out of scope for this task;
-        loading is synchronous here and a later task will introduce threading.
+        The threaded path runs ``session.load`` off-thread and calls
+        :meth:`register_loaded` on the GUI thread instead.
 
         Parameters
         ----------
@@ -58,9 +63,13 @@ class AppViewModel(Observable):
             The group key assigned by the Session (e.g. ``"csv_1"``).
         """
         key = self._session.load(Path(path), format_def)
+        self.register_loaded(key)
+        return key
+
+    def register_loaded(self, key: str) -> None:
+        """Record an already-loaded group key and notify (GUI-thread side)."""
         self._loaded_keys.append(key)
         self._notify("loaded")
-        return key
 
     # ─── Signals proxy ───────────────────────────────────────────────────────
 

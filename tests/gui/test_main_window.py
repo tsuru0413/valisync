@@ -195,28 +195,20 @@ class TestStatePersistence:
 # ---------------------------------------------------------------------------
 
 
-class TestDependencyInjection:
-    def test_custom_channel_browser_widget_is_used(self, qtbot: QtBot) -> None:
-        from PySide6.QtWidgets import QLabel
+class TestMountedViews:
+    """MainWindow now builds and mounts the real views (Task 10 integration)."""
 
-        from valisync.gui.views.main_window import MainWindow
+    def test_channel_dock_holds_channel_browser_view(self, qtbot: QtBot) -> None:
+        from valisync.gui.views.channel_browser_view import ChannelBrowserView
 
-        app_vm = AppViewModel()
-        custom_cb = QLabel("CustomCB")
-        window = MainWindow(app_vm, channel_browser_widget=custom_cb)
-        qtbot.addWidget(window)
-        assert window.channel_dock.widget() is custom_cb
+        window = _make_window(qtbot)
+        assert isinstance(window.channel_dock.widget(), ChannelBrowserView)  # type: ignore[union-attr]
 
-    def test_custom_graph_area_widget_is_used(self, qtbot: QtBot) -> None:
-        from PySide6.QtWidgets import QLabel
+    def test_graph_dock_holds_graph_area_view(self, qtbot: QtBot) -> None:
+        from valisync.gui.views.graph_area_view import GraphAreaView
 
-        from valisync.gui.views.main_window import MainWindow
-
-        app_vm = AppViewModel()
-        custom_ga = QLabel("CustomGA")
-        window = MainWindow(app_vm, graph_area_widget=custom_ga)
-        qtbot.addWidget(window)
-        assert window.graph_dock.widget() is custom_ga
+        window = _make_window(qtbot)
+        assert isinstance(window.graph_dock.widget(), GraphAreaView)  # type: ignore[union-attr]
 
 
 # ---------------------------------------------------------------------------

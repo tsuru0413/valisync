@@ -10,6 +10,7 @@ wires the filesystem tree and the source list to it.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -21,6 +22,7 @@ from PySide6.QtGui import (
     QDropEvent,
 )
 from PySide6.QtWidgets import (
+    QFileDialog,
     QFileSystemModel,
     QMainWindow,
     QMenu,
@@ -51,10 +53,19 @@ class DataExplorerView(QMainWindow):
         app_vm: AppViewModel,
         sources_file: Path | None = None,
         parent: QMainWindow | None = None,
+        *,
+        load_handler: Callable[[Path | str], None] | None = None,
+        dir_chooser: Callable[[], str] | None = None,
     ) -> None:
         super().__init__(parent)
         self._app_vm = app_vm
         self._sources_file = Path(sources_file) if sources_file is not None else None
+        # The integration injects an async loader; standalone use loads directly.
+        self._load_handler: Callable[[Path | str], None] = (
+            load_handler or self.load_path
+        )
+        # Injectable so the modal QFileDialog can be bypassed in tests.
+        self._dir_chooser: Callable[[], str] = dir_chooser or self._default_dir_chooser
         self.setWindowTitle("Data Explorer")
 
         # ── Filesystem tree ──────────────────────────────────────────────────
@@ -70,13 +81,31 @@ class DataExplorerView(QMainWindow):
         # ── Toolbar ──────────────────────────────────────────────────────────
         toolbar: QToolBar = self.addToolBar("Sources")
         self.action_add_source = toolbar.addAction("Add Source")
+        self.action_add_source.triggered.connect(self._on_add_source_clicked)
         self.action_remove_source = toolbar.addAction("Remove Source")
+        self.action_remove_source.triggered.connect(self._on_remove_source_clicked)
 
         # ── Restore persisted sources ────────────────────────────────────────
         if self._sources_file is not None:
             for path in data_sources.load(self._sources_file):
                 self._app_vm.add_data_source(path)
             self._show_last_source()
+
+    # ─── Toolbar actions (R3.4) ─────────────────────────────────────────────────
+
+    def _default_dir_chooser(self) -> str:
+        return QFileDialog.getExistingDirectory(self, "Select Data Source Folder")
+
+    def _on_add_source_clicked(self, *_: object) -> None:
+        folder = self._dir_chooser()
+        if folder:
+            self.add_source(folder)
+
+    def _on_remove_source_clicked(self, *_: object) -> None:
+        """Remove the source the tree is currently rooted at, if registered."""
+        rooted = Path(self.fs_model.filePath(self.tree.rootIndex()))
+        if str(rooted) in self.sources():
+            self.remove_source(rooted)
 
     # ─── Source management ─────────────────────────────────────────────────────
 
@@ -117,7 +146,7 @@ class DataExplorerView(QMainWindow):
         """Load files on activation; directories are navigated, not loaded."""
         if not index.isValid() or self.fs_model.isDir(index):
             return
-        self.load_path(self.fs_model.filePath(index))
+        self._load_handler(self.fs_model.filePath(index))
 
     # ─── OS file drop (R12.1) ───────────────────────────────────────────────────
 
@@ -141,7 +170,7 @@ class DataExplorerView(QMainWindow):
         for url in mime.urls():
             local = url.toLocalFile()
             if local:
-                self.load_path(local)
+                self._load_handler(local)
         event.acceptProposedAction()
 
     # ─── Context menu (R14.2) ───────────────────────────────────────────────────
@@ -152,7 +181,7 @@ class DataExplorerView(QMainWindow):
         menu = QMenu(self)
         load = menu.addAction("Load File")
         load.setEnabled(path.is_file())
-        load.triggered.connect(lambda *_: self.load_path(path))
+        load.triggered.connect(lambda *_: self._load_handler(path))
         remove = menu.addAction("Remove from Data Sources")
         remove.setEnabled(str(path) in self.sources())
         remove.triggered.connect(lambda *_: self.remove_source(path))

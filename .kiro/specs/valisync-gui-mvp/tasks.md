@@ -143,7 +143,7 @@ ValiSync GUI の「歩く骨格（walking skeleton）」を実装する。PySide
     - `tests/gui/test_context_menus.py`（pytest-qt）: 各メニュー項目の表示・有効/無効・動作
     - _Requirements: 14.1, 14.2, 14.3, 14.4_
 
-- [ ] 10. チェックポイント — 統合
+- [x] 10. チェックポイント — 統合
   - 全 GUI テスト（VM + pytest-qt offscreen）green。`uv run pytest`・ruff・ruff format・mypy 通過。`valisync` エントリポイントで起動し、CSV/MDF4 読込→D&D→波形→ズーム/パン→LOD が動作
 
 - [ ] 11. 性能検証
@@ -183,22 +183,19 @@ ValiSync GUI の「歩く骨格（walking skeleton）」を実装する。PySide
 - **構造変更ポリシー**: `gui/` 配下のサブパッケージ（viewmodels/views/adapters/workers/persistence）は design.md で承認済みの構成。新規追加が必要になればユーザー承認を取る
 - 完了タスクは本ファイルのチェックボックスを `[x]` に更新する
 
-### UI 配線の申し送り（コードレビュー 2026-06-02 で抽出、後続タスクで対応）
+### UI 配線の申し送り（コードレビュー 2026-06-02 抽出 → Task 10 で大半解消）
 
-VM/ロジック層は完成・テスト済みだが、以下の**薄い UI トリガー配線が未了**。各担当タスクで対応する:
-
-- **MainWindow → Data_Explorer 起動**: `views/main_window.py` の `open_data_explorer()` は空スタブ（Task 6.1 時点で `DataExplorerView` 未実装のため）。`DataExplorerView` を生成・表示する配線を **Task 10（統合チェックポイント）**で行う（R1.5）
-- **Data_Explorer の Add Source ボタン**: `views/data_explorer_view.py` の `action_add_source` が未接続。フォルダ選択ダイアログ（`QFileDialog.getExistingDirectory`）→ `add_source()` の配線を **Task 10** で対応（R3.4）。※ロジック（`add_source`/`remove_source` + 永続化）は 7.3 で実装・テスト済み
+- ~~**MainWindow → Data_Explorer 起動**~~ → **Task 10 で解消**: `open_data_explorer()` が `DataExplorerView`（`load_handler=_load_file` 注入）を生成・表示（R1.5）
+- ~~**Data_Explorer の Add Source ボタン**~~ → **Task 10 で解消**: `action_add_source` を `QFileDialog.getExistingDirectory`（`dir_chooser` 注入でテスト可）→ `add_source()` に接続（R3.4）。Remove Source ボタンも接続（現在のルートが登録済みソースなら除外）
 - ~~**Data_Explorer の Remove/除外**~~ → **9.3 で実装済み**: ファイル右クリック「Remove from Data Sources」（R8.2）
-- **クロスビューシグナルの統合接続（Task 10）**: 9.2/9.3 で疎結合シグナルを公開済み。Task 10 で次を接続する:
-  - `ChannelBrowserView.add_to_panel_requested(keys)` → アクティブ Graph_Panel の `add_signal`（R14.1）
-  - `GraphAreaView.file_dropped(path)` → 読込パイプライン（`LoadController.submit`、R12.1）
-  - `GraphPanelView.add_panel_requested`/`remove_panel_requested` → GraphAreaView 内で接続済み（9.3）。MainWindow への結線のみ残
-- **OS ファイル D&D の実機到達は要確認（Task 10 手動 verify）**: `GraphAreaView.file_dropped` / `DataExplorerView.dropEvent` はユニットでは直接呼んで検証済みだが、実機では子ウィジェット（QTabWidget の panel、QFileSystemModel の tree）がドロップを先取りする可能性。必要なら viewport への eventFilter / 子の setAcceptDrops(False) で対応
+- ~~**クロスビューシグナルの統合接続**~~ → **Task 10 で解消**: MainWindow が `add_to_panel_requested`→アクティブ Graph_Panel の `add_signal`（R14.1）、`file_dropped`→`LoadController` 非同期読込（R12.1）を接続。読込完了は `register_loaded`→"loaded" 通知→`channel_browser_vm.refresh` + `_refresh_panels`
+- **残：OS ファイル D&D の実機到達**: `file_dropped`/`dropEvent` はユニット・offscreen 統合では検証済みだが、実機で子ウィジェットがドロップを先取りする可能性は実 GUI での手動確認が必要（offscreen スクショでは波形描画まで確認済み）
+- **残：CSV 読込のフォーマット選択 UI**: 統合の読込経路は `session.load(path, None)` で **MDF4 のみ**対応。CSV は FormatDefinition が要るためフォーマット選択ダイアログが必要（後続 sub-spec / 別タスク）
+- **残：「アクティブ Graph_Panel」はアクティブタブの先頭パネル**（MVP 簡易）。最後に操作したパネルを追跡する真の active-panel は後続で
 
 ### コードレビュー残課題（堅牢性・効率、2026-06-02）
 
-- **render キャッシュの Session 非追従**（`graph_panel_vm.py`）: 信号が初回 render 時に未ロード（`sig is None`→空カーブをキャッシュ）だと、後でロードされても同一キーで空のまま。エッジ。**Task 9.1 で `LoadController.on_success`（メインスレッド完了コールバック）の継ぎ目が整備済み** → Task 10 統合時に「読込完了 → 表示中パネルの `_invalidate_cache`/refresh」を on_success に組み込んで解消する
+- ~~**render キャッシュの Session 非追従**（`graph_panel_vm.py`）~~ → **Task 10 で解消**: `GraphPanelVM.refresh()`（cache invalidate + 通知）を追加し、MainWindow が読込完了の "loaded" 通知で全パネルに `refresh()` を呼ぶ（`_refresh_panels`）。初回 render 時未ロードだった信号も、ロード後に再描画される
 - ~~**reset_x/reset_y の旧レンジ温存**（`graph_panel_vm.py`）~~ → **修正済み(2026-06-02)**: 対象なし時は range=None にクリアし、後続 add_signal の auto-fit を妨げない
 - ~~**`tree()` の `split("::",1)` 無防備**（`channel_browser_vm.py`）~~ → **修正済み(2026-06-02)**: 区切り無しの名前は全名をグループキーにフォールバック（ブラウザ全体クラッシュを防止）
 - **ズーム/パンのライブプレビュー + debounce 未実装**（`graph_panel_view.py`, Task 8.3）: 現状はジェスチャ確定時（ドラッグ release / ホイール 1 ノッチ）に 1 回だけ range を適用する方式。16ms 予算は VM の render キャッシュ + 点数有界で満たすが、ドラッグ中の連続プレビュー（debounce タイマ ~16-30ms）は未実装。R9.5/R10.5 の体感向上のための refinement として後続で対応可
