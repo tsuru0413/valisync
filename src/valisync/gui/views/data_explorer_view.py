@@ -14,10 +14,16 @@ from pathlib import Path
 from typing import cast
 
 from PySide6.QtCore import QModelIndex
-from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
+from PySide6.QtGui import (
+    QContextMenuEvent,
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
+)
 from PySide6.QtWidgets import (
     QFileSystemModel,
     QMainWindow,
+    QMenu,
     QToolBar,
     QTreeView,
 )
@@ -137,3 +143,24 @@ class DataExplorerView(QMainWindow):
             if local:
                 self.load_path(local)
         event.acceptProposedAction()
+
+    # ─── Context menu (R14.2) ───────────────────────────────────────────────────
+
+    def build_context_menu(self, path: Path | str) -> QMenu:
+        """Build the file context menu, greyed out per file/source state."""
+        path = Path(path)
+        menu = QMenu(self)
+        load = menu.addAction("Load File")
+        load.setEnabled(path.is_file())
+        load.triggered.connect(lambda *_: self.load_path(path))
+        remove = menu.addAction("Remove from Data Sources")
+        remove.setEnabled(str(path) in self.sources())
+        remove.triggered.connect(lambda *_: self.remove_source(path))
+        return menu
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        index = self.tree.indexAt(self.tree.viewport().mapFromGlobal(event.globalPos()))
+        if index.isValid():
+            self.build_context_menu(self.fs_model.filePath(index)).exec(
+                event.globalPos()
+            )

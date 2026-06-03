@@ -106,13 +106,34 @@ class GraphAreaView(QWidget):
                     page.deleteLater()
             for tab_index, tab in enumerate(self.vm.tabs()):
                 splitter = QSplitter(Qt.Orientation.Vertical)
-                for panel_vm in self.vm.panels(tab_index):
-                    splitter.addWidget(self._panel_factory(panel_vm))
+                panel_vms = self.vm.panels(tab_index)
+                for panel_index, panel_vm in enumerate(panel_vms):
+                    widget = self._panel_factory(panel_vm)
+                    self._wire_panel(
+                        widget, tab_index, panel_index, removable=len(panel_vms) > 1
+                    )
+                    splitter.addWidget(widget)
                 self.tabs.addTab(splitter, tab.name)
             self.tabs.setCurrentIndex(self.vm.active_tab_index)
         finally:
             self._syncing = False
         self._update_sync_checkbox()
+
+    def _wire_panel(
+        self, widget: QWidget, tab_index: int, panel_index: int, removable: bool
+    ) -> None:
+        """Connect a GraphPanelView's add/remove requests to area operations.
+
+        Bound to this call's *tab_index*/*panel_index* (not loop vars), so the
+        connected lambdas capture the correct position.
+        """
+        if not isinstance(widget, GraphPanelView):
+            return
+        widget.set_removable(removable)
+        widget.add_panel_requested.connect(lambda *_: self.add_panel(tab_index))
+        widget.remove_panel_requested.connect(
+            lambda *_: self.remove_panel(panel_index, tab_index)
+        )
 
     def _sync_current(self) -> None:
         self._syncing = True

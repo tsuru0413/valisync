@@ -8,9 +8,11 @@ widget stays a dumb projection that headless VM tests already cover.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QItemSelection, QMimeData
+from PySide6.QtCore import QItemSelection, QMimeData, Signal
+from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtWidgets import (
     QLineEdit,
+    QMenu,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -25,6 +27,10 @@ from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
 
 class ChannelBrowserView(QWidget):
     """Search box + tree view bound to a :class:`ChannelBrowserVM`."""
+
+    # Emitted with the selected signal keys; the integration connects this to
+    # the active Graph_Panel's add_signal (R14.1).
+    add_to_panel_requested = Signal(list)
 
     def __init__(self, vm: ChannelBrowserVM, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -94,3 +100,18 @@ class ChannelBrowserView(QWidget):
         """Flip visibility on every selected signal (used by toolbar/context)."""
         for key in self.selected_signal_keys():
             self._vm.toggle_visibility(key)
+
+    # ─── Context menu (R14.1) ──────────────────────────────────────────────────
+
+    def build_context_menu(self) -> QMenu:
+        """Build the signal context menu, greyed out per current selection."""
+        menu = QMenu(self)
+        add = menu.addAction("Add to Active Panel")
+        add.setEnabled(bool(self.selected_signal_keys()))
+        add.triggered.connect(
+            lambda *_: self.add_to_panel_requested.emit(self.selected_signal_keys())
+        )
+        return menu
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        self.build_context_menu().exec(event.globalPos())

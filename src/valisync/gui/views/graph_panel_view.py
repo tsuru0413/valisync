@@ -19,8 +19,9 @@ count.  Live drag-preview with a debounce timer is a noted refinement (R9.5).
 from __future__ import annotations
 
 import pyqtgraph as pg
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
+    QContextMenuEvent,
     QDragEnterEvent,
     QDragLeaveEvent,
     QDragMoveEvent,
@@ -29,7 +30,7 @@ from PySide6.QtGui import (
     QResizeEvent,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QMenu, QVBoxLayout, QWidget
 
 from valisync.gui.adapters.qt_signal_models import (
     SIGNAL_KEYS_MIME,
@@ -119,6 +120,11 @@ def cursor_for_zone(zone: str) -> Qt.CursorShape:
 class GraphPanelView(QWidget):
     """PyQtGraph waveform view bound to a :class:`GraphPanelVM`."""
 
+    # Panel add/remove are area-level operations; the GraphAreaView wires these
+    # to GraphAreaVM (R14.3).
+    add_panel_requested = Signal()
+    remove_panel_requested = Signal()
+
     def __init__(self, vm: GraphPanelVM, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.vm = vm
@@ -126,6 +132,7 @@ class GraphPanelView(QWidget):
         self._drag_zone: str | None = None
         self._drag_start: QPointF | None = None
         self._drop_active = False
+        self._removable = True
 
         self.plot_widget = pg.PlotWidget()
         self._plot_item = self.plot_widget.getPlotItem()
@@ -275,10 +282,13 @@ class GraphPanelView(QWidget):
     # ─── Mouse / wheel handlers (thin glue over the gesture methods) ────────────
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        zone = self._zone_at(event.position())
-        if zone in (ZONE_X_INNER, ZONE_X_OUTER, ZONE_Y_INNER, ZONE_Y_OUTER):
-            self._drag_zone = zone
-            self._drag_start = event.position()
+        # Only the left button drives zoom/pan; right-click opens the context
+        # menu and must not start a drag gesture.
+        if event.button() == Qt.MouseButton.LeftButton:
+            zone = self._zone_at(event.position())
+            if zone in (ZONE_X_INNER, ZONE_X_OUTER, ZONE_Y_INNER, ZONE_Y_OUTER):
+                self._drag_zone = zone
+                self._drag_start = event.position()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -361,3 +371,30 @@ class GraphPanelView(QWidget):
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self.vm.set_panel_width(max(1, event.size().width()))  # notifies → refresh()
+
+    # ─── Context menu (R14.3) ───────────────────────────────────────────────────
+
+    def set_removable(self, removable: bool) -> None:
+        """Set whether the 'Remove Panel' action is enabled (R6.6 grey-out)."""
+        self._removable = removable
+
+    def _reset_all_axes(self) -> None:
+        self.vm.reset_x()
+        self.vm.reset_y()
+
+    def build_context_menu(self) -> QMenu:
+        """Build the blank-area panel menu (add/remove panel, reset axes)."""
+        menu = QMenu(self)
+        menu.addAction("Add Panel").triggered.connect(
+            lambda *_: self.add_panel_requested.emit()
+        )
+        remove = menu.addAction("Remove Panel")
+        remove.setEnabled(self._removable)
+        remove.triggered.connect(lambda *_: self.remove_panel_requested.emit())
+        menu.addAction("Reset All Axes").triggered.connect(
+            lambda *_: self._reset_all_axes()
+        )
+        return menu
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        self.build_context_menu().exec(event.globalPos())

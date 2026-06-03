@@ -128,7 +128,7 @@ ValiSync GUI の「歩く骨格（walking skeleton）」を実装する。PySide
     - `tests/gui/test_x_sync.py`（pytest-qt）: 同期 ON で 1 パネルのズームが全パネルへ伝播、OFF で独立
     - _Requirements: 7.1, 7.2, 7.3, 7.4_
 
-- [ ] 9. D&D・ビジー表示・コンテキストメニュー
+- [x] 9. D&D・ビジー表示・コンテキストメニュー
   - [x] 9.1 BusyOverlay と読込ワーカーの実装
     - `src/valisync/gui/views/busy_overlay.py`: 不確定（インディターミネート）ビジー表示
     - `src/valisync/gui/workers/__init__.py` と `src/valisync/gui/workers/load_worker.py`: `QRunnable` で `Session.load` をオフスレッド実行し queued signal で完了通知。AppViewModel/LoadTask と接続、読込中 BusyOverlay 表示
@@ -138,7 +138,7 @@ ValiSync GUI の「歩く骨格（walking skeleton）」を実装する。PySide
     - OS ファイルマネージャ → Data_Explorer / Graph_Area への D&D 読込、Channel_Browser 信号 → Graph_Panel D&D（複数選択一括）、ドロップ領域ハイライト
     - `tests/gui/test_dnd_workflow.py`（pytest-qt）: 信号ドロップで波形追加、ファイルドロップで読込
     - _Requirements: 12.1, 12.2, 12.3, 12.4, 12.5_
-  - [ ] 9.3 最小コンテキストメニューの実装
+  - [x] 9.3 最小コンテキストメニューの実装
     - Channel_Browser 信号右クリック「アクティブ Graph_Panel に追加」、Data_Explorer ファイル右クリック「ファイル読み込み/データソースから除外」、Graph_Panel 空白右クリック「パネル追加/削除/全軸リセット」。状態に応じグレーアウト
     - `tests/gui/test_context_menus.py`（pytest-qt）: 各メニュー項目の表示・有効/無効・動作
     - _Requirements: 14.1, 14.2, 14.3, 14.4_
@@ -188,10 +188,13 @@ ValiSync GUI の「歩く骨格（walking skeleton）」を実装する。PySide
 VM/ロジック層は完成・テスト済みだが、以下の**薄い UI トリガー配線が未了**。各担当タスクで対応する:
 
 - **MainWindow → Data_Explorer 起動**: `views/main_window.py` の `open_data_explorer()` は空スタブ（Task 6.1 時点で `DataExplorerView` 未実装のため）。`DataExplorerView` を生成・表示する配線を **Task 10（統合チェックポイント）**で行う（R1.5）
-- **Data_Explorer の Add Source ボタン**: `views/data_explorer_view.py` の `action_add_source` が未接続。フォルダ選択ダイアログ → `add_source()` の配線を **Task 9.3 / 10 の UI 配線**に含めて対応（R3.4）。※ロジック（`add_source`/`remove_source` + 永続化）は 7.3 で実装・テスト済み。9.2 で OS ファイル D&D 受理は実装済み
+- **Data_Explorer の Add Source ボタン**: `views/data_explorer_view.py` の `action_add_source` が未接続。フォルダ選択ダイアログ（`QFileDialog.getExistingDirectory`）→ `add_source()` の配線を **Task 10** で対応（R3.4）。※ロジック（`add_source`/`remove_source` + 永続化）は 7.3 で実装・テスト済み
+- ~~**Data_Explorer の Remove/除外**~~ → **9.3 で実装済み**: ファイル右クリック「Remove from Data Sources」（R8.2）
+- **クロスビューシグナルの統合接続（Task 10）**: 9.2/9.3 で疎結合シグナルを公開済み。Task 10 で次を接続する:
+  - `ChannelBrowserView.add_to_panel_requested(keys)` → アクティブ Graph_Panel の `add_signal`（R14.1）
+  - `GraphAreaView.file_dropped(path)` → 読込パイプライン（`LoadController.submit`、R12.1）
+  - `GraphPanelView.add_panel_requested`/`remove_panel_requested` → GraphAreaView 内で接続済み（9.3）。MainWindow への結線のみ残
 - **OS ファイル D&D の実機到達は要確認（Task 10 手動 verify）**: `GraphAreaView.file_dropped` / `DataExplorerView.dropEvent` はユニットでは直接呼んで検証済みだが、実機では子ウィジェット（QTabWidget の panel、QFileSystemModel の tree）がドロップを先取りする可能性。必要なら viewport への eventFilter / 子の setAcceptDrops(False) で対応
-- **Data_Explorer の Remove/除外**: ファイル右クリック「データソースから除外」を **Task 9.3** で対応（R8.2、既定の行き先）
-- **GraphAreaView/ChannelBrowserView のジェスチャ未配線**: タブ閉じる（`tabCloseRequested`→`remove_tab`）・パネル追加/削除ボタン等の UI トリガーは **Task 8.x/9.3** で対応（VM コマンド自体は実装・テスト済み）
 
 ### コードレビュー残課題（堅牢性・効率、2026-06-02）
 
