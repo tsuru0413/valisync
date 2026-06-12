@@ -35,9 +35,18 @@ class TestDocksExist:
         window = _make_window(qtbot)
         assert isinstance(window.channel_dock, QDockWidget)  # type: ignore[union-attr]
 
-    def test_graph_dock_is_qdockwidget(self, qtbot: QtBot) -> None:
+
+# ---------------------------------------------------------------------------
+# Central Widget
+# ---------------------------------------------------------------------------
+
+
+class TestCentralWidget:
+    def test_graph_area_is_central_widget(self, qtbot: QtBot) -> None:
+        from valisync.gui.views.graph_area_view import GraphAreaView
+
         window = _make_window(qtbot)
-        assert isinstance(window.graph_dock, QDockWidget)  # type: ignore[union-attr]
+        assert isinstance(window.centralWidget(), GraphAreaView)  # type: ignore[union-attr]
 
 
 # ---------------------------------------------------------------------------
@@ -54,16 +63,6 @@ class TestDockFeatures:
     def test_channel_dock_is_closable(self, qtbot: QtBot) -> None:
         window = _make_window(qtbot)
         features = window.channel_dock.features()  # type: ignore[union-attr]
-        assert features & QDockWidget.DockWidgetFeature.DockWidgetClosable
-
-    def test_graph_dock_is_floatable(self, qtbot: QtBot) -> None:
-        window = _make_window(qtbot)
-        features = window.graph_dock.features()  # type: ignore[union-attr]
-        assert features & QDockWidget.DockWidgetFeature.DockWidgetFloatable
-
-    def test_graph_dock_is_closable(self, qtbot: QtBot) -> None:
-        window = _make_window(qtbot)
-        features = window.graph_dock.features()  # type: ignore[union-attr]
         assert features & QDockWidget.DockWidgetFeature.DockWidgetClosable
 
 
@@ -92,16 +91,6 @@ class TestDockToggleAction:
         dock.close()
         assert dock.isHidden()
         # Trigger the toggle action to re-show
-        action = dock.toggleViewAction()
-        action.trigger()
-        assert not dock.isHidden()
-
-    def test_graph_dock_toggle_action_reshows_closed_dock(self, qtbot: QtBot) -> None:
-        window = _make_window(qtbot)
-        dock = window.graph_dock  # type: ignore[union-attr]
-        assert not dock.isHidden()
-        dock.close()
-        assert dock.isHidden()
         action = dock.toggleViewAction()
         action.trigger()
         assert not dock.isHidden()
@@ -198,12 +187,6 @@ class TestMountedViews:
 
         window = _make_window(qtbot)
         assert isinstance(window.channel_dock.widget(), ChannelBrowserView)  # type: ignore[union-attr]
-
-    def test_graph_dock_holds_graph_area_view(self, qtbot: QtBot) -> None:
-        from valisync.gui.views.graph_area_view import GraphAreaView
-
-        window = _make_window(qtbot)
-        assert isinstance(window.graph_dock.widget(), GraphAreaView)  # type: ignore[union-attr]
 
 
 # ---------------------------------------------------------------------------
