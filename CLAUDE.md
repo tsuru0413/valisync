@@ -46,7 +46,8 @@ ADAS ソフトウェア開発向けの時系列信号データ統合・同期・
 | Phase | スコープ | 状況 | 一次情報源 |
 |---|---|---|---|
 | Phase 1 / valisync-core | Signal・Loader・Sync・Formula・補間・統計・Downsampler・Export・Session | 完了 (PR #2 merged) | `.kiro/specs/valisync-core/` |
-| Phase 2 / valisync-gui-mvp | GUI 歩く骨格: シェル/ドッキング・データ取込/閲覧・タブ/パネル・Y-T 波形・X/Y ズーム/パン・動的 LOD・X 軸同期・D&D・コンテキストメニュー | **実装完了** (tasks 0〜11 全 `[x]`・`feature/valisync-gui-mvp`・PR 未作成) | `.kiro/specs/valisync-gui-mvp/` |
+| Phase 2 / valisync-gui-mvp | GUI 歩く骨格: シェル/ドッキング・データ取込/閲覧・タブ/パネル・Y-T 波形・X/Y ズーム/パン・動的 LOD・X 軸同期・D&D・コンテキストメニュー | 完了 (PR #2 merged) | `.kiro/specs/valisync-gui-mvp/` |
+| Phase 2 / valisync-gui-file-browser | FileBrowser の分離: 読み込み済みファイルリストと選択ファイルごとの信号フラットリスト表示 | 進行中 | `.kiro/specs/valisync-gui-file-browser/` |
 
 > Phase 2 `valisync-gui` は 6 sub-spec に分解済み（mvp / axes / analysis / derived / views / script）。詳細は `docs/roadmap.md`。
 
