@@ -41,7 +41,9 @@ class TestBuildMainWindow:
         qtbot.addWidget(window)
         assert isinstance(window.channel_dock, QDockWidget)
 
-    def test_graph_area_is_central_widget(self, qapp: QApplication, qtbot: QtBot) -> None:
+    def test_graph_area_is_central_widget(
+        self, qapp: QApplication, qtbot: QtBot
+    ) -> None:
         from valisync.gui.app import build_main_window
         from valisync.gui.views.graph_area_view import GraphAreaView
 
