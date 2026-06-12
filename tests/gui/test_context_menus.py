@@ -1,18 +1,15 @@
-"""Tests for minimal context menus — Task 9.3.
+"""Tests for minimal context menus — Task 9.3 (Refactored).
 
 Each view exposes ``build_context_menu(...)`` returning a QMenu so the actions,
 their enabled/disabled (grey-out) state, and their effects can be asserted
-headlessly.  Cross-view actions (add-to-active-panel, add/remove panel) are
-emitted as Qt signals and wired by the owning container.
-
-TDD: written before the menus exist; all must FAIL first.
+headlessly.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QItemSelectionModel, QModelIndex
+from PySide6.QtCore import QItemSelectionModel
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from tests.mdf4_helpers import CAN, write_mdf4
@@ -34,11 +31,8 @@ def _action(menu: object, text: str) -> object:
     return next(a for a in menu.actions() if a.text() == text)  # type: ignore[attr-defined]
 
 
-def _session_2sig(tmp_path: Path) -> tuple[Session, str]:
-    path = tmp_path / "d.csv"
-    path.write_text("t,a,b\n0.0,1.0,4.0\n1.0,2.0,5.0\n", encoding="utf-8")
-    session = Session()
-    fmt = FormatDefinition(
+def _fmt() -> FormatDefinition:
+    return FormatDefinition(
         name="f",
         delimiter=Delimiter.COMMA,
         timestamp_column=0,
@@ -47,55 +41,64 @@ def _session_2sig(tmp_path: Path) -> tuple[Session, str]:
         signal_end_column=2,
         has_header=True,
     )
-    return session, session.load(path, fmt)
+
+
+def _setup_app_2sig(tmp_path: Path) -> tuple[AppViewModel, str]:
+    path = tmp_path / "d.csv"
+    path.write_text("t,a,b\n0.0,1.0,4.0\n1.0,2.0,5.0\n", encoding="utf-8")
+    app_vm = AppViewModel()
+    key = app_vm.request_load(path, _fmt())
+    return app_vm, key
 
 
 # ─── Channel_Browser menu (R14.1) ──────────────────────────────────────────────
 
 
 class TestChannelBrowserMenu:
-    def _view(self, qtbot: QtBot, session: Session) -> object:
+    def _view(self, qtbot: QtBot, app_vm: AppViewModel) -> object:
         from valisync.gui.views.channel_browser_view import ChannelBrowserView
 
-        view = ChannelBrowserView(ChannelBrowserVM(session))
+        view = ChannelBrowserView(ChannelBrowserVM(app_vm))
         qtbot.addWidget(view)
         return view
 
-    def _select_first_leaf(self, view: object) -> None:
-        model = view.tree_model  # type: ignore[attr-defined]
-        group = model.index(0, 0, QModelIndex())
-        leaf = model.index(0, 0, group)
+    def _select_first_row(self, view: object) -> None:
+        index = view.model.index(0, 0)  # type: ignore[attr-defined]
         flags = (
             QItemSelectionModel.SelectionFlag.Select
             | QItemSelectionModel.SelectionFlag.Rows
         )
-        view.tree.selectionModel().select(leaf, flags)  # type: ignore[attr-defined]
+        view.tree.selectionModel().select(index, flags)  # type: ignore[attr-defined]
 
     def test_menu_has_add_to_panel_action(self, qtbot: QtBot, tmp_path: Path) -> None:
-        session, _ = _session_2sig(tmp_path)
-        view = self._view(qtbot, session)
-        self._select_first_leaf(view)
+        app_vm, key = _setup_app_2sig(tmp_path)
+        app_vm.set_active_file(key)
+        view = self._view(qtbot, app_vm)
+        self._select_first_row(view)
         assert "Add to Active Panel" in _texts(view.build_context_menu())  # type: ignore[attr-defined]
 
     def test_add_disabled_without_selection(self, qtbot: QtBot, tmp_path: Path) -> None:
-        session, _ = _session_2sig(tmp_path)
-        view = self._view(qtbot, session)
+        app_vm, key = _setup_app_2sig(tmp_path)
+        app_vm.set_active_file(key)
+        view = self._view(qtbot, app_vm)
         action = _action(view.build_context_menu(), "Add to Active Panel")  # type: ignore[attr-defined]
         assert not action.isEnabled()  # type: ignore[attr-defined]
 
     def test_add_enabled_with_selection(self, qtbot: QtBot, tmp_path: Path) -> None:
-        session, _ = _session_2sig(tmp_path)
-        view = self._view(qtbot, session)
-        self._select_first_leaf(view)
+        app_vm, key = _setup_app_2sig(tmp_path)
+        app_vm.set_active_file(key)
+        view = self._view(qtbot, app_vm)
+        self._select_first_row(view)
         action = _action(view.build_context_menu(), "Add to Active Panel")  # type: ignore[attr-defined]
         assert action.isEnabled()  # type: ignore[attr-defined]
 
     def test_triggering_add_emits_selected_keys(
         self, qtbot: QtBot, tmp_path: Path
     ) -> None:
-        session, key = _session_2sig(tmp_path)
-        view = self._view(qtbot, session)
-        self._select_first_leaf(view)
+        app_vm, key = _setup_app_2sig(tmp_path)
+        app_vm.set_active_file(key)
+        view = self._view(qtbot, app_vm)
+        self._select_first_row(view)
         emitted: list[list[str]] = []
         view.add_to_panel_requested.connect(emitted.append)  # type: ignore[attr-defined]
 

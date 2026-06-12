@@ -32,11 +32,27 @@ class AppViewModel(Observable):
         self._loaded_keys: list[str] = []
         self._active_tab: int = 0
         self._data_sources: list[str] = []
+        self._active_file_key: str | None = None
 
     @property
     def session(self) -> Session:
         """The shared Session (so sibling ViewModels read the same data)."""
         return self._session
+
+    @property
+    def active_file_key(self) -> str | None:
+        """The absolute path/key of the currently selected file."""
+        return self._active_file_key
+
+    @property
+    def loaded_file_keys(self) -> list[str]:
+        """List of keys (paths) for all currently loaded files."""
+        return list(self._loaded_keys)
+
+    def set_active_file(self, key: str | None) -> None:
+        """Set the active file and notify subscribers ('active_file')."""
+        self._active_file_key = key
+        self._notify("active_file")
 
     # ─── Load ────────────────────────────────────────────────────────────────
 
@@ -102,4 +118,5 @@ class AppViewModel(Observable):
             "loaded_keys": list(self._loaded_keys),
             "active_tab": self._active_tab,
             "data_sources": list(self._data_sources),
+            "active_file": self._active_file_key,
         }

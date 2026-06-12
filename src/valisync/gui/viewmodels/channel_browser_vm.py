@@ -1,24 +1,30 @@
-"""ChannelBrowserVM — hierarchical signal browser, pure Python (no Qt imports).
+"""ChannelBrowserVM — flat signal browser for the active file.
 
-Presents Session signals grouped by source key > signal name.  Supports
-incremental substring filtering, selection state, and per-signal visibility
-toggling.  All state changes broadcast a short change tag via _notify so that
-Qt (or test code) can react without polling.
-
-The key separator ``"::"`` is treated as a documented contract: a group key
-contains no ``"::"`` and the namespaced signal name is ``"<key>::<origname>"``.
-We deliberately do NOT import the KEY_SEPARATOR constant from core internals to
-keep this ViewModel free of core package coupling beyond Session and models.
+Presents a flat list of signals for the currently selected file in AppViewModel.
+Supports incremental substring filtering and selection state.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
-from valisync.core.session import Session
 from valisync.gui.viewmodels.observable import Observable
 
+if TYPE_CHECKING:
+    from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+
 _SEP = "::"
+
+
+@dataclass(frozen=True)
+class SignalItem:
+    """Represents a single signal entry in the browser list."""
+
+    name: str  # Original name, e.g. "speed"
+    unit: str  # Physical unit, e.g. "km/h"
+    key: str  # Full namespaced key, e.g. "csv_1::speed"
+    visible: bool = True
 
 
 class ChannelBrowserVM(Observable):
@@ -26,99 +32,69 @@ class ChannelBrowserVM(Observable):
 
     Parameters
     ----------
-    session:
-        The application Session to read signals from.
+    app_vm:
+        The parent application ViewModel providing the active file context.
     """
 
-    def __init__(self, session: Session) -> None:
+    def __init__(self, app_vm: AppViewModel) -> None:
         super().__init__()
-        self._session = session
+        self._app_vm = app_vm
         self._filter_text: str = ""
         self._selection: list[str] = []
-        # visibility defaults to True; only keys explicitly toggled-off are stored.
+        # Visibility defaults to True; only keys explicitly toggled-off are stored.
         self._hidden: set[str] = set()
 
-    # ─── Core query ──────────────────────────────────────────────────────────
+        # Subscribe to AppViewModel events to react to file selection changes
+        self._unsubscribe = self._app_vm.subscribe(self._on_app_change)
 
-    def tree(self) -> list[dict[str, Any]]:
-        """Return the filtered hierarchical signal tree.
+    @property
+    def signals(self) -> list[SignalItem]:
+        """Return the flat list of signals for the active file, filtered."""
+        active_key = self._app_vm.active_file_key
+        if not active_key:
+            return []
 
-        Structure::
-
-            [
-              {
-                "key": str,           # group key, e.g. "csv_1"
-                "signals": [
-                  {
-                    "name": str,        # namespaced, e.g. "csv_1::speed"
-                    "display_name": str,# original, e.g. "speed"
-                    "dtype": str,       # numpy dtype string
-                    "count": int,       # number of samples
-                    "time_range": tuple[float, float] | None,
-                    "visible": bool,
-                  },
-                  ...
-                ]
-              },
-              ...
-            ]
-
-        Groups whose signals are all filtered out are omitted from the result.
-        """
         filter_lower = self._filter_text.lower()
-        groups: dict[str, list[dict[str, Any]]] = {}
+        results: list[SignalItem] = []
 
-        for sig in self._session.signals():
+        for sig in self._app_vm.session.signals():
             parts = sig.name.split(_SEP, 1)
             if len(parts) == 2:
-                key, orig_name = parts
+                file_key, orig_name = parts
             else:
-                # Defensive: a name without the "::" namespace separator cannot
-                # arise today (SignalGroupManager namespaces every signal) but a
-                # future Derived signal might — group it under its full name
-                # rather than crash the whole browser.
-                key = orig_name = sig.name
+                file_key = orig_name = sig.name
 
+            # Only include signals from the active file
+            if file_key != active_key:
+                continue
+
+            # Apply filter
             if filter_lower and filter_lower not in orig_name.lower():
                 continue
 
-            n = len(sig.timestamps)
-            if n > 0:
-                time_range: tuple[float, float] | None = (
-                    float(sig.timestamps[0]),
-                    float(sig.timestamps[-1]),
+            unit = sig.metadata.get("unit", "") if sig.metadata else ""
+
+            results.append(
+                SignalItem(
+                    name=orig_name,
+                    unit=str(unit),
+                    key=sig.name,
+                    visible=sig.name not in self._hidden,
                 )
-            else:
-                time_range = None
+            )
 
-            leaf: dict[str, Any] = {
-                "name": sig.name,
-                "display_name": orig_name,
-                "dtype": str(sig.values.dtype),
-                "count": n,
-                "time_range": time_range,
-                "visible": sig.name not in self._hidden,
-            }
-
-            groups.setdefault(key, []).append(leaf)
-
-        return [{"key": k, "signals": v} for k, v in groups.items()]
+        return results
 
     # ─── Refresh ─────────────────────────────────────────────────────────────
 
     def refresh(self) -> None:
-        """Re-read signals from the Session and notify subscribers."""
-        self._notify("tree")
+        """Manually trigger a refresh notification."""
+        self._notify("signals")
 
     # ─── Filter ──────────────────────────────────────────────────────────────
 
     def set_filter(self, text: str) -> None:
-        """Set the incremental substring filter and notify subscribers.
-
-        An empty string clears the filter (all signals visible).
-        Matching is case-insensitive and applied to the original signal name
-        (the portion after the ``"::"`` separator).
-        """
+        """Set the incremental substring filter and notify subscribers."""
         self._filter_text = text
         self._notify("filter")
 
@@ -135,42 +111,44 @@ class ChannelBrowserVM(Observable):
     # ─── Visibility ──────────────────────────────────────────────────────────
 
     def toggle_visibility(self, signal_key: str) -> None:
-        """Flip the visibility of *signal_key*.
-
-        Signals are visible by default; the first toggle hides them.
-        """
+        """Flip the visibility of *signal_key*."""
         if signal_key in self._hidden:
             self._hidden.discard(signal_key)
         else:
             self._hidden.add(signal_key)
+        self._notify("visibility")
 
     def is_visible(self, signal_key: str) -> bool:
-        """Return True if *signal_key* is currently visible (default: True)."""
+        """Return True if *signal_key* is currently visible."""
         return signal_key not in self._hidden
 
     def visible_signal_keys(self) -> list[str]:
-        """Return the namespaced names of all currently-visible loaded signals."""
+        """Return the namespaced names of all currently-visible signals in active file."""
+        active_key = self._app_vm.active_file_key
+        if not active_key:
+            return []
+
         return [
-            sig.name for sig in self._session.signals() if sig.name not in self._hidden
+            sig.name
+            for sig in self._app_vm.session.signals()
+            if sig.name.startswith(f"{active_key}{_SEP}")
+            and sig.name not in self._hidden
         ]
+
+    # ─── Event Handling ──────────────────────────────────────────────────────
+
+    def _on_app_change(self, change: str) -> None:
+        """Handle notifications from AppViewModel."""
+        if change == "active_file":
+            self._notify("signals")
 
     # ─── Introspection ───────────────────────────────────────────────────────
 
     def inspect(self) -> dict[str, Any]:
-        """Return a structured snapshot of ViewModel state.
-
-        Suitable for headless test assertions and AI-agent introspection.
-        """
-        tree = self.tree()
-        tree_summary = [
-            {"key": g["key"], "signal_count": len(g["signals"])} for g in tree
-        ]
+        """Return a structured snapshot of ViewModel state."""
         return {
+            "active_file": self._app_vm.active_file_key,
             "filter_text": self._filter_text,
             "selection": list(self._selection),
-            "visibility_map": {
-                sig.name: sig.name not in self._hidden
-                for sig in self._session.signals()
-            },
-            "tree_summary": tree_summary,
+            "signal_count": len(self.signals),
         }

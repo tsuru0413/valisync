@@ -1,13 +1,7 @@
-"""Integration tests — Task 10.
+"""Integration tests — Task 10 (Refactored).
 
 Drives the assembled MainWindow (built by app.build_main_window) to verify the
-cross-view wiring end-to-end on the offscreen platform: a load refreshes the
-channel tree and the plotted panels, the channel browser's "add to active
-panel" reaches a GraphPanelVM, an OS file drop on the graph area loads through
-the async controller, and the Data Explorer opens and registers sources.
-
-MDF4 is used throughout because it needs no FormatDefinition (CSV would require
-a format picker, deferred).
+cross-view wiring end-to-end on the offscreen platform.
 """
 
 from __future__ import annotations
@@ -48,9 +42,11 @@ def _window(qtbot: QtBot) -> object:
 class TestAssembly:
     def test_mounts_real_views(self, qtbot: QtBot) -> None:
         from valisync.gui.views.channel_browser_view import ChannelBrowserView
+        from valisync.gui.views.file_browser_view import FileBrowserView
         from valisync.gui.views.graph_area_view import GraphAreaView
 
         window = _window(qtbot)
+        assert isinstance(window.file_browser_view, FileBrowserView)  # type: ignore[attr-defined]
         assert isinstance(window.channel_browser_view, ChannelBrowserView)  # type: ignore[attr-defined]
         assert isinstance(window.graph_area_view, GraphAreaView)  # type: ignore[attr-defined]
 
@@ -58,7 +54,7 @@ class TestAssembly:
         window = _window(qtbot)
         # The channel browser and graph area must read the same Session the
         # AppViewModel loads into, or loaded data never appears.
-        assert window.channel_browser_vm._session is window.app_vm.session  # type: ignore[attr-defined]
+        assert window.channel_browser_vm._app_vm is window.app_vm  # type: ignore[attr-defined]
         assert window.graph_area_vm._session is window.app_vm.session  # type: ignore[attr-defined]
 
 
@@ -78,7 +74,12 @@ class TestLoadRefresh:
             lambda: len(window.app_vm.inspect()["loaded_keys"]) >= 1,  # type: ignore[attr-defined]
             timeout=3000,
         )
-        assert len(window.channel_browser_vm.tree()) == 1  # type: ignore[attr-defined]
+
+        # Select the newly loaded file to see its signals
+        key = window.app_vm.loaded_file_keys[0]  # type: ignore[attr-defined]
+        window.app_vm.set_active_file(key)  # type: ignore[attr-defined]
+
+        assert len(window.channel_browser_vm.signals) == 1  # type: ignore[attr-defined]
 
     def test_load_refreshes_panel_with_preadded_signal(
         self, qtbot: QtBot, tmp_path: Path

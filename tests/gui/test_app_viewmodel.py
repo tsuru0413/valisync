@@ -132,3 +132,30 @@ def test_remove_nonexistent_data_source_is_noop(tmp_path: Path) -> None:
     vm.remove_data_source(ghost)  # must not raise
 
     assert "data_sources" in notifications
+
+
+def test_active_file_state_updates_and_notifies() -> None:
+    """set_active_file updates the state and fires 'active_file' notification."""
+    vm = AppViewModel()
+    notifications: list[str] = []
+    vm.subscribe(notifications.append)
+
+    assert vm.active_file_key is None
+    assert vm.inspect()["active_file"] is None
+
+    test_key = "some/file/path.mf4"
+    vm.set_active_file(test_key)
+
+    assert vm.active_file_key == test_key
+    assert vm.inspect()["active_file"] == test_key
+    assert "active_file" in notifications
+
+
+def test_loaded_file_keys_exposes_list(tmp_path: Path) -> None:
+    """loaded_file_keys property returns the list of group keys."""
+    vm = AppViewModel()
+    csv_file = _write_csv(tmp_path / "data.csv")
+
+    key = vm.request_load(csv_file, _csv_format())
+
+    assert vm.loaded_file_keys == [key]

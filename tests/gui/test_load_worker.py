@@ -1,10 +1,8 @@
-"""Tests for off-thread loading: BusyOverlay, LoadWorker, LoadController — Task 9.1.
+"""Tests for off-thread loading: BusyOverlay, LoadWorker, LoadController — Task 9.1 (Refactored).
 
 The worker runs the (thread-safe) Session.load off the GUI thread and reports
 completion via queued signals; the controller drives a LoadTask + BusyOverlay
 and a caller-supplied success/error callback on the main thread.
-
-TDD: written before the implementation; all must FAIL first.
 """
 
 from __future__ import annotations
@@ -17,6 +15,7 @@ from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.session import Session
+from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
 from valisync.gui.viewmodels.load_task import LoadTask
 
@@ -139,8 +138,8 @@ class TestLoadController:
         from valisync.gui.workers.load_worker import LoadController
 
         path, fmt = _csv(tmp_path)
-        session = Session()
-        cb_vm = ChannelBrowserVM(session)
+        app_vm = AppViewModel()
+        cb_vm = ChannelBrowserVM(app_vm)
         task = LoadTask()
         busy = BusyOverlay()
         qtbot.addWidget(busy)
@@ -148,15 +147,18 @@ class TestLoadController:
 
         controller = LoadController()
         controller.submit(
-            lambda: session.load(path, fmt),
+            lambda: app_vm.session.load(path, fmt),
             task=task,
             busy=busy,
-            on_success=lambda key: (cb_vm.refresh(), keys.append(key)),
+            on_success=lambda key: (app_vm.register_loaded(key), keys.append(key)),
         )
 
         qtbot.waitUntil(lambda: task.state == "done", timeout=3000)
         assert len(keys) == 1
-        assert len(cb_vm.tree()) == 1  # tree now reflects the loaded file
+
+        # Select the active file to see signals
+        app_vm.set_active_file(keys[0])
+        assert len(cb_vm.signals) == 1
         assert busy.isHidden()
 
     def test_busy_shown_during_load(self, qtbot: QtBot) -> None:
