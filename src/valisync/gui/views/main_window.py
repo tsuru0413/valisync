@@ -62,7 +62,7 @@ class MainWindow(QMainWindow):
         self._load_controller = LoadController(parent=self)
         self.data_explorer: DataExplorerView | None = None
 
-        # ── Channel Browser dock (left) ──────────────────────────────────────
+        # ── Channel Browser dock (right) ─────────────────────────────────────
         self.channel_dock = QDockWidget("Channel Browser", self)
         self.channel_dock.setWidget(self.channel_browser_view)
         self.channel_dock.setFeatures(
@@ -70,22 +70,14 @@ class MainWindow(QMainWindow):
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
             | QDockWidget.DockWidgetFeature.DockWidgetMovable
         )
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.channel_dock)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.channel_dock)
 
-        # ── Graph Area dock (right) ──────────────────────────────────────────
-        self.graph_dock = QDockWidget("Graph Area", self)
-        self.graph_dock.setWidget(self.graph_area_view)
-        self.graph_dock.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetFloatable
-            | QDockWidget.DockWidgetFeature.DockWidgetClosable
-            | QDockWidget.DockWidgetFeature.DockWidgetMovable
-        )
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.graph_dock)
+        # ── Graph Area (Central Widget) ──────────────────────────────────────
+        self.setCentralWidget(self.graph_area_view)
 
         # ── View menu (dock toggles, R1.4) ───────────────────────────────────
         view_menu = self.menuBar().addMenu("View")
         view_menu.addAction(self.channel_dock.toggleViewAction())
-        view_menu.addAction(self.graph_dock.toggleViewAction())
 
         # ── Toolbar (R1.5) ───────────────────────────────────────────────────
         toolbar: QToolBar = self.addToolBar("Main")
