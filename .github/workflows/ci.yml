@@ -12,6 +12,15 @@ concurrency:
 
 env:
   PYTHONIOENCODING: utf-8
+  # Run Qt against a real (virtual) X display via Xvfb. pyqtgraph's
+  # PlotWidget.paintEvent segfaults under the "offscreen" QPA on CI's Mesa, so
+  # we use xcb + xvfb instead. (tests/gui/conftest.py defaults to "offscreen"
+  # for local headless runs; this env overrides it on CI.)
+  QT_QPA_PLATFORM: xcb
+  # CI has no GPU; force pure software rendering so window paints don't crash
+  # in Mesa's GLX/EGL path (window.show() segfaulted otherwise).
+  QT_XCB_GL_INTEGRATION: none
+  LIBGL_ALWAYS_SOFTWARE: "1"
 
 jobs:
   quality:
@@ -22,6 +31,18 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # PySide6 links against EGL/GL/xkbcommon even under the offscreen
+      # platform; ubuntu-latest does not ship these by default.
+      - name: Install Qt system libraries + Xvfb (PySide6 headless)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libegl1 libgl1 libdbus-1-3 \
+            libxkbcommon0 libxkbcommon-x11-0 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+            libxcb-xkb1 libxcb-xfixes0 libxcb-sync1 libxcb-shm0 libxcb-glx0
 
       - uses: astral-sh/setup-uv@v3
         with:
@@ -37,7 +58,7 @@ jobs:
         run: uv sync --extra dev
 
       - name: Run tests
-        run: uv run pytest
+        run: xvfb-run -a uv run pytest
 
       - name: Lint
         run: uv run ruff check

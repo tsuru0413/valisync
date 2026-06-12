@@ -52,6 +52,25 @@ uv run pytest -k "test_name"           # 名前一致で絞り込み
 
 利点: git に binary blob を置かない / プロトコル・チャンネルグループ・同名信号をパラメトライズできる / 往復 Property（読込→書出→再読込）はそもそも書き込み能力を要求する。
 
+### GUI / Qt (offscreen) テスト
+
+GUI は `pytest-qt` + `QT_QPA_PLATFORM=offscreen`（`tests/gui/conftest.py` で設定）でヘッドレス実行する。MVVM 境界の一次情報源は `.kiro/specs/valisync-gui-mvp/design.md`。
+
+**原則: ピクセルでなく構造化状態を assert する**（VM の `inspect()` / View が公開する投影状態）。実装で確立したパターン:
+
+- **コンテキストメニュー**: View は `build_context_menu()->QMenu` を返し、テストは `action.text()` / `isEnabled()`（グレーアウト）/ `trigger()` を検査。`contextMenuEvent` はそれを `exec` するだけの薄いグルー
+- **ズーム/パン**: 「ゾーン判定・範囲演算」は純関数（`classify_zone`/`zoom_range`/`pan_range`）、「ジェスチャ適用」はデータ座標メソッド（`apply_zone_drag`/`apply_zone_wheel`/`reset_zone`）として検査。Qt イベント→ピクセル写像のグルーは offscreen 幾何が不安定なため **smoke（no-crash）のみ**
+- **波形描画**: `curve_keys()`/`curve_xy()`/`pen_color()`/`legend_labels()` で投影を検査 + `QWidget.grab()` のスモーク
+
+**落とし穴（実際に踏んだもの）**:
+
+- **`QDropEvent` は `QMimeData` を借用する**。テストで一時オブジェクトを渡すと使用前に GC されアクセス違反（Windows fatal exception / segfault）。`QMimeData` は **ローカル変数で保持**してからイベントを渡す
+- **View は長命 VM を unsubscribe する**。VM はウィジェットより長命なので、破棄後の `_notify` が削除済み C++ オブジェクトを叩き `RuntimeError`。`self.destroyed.connect(lambda *_: unsubscribe())`（**view を参照しない closure**）で対処。検証は `view.deleteLater()` → `qtbot.wait(50)` → `len(vm._callbacks) == 0`
+- **offscreen はフォントが無く文字が □ で描画**される（`grab()` スクショ）。レイアウト・ドッキング・波形描画の確認には十分だが文字は読めない（cosmetic、バグではない）
+- **クロスビュー操作は Qt シグナルで疎結合**（`add_to_panel_requested` / `file_dropped` / `add_panel_requested` 等）。各 View 単体テストは emit を検査し、接続は MainWindow（統合）で行う
+
+**スレッド（読込ワーカー）**: `LoadController`/`LoadWorker` は**スレッドセーフな `session.load` のみオフスレッド**実行（不変 Signal）、状態変更・通知は queued signal でメインスレッドへ。テストは `qtbot.waitSignal` / `waitUntil`。「読込中ビジー表示」はブロッキング callable（`threading.Event`）で停止させて決定論的に検証する。
+
 ## Lint / Format (Ruff)
 
 `pyproject.toml` の `[tool.ruff]` で集中管理。
@@ -98,8 +117,6 @@ uv lock --upgrade              # ロックファイル更新
 
 ## 開発環境の落とし穴
 
-<!-- TODO: 環境固有の問題を記載 -->
-<!-- 例:
-- Windows: `python` コマンドは Microsoft Store スタブ → `uv run python` を使う
-- PowerShell: 出力が cp932 → PYTHONIOENCODING=utf-8 を設定
--->
+- **Windows**: `python` コマンドは Microsoft Store スタブになり得る → 常に `uv run python` を使う
+- **Qt offscreen テストの落とし穴**（`QMimeData` 借用によるアクセス違反、View の unsubscribe 漏れ、□ フォント描画など）は上の「[GUI / Qt (offscreen) テスト](#gui--qt-offscreen-テスト)」を参照
+- **CRLF 警告**: Windows では新規ファイルコミット時に `LF will be replaced by CRLF` 警告が出るが無害（`.gitattributes` 未設定のため）

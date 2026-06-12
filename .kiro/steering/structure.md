@@ -39,7 +39,7 @@ valisync/
 │       │   │   ├── __init__.py
 │       │   │   └── csv_exporter.py        # CsvExporter (atomic write)
 │       │   └── session.py                 # Session (orchestration layer)
-│       └── gui/                           # Phase 2+: PyQt6 desktop app
+│       └── gui/                           # Phase 2+: PySide6 desktop app
 │           ├── __init__.py
 │           ├── views/                     # Qt widgets (View layer)
 │           ├── viewmodels/                # MVVM ViewModel layer
@@ -98,7 +98,7 @@ valisync/
 | `core/downsampler/` | Pure computation — min-max downsampling | None |
 | `core/export/` | File I/O — writes CSV, never modifies input files | Write |
 | `core/session.py` | Orchestration — coordinates all core modules | Via modules |
-| `gui/` | PyQt6 UI layer — imports from `core/` only, never the reverse | Qt |
+| `gui/` | PySide6 UI layer — imports from `core/` only, never the reverse | Qt |
 
 ## Dependency Rules
 

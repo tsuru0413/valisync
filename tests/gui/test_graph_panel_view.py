@@ -1,0 +1,259 @@
+"""Tests for GraphPanelView — Task 8.2.
+
+The view is a thin pyqtgraph.PlotWidget wrapper bound to a GraphPanelVM.  It
+projects vm.render_data() onto PlotDataItems (one per curve, coloured per the
+VM), maintains a legend, accepts signal drops (SIGNAL_KEYS_MIME → add_signal),
+and reports its pixel width to the VM on resize.  All assertions read the
+view's projected state, plus one QWidget.grab() smoke test.
+
+TDD: written before the view exists; all must FAIL first.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from PySide6.QtCore import QPointF, QSize, Qt
+from PySide6.QtGui import QDropEvent, QResizeEvent
+from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
+
+from valisync.core.models import Delimiter, FormatDefinition
+from valisync.core.session import Session
+from valisync.gui.adapters.qt_signal_models import encode_signal_keys
+from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+
+# ─── Helpers ────────────────────────────────────────────────────────────────
+
+
+def _csv_format(n_signals: int = 1) -> FormatDefinition:
+    return FormatDefinition(
+        name="fmt",
+        delimiter=Delimiter.COMMA,
+        timestamp_column=0,
+        timestamp_unit="sec",
+        signal_start_column=1,
+        signal_end_column=n_signals,
+        has_header=True,
+    )
+
+
+def _write_csv(path: Path, n_rows: int, n_signals: int) -> Path:
+    headers = ["t"] + [f"s{i}" for i in range(1, n_signals + 1)]
+    lines = [",".join(headers)]
+    for i in range(n_rows):
+        t = i * 0.01
+        lines.append(
+            ",".join([f"{t}"] + [f"{float(i % 50)}" for _ in range(n_signals)])
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _loaded_session(
+    tmp_path: Path, n_rows: int = 100, n_signals: int = 1
+) -> tuple[Session, str]:
+    csv = _write_csv(tmp_path / "data.csv", n_rows, n_signals)
+    session = Session()
+    key = session.load(csv, _csv_format(n_signals))
+    return session, key
+
+
+def _keys(session: Session) -> list[str]:
+    return [s.name for s in session.signals()]
+
+
+def _make_view(qtbot: QtBot, vm: GraphPanelVM) -> object:
+    from valisync.gui.views.graph_panel_view import GraphPanelView
+
+    view = GraphPanelView(vm)
+    qtbot.addWidget(view)
+    return view
+
+
+# ─── Drawing curves ───────────────────────────────────────────────────────────
+
+
+class TestDrawing:
+    def test_adding_signal_draws_curve(self, qtbot: QtBot, tmp_path: Path) -> None:
+        session, _ = _loaded_session(tmp_path)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        vm.add_signal(key)
+
+        assert key in view.curve_keys()  # type: ignore[attr-defined]
+        x, y = view.curve_xy(key)  # type: ignore[attr-defined]
+        assert len(x) > 0
+        assert len(x) == len(y)
+
+    def test_curve_uses_vm_assigned_color(self, qtbot: QtBot, tmp_path: Path) -> None:
+        session, _ = _loaded_session(tmp_path)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        vm.add_signal(key)
+
+        expected = vm.inspect()["plotted_signals"][0]["color"]
+        assert view.pen_color(key).lower() == expected.lower()  # type: ignore[attr-defined]
+
+    def test_overlay_multiple_signals(self, qtbot: QtBot, tmp_path: Path) -> None:
+        session, _ = _loaded_session(tmp_path, n_signals=2)
+        k0, k1 = _keys(session)[:2]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        vm.add_signal(k0)
+        vm.add_signal(k1)
+
+        assert set(view.curve_keys()) == {k0, k1}  # type: ignore[attr-defined]
+
+    def test_remove_signal_removes_curve(self, qtbot: QtBot, tmp_path: Path) -> None:
+        session, _ = _loaded_session(tmp_path)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        vm.add_signal(key)
+        vm.remove_signal(key)
+
+        assert key not in view.curve_keys()  # type: ignore[attr-defined]
+
+    def test_toggle_invisible_hides_curve(self, qtbot: QtBot, tmp_path: Path) -> None:
+        session, _ = _loaded_session(tmp_path)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        vm.add_signal(key)
+        vm.toggle_visibility(key)
+
+        # render_data omits invisible signals, so no curve is drawn for it.
+        assert key not in view.curve_keys()  # type: ignore[attr-defined]
+
+
+# ─── Legend ────────────────────────────────────────────────────────────────--
+
+
+class TestLegend:
+    def test_legend_lists_signal_name(self, qtbot: QtBot, tmp_path: Path) -> None:
+        session, _ = _loaded_session(tmp_path)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        vm.add_signal(key)
+
+        assert key in view.legend_labels()  # type: ignore[attr-defined]
+
+
+# ─── Empty signal (R8.5) ──────────────────────────────────────────────────────
+
+
+class TestEmptySignal:
+    def test_empty_window_keeps_legend_without_points(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        session, _ = _loaded_session(tmp_path)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        vm.add_signal(key)
+        vm.set_x_range(1.0e9, 1.0e9 + 1.0)  # window with no samples
+
+        assert key in view.curve_keys()  # type: ignore[attr-defined]  # legend entry persists
+        x, _y = view.curve_xy(key)  # type: ignore[attr-defined]
+        # pyqtgraph represents an empty curve as None (no points drawn).
+        assert x is None or len(x) == 0
+
+
+# ─── Drag-and-drop sink (R12.4) ────────────────────────────────────────────────
+
+
+class TestDrop:
+    def test_drop_adds_signals_and_draws(self, qtbot: QtBot, tmp_path: Path) -> None:
+        session, _ = _loaded_session(tmp_path)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        mime = encode_signal_keys([key])
+        event = QDropEvent(
+            QPointF(5.0, 5.0),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        view.dropEvent(event)  # type: ignore[attr-defined]
+
+        assert any(p["signal_key"] == key for p in vm.inspect()["plotted_signals"])
+        assert key in view.curve_keys()  # type: ignore[attr-defined]
+
+    def test_drag_enter_accepts_signal_mime(self, qtbot: QtBot, tmp_path: Path) -> None:
+        from PySide6.QtGui import QDragEnterEvent
+
+        session, _ = _loaded_session(tmp_path)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        mime = encode_signal_keys([key])
+        event = QDragEnterEvent(
+            QPointF(5.0, 5.0).toPoint(),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        view.dragEnterEvent(event)  # type: ignore[attr-defined]
+        assert event.isAccepted()
+
+
+# ─── Resize → panel width ──────────────────────────────────────────────────────
+
+
+class TestResize:
+    def test_resize_updates_panel_width(self, qtbot: QtBot, tmp_path: Path) -> None:
+        session, _ = _loaded_session(tmp_path)
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        view.resizeEvent(QResizeEvent(QSize(640, 480), QSize(800, 600)))  # type: ignore[attr-defined]
+
+        assert vm.panel_width_px == 640
+
+
+# ─── Screenshot smoke + lifecycle ──────────────────────────────────────────────
+
+
+class TestSmokeAndLifecycle:
+    def test_grab_screenshot_succeeds(self, qtbot: QtBot, tmp_path: Path) -> None:
+        session, _ = _loaded_session(tmp_path)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal(key)
+        view.resize(400, 300)  # type: ignore[attr-defined]
+
+        pixmap = view.grab()  # type: ignore[attr-defined]
+
+        assert not pixmap.isNull()
+        assert pixmap.width() > 0
+
+    def test_unsubscribes_when_destroyed(self, qtbot: QtBot, tmp_path: Path) -> None:
+        session, _ = _loaded_session(tmp_path)
+        vm = GraphPanelVM(session)
+        from valisync.gui.views.graph_panel_view import GraphPanelView
+
+        view = GraphPanelView(vm)
+        qtbot.addWidget(view)
+        assert len(vm._callbacks) == 1
+
+        view.deleteLater()
+        qtbot.wait(50)
+
+        assert len(vm._callbacks) == 0
+        vm.set_x_range(0.0, 1.0)  # a notify after destruction must not raise

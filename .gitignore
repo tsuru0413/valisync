@@ -44,5 +44,9 @@ Thumbs.db
 # Data (uncomment if needed)
 # data/plans/*.json
 
+# Test fixtures (generated binary files — run scripts/generate_sample.py to recreate)
+tests/fixtures/*.mf4
+tests/fixtures/*.csv
+
 # Migration script auto-backups (uncomment if scripts auto-create backups)
 # data/*_backup_*/
