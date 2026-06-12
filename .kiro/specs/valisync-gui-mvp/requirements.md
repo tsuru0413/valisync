@@ -35,7 +35,7 @@
 
 #### Acceptance Criteria
 
-1. THE GUI_Application SHALL QDockWidget ベースのドッキングウィンドウシステムを採用し、Channel_Browser および Graph_Area を独立した Dock_Widget として提供する
+1. THE GUI_Application SHALL メインウィンドウの中央作業領域（Central Widget）として Graph_Area を配置し、Channel_Browser を QDockWidget ベースのドッキングウィンドウとして提供する
 2. THE Dock_Widget SHALL ドラッグ操作によりメインウィンドウ内の任意の位置にドッキング（上下左右・タブ化）可能とする
 3. THE Dock_Widget SHALL メインウィンドウから切り離してフローティングウィンドウとして表示可能とする
 4. WHEN ユーザーがパネルを閉じた場合、THE GUI_Application SHALL メニューまたはショートカットから再表示可能とする
