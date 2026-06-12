@@ -85,31 +85,26 @@ class TestWindowTitle:
 
 class TestDockToggleAction:
     def test_channel_dock_toggle_action_reshows_closed_dock(self, qtbot: QtBot) -> None:
-        # NOTE (offscreen): isVisible() only reflects the shown hierarchy, so we
-        # must show the window before testing dock visibility toggling.
         window = _make_window(qtbot)
-        window.show()  # type: ignore[union-attr]
         dock = window.channel_dock  # type: ignore[union-attr]
-        assert dock.isVisible()
-        # Close the dock (sets invisible within the shown hierarchy)
+        assert not dock.isHidden()
+        # Close the dock (sets hidden state to True)
         dock.close()
-        assert not dock.isVisible()
+        assert dock.isHidden()
         # Trigger the toggle action to re-show
         action = dock.toggleViewAction()
         action.trigger()
-        assert dock.isVisible()
+        assert not dock.isHidden()
 
     def test_graph_dock_toggle_action_reshows_closed_dock(self, qtbot: QtBot) -> None:
-        # NOTE (offscreen): same rationale as the channel dock test above.
         window = _make_window(qtbot)
-        window.show()  # type: ignore[union-attr]
         dock = window.graph_dock  # type: ignore[union-attr]
-        assert dock.isVisible()
+        assert not dock.isHidden()
         dock.close()
-        assert not dock.isVisible()
+        assert dock.isHidden()
         action = dock.toggleViewAction()
         action.trigger()
-        assert dock.isVisible()
+        assert not dock.isHidden()
 
 
 # ---------------------------------------------------------------------------
