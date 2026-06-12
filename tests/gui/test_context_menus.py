@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QItemSelectionModel, QModelIndex
+from PySide6.QtCore import QItemSelectionModel
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from tests.mdf4_helpers import CAN, write_mdf4

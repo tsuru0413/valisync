@@ -6,7 +6,6 @@ and communicates selection changes back to the AppViewModel.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from valisync.gui.viewmodels.observable import Observable
@@ -60,7 +59,7 @@ class FileBrowserVM(Observable):
         files: list[str] = []
         for key in self._app_vm.loaded_file_keys:
             try:
-                group = self._app_vm.session._groups.group(key)  # type: ignore[attr-defined]
+                group = self._app_vm.session._groups.group(key)
                 files.append(group.source_path.name)
             except (KeyError, AttributeError):
                 # Fallback to key if group recovery fails

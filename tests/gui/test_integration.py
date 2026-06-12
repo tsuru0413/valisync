@@ -74,11 +74,11 @@ class TestLoadRefresh:
             lambda: len(window.app_vm.inspect()["loaded_keys"]) >= 1,  # type: ignore[attr-defined]
             timeout=3000,
         )
-        
+
         # Select the newly loaded file to see its signals
         key = window.app_vm.loaded_file_keys[0]  # type: ignore[attr-defined]
         window.app_vm.set_active_file(key)  # type: ignore[attr-defined]
-        
+
         assert len(window.channel_browser_vm.signals) == 1  # type: ignore[attr-defined]
 
     def test_load_refreshes_panel_with_preadded_signal(

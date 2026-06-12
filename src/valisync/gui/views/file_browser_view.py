@@ -38,7 +38,9 @@ class FileBrowserView(QWidget):
         layout.addWidget(self.list_view)
 
         # Connect selection changes to VM
-        self.list_view.selectionModel().selectionChanged.connect(self._on_selection_changed)
+        self.list_view.selectionModel().selectionChanged.connect(
+            self._on_selection_changed
+        )
 
     def _on_selection_changed(self) -> None:
         """Translate view selection to ViewModel selection."""

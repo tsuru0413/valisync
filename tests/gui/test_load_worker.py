@@ -155,7 +155,7 @@ class TestLoadController:
 
         qtbot.waitUntil(lambda: task.state == "done", timeout=3000)
         assert len(keys) == 1
-        
+
         # Select the active file to see signals
         app_vm.set_active_file(keys[0])
         assert len(cb_vm.signals) == 1
