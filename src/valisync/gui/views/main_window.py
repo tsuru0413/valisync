@@ -23,10 +23,12 @@ from PySide6.QtWidgets import QDockWidget, QMainWindow, QToolBar
 
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
+from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 from valisync.gui.views.busy_overlay import BusyOverlay
 from valisync.gui.views.channel_browser_view import ChannelBrowserView
 from valisync.gui.views.data_explorer_view import DataExplorerView
+from valisync.gui.views.file_browser_view import FileBrowserView
 from valisync.gui.views.graph_area_view import GraphAreaView
 from valisync.gui.workers.load_worker import LoadController
 
@@ -52,17 +54,29 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("ValiSync")
 
         # ── Shared ViewModels (one Session) ──────────────────────────────────
-        self.channel_browser_vm = ChannelBrowserVM(session)
+        self.file_browser_vm = FileBrowserVM(app_vm)
+        self.channel_browser_vm = ChannelBrowserVM(app_vm)
         self.graph_area_vm = GraphAreaVM(session)
 
         # ── Views ────────────────────────────────────────────────────────────
+        self.file_browser_view = FileBrowserView(self.file_browser_vm)
         self.channel_browser_view = ChannelBrowserView(self.channel_browser_vm)
         self.graph_area_view = GraphAreaView(self.graph_area_vm)
         self.busy_overlay = BusyOverlay(self)
         self._load_controller = LoadController(parent=self)
         self.data_explorer: DataExplorerView | None = None
 
-        # ── Channel Browser dock (right) ─────────────────────────────────────
+        # ── File Browser dock (right top) ────────────────────────────────────
+        self.file_dock = QDockWidget("File Browser", self)
+        self.file_dock.setWidget(self.file_browser_view)
+        self.file_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetFloatable
+            | QDockWidget.DockWidgetFeature.DockWidgetClosable
+            | QDockWidget.DockWidgetFeature.DockWidgetMovable
+        )
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.file_dock)
+
+        # ── Channel Browser dock (right bottom) ──────────────────────────────
         self.channel_dock = QDockWidget("Channel Browser", self)
         self.channel_dock.setWidget(self.channel_browser_view)
         self.channel_dock.setFeatures(
@@ -72,11 +86,15 @@ class MainWindow(QMainWindow):
         )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.channel_dock)
 
+        # Stack them vertically
+        self.splitDockWidget(self.file_dock, self.channel_dock, Qt.Orientation.Vertical)
+
         # ── Graph Area (Central Widget) ──────────────────────────────────────
         self.setCentralWidget(self.graph_area_view)
 
         # ── View menu (dock toggles, R1.4) ───────────────────────────────────
         view_menu = self.menuBar().addMenu("View")
+        view_menu.addAction(self.file_dock.toggleViewAction())
         view_menu.addAction(self.channel_dock.toggleViewAction())
 
         # ── Toolbar (R1.5) ───────────────────────────────────────────────────

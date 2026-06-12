@@ -1,12 +1,10 @@
-"""Tests for the drag-and-drop workflow — Task 9.2.
+"""Tests for the drag-and-drop workflow — Task 9.2 (Refactored).
 
 Covers the three D&D paths and the drop-highlight feedback:
-- Channel_Browser signals → Graph_Panel (ChannelTreeModel as drag source +
+- Channel_Browser signals → Graph_Panel (SignalTableModel as drag source +
   GraphPanelView as sink), including multi-select (R12.2/12.3/12.4)
 - OS file manager → Graph_Area / Data_Explorer (url drops load, R12.1)
 - droppable-region highlight on drag enter/leave (R12.5)
-
-TDD: written before the wiring exists; all must FAIL first.
 """
 
 from __future__ import annotations
@@ -22,7 +20,7 @@ from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.session import Session
 from valisync.gui.adapters.qt_signal_models import (
     SIGNAL_KEYS_MIME,
-    ChannelTreeModel,
+    SignalTableModel,
     decode_signal_keys,
 )
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
@@ -45,17 +43,17 @@ def _fmt(n: int = 2) -> FormatDefinition:
     )
 
 
-def _session_2sig(tmp_path: Path) -> tuple[Session, str]:
+def _setup_app_2sig(tmp_path: Path) -> tuple[AppViewModel, str]:
     path = tmp_path / "d.csv"
     path.write_text("t,a,b\n0.0,1.0,4.0\n1.0,2.0,5.0\n", encoding="utf-8")
-    session = Session()
-    key = session.load(path, _fmt(2))
-    return session, key
+    app_vm = AppViewModel()
+    key = app_vm.request_load(path, _fmt(2))
+    app_vm.set_active_file(key)
+    return app_vm, key
 
 
-def _leaf_indexes(model: ChannelTreeModel) -> list[QModelIndex]:
-    group = model.index(0, 0, QModelIndex())
-    return [model.index(r, 0, group) for r in range(model.rowCount(group))]
+def _row_indexes(model: SignalTableModel) -> list[QModelIndex]:
+    return [model.index(r, 0) for r in range(model.rowCount())]
 
 
 def _drop_event(mime: QMimeData) -> QDropEvent:
@@ -91,30 +89,26 @@ class TestSignalDragSource:
     def test_model_advertises_signal_mime_type(
         self, qtbot: QtBot, tmp_path: Path
     ) -> None:
-        session, _ = _session_2sig(tmp_path)
-        model = ChannelTreeModel(ChannelBrowserVM(session))
+        app_vm, _ = _setup_app_2sig(tmp_path)
+        model = SignalTableModel(ChannelBrowserVM(app_vm))
         assert SIGNAL_KEYS_MIME in model.mimeTypes()
 
     def test_mimedata_carries_all_selected_keys(
         self, qtbot: QtBot, tmp_path: Path
     ) -> None:
-        session, key = _session_2sig(tmp_path)
-        model = ChannelTreeModel(ChannelBrowserVM(session))
+        app_vm, key = _setup_app_2sig(tmp_path)
+        model = SignalTableModel(ChannelBrowserVM(app_vm))
 
-        mime = model.mimeData(_leaf_indexes(model))
+        mime = model.mimeData(_row_indexes(model))
 
         assert set(decode_signal_keys(mime)) == {f"{key}::a", f"{key}::b"}
 
-    def test_leaf_is_drag_enabled_group_is_not(
-        self, qtbot: QtBot, tmp_path: Path
-    ) -> None:
-        session, _ = _session_2sig(tmp_path)
-        model = ChannelTreeModel(ChannelBrowserVM(session))
-        group = model.index(0, 0, QModelIndex())
-        leaf = model.index(0, 0, group)
+    def test_rows_are_drag_enabled(self, qtbot: QtBot, tmp_path: Path) -> None:
+        app_vm, _ = _setup_app_2sig(tmp_path)
+        model = SignalTableModel(ChannelBrowserVM(app_vm))
+        index = model.index(0, 0)
 
-        assert model.flags(leaf) & Qt.ItemFlag.ItemIsDragEnabled
-        assert not (model.flags(group) & Qt.ItemFlag.ItemIsDragEnabled)
+        assert model.flags(index) & Qt.ItemFlag.ItemIsDragEnabled
 
 
 # ─── Signal drop → Graph_Panel (R12.4) ─────────────────────────────────────────
@@ -126,11 +120,11 @@ class TestSignalDropToPanel:
     ) -> None:
         from valisync.gui.views.graph_panel_view import GraphPanelView
 
-        session, key = _session_2sig(tmp_path)
-        model = ChannelTreeModel(ChannelBrowserVM(session))
-        mime = model.mimeData(_leaf_indexes(model))
+        app_vm, key = _setup_app_2sig(tmp_path)
+        model = SignalTableModel(ChannelBrowserVM(app_vm))
+        mime = model.mimeData(_row_indexes(model))
 
-        panel = GraphPanelView(GraphPanelVM(session))
+        panel = GraphPanelView(GraphPanelVM(app_vm.session))
         qtbot.addWidget(panel)
         panel.dropEvent(_drop_event(mime))
 
@@ -139,11 +133,11 @@ class TestSignalDropToPanel:
     def test_drag_enter_highlights_panel(self, qtbot: QtBot, tmp_path: Path) -> None:
         from valisync.gui.views.graph_panel_view import GraphPanelView
 
-        session, _ = _session_2sig(tmp_path)
-        model = ChannelTreeModel(ChannelBrowserVM(session))
-        mime = model.mimeData(_leaf_indexes(model))
+        app_vm, _ = _setup_app_2sig(tmp_path)
+        model = SignalTableModel(ChannelBrowserVM(app_vm))
+        mime = model.mimeData(_row_indexes(model))
 
-        panel = GraphPanelView(GraphPanelVM(session))
+        panel = GraphPanelView(GraphPanelVM(app_vm.session))
         qtbot.addWidget(panel)
         panel.dragEnterEvent(_drag_enter_event(mime))
         assert panel.is_drop_highlighted()
