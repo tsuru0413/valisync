@@ -1,10 +1,16 @@
 # Design Document: valisync-gui-file-browser
 
+## Overview
+
+The `valisync-gui-file-browser` extension refactors the primary navigation UI of ValiSync. By separating file management (Master) from channel exploration (Detail), we reduce cognitive load and improve performance when hundreds of signals are spread across multiple loaded files.
+
+The design follows the strict MVVM architecture established in the MVP.
+
 ## Architecture
 
-This specification adheres to the existing MVVM pattern. The primary architectural shift involves splitting the responsibilities of the old `ChannelBrowserVM` into two distinct ViewModels, reflecting the master-detail UI.
-
 ### Component Interaction
+
+The `AppViewModel` serves as the source of truth for the application state, including the `active_file_key`. The `FileBrowserVM` writes to this state, and the `ChannelBrowserVM` reacts to it.
 
 ```mermaid
 graph TD
@@ -16,15 +22,15 @@ graph TD
         MainWindow --> FB_View
         MainWindow --> CB_View
     end
-    subgraph ViewModel
-        AppVM[AppViewModel<br>state: active_file_key]
+    subgraph VM (Pure Python)
+        AppVM[AppViewModel]
         FB_VM[FileBrowserVM]
         CB_VM[ChannelBrowserVM]
         
-        FB_View -. selection changed .-> FB_VM
-        FB_VM -. calls .-> AppVM::set_active_file
-        AppVM -. notifies .-> CB_VM
-        CB_VM -. notifies .-> CB_View
+        FB_View -. change selection .-> FB_VM
+        FB_VM -. set_active_file(key) .-> AppVM
+        AppVM -. notify('active_file') .-> CB_VM
+        CB_VM -. notify('signals') .-> CB_View
     end
     subgraph Model
         Session[Session]
@@ -37,34 +43,78 @@ graph TD
 
 ## ViewModels
 
-### AppViewModel (Modification)
-- **State Added**: Needs a new state variable to track the currently active (selected) file. E.g., `self._active_file_key: str | None = None`.
-- **Method Added**: `set_active_file(key: str | None)`. This method updates the state and calls `self._notify("active_file")`.
+### AppViewModel (Modified)
+
+**State:**
+- `active_file_key: str | None`: The absolute path (key) of the currently selected file.
+- `loaded_files: list[str]`: List of keys for all loaded signal groups.
+
+**Actions:**
+- `set_active_file(key: str | None) -> None`: Updates the state and calls `self._notify("active_file")`.
 
 ### FileBrowserVM (New)
-- **Role**: Provides the list of loaded file keys/paths to the View.
-- **State**: A flat list of loaded files (can derive this from `Session.list_loaded()` or `AppViewModel`).
-- **Actions**: Handles selection changes from the View, calling `AppViewModel.set_active_file(...)`.
-- **Observation**: Subscribes to `AppViewModel` for `"loaded"` events to refresh its list.
 
-### ChannelBrowserVM (Refactor)
-- **Role**: Provides the flat list of signals for the currently active file.
-- **State Modification**: Removes the hierarchical tree logic. The internal representation should become a flat list of signal metadata objects.
-- **Observation**: Subscribes to `AppViewModel` for `"active_file"` events. When notified, it queries the `Session` for the signals of `AppViewModel.active_file_key` and notifies the View.
+**Role:** Manages the list of files available for selection.
+
+**State:**
+- `files: list[str]`: The list of filenames (basename) derived from `AppViewModel.loaded_files`.
+
+**Actions:**
+- `select_file(index: int) -> None`: Translates the list index to a file key and calls `AppViewModel.set_active_file(key)`.
+
+**Observation:**
+- Subscribes to `AppViewModel` for `"loaded"` and `"unloaded"` events to refresh the file list.
+
+### ChannelBrowserVM (Refactored)
+
+**Role:** Provides a flat list of signals for the currently active file.
+
+**State:**
+- `signals: list[SignalItem]`: Flat list of signal objects containing `name`, `unit`, and `signal_key`.
+- `filter_text: str`: Used for incremental search.
+
+**Observation:**
+- Subscribes to `AppViewModel` for `"active_file"` changes.
+- When notified, it fetches the `SignalGroup` for the `active_file_key` from the `Session`, flattens its signals into `SignalItem` objects, and notifies the View.
+- **Unit extraction**: `unit = signal.metadata.get("unit", "")`.
 
 ## Views and Adapters
 
 ### FileBrowserView (New)
-- **Implementation**: A simple `QListView` or `QTreeView` (used as a flat list).
-- **Model**: Needs a new adapter in `qt_signal_models.py` (e.g., `FileStringListModel` inheriting from `QStringListModel` or `QAbstractListModel`) to bridge `FileBrowserVM` and Qt.
 
-### ChannelBrowserView (Refactor)
-- **Implementation**: Retain `QTreeView` but configure it to look like a flat table (e.g., `setRootIsDecorated(False)`).
-- **Adapter Refactor**: The adapter (`SignalTreeModel`) in `qt_signal_models.py` must be completely rewritten. It will no longer manage hierarchical `TreeItem`s. Instead, it will be a simple tabular model (e.g., `SignalListModel` inheriting from `QAbstractTableModel`) serving 2 columns: Name and Unit.
+- **UI**: A `QDockWidget` containing a `QListView`.
+- **Adapter**: `FileListModel` (inherits `QAbstractListModel`).
+  - Implements `data()` to return filenames.
+  - Connects to `FileBrowserVM` notifications to trigger `layoutChanged`.
 
-## MainWindow
+### ChannelBrowserView (Refactored)
 
-- Instantiates `FileBrowserVM` and `FileBrowserView`.
-- Wraps `FileBrowserView` in a `QDockWidget` (`file_dock`).
-- Arranges docks using `splitDockWidget` or by placing `file_dock` first and `channel_dock` immediately below it in the `RightDockWidgetArea`.
-- Adds `file_dock` to the "View" menu toggles.
+- **UI**: A `QDockWidget` containing a `QTreeView`.
+- **Configuration**:
+  - `setRootIsDecorated(False)`: Disables the tree expansion icons.
+  - `setItemsExpandable(False)`: Forces a flat appearance.
+- **Adapter**: `SignalTableModel` (refactored from `SignalTreeModel`).
+  - Inherits `QAbstractTableModel`.
+  - **Columns (2)**: 0 = "Name", 1 = "Unit".
+  - Connects to `ChannelBrowserVM` notifications to refresh data.
+
+## MainWindow Integration
+
+**Layout Wiring:**
+```python
+# Initial setup in MainWindow.__init__
+self.addDockWidget(Qt.RightDockWidgetArea, self.file_browser_dock)
+self.addDockWidget(Qt.RightDockWidgetArea, self.channel_browser_dock)
+# Stack them vertically
+self.splitDockWidget(self.file_browser_dock, self.channel_browser_dock, Qt.Vertical)
+```
+
+## Testing Strategy
+
+1.  **VM Unit Tests**:
+    - Verify `AppViewModel.set_active_file` notifies observers.
+    - Verify `ChannelBrowserVM` updates its list correctly when `active_file_key` changes.
+2.  **Adapter Tests**:
+    - Verify `SignalTableModel` correctly maps `signal.metadata["unit"]` to column 1.
+3.  **Integration Tests**:
+    - Use `QtBot` to select an item in `FileBrowserView` and assert that `ChannelBrowserView` displays the expected signals.
