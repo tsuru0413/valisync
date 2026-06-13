@@ -27,36 +27,30 @@ class YAxisVM(Observable):
 
     def set_range(self, lo: float | None, hi: float | None) -> None:
         """Set the vertical data range for this axis."""
-        if lo is None and hi is None:
-            self.y_range = None
-        else:
+        if lo is not None and hi is not None:
             self.y_range = (lo, hi)
+        else:
+            self.y_range = None
         self._notify("range")
 
     def calculate_virtual_range(self) -> tuple[float, float]:
-        """Calculate the virtual Y-range for a ViewBox to overlay this axis region.
+        """Calculate the full ViewBox Y-range to map [y_lo, y_hi] to this region.
 
-        If a signal has a real range [Ymin, Ymax] and we want to show it in a
-        region starting at `top_ratio` with `height_ratio` (relative to full
-        panel height 1.0), we calculate a `virtual_range` [Vmin, Vmax] such
-        that when the ViewBox maps [Vmin, Vmax] to [0, PixelHeight], the
-        sub-range [Ymin, Ymax] lands exactly in the region
-        [top_ratio, top_ratio + height_ratio].
+        This implements the 'unclipped overlay' mapping. The full ViewBox
+        occupies the entire panel; we set its Y-range such that the data range
+        [y_min, y_max] corresponds to the vertical strip [top_ratio, top_ratio+height].
 
-        Math:
-        Span = Ymax - Ymin
-        VirtualSpan = Span / height_ratio
-        Vmin = Ymin - (top_ratio / height_ratio) * Span
-        Vmax = Vmin + VirtualSpan
+        top_ratio is 0.0 at the top of the panel and 1.0 at the bottom.
+        Pyqtgraph Y-axis increases upwards (0.0 at bottom).
         """
         y_min, y_max = self.y_range if self.y_range is not None else (0.0, 1.0)
-        span = y_max - y_min
-
-        # Avoid division by zero if height_ratio is somehow 0
+        span = max(y_max - y_min, 1e-9)
         h_ratio = max(self.height_ratio, 1e-9)
 
-        virtual_span = span / h_ratio
-        v_min = y_min - (self.top_ratio / h_ratio) * span
-        v_max = v_min + virtual_span
+        # Formula:
+        # full_hi = y_hi + top_ratio * span / height_ratio
+        # full_lo = y_hi - (1 - top_ratio) * span / height_ratio
+        v_hi = y_max + self.top_ratio * span / h_ratio
+        v_lo = y_max - (1.0 - self.top_ratio) * span / h_ratio
 
-        return (v_min, v_max)
+        return (v_lo, v_hi)

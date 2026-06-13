@@ -77,21 +77,22 @@ def full_y_range(
     y_lo: float, y_hi: float, top_ratio: float, height_ratio: float
 ) -> tuple[float, float]:
     """Calculate the full ViewBox Y-range to map [y_lo, y_hi] to a sub-region.
-    
-    This implements the 'unclipped overlay' mapping (R4). The full ViewBox
-    occupies the entire panel; we set its Y-range such that the data range
-    [y_lo, y_hi] corresponds to the vertical strip [top_ratio, top_ratio+height].
+
+       This implements the 'unclipped overlay' mapping (R4).
+    The full ViewBox
+       occupies the entire panel; we set its Y-range such that the data range
+       [y_lo, y_hi] corresponds to the vertical strip [top_ratio, top_ratio+height].
     """
     if height_ratio <= 0:
         return y_lo, y_hi
-    
+
     # Formulas derived from linear mapping:
     # Y_full_lo = y_hi - (1 - top_ratio) * (y_hi - y_lo) / height_ratio
     # Y_full_hi = y_hi + top_ratio * (y_hi - y_lo) / height_ratio
     span = y_hi - y_lo
     if span <= 0:
         span = 1.0  # Avoid division by zero
-        
+
     full_lo = y_hi - (1 - top_ratio) * span / height_ratio
     full_hi = y_hi + top_ratio * span / height_ratio
     return full_lo, full_hi
@@ -166,7 +167,7 @@ class GraphPanelView(QWidget):
         # The central layout manages axes in col 0 and the plot area in col 1.
         self._layout = self.plot_widget.ci.layout
         self._layout.setColumnFixedWidth(0, 60)  # Width for Y-axes
-        
+
         # Shared X-axis at the bottom (linked to the first ViewBox).
         self._x_axis = pg.AxisItem(orientation="bottom")
         self._x_axis.setLabel("Time", units="s")
@@ -226,9 +227,12 @@ class GraphPanelView(QWidget):
                 self._items[curve.name] = item
                 if self._legend:
                     self._legend.addItem(item, curve.name)
-            
+
+            item.setClipToView(False)
             # Add to correct ViewBox based on axis_index
-            target_vb = self._view_boxes[min(curve.axis_index, len(self._view_boxes) - 1)]
+            target_vb = self._view_boxes[
+                min(curve.axis_index, len(self._view_boxes) - 1)
+            ]
             if item not in target_vb.addedItems:
                 # Remove from previous ViewBox if any
                 for vb in self._view_boxes:
@@ -261,7 +265,9 @@ class GraphPanelView(QWidget):
         if len(self._y_axes) == n_axes:
             # Just update stretch factors if count matches
             for i, axis_vm in enumerate(self.vm.axes):
-                self._layout.setRowStretchFactor(i * 2, int(axis_vm.height_ratio * 1000))
+                self._layout.setRowStretchFactor(
+                    i * 2, int(axis_vm.height_ratio * 1000)
+                )
             return
 
         # Count mismatch: rebuild layout
@@ -271,15 +277,15 @@ class GraphPanelView(QWidget):
         self._view_boxes.clear()
         self._dividers.clear()
         self._items.clear()  # Clear items to force re-adding to new ViewBoxes
-        
+
         # We'll use a single legend for the whole panel
         self._legend = pg.LegendItem()
-        
+
         # Right column: Overlay all ViewBoxes in one cell that spans all rows
         # Actually, if we put them in the same cell, they overlap.
         # rowspan should be 2 * n_axes - 1 (axes + dividers)
         row_span = max(1, 2 * n_axes - 1)
-        
+
         # Primary ViewBox (the one at the bottom usually has the X-axis)
         master_vb = None
 
@@ -307,15 +313,27 @@ class GraphPanelView(QWidget):
             self.plot_widget.addItem(axis, row=row, col=0)
             self._layout.setRowStretchFactor(row, int(axis_vm.height_ratio * 1000))
 
-            # Add ViewBox to the right column (all overlap in the same cell)
-            self.plot_widget.addItem(vb, row=0, col=1, rowspan=row_span)
+            # Add ViewBox to the right column
+            if i == 0:
+                # Primary ViewBox is managed by the layout
+                self.plot_widget.addItem(vb, row=0, col=1, rowspan=row_span)
+                master_vb = vb
+            else:
+                # Secondary ViewBoxes are added to the scene and follow the master's geometry
+                vb.setXLink(master_vb)
+                self.plot_widget.scene().addItem(vb)
+                master_vb.sigResized.connect(
+                    lambda vb=vb, master=master_vb: vb.setGeometry(master.geometry())
+                )
+                vb.setGeometry(master_vb.geometry())
 
             # Add Divider if not the last axis
             if i < n_axes - 1:
                 divider = RegionDividerItem(self.vm, i)
                 self._dividers.append(divider)
-                # Dividers are in between axis rows
-                self.plot_widget.addItem(divider, row=row + 1, col=0, colspan=2)
+                # Dividers are in between axis rows. Only in col 0 to avoid
+                # overlapping with the spanning ViewBoxes in col 1.
+                self.plot_widget.addItem(divider, row=row + 1, col=0)
                 self._layout.setRowFixedHeight(row + 1, 1)
 
         # Add X-axis at the bottom
@@ -337,6 +355,10 @@ class GraphPanelView(QWidget):
     def pen_color(self, key: str) -> str:
         """Return the hex colour of *key*'s curve pen (e.g. ``#1f77b4``)."""
         return pg.mkPen(self._items[key].opts["pen"]).color().name()
+
+    def is_clipped(self, key: str) -> bool:
+        """Return whether *key*'s curve is clipped to its ViewBox."""
+        return bool(self._items[key].opts.get("clipToView", False))
 
     def legend_labels(self) -> list[str]:
         """Return the signal names currently shown in the legend."""
@@ -382,7 +404,7 @@ class GraphPanelView(QWidget):
             vb = self._view_boxes[0] if self._view_boxes else None
             if vb is None:
                 return QRectF(0.0, 0.0, float(self.width()), float(self.height()))
-            
+
             scene_rect = vb.sceneBoundingRect()
             # GraphicsLayoutWidget.mapFromScene maps from scene to widget coordinates
             top_left = self.plot_widget.mapFromScene(scene_rect.topLeft())
@@ -401,10 +423,10 @@ class GraphPanelView(QWidget):
         # Simple vertical split for now based on relative height
         if not self._y_axes:
             return 0
-        
+
         plot_rect = self._plot_rect_in_widget()
         y_rel = (pos.y() - plot_rect.top()) / plot_rect.height()
-        
+
         for i, axis_vm in enumerate(self.vm.axes):
             if axis_vm.top_ratio <= y_rel <= axis_vm.top_ratio + axis_vm.height_ratio:
                 return i
@@ -414,7 +436,7 @@ class GraphPanelView(QWidget):
         try:
             axis_idx = self._axis_index_at(pos)
             vb = self._view_boxes[axis_idx] if axis == "y" else self._view_boxes[0]
-            
+
             scene_pos = self.plot_widget.mapToScene(pos.toPoint())
             point = vb.mapSceneToView(scene_pos)
             return float(point.x() if axis == "x" else point.y())
@@ -504,8 +526,18 @@ class GraphPanelView(QWidget):
         if not keys:
             event.ignore()
             return
+
+        pos = event.position()
+        zone = self._zone_at(pos)
+
         for key in keys:
-            self.vm.add_signal(key)  # notifies → refresh()
+            if zone in (ZONE_Y_INNER, ZONE_Y_OUTER):
+                axis_idx = self._axis_index_at(pos)
+                self.vm.add_signal_to_axis(key, axis_idx)
+            else:
+                # Dropped on plot area (ZONE_PLOT) or elsewhere: create new axis
+                self.vm.create_new_axis(key)
+
         event.acceptProposedAction()
 
     # ─── Resize → LOD pixel budget ──────────────────────────────────────────────

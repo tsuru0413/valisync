@@ -113,11 +113,32 @@ class GraphPanelVM(Observable):
         Auto-fits x_range and y_range to the union of all plotted signals when
         those ranges have not been set manually.
         """
+        self.add_signal_to_axis(signal_key, 0)
+
+    def add_signal_to_axis(self, signal_key: str, axis_index: int) -> None:
+        """Add *signal_key* to a specific axis."""
         color = _PALETTE[len(self._plotted) % len(_PALETTE)]
-        self._plotted.append(_PlottedEntry(signal_key=signal_key, color=color))
+        self._plotted.append(
+            _PlottedEntry(signal_key=signal_key, color=color, axis_index=axis_index)
+        )
         self._auto_fit_ranges()
         self._invalidate_cache()
         self._notify("signals")
+
+    def create_new_axis(self, signal_key: str) -> None:
+        """Create a new Y-axis and add *signal_key* to it."""
+        # Simple redistribution: split total space equally
+        n = len(self._axes) + 1
+        h = 1.0 / n
+        for i, axis in enumerate(self._axes):
+            axis.top_ratio = i * h
+            axis.height_ratio = h
+
+        new_axis = YAxisVM(top_ratio=(n - 1) * h, height_ratio=h)
+        self._axes.append(new_axis)
+
+        self.add_signal_to_axis(signal_key, n - 1)
+        self._notify("axes")
 
     def remove_signal(self, signal_key: str) -> None:
         """Remove *signal_key* from the plot."""

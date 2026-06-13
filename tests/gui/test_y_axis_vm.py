@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+
 from valisync.gui.viewmodels.y_axis_vm import YAxisVM
 
 
@@ -36,9 +37,9 @@ def test_y_axis_vm_set_range_notifies() -> None:
     "y_range, top, height, expected_virtual",
     [
         ((0.0, 100.0), 0.0, 1.0, (0.0, 100.0)),  # Full height
-        ((0.0, 100.0), 0.0, 0.5, (0.0, 200.0)),  # Top half
-        ((0.0, 100.0), 0.5, 0.5, (-100.0, 100.0)),  # Bottom half
-        ((10.0, 20.0), 0.2, 0.2, (0.0, 50.0)),  # Small region
+        ((0.0, 100.0), 0.0, 0.5, (-100.0, 100.0)),  # Top half
+        ((0.0, 100.0), 0.5, 0.5, (0.0, 200.0)),  # Bottom half
+        ((10.0, 20.0), 0.0, 0.2, (-30.0, 20.0)),  # Small region at top
     ],
 )
 def test_calculate_virtual_range(y_range, top, height, expected_virtual) -> None:
