@@ -54,6 +54,7 @@ class RenderCurve:
     color: str  # hex colour, e.g. "#1f77b4"
     timestamps: np.ndarray  # float64, already LOD-reduced if applicable
     values: np.ndarray  # float64, same length as timestamps
+    axis_index: int = 0  # Added for multi-axis support
 
 
 @dataclass
@@ -278,6 +279,7 @@ class GraphPanelVM(Observable):
                         color=entry.color,
                         timestamps=np.empty(0, dtype=np.float64),
                         values=np.empty(0, dtype=np.float64),
+                        axis_index=entry.axis_index,
                     )
                 )
                 continue
@@ -311,6 +313,7 @@ class GraphPanelVM(Observable):
                     color=entry.color,
                     timestamps=out_ts,
                     values=out_vs,
+                    axis_index=entry.axis_index,
                 )
             )
 
@@ -320,6 +323,31 @@ class GraphPanelVM(Observable):
 
         self._cache[cache_key] = curves
         return curves
+
+    def resize_axis(self, divider_index: int, delta_ratio: float) -> None:
+        """Resize two adjacent axes by moving the divider between them.
+
+        divider_index 0 is between axis 0 and 1.
+        delta_ratio is positive for moving the divider down.
+        """
+        if divider_index < 0 or divider_index >= len(self._axes) - 1:
+            return
+
+        above = self._axes[divider_index]
+        below = self._axes[divider_index + 1]
+
+        # Ensure minimum height (e.g., 5%)
+        min_h = 0.05
+        if above.height_ratio + delta_ratio < min_h:
+            delta_ratio = min_h - above.height_ratio
+        if below.height_ratio - delta_ratio < min_h:
+            delta_ratio = below.height_ratio - min_h
+
+        above.height_ratio += delta_ratio
+        below.top_ratio += delta_ratio
+        below.height_ratio -= delta_ratio
+
+        self._notify("axes")
 
     # ─── Introspection ────────────────────────────────────────────────────────
 

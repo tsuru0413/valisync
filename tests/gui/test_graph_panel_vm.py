@@ -21,6 +21,7 @@ import csv
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.session import Session
@@ -75,17 +76,19 @@ def _first_signal_key(session: Session) -> str:
 
 
 def test_render_curve_is_dataclass() -> None:
-    """RenderCurve is a dataclass with name, color, timestamps, values."""
+    """RenderCurve is a dataclass with name, color, timestamps, values, axis_index."""
     rc = RenderCurve(
         name="grp::sig",
         color="#1f77b4",
         timestamps=np.array([0.0, 1.0]),
         values=np.array([1.0, 2.0]),
+        axis_index=0,
     )
     assert rc.name == "grp::sig"
     assert rc.color == "#1f77b4"
     assert len(rc.timestamps) == 2
     assert len(rc.values) == 2
+    assert rc.axis_index == 0
 
 
 # ─── Construction ────────────────────────────────────────────────────────────
@@ -734,3 +737,51 @@ def test_multi_axis_independent_ranges(tmp_path: Path) -> None:
 
     assert vm.axes[0].y_range == (float(v0_lo), float(v0_hi))
     assert vm.axes[1].y_range == (float(v1_lo), float(v1_hi))
+
+
+# ─── Multi-axis resizing (Task 2) ────────────────────────────────────────────
+
+
+def test_resize_axis(tmp_path: Path) -> None:
+    """resize_axis correctly updates height_ratio and top_ratio of adjacent axes."""
+    session = Session()
+    vm = GraphPanelVM(session)
+    # Add a second axis
+    vm.axes.append(YAxisVM(top_ratio=0.5, height_ratio=0.5))
+    vm.axes[0].height_ratio = 0.5
+
+    vm.resize_axis(0, 0.1)  # Move divider down by 0.1
+
+    assert vm.axes[0].height_ratio == pytest.approx(0.6)
+    assert vm.axes[1].top_ratio == pytest.approx(0.6)
+    assert vm.axes[1].height_ratio == pytest.approx(0.4)
+
+
+def test_resize_axis_clamps_minimum_height(tmp_path: Path) -> None:
+    """resize_axis prevents axes from becoming too small."""
+    session = Session()
+    vm = GraphPanelVM(session)
+    vm.axes.append(YAxisVM(top_ratio=0.5, height_ratio=0.5))
+    vm.axes[0].height_ratio = 0.5
+
+    # Try to move divider way down (should clamp)
+    vm.resize_axis(0, 0.5)
+
+    # Assuming min_h = 0.05
+    assert vm.axes[1].height_ratio == pytest.approx(0.05)
+    assert vm.axes[0].height_ratio == pytest.approx(0.95)
+
+
+def test_render_data_includes_axis_index(tmp_path: Path) -> None:
+    """RenderCurve includes the axis_index assigned to the signal."""
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=2)
+    vm = GraphPanelVM(session)
+    sigs = session.signals()
+    vm.add_signal(sigs[0].name)
+    vm.add_signal(sigs[1].name)
+    vm._plotted[1].axis_index = 1
+
+    curves = vm.render_data()
+
+    assert curves[0].axis_index == 0
+    assert curves[1].axis_index == 1
