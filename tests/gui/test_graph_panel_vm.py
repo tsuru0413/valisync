@@ -25,6 +25,7 @@ import numpy as np
 from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.session import Session
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM, RenderCurve
+from valisync.gui.viewmodels.y_axis_vm import YAxisVM
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -707,3 +708,29 @@ def test_reset_y_clears_range_when_no_plotted_signals(tmp_path: Path) -> None:
     vm.reset_y()
 
     assert vm.y_range is None
+
+
+def test_multi_axis_independent_ranges(tmp_path: Path) -> None:
+    """Verify reset_y fits multiple axes independently based on their assigned signals."""
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=2)
+    vm = GraphPanelVM(session)
+    sigs = session.signals()
+
+    # Add a second axis
+    vm.axes.append(YAxisVM())
+
+    # Assign sig[0] to axis 0, sig[1] to axis 1
+    vm.add_signal(sigs[0].name)  # defaults to axis 0
+    vm.add_signal(sigs[1].name)
+    # Manually reassign second signal to second axis (entry.axis_index = 1)
+    # This is slightly white-box but no public API exists yet for assignment.
+    vm._plotted[1].axis_index = 1
+
+    # Get actual min/max of the signals
+    v0_lo, v0_hi = sigs[0].values.min(), sigs[0].values.max()
+    v1_lo, v1_hi = sigs[1].values.min(), sigs[1].values.max()
+
+    vm.reset_y()
+
+    assert vm.axes[0].y_range == (float(v0_lo), float(v0_hi))
+    assert vm.axes[1].y_range == (float(v1_lo), float(v1_hi))
