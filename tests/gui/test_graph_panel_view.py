@@ -132,6 +132,17 @@ class TestDrawing:
         # render_data omits invisible signals, so no curve is drawn for it.
         assert key not in view.curve_keys()  # type: ignore[attr-defined]
 
+    def test_unclipped_rendering(self, qtbot: QtBot, tmp_path: Path) -> None:
+        session, _ = _loaded_session(tmp_path)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        vm.add_signal(key)
+
+        # Verify that clipToView is False (R4)
+        assert view.is_clipped(key) is False  # type: ignore[attr-defined]
+
 
 # ─── Legend ────────────────────────────────────────────────────────────────--
 
@@ -191,6 +202,93 @@ class TestDrop:
 
         assert any(p["signal_key"] == key for p in vm.inspect()["plotted_signals"])
         assert key in view.curve_keys()  # type: ignore[attr-defined]
+
+    def test_drop_on_plot_creates_new_axis(self, qtbot: QtBot, tmp_path: Path) -> None:
+        session, _ = _loaded_session(tmp_path)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        # Force ZONE_PLOT
+        view._zone_at = lambda pos: "plot"  # type: ignore
+
+        mime = encode_signal_keys([key])
+        event = QDropEvent(
+            QPointF(100.0, 100.0),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        view.dropEvent(event)  # type: ignore[attr-defined]
+
+        # Initial 1 axis + 1 new axis = 2
+        assert len(vm.axes) == 2
+        plotted = vm.inspect()["plotted_signals"]
+        assert plotted[0]["signal_key"] == key
+        assert plotted[0]["axis_index"] == 1
+
+        # Verify ratios (equally split 1.0 / 2 = 0.5)
+        assert vm.axes[0].height_ratio == 0.5
+        assert vm.axes[1].height_ratio == 0.5
+        assert vm.axes[1].top_ratio == 0.5
+
+    def test_drop_on_y_axis_joins_that_axis(self, qtbot: QtBot, tmp_path: Path) -> None:
+        session, _ = _loaded_session(tmp_path)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        # Force ZONE_Y_INNER and axis index 0
+        view._zone_at = lambda pos: "y_inner"  # type: ignore
+        view._axis_index_at = lambda pos: 0  # type: ignore
+
+        mime = encode_signal_keys([key])
+        event = QDropEvent(
+            QPointF(10.0, 100.0),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        view.dropEvent(event)  # type: ignore[attr-defined]
+
+        # Still 1 axis
+        assert len(vm.axes) == 1
+        plotted = vm.inspect()["plotted_signals"]
+        assert plotted[0]["signal_key"] == key
+        assert plotted[0]["axis_index"] == 0
+
+    def test_drop_multiple_signals_on_plot_creates_multiple_axes(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        session, _ = _loaded_session(tmp_path, n_signals=2)
+        k0, k1 = _keys(session)[:2]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        # Force ZONE_PLOT
+        view._zone_at = lambda pos: "plot"  # type: ignore
+
+        mime = encode_signal_keys([k0, k1])
+        event = QDropEvent(
+            QPointF(100.0, 100.0),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        view.dropEvent(event)  # type: ignore[attr-defined]
+
+        # Initial 1 axis + 2 new axes = 3
+        assert len(vm.axes) == 3
+        plotted = vm.inspect()["plotted_signals"]
+        assert plotted[0]["axis_index"] == 1
+        assert plotted[1]["axis_index"] == 2
+
+        # Verify ratios (1/3 = 0.333...)
+        for ax in vm.axes:
+            assert abs(ax.height_ratio - 1.0 / 3.0) < 1e-6
 
     def test_drag_enter_accepts_signal_mime(self, qtbot: QtBot, tmp_path: Path) -> None:
         from PySide6.QtGui import QDragEnterEvent

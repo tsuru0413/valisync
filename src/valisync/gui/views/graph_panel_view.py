@@ -37,6 +37,7 @@ from valisync.gui.adapters.qt_signal_models import (
     decode_signal_keys,
 )
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+from valisync.gui.views.region_divider_item import RegionDividerItem
 
 # ─── Axis interaction zones (R9.1 / R10.1) ────────────────────────────────────
 
@@ -129,22 +130,30 @@ class GraphPanelView(QWidget):
         super().__init__(parent)
         self.vm = vm
         self._items: dict[str, pg.PlotDataItem] = {}
+        self._y_axes: list[pg.AxisItem] = []
+        self._view_boxes: list[pg.ViewBox] = []
+        self._dividers: list[RegionDividerItem] = []
+        # Assigned later in _reconcile_axes; declared here (no runtime binding,
+        # so the hasattr(_axis_layout) guard still holds) to let mypy resolve
+        # their type at the use sites in refresh().
+        self._legend: pg.LegendItem
+        self._axis_layout: pg.GraphicsLayout
         self._drag_zone: str | None = None
         self._drag_start: QPointF | None = None
         self._drop_active = False
         self._removable = True
 
-        self.plot_widget = pg.PlotWidget()
-        self._plot_item = self.plot_widget.getPlotItem()
-        self._plot_item.setLabel("bottom", "Time", units="s")
-        self._legend = self._plot_item.addLegend()
+        self.plot_widget = pg.GraphicsLayoutWidget()
+        # The central layout manages axes in col 0 and the plot area in col 1.
+        self._layout = self.plot_widget.ci.layout
+        self._layout.setColumnFixedWidth(0, 60)  # Width for Y-axes
+
+        # Shared X-axis at the bottom (linked to the first ViewBox).
+        self._x_axis = pg.AxisItem(orientation="bottom")
+        self._x_axis.setLabel("Time", units="s")
 
         # Own all interaction via the zone model: disable pyqtgraph's built-in
         # mouse pan/zoom and auto-range; the VM drives the visible range.
-        vb = self._plot_item.getViewBox()
-        vb.setMouseEnabled(x=False, y=False)
-        vb.disableAutoRange()
-        self.plot_widget.setMenuEnabled(False)
 
         # Let drops bubble to this container rather than being eaten by the
         # GraphicsView; the container owns the drag-and-drop contract.
@@ -170,32 +179,189 @@ class GraphPanelView(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
-        """Re-project vm.render_data() onto the plot, reconciling curve items."""
+        """Re-project vm.render_data() onto the plot, reconciling multiple axes."""
+        # 1. Reconcile Y-axes, ViewBoxes, and Dividers
+        self._reconcile_axes()
+
+        # 2. Get render curves from VM
         curves = self.vm.render_data()
         desired = {c.name: c for c in curves}
 
-        # Drop curves no longer present (removed or toggled invisible).
+        # 3. Drop curves no longer present
         for key in list(self._items):
             if key not in desired:
                 item = self._items.pop(key)
-                self._plot_item.removeItem(item)
-                self._legend.removeItem(item)
+                # Find which ViewBox it was in and remove it
+                for vb in self._view_boxes:
+                    if item in vb.addedItems:
+                        vb.removeItem(item)
+                        break
+                if self._legend:
+                    self._legend.removeItem(item)
 
-        # Add or update the remaining curves.
+        # 4. Add or update remaining curves
         for curve in curves:
-            pen = pg.mkPen(curve.color)
             item = self._items.get(curve.name)
             if item is None:
-                item = self._plot_item.plot(name=curve.name)
+                item = pg.PlotDataItem(name=curve.name)
                 self._items[curve.name] = item
-            item.setData(curve.timestamps, curve.values)
-            item.setPen(pen)
+                if self._legend:
+                    self._legend.addItem(item, curve.name)
 
-        # Mirror the VM's range onto the viewbox so the axes follow the VM.
+            item.setClipToView(False)
+            # Add to correct ViewBox based on axis_index
+            target_vb = self._view_boxes[
+                min(curve.axis_index, len(self._view_boxes) - 1)
+            ]
+            if item not in target_vb.addedItems:
+                # Remove from previous ViewBox if any
+                for vb in self._view_boxes:
+                    if vb != target_vb and item in vb.addedItems:
+                        vb.removeItem(item)
+                target_vb.addItem(item)
+
+            item.setData(curve.timestamps, curve.values)
+            item.setPen(pg.mkPen(curve.color))
+
+        # 5. Update geometry and ranges
+        # The overlaid secondary ViewBoxes must track the master's plot rect on
+        # every render (the layout reflows the master after axis/divider changes).
+        self._sync_overlay_geometry()
+
+        # Shared X-range
         if self.vm.x_range is not None:
-            self._plot_item.setXRange(*self.vm.x_range, padding=0)
-        if self.vm.y_range is not None:
-            self._plot_item.setYRange(*self.vm.y_range, padding=0)
+            for vb in self._view_boxes:
+                vb.setXRange(*self.vm.x_range, padding=0)
+
+        # Per-axis Y mapping: the ViewBox gets the expanded *virtual* range so its
+        # data lands in its home region, while the AxisItem shows the real data
+        # range so its tick labels stay correct.
+        for i, axis_vm in enumerate(self.vm.axes):
+            if axis_vm.y_range is not None:
+                y_lo, y_hi = axis_vm.y_range
+                full_lo, full_hi = axis_vm.calculate_virtual_range()
+                self._view_boxes[i].setYRange(full_lo, full_hi, padding=0)
+                self._y_axes[i].setRange(y_lo, y_hi)
+
+    def _sync_overlay_geometry(self) -> None:
+        """Align every overlaid ViewBox to the master's plot rect.
+
+        Secondary ViewBoxes live directly in the scene (so waveforms draw
+        unclipped across the whole panel); their geometry must follow the
+        master's, otherwise they keep a stale rect and render their waveforms
+        outside their home region.
+        """
+        if not self._view_boxes:
+            return
+        rect = self._view_boxes[0].sceneBoundingRect()
+        for vb in self._view_boxes[1:]:
+            vb.setGeometry(rect)
+
+    def _reconcile_axes(self) -> None:
+        """Ensure the number of AxisItems, ViewBoxes, and Dividers matches the VM."""
+        n_axes = len(self.vm.axes)
+
+        # If count matches, just update stretch factors and labels in the sub-layout
+        if hasattr(self, "_axis_layout") and len(self._y_axes) == n_axes:
+            for i, axis_vm in enumerate(self.vm.axes):
+                self._axis_layout.layout.setRowStretchFactor(
+                    i * 2, int(axis_vm.height_ratio * 1000)
+                )
+                if axis_vm.unit:
+                    self._y_axes[i].setLabel(units=axis_vm.unit)
+            return
+
+        # Count mismatch: rebuild layout
+        # (Slightly heavy but robust for now)
+        # Secondary ViewBoxes were added straight to the scene, so ci.clear()
+        # (which only drops layout-managed items) leaves them behind as orphans
+        # that keep drawing their stale curve. Remove them explicitly first.
+        for vb in self._view_boxes[1:]:
+            scene = vb.scene()
+            if scene is not None:
+                scene.removeItem(vb)
+        self.plot_widget.ci.clear()
+        self._y_axes.clear()
+        self._view_boxes.clear()
+        self._dividers.clear()
+        self._items.clear()  # Clear items to force re-adding to new ViewBoxes
+
+        # We'll use a single legend for the whole panel
+        self._legend = pg.LegendItem()
+
+        # Root layout configuration (2x2)
+        # Row 0: Axes (Col 0), ViewBoxes (Col 1)
+        # Row 1: empty (Col 0), X-axis (Col 1)
+        root = self.plot_widget.ci.layout
+        root.setColumnFixedWidth(0, 60)
+        root.setColumnStretchFactor(1, 1)  # Ensure plot area takes remaining width
+        root.setRowStretchFactor(0, 1)
+        root.setRowStretchFactor(1, 0)  # Fixed height for X-axis
+
+        # Add Axis Sub-Layout
+        self._axis_layout = self.plot_widget.addLayout(row=0, col=0)
+
+        # Primary ViewBox (the one at the bottom usually has the X-axis)
+        master_vb = None
+
+        for i in range(n_axes):
+            axis_vm = self.vm.axes[i]
+
+            # Create ViewBox
+            vb = pg.ViewBox()
+            vb.setMouseEnabled(x=False, y=False)
+            vb.disableAutoRange()
+            self._view_boxes.append(vb)
+
+            if master_vb is None:
+                master_vb = vb
+            else:
+                vb.setXLink(master_vb)
+
+            # Create AxisItem. It is NOT linked to the ViewBox: the ViewBox uses
+            # an expanded virtual range, so the axis range is driven directly
+            # (refresh -> setRange) with the real data range instead.
+            axis = pg.AxisItem(orientation="left")
+            if axis_vm.unit:
+                axis.setLabel(units=axis_vm.unit)
+            self._y_axes.append(axis)
+
+            # Add to Axis Sub-Layout
+            row = i * 2
+            self._axis_layout.addItem(axis, row=row, col=0)
+            self._axis_layout.layout.setRowStretchFactor(
+                row, int(axis_vm.height_ratio * 1000)
+            )
+
+            # Add ViewBox to the root layout (Col 1)
+            if i == 0:
+                # Primary ViewBox is managed by the layout in Col 1, Row 0
+                self.plot_widget.addItem(vb, row=0, col=1)
+                master_vb = vb
+            else:
+                # Secondary ViewBoxes are added to the scene and overlay the
+                # master's plot rect (kept in sync by _sync_overlay_geometry).
+                vb.setXLink(master_vb)
+                self.plot_widget.scene().addItem(vb)
+
+            # Add Divider if not the last axis
+            if i < n_axes - 1:
+                divider = RegionDividerItem(self.vm, i)
+                self._dividers.append(divider)
+                # Dividers are in between axis rows in the sub-layout
+                self._axis_layout.addItem(divider, row=row + 1, col=0)
+                self._axis_layout.layout.setRowFixedHeight(row + 1, 1)
+
+        # The VM always holds at least one axis, so the master ViewBox is set.
+        assert master_vb is not None
+        # Add X-axis at the bottom (Row 1, Col 1)
+        self.plot_widget.addItem(self._x_axis, row=1, col=1)
+        self._x_axis.linkToView(master_vb)
+        # Keep overlays aligned when the window (and thus the master) resizes
+        # without a VM change, since refresh() is not called in that case.
+        master_vb.sigResized.connect(self._sync_overlay_geometry)
+        # Add legend to the master ViewBox
+        self._legend.setParentItem(master_vb)
 
     # ─── Test/introspection surface ────────────────────────────────────────────
 
@@ -210,6 +376,10 @@ class GraphPanelView(QWidget):
     def pen_color(self, key: str) -> str:
         """Return the hex colour of *key*'s curve pen (e.g. ``#1f77b4``)."""
         return pg.mkPen(self._items[key].opts["pen"]).color().name()
+
+    def is_clipped(self, key: str) -> bool:
+        """Return whether *key*'s curve is clipped to its ViewBox."""
+        return bool(self._items[key].opts.get("clipToView", False))
 
     def legend_labels(self) -> list[str]:
         """Return the signal names currently shown in the legend."""
@@ -251,14 +421,15 @@ class GraphPanelView(QWidget):
     def _plot_rect_in_widget(self) -> QRectF:
         """Return the plot (viewbox) rect in this widget's coordinate space."""
         try:
-            vb = self._plot_item.getViewBox()
+            # All ViewBoxes share the same space in col 1
+            vb = self._view_boxes[0] if self._view_boxes else None
+            if vb is None:
+                return QRectF(0.0, 0.0, float(self.width()), float(self.height()))
+
             scene_rect = vb.sceneBoundingRect()
-            top_left = self.plot_widget.mapToParent(
-                self.plot_widget.mapFromScene(scene_rect.topLeft())
-            )
-            bottom_right = self.plot_widget.mapToParent(
-                self.plot_widget.mapFromScene(scene_rect.bottomRight())
-            )
+            # GraphicsLayoutWidget.mapFromScene maps from scene to widget coordinates
+            top_left = self.plot_widget.mapFromScene(scene_rect.topLeft())
+            bottom_right = self.plot_widget.mapFromScene(scene_rect.bottomRight())
             return QRectF(QPointF(top_left), QPointF(bottom_right))
         except Exception:
             return QRectF(0.0, 0.0, float(self.width()), float(self.height()))
@@ -268,12 +439,26 @@ class GraphPanelView(QWidget):
             pos.x(), pos.y(), self._plot_rect_in_widget(), self.width(), self.height()
         )
 
+    def _axis_index_at(self, pos: QPointF) -> int:
+        """Identify which Y-axis is at *pos*."""
+        # Simple vertical split for now based on relative height
+        if not self._y_axes:
+            return 0
+
+        plot_rect = self._plot_rect_in_widget()
+        y_rel = (pos.y() - plot_rect.top()) / plot_rect.height()
+
+        for i, axis_vm in enumerate(self.vm.axes):
+            if axis_vm.top_ratio <= y_rel <= axis_vm.top_ratio + axis_vm.height_ratio:
+                return i
+        return 0
+
     def _data_value(self, pos: QPointF, axis: str) -> float | None:
         try:
-            vb = self._plot_item.getViewBox()
-            scene_pos = self.plot_widget.mapToScene(
-                self.plot_widget.mapFromParent(pos.toPoint())
-            )
+            axis_idx = self._axis_index_at(pos)
+            vb = self._view_boxes[axis_idx] if axis == "y" else self._view_boxes[0]
+
+            scene_pos = self.plot_widget.mapToScene(pos.toPoint())
             point = vb.mapSceneToView(scene_pos)
             return float(point.x() if axis == "x" else point.y())
         except Exception:
@@ -362,8 +547,18 @@ class GraphPanelView(QWidget):
         if not keys:
             event.ignore()
             return
+
+        pos = event.position()
+        zone = self._zone_at(pos)
+
         for key in keys:
-            self.vm.add_signal(key)  # notifies → refresh()
+            if zone in (ZONE_Y_INNER, ZONE_Y_OUTER):
+                axis_idx = self._axis_index_at(pos)
+                self.vm.add_signal_to_axis(key, axis_idx)
+            else:
+                # Dropped on plot area (ZONE_PLOT) or elsewhere: create new axis
+                self.vm.create_new_axis(key)
+
         event.acceptProposedAction()
 
     # ─── Resize → LOD pixel budget ──────────────────────────────────────────────

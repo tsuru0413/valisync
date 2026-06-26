@@ -21,6 +21,7 @@ import numpy as np
 from valisync.core.models import Signal
 from valisync.core.session import Session
 from valisync.gui.viewmodels.observable import Observable
+from valisync.gui.viewmodels.y_axis_vm import YAxisVM
 
 # Matplotlib tab10 palette — 10 visually distinct colours.
 _PALETTE: tuple[str, ...] = (
@@ -53,6 +54,7 @@ class RenderCurve:
     color: str  # hex colour, e.g. "#1f77b4"
     timestamps: np.ndarray  # float64, already LOD-reduced if applicable
     values: np.ndarray  # float64, same length as timestamps
+    axis_index: int = 0  # Added for multi-axis support
 
 
 @dataclass
@@ -62,6 +64,7 @@ class _PlottedEntry:
     signal_key: str
     color: str
     visible: bool = True
+    axis_index: int = 0
 
 
 class GraphPanelVM(Observable):
@@ -78,12 +81,29 @@ class GraphPanelVM(Observable):
         self._session = session
         self._plotted: list[_PlottedEntry] = []
         self.x_range: tuple[float, float] | None = None
-        self.y_range: tuple[float, float] | None = None
+        self._axes: list[YAxisVM] = [YAxisVM()]
         self.panel_width_px: int = 800
         self.lod_active: bool = False
         self.last_rendered_points: int = 0
         # Cache: maps cache-key → list[RenderCurve]
         self._cache: dict[tuple[Any, ...], list[RenderCurve]] = {}
+
+    @property
+    def y_range(self) -> tuple[float, float] | None:
+        """Primary Y-axis range (for backward compatibility)."""
+        if not self._axes:
+            return None
+        return self._axes[0].y_range
+
+    @y_range.setter
+    def y_range(self, val: tuple[float, float] | None) -> None:
+        if self._axes and val is not None:
+            self._axes[0].set_range(val[0], val[1])
+
+    @property
+    def axes(self) -> list[YAxisVM]:
+        """Return the list of Y-axes."""
+        return self._axes
 
     # ─── Signal list management ──────────────────────────────────────────────
 
@@ -93,11 +113,40 @@ class GraphPanelVM(Observable):
         Auto-fits x_range and y_range to the union of all plotted signals when
         those ranges have not been set manually.
         """
+        self.add_signal_to_axis(signal_key, 0)
+
+    def add_signal_to_axis(self, signal_key: str, axis_index: int) -> None:
+        """Add *signal_key* to a specific axis."""
         color = _PALETTE[len(self._plotted) % len(_PALETTE)]
-        self._plotted.append(_PlottedEntry(signal_key=signal_key, color=color))
+        self._plotted.append(
+            _PlottedEntry(signal_key=signal_key, color=color, axis_index=axis_index)
+        )
+
+        # Propagate unit from signal to axis
+        sig = self._signal_map().get(signal_key)
+        if sig and 0 <= axis_index < len(self._axes):
+            unit = sig.metadata.get("unit", "")
+            if unit:
+                self._axes[axis_index].unit = unit
+
         self._auto_fit_ranges()
         self._invalidate_cache()
         self._notify("signals")
+
+    def create_new_axis(self, signal_key: str) -> None:
+        """Create a new Y-axis and add *signal_key* to it."""
+        # Simple redistribution: split total space equally
+        n = len(self._axes) + 1
+        h = 1.0 / n
+        for i, axis in enumerate(self._axes):
+            axis.top_ratio = i * h
+            axis.height_ratio = h
+
+        new_axis = YAxisVM(top_ratio=(n - 1) * h, height_ratio=h)
+        self._axes.append(new_axis)
+
+        self.add_signal_to_axis(signal_key, n - 1)
+        self._notify("axes")
 
     def remove_signal(self, signal_key: str) -> None:
         """Remove *signal_key* from the plot."""
@@ -158,29 +207,35 @@ class GraphPanelVM(Observable):
         self._notify("range")
 
     def reset_y(self) -> None:
-        """Fit y_range to visible values across all visible plotted signals.
-
-        Ignores NaN values. Falls back gracefully when no finite values exist.
-        """
-        lo: float | None = None
-        hi: float | None = None
+        """Fit all Y-axes to visible values of signals assigned to them."""
         sig_map = self._signal_map()
+
+        # Build list of signals per axis
+        axis_to_sigs: dict[int, list[str]] = {}
         for entry in self._plotted:
             if not entry.visible:
                 continue
-            sig = sig_map.get(entry.signal_key)
-            if sig is None or len(sig.values) == 0:
-                continue
-            finite_vals = sig.values[np.isfinite(sig.values)]
-            if len(finite_vals) == 0:
-                continue
-            v_lo = float(finite_vals.min())
-            v_hi = float(finite_vals.max())
-            lo = v_lo if lo is None else min(lo, v_lo)
-            hi = v_hi if hi is None else max(hi, v_hi)
-        # Clear to None when nothing is fittable so a later add_signal can
-        # auto-fit instead of being clipped to a stale window.
-        self.y_range = (lo, hi) if lo is not None and hi is not None else None
+            axis_to_sigs.setdefault(entry.axis_index, []).append(entry.signal_key)
+
+        for i, axis in enumerate(self._axes):
+            lo: float | None = None
+            hi: float | None = None
+            for sig_key in axis_to_sigs.get(i, []):
+                sig = sig_map.get(sig_key)
+                if sig is None or len(sig.values) == 0:
+                    continue
+                finite_vals = sig.values[np.isfinite(sig.values)]
+                if len(finite_vals) == 0:
+                    continue
+                v_lo = float(finite_vals.min())
+                v_hi = float(finite_vals.max())
+                lo = v_lo if lo is None else min(lo, v_lo)
+                hi = v_hi if hi is None else max(hi, v_hi)
+
+            # Clear to None when nothing is fittable so a later add_signal can
+            # auto-fit instead of being clipped to a stale window.
+            axis.set_range(lo, hi)
+
         self._invalidate_cache()
         self._notify("range")
 
@@ -253,6 +308,7 @@ class GraphPanelVM(Observable):
                         color=entry.color,
                         timestamps=np.empty(0, dtype=np.float64),
                         values=np.empty(0, dtype=np.float64),
+                        axis_index=entry.axis_index,
                     )
                 )
                 continue
@@ -286,6 +342,7 @@ class GraphPanelVM(Observable):
                     color=entry.color,
                     timestamps=out_ts,
                     values=out_vs,
+                    axis_index=entry.axis_index,
                 )
             )
 
@@ -295,6 +352,31 @@ class GraphPanelVM(Observable):
 
         self._cache[cache_key] = curves
         return curves
+
+    def resize_axis(self, divider_index: int, delta_ratio: float) -> None:
+        """Resize two adjacent axes by moving the divider between them.
+
+        divider_index 0 is between axis 0 and 1.
+        delta_ratio is positive for moving the divider down.
+        """
+        if divider_index < 0 or divider_index >= len(self._axes) - 1:
+            return
+
+        above = self._axes[divider_index]
+        below = self._axes[divider_index + 1]
+
+        # Ensure minimum height (e.g., 5%)
+        min_h = 0.05
+        if above.height_ratio + delta_ratio < min_h:
+            delta_ratio = min_h - above.height_ratio
+        if below.height_ratio - delta_ratio < min_h:
+            delta_ratio = below.height_ratio - min_h
+
+        above.height_ratio += delta_ratio
+        below.top_ratio += delta_ratio
+        below.height_ratio -= delta_ratio
+
+        self._notify("axes")
 
     # ─── Introspection ────────────────────────────────────────────────────────
 
@@ -309,11 +391,22 @@ class GraphPanelVM(Observable):
                     "signal_key": e.signal_key,
                     "color": e.color,
                     "visible": e.visible,
+                    "axis_index": e.axis_index,
                 }
                 for e in self._plotted
             ],
             "x_range": self.x_range,
             "y_range": self.y_range,
+            "axes": [
+                {
+                    "range": ax.y_range,
+                    "top_ratio": ax.top_ratio,
+                    "height_ratio": ax.height_ratio,
+                    "column": ax.column,
+                    "unit": ax.unit,
+                }
+                for ax in self._axes
+            ],
             "panel_width_px": self.panel_width_px,
             "lod_active": self.lod_active,
             "last_rendered_points": self.last_rendered_points,
@@ -347,22 +440,29 @@ class GraphPanelVM(Observable):
             if x_lo is not None and x_hi is not None:
                 self.x_range = (x_lo, x_hi)
 
-        if self.y_range is None:
-            y_lo: float | None = None
-            y_hi: float | None = None
-            for entry in self._plotted:
-                sig = sig_map.get(entry.signal_key)
-                if sig is None or len(sig.values) == 0:
-                    continue
-                finite_vals = sig.values[np.isfinite(sig.values)]
-                if len(finite_vals) == 0:
-                    continue
-                vlo = float(finite_vals.min())
-                vhi = float(finite_vals.max())
-                y_lo = vlo if y_lo is None else min(y_lo, vlo)
-                y_hi = vhi if y_hi is None else max(y_hi, vhi)
-            if y_lo is not None and y_hi is not None:
-                self.y_range = (y_lo, y_hi)
+        # Build list of signals per axis
+        axis_to_sigs: dict[int, list[str]] = {}
+        for entry in self._plotted:
+            axis_to_sigs.setdefault(entry.axis_index, []).append(entry.signal_key)
+
+        for i, axis in enumerate(self._axes):
+            if axis.y_range is None:
+                lo: float | None = None
+                hi: float | None = None
+                for sig_key in axis_to_sigs.get(i, []):
+                    sig = sig_map.get(sig_key)
+                    if sig is None or len(sig.values) == 0:
+                        continue
+                    finite_vals = sig.values[np.isfinite(sig.values)]
+                    if len(finite_vals) == 0:
+                        continue
+                    v_lo = float(finite_vals.min())
+                    v_hi = float(finite_vals.max())
+                    lo = v_lo if lo is None else min(lo, v_lo)
+                    hi = v_hi if hi is None else max(hi, v_hi)
+
+                if lo is not None and hi is not None:
+                    axis.set_range(lo, hi)
 
     def _make_cache_key(self) -> tuple[Any, ...]:
         """Build a hashable cache key capturing all inputs that affect the render."""
