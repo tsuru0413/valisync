@@ -20,6 +20,48 @@ from valisync.gui.adapters.qt_signal_models import encode_signal_keys
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 
 
+class _DragEvent:
+    """Duck-typed pyqtgraph MouseDragEvent.
+
+    Exposes the exact interface ``RegionDividerItem.mouseDragEvent`` consumes,
+    so a divider drag can be driven on the real view the same way a real mouse
+    drag would, without mocking the view or the ViewModel.
+    """
+
+    def __init__(
+        self,
+        pos: QPointF,
+        last_pos: QPointF,
+        *,
+        start: bool = False,
+        finish: bool = False,
+    ) -> None:
+        self._pos, self._last = pos, last_pos
+        self._start, self._finish = start, finish
+        self.accepted = False
+
+    def pos(self) -> QPointF:
+        return self._pos
+
+    def lastPos(self) -> QPointF:
+        return self._last
+
+    def isStart(self) -> bool:
+        return self._start
+
+    def isFinish(self) -> bool:
+        return self._finish
+
+    def button(self) -> Qt.MouseButton:
+        return Qt.MouseButton.LeftButton
+
+    def accept(self) -> None:
+        self.accepted = True
+
+    def ignore(self) -> None:
+        self.accepted = False
+
+
 class TestContextualDrop:
     def test_drop_on_plot_creates_new_axis(self, qtbot: QtBot, tmp_path: Path) -> None:
         session, _ = _loaded_session(tmp_path)
@@ -294,3 +336,47 @@ class TestMultiAxisLayout:
                 if isinstance(it, pg.PlotDataItem) and it.name():
                     counts[it.name()] = counts.get(it.name(), 0) + 1
         assert all(c == 1 for c in counts.values()), f"duplicated curves: {counts}"
+
+    def test_dragging_divider_resizes_adjacent_regions(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        """E2E: a divider drag resizes adjacent regions through the real VM.
+
+        Drives `RegionDividerItem.mouseDragEvent` on the real (shown) view with
+        synthesized start/move/finish events — the same handler path a real
+        mouse drag exercises — and checks the height ratios shift accordingly.
+        This is the "adjust their heights" gesture of the Task 3.3 E2E check.
+        """
+        session, _ = _loaded_session(tmp_path, n_signals=3)
+        keys = _keys(session)
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal_to_axis(keys[0], 0)
+        vm.create_new_axis(keys[1])
+        vm.create_new_axis(keys[2])
+        view.resize(1000, 700)
+        view.show()
+        qtbot.waitExposed(view)
+        qtbot.waitUntil(
+            lambda: view._view_boxes[0].geometry().height() > 100, timeout=2000
+        )
+
+        before = [a.height_ratio for a in vm.axes]
+        assert before == pytest.approx([1 / 3, 1 / 3, 1 / 3], abs=1e-3)
+
+        divider = view._dividers[0]  # divider between region 0 and region 1
+        view_h = divider.getViewWidget().height()
+        assert view_h > 0
+        dy = 0.15 * view_h  # drag down by 15% of the view height
+        divider.mouseDragEvent(_DragEvent(QPointF(0, 0), QPointF(0, 0), start=True))
+        divider.mouseDragEvent(_DragEvent(QPointF(0, dy), QPointF(0, 0)))
+        divider.mouseDragEvent(_DragEvent(QPointF(0, dy), QPointF(0, dy), finish=True))
+
+        after = [a.height_ratio for a in vm.axes]
+        delta = dy / view_h  # == 0.15
+        # Region 0 grows by ~delta, region 1 shrinks by ~delta, region 2 is fixed.
+        assert after[0] == pytest.approx(before[0] + delta, abs=1e-3)
+        assert after[1] == pytest.approx(before[1] - delta, abs=1e-3)
+        assert after[2] == pytest.approx(before[2], abs=1e-3)
+        # Ratios always remain a valid partition of the panel height.
+        assert sum(after) == pytest.approx(1.0, abs=1e-6)
