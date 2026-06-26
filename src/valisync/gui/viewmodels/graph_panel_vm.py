@@ -121,6 +121,14 @@ class GraphPanelVM(Observable):
         self._plotted.append(
             _PlottedEntry(signal_key=signal_key, color=color, axis_index=axis_index)
         )
+
+        # Propagate unit from signal to axis
+        sig = self._signal_map().get(signal_key)
+        if sig and 0 <= axis_index < len(self._axes):
+            unit = sig.metadata.get("unit", "")
+            if unit:
+                self._axes[axis_index].unit = unit
+
         self._auto_fit_ranges()
         self._invalidate_cache()
         self._notify("signals")

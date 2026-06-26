@@ -158,6 +158,11 @@ class GraphPanelView(QWidget):
         self._y_axes: list[pg.AxisItem] = []
         self._view_boxes: list[pg.ViewBox] = []
         self._dividers: list[RegionDividerItem] = []
+        # Assigned later in _reconcile_axes; declared here (no runtime binding,
+        # so the hasattr(_axis_layout) guard still holds) to let mypy resolve
+        # their type at the use sites in refresh().
+        self._legend: pg.LegendItem
+        self._axis_layout: pg.GraphicsLayout
         self._drag_zone: str | None = None
         self._drag_start: QPointF | None = None
         self._drop_active = False
@@ -262,12 +267,15 @@ class GraphPanelView(QWidget):
     def _reconcile_axes(self) -> None:
         """Ensure the number of AxisItems, ViewBoxes, and Dividers matches the VM."""
         n_axes = len(self.vm.axes)
-        if len(self._y_axes) == n_axes:
-            # Just update stretch factors if count matches
+
+        # If count matches, just update stretch factors and labels in the sub-layout
+        if hasattr(self, "_axis_layout") and len(self._y_axes) == n_axes:
             for i, axis_vm in enumerate(self.vm.axes):
-                self._layout.setRowStretchFactor(
+                self._axis_layout.layout.setRowStretchFactor(
                     i * 2, int(axis_vm.height_ratio * 1000)
                 )
+                if axis_vm.unit:
+                    self._y_axes[i].setLabel(units=axis_vm.unit)
             return
 
         # Count mismatch: rebuild layout
@@ -281,10 +289,17 @@ class GraphPanelView(QWidget):
         # We'll use a single legend for the whole panel
         self._legend = pg.LegendItem()
 
-        # Right column: Overlay all ViewBoxes in one cell that spans all rows
-        # Actually, if we put them in the same cell, they overlap.
-        # rowspan should be 2 * n_axes - 1 (axes + dividers)
-        row_span = max(1, 2 * n_axes - 1)
+        # Root layout configuration (2x2)
+        # Row 0: Axes (Col 0), ViewBoxes (Col 1)
+        # Row 1: empty (Col 0), X-axis (Col 1)
+        root = self.plot_widget.ci.layout
+        root.setColumnFixedWidth(0, 60)
+        root.setColumnStretchFactor(1, 1)  # Ensure plot area takes remaining width
+        root.setRowStretchFactor(0, 1)
+        root.setRowStretchFactor(1, 0)  # Fixed height for X-axis
+
+        # Add Axis Sub-Layout
+        self._axis_layout = self.plot_widget.addLayout(row=0, col=0)
 
         # Primary ViewBox (the one at the bottom usually has the X-axis)
         master_vb = None
@@ -306,17 +321,21 @@ class GraphPanelView(QWidget):
             # Create AxisItem
             axis = pg.AxisItem(orientation="left")
             axis.linkToView(vb)
+            if axis_vm.unit:
+                axis.setLabel(units=axis_vm.unit)
             self._y_axes.append(axis)
 
-            # Add to layout using ci.addItem (which supports row/col keywords)
+            # Add to Axis Sub-Layout
             row = i * 2
-            self.plot_widget.addItem(axis, row=row, col=0)
-            self._layout.setRowStretchFactor(row, int(axis_vm.height_ratio * 1000))
+            self._axis_layout.addItem(axis, row=row, col=0)
+            self._axis_layout.layout.setRowStretchFactor(
+                row, int(axis_vm.height_ratio * 1000)
+            )
 
-            # Add ViewBox to the right column
+            # Add ViewBox to the root layout (Col 1)
             if i == 0:
-                # Primary ViewBox is managed by the layout
-                self.plot_widget.addItem(vb, row=0, col=1, rowspan=row_span)
+                # Primary ViewBox is managed by the layout in Col 1, Row 0
+                self.plot_widget.addItem(vb, row=0, col=1)
                 master_vb = vb
             else:
                 # Secondary ViewBoxes are added to the scene and follow the master's geometry
@@ -331,13 +350,12 @@ class GraphPanelView(QWidget):
             if i < n_axes - 1:
                 divider = RegionDividerItem(self.vm, i)
                 self._dividers.append(divider)
-                # Dividers are in between axis rows. Only in col 0 to avoid
-                # overlapping with the spanning ViewBoxes in col 1.
-                self.plot_widget.addItem(divider, row=row + 1, col=0)
-                self._layout.setRowFixedHeight(row + 1, 1)
+                # Dividers are in between axis rows in the sub-layout
+                self._axis_layout.addItem(divider, row=row + 1, col=0)
+                self._axis_layout.layout.setRowFixedHeight(row + 1, 1)
 
-        # Add X-axis at the bottom
-        self.plot_widget.addItem(self._x_axis, row=row_span, col=1)
+        # Add X-axis at the bottom (Row 1, Col 1)
+        self.plot_widget.addItem(self._x_axis, row=1, col=1)
         self._x_axis.linkToView(master_vb)
         # Add legend to the master ViewBox
         self._legend.setParentItem(master_vb)

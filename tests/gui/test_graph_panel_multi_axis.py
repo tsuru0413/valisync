@@ -8,15 +8,17 @@ in different outcomes:
 
 from __future__ import annotations
 
-import pytest
 from pathlib import Path
+
+import pytest
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QDropEvent
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
+from tests.gui.test_graph_panel_view import _keys, _loaded_session, _make_view
 from valisync.gui.adapters.qt_signal_models import encode_signal_keys
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
-from tests.gui.test_graph_panel_view import _loaded_session, _keys, _make_view
+
 
 class TestContextualDrop:
     def test_drop_on_plot_creates_new_axis(self, qtbot: QtBot, tmp_path: Path) -> None:
@@ -24,10 +26,10 @@ class TestContextualDrop:
         key = _keys(session)[0]
         vm = GraphPanelVM(session)
         view = _make_view(qtbot, vm)
-        
+
         # Force ZONE_PLOT
-        view._zone_at = lambda pos: "plot" # type: ignore
-        
+        view._zone_at = lambda pos: "plot"  # type: ignore
+
         mime = encode_signal_keys([key])
         event = QDropEvent(
             QPointF(100.0, 100.0),
@@ -37,13 +39,13 @@ class TestContextualDrop:
             Qt.KeyboardModifier.NoModifier,
         )
         view.dropEvent(event)
-        
+
         # Initial 1 axis + 1 new axis = 2
         assert len(vm.axes) == 2
         plotted = vm.inspect()["plotted_signals"]
         assert plotted[0]["signal_key"] == key
         assert plotted[0]["axis_index"] == 1
-        
+
         # Verify ratios (equally split 1.0 / 2 = 0.5)
         assert vm.axes[0].height_ratio == 0.5
         assert vm.axes[1].height_ratio == 0.5
@@ -54,11 +56,11 @@ class TestContextualDrop:
         key = _keys(session)[0]
         vm = GraphPanelVM(session)
         view = _make_view(qtbot, vm)
-        
+
         # Force ZONE_Y_INNER and axis index 0
-        view._zone_at = lambda pos: "y_inner" # type: ignore
-        view._axis_index_at = lambda pos: 0 # type: ignore
-        
+        view._zone_at = lambda pos: "y_inner"  # type: ignore
+        view._axis_index_at = lambda pos: 0  # type: ignore
+
         mime = encode_signal_keys([key])
         event = QDropEvent(
             QPointF(10.0, 100.0),
@@ -68,22 +70,24 @@ class TestContextualDrop:
             Qt.KeyboardModifier.NoModifier,
         )
         view.dropEvent(event)
-        
+
         # Still 1 axis
         assert len(vm.axes) == 1
         plotted = vm.inspect()["plotted_signals"]
         assert plotted[0]["signal_key"] == key
         assert plotted[0]["axis_index"] == 0
 
-    def test_drop_multiple_signals_on_plot_creates_multiple_axes(self, qtbot: QtBot, tmp_path: Path) -> None:
+    def test_drop_multiple_signals_on_plot_creates_multiple_axes(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
         session, _ = _loaded_session(tmp_path, n_signals=2)
         k0, k1 = _keys(session)[:2]
         vm = GraphPanelVM(session)
         view = _make_view(qtbot, vm)
-        
+
         # Force ZONE_PLOT
-        view._zone_at = lambda pos: "plot" # type: ignore
-        
+        view._zone_at = lambda pos: "plot"  # type: ignore
+
         mime = encode_signal_keys([k0, k1])
         event = QDropEvent(
             QPointF(100.0, 100.0),
@@ -93,42 +97,96 @@ class TestContextualDrop:
             Qt.KeyboardModifier.NoModifier,
         )
         view.dropEvent(event)
-        
+
         # Initial 1 axis + 2 new axes = 3
         assert len(vm.axes) == 3
         plotted = vm.inspect()["plotted_signals"]
         assert plotted[0]["axis_index"] == 1
         assert plotted[1]["axis_index"] == 2
-        
+
         # Verify ratios (1/3 = 0.333...)
         for ax in vm.axes:
-            assert abs(ax.height_ratio - 1.0/3.0) < 1e-6
+            assert abs(ax.height_ratio - 1.0 / 3.0) < 1e-6
+
 
 class TestAxisResizing:
     def test_resize_axis_updates_ratios(self, tmp_path: Path) -> None:
         from valisync.core.session import Session
+
         session = Session()
         vm = GraphPanelVM(session)
         # Create 2 axes (0.5 each)
         vm.create_new_axis("sig1")
         assert len(vm.axes) == 2
-        
+
         # Move divider 0 down by 0.1
         vm.resize_axis(0, 0.1)
-        
+
         assert vm.axes[0].height_ratio == pytest.approx(0.6)
         assert vm.axes[1].top_ratio == pytest.approx(0.6)
         assert vm.axes[1].height_ratio == pytest.approx(0.4)
 
     def test_resize_axis_respects_minimum_height(self, tmp_path: Path) -> None:
         from valisync.core.session import Session
+
         session = Session()
         vm = GraphPanelVM(session)
         vm.create_new_axis("sig1")
-        
+
         # Try to move divider 0 down so much that below axis disappears
-        vm.resize_axis(0, 0.6) # 0.5 + 0.6 = 1.1 (invalid, should cap)
-        
+        vm.resize_axis(0, 0.6)  # 0.5 + 0.6 = 1.1 (invalid, should cap)
+
         # Min height is 0.05
         assert vm.axes[1].height_ratio == pytest.approx(0.05)
         assert vm.axes[0].height_ratio == pytest.approx(0.95)
+
+
+class TestMultiAxisLayout:
+    def test_unit_propagation(self, qtbot: QtBot, tmp_path: Path) -> None:
+        """Verify that signal unit is propagated to the YAxisVM and then to AxisItem."""
+        session, _ = _loaded_session(tmp_path)
+        # Manually set a unit on a signal
+        sig_name = _keys(session)[0]
+        for sig in session.signals():
+            if sig.name == sig_name:
+                sig.metadata["unit"] = "m/s"
+                break
+
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        # Add signal to first axis
+        vm.add_signal_to_axis(sig_name, 0)
+
+        # Check VM
+        assert vm.axes[0].unit == "m/s"
+
+        # Check View (AxisItem)
+        # Note: AxisItem.labelUnits might be used, or just prefix in label
+        axis_item = view._y_axes[0]
+        assert axis_item.labelUnits == "m/s"
+
+    def test_x_axis_not_crushed(self, qtbot: QtBot, tmp_path: Path) -> None:
+        """Verify that X-axis doesn't get crushed when Y-axis has high stretch."""
+        session, _ = _loaded_session(tmp_path, n_signals=2)
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        # Add two axes with signals
+        vm.add_signal_to_axis(_keys(session)[0], 0)
+        vm.create_new_axis(_keys(session)[1])
+
+        # Force a high stretch factor in VM
+        vm.axes[0].height_ratio = 0.9
+        vm.axes[1].height_ratio = 0.1
+        view.refresh()
+
+        # Check X-axis height. It should be a positive reasonable value.
+        x_axis_height = view._x_axis.boundingRect().height()
+        assert x_axis_height > 10  # Typically ~20-30px
+
+        # Check layout stretch factors
+        # Root layout should have Row 0 stretch=1, Row 1 stretch=0
+        root_layout = view.plot_widget.ci.layout
+        assert root_layout.rowStretchFactor(0) == 1
+        assert root_layout.rowStretchFactor(1) == 0
