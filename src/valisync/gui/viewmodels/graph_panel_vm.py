@@ -134,19 +134,41 @@ class GraphPanelVM(Observable):
         self._notify("signals")
 
     def create_new_axis(self, signal_key: str) -> None:
-        """Create a new Y-axis and add *signal_key* to it."""
-        # Simple redistribution: split total space equally
-        n = len(self._axes) + 1
+        """Add *signal_key* as a new vertical region.
+
+        A fresh axis is appended for the signal, then :meth:`_normalize_axes`
+        prunes any empty axis (e.g. the initial placeholder) so the first signal
+        fills the whole panel and subsequent signals split it into equal regions.
+        """
+        self._axes.append(YAxisVM())
+        self.add_signal_to_axis(signal_key, len(self._axes) - 1)
+        self._normalize_axes()
+        self._notify("axes")
+
+    def _normalize_axes(self) -> None:
+        """Keep one region per signal-bearing axis (min 1) and split equally.
+
+        Empty axes (the initial placeholder, or an axis whose signals were all
+        moved away) must not occupy panel space — otherwise a real signal would
+        render at a fraction of the panel height with blank regions beside it.
+        Re-indexes plotted entries to the compacted axis positions.
+        """
+        used = sorted({e.axis_index for e in self._plotted})
+        if not used:
+            # No signals plotted: collapse to a single full-height placeholder.
+            keep = self._axes[0] if self._axes else YAxisVM()
+            keep.top_ratio, keep.height_ratio = 0.0, 1.0
+            self._axes = [keep]
+            return
+        remap = {old: new for new, old in enumerate(used)}
+        self._axes = [self._axes[old] for old in used]
+        for entry in self._plotted:
+            entry.axis_index = remap[entry.axis_index]
+        n = len(self._axes)
         h = 1.0 / n
         for i, axis in enumerate(self._axes):
             axis.top_ratio = i * h
             axis.height_ratio = h
-
-        new_axis = YAxisVM(top_ratio=(n - 1) * h, height_ratio=h)
-        self._axes.append(new_axis)
-
-        self.add_signal_to_axis(signal_key, n - 1)
-        self._notify("axes")
 
     def remove_signal(self, signal_key: str) -> None:
         """Remove *signal_key* from the plot."""
