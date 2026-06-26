@@ -203,7 +203,9 @@ class TestDrop:
         assert any(p["signal_key"] == key for p in vm.inspect()["plotted_signals"])
         assert key in view.curve_keys()  # type: ignore[attr-defined]
 
-    def test_drop_on_plot_creates_new_axis(self, qtbot: QtBot, tmp_path: Path) -> None:
+    def test_first_drop_on_plot_fills_full_height(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
         session, _ = _loaded_session(tmp_path)
         key = _keys(session)[0]
         vm = GraphPanelVM(session)
@@ -222,16 +224,13 @@ class TestDrop:
         )
         view.dropEvent(event)  # type: ignore[attr-defined]
 
-        # Initial 1 axis + 1 new axis = 2
-        assert len(vm.axes) == 2
+        # First signal fills the whole panel — placeholder consumed, no 2nd axis.
+        assert len(vm.axes) == 1
         plotted = vm.inspect()["plotted_signals"]
         assert plotted[0]["signal_key"] == key
-        assert plotted[0]["axis_index"] == 1
-
-        # Verify ratios (equally split 1.0 / 2 = 0.5)
-        assert vm.axes[0].height_ratio == 0.5
-        assert vm.axes[1].height_ratio == 0.5
-        assert vm.axes[1].top_ratio == 0.5
+        assert plotted[0]["axis_index"] == 0
+        assert vm.axes[0].height_ratio == 1.0
+        assert vm.axes[0].top_ratio == 0.0
 
     def test_drop_on_y_axis_joins_that_axis(self, qtbot: QtBot, tmp_path: Path) -> None:
         session, _ = _loaded_session(tmp_path)
@@ -280,15 +279,15 @@ class TestDrop:
         )
         view.dropEvent(event)  # type: ignore[attr-defined]
 
-        # Initial 1 axis + 2 new axes = 3
-        assert len(vm.axes) == 3
+        # Two signals -> two equal regions (the placeholder is consumed).
+        assert len(vm.axes) == 2
         plotted = vm.inspect()["plotted_signals"]
-        assert plotted[0]["axis_index"] == 1
-        assert plotted[1]["axis_index"] == 2
+        assert plotted[0]["axis_index"] == 0
+        assert plotted[1]["axis_index"] == 1
 
-        # Verify ratios (1/3 = 0.333...)
+        # Verify ratios (1/2 = 0.5)
         for ax in vm.axes:
-            assert abs(ax.height_ratio - 1.0 / 3.0) < 1e-6
+            assert abs(ax.height_ratio - 0.5) < 1e-6
 
     def test_drag_enter_accepts_signal_mime(self, qtbot: QtBot, tmp_path: Path) -> None:
         from PySide6.QtGui import QDragEnterEvent

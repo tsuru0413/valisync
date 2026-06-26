@@ -63,7 +63,15 @@ class _DragEvent:
 
 
 class TestContextualDrop:
-    def test_drop_on_plot_creates_new_axis(self, qtbot: QtBot, tmp_path: Path) -> None:
+    def test_first_drop_on_plot_fills_full_height(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        """The FIRST signal dropped on the plot must fill the whole panel.
+
+        The panel starts with one empty placeholder axis; dropping the first
+        signal must consume it (full-height, single region) rather than leaving
+        the placeholder above a half-height new region.
+        """
         session, _ = _loaded_session(tmp_path)
         key = _keys(session)[0]
         vm = GraphPanelVM(session)
@@ -82,16 +90,13 @@ class TestContextualDrop:
         )
         view.dropEvent(event)
 
-        # Initial 1 axis + 1 new axis = 2
-        assert len(vm.axes) == 2
+        # One full-height region holding the signal — no empty placeholder left.
+        assert len(vm.axes) == 1
         plotted = vm.inspect()["plotted_signals"]
         assert plotted[0]["signal_key"] == key
-        assert plotted[0]["axis_index"] == 1
-
-        # Verify ratios (equally split 1.0 / 2 = 0.5)
-        assert vm.axes[0].height_ratio == 0.5
-        assert vm.axes[1].height_ratio == 0.5
-        assert vm.axes[1].top_ratio == 0.5
+        assert plotted[0]["axis_index"] == 0
+        assert vm.axes[0].height_ratio == 1.0
+        assert vm.axes[0].top_ratio == 0.0
 
     def test_drop_on_y_axis_joins_that_axis(self, qtbot: QtBot, tmp_path: Path) -> None:
         session, _ = _loaded_session(tmp_path)
@@ -140,15 +145,15 @@ class TestContextualDrop:
         )
         view.dropEvent(event)
 
-        # Initial 1 axis + 2 new axes = 3
-        assert len(vm.axes) == 3
+        # Two signals -> two equal regions (the placeholder is consumed).
+        assert len(vm.axes) == 2
         plotted = vm.inspect()["plotted_signals"]
-        assert plotted[0]["axis_index"] == 1
-        assert plotted[1]["axis_index"] == 2
+        assert plotted[0]["axis_index"] == 0
+        assert plotted[1]["axis_index"] == 1
 
-        # Verify ratios (1/3 = 0.333...)
+        # Verify ratios (1/2 = 0.5)
         for ax in vm.axes:
-            assert abs(ax.height_ratio - 1.0 / 3.0) < 1e-6
+            assert abs(ax.height_ratio - 0.5) < 1e-6
 
 
 class TestAxisResizing:
@@ -157,7 +162,8 @@ class TestAxisResizing:
 
         session = Session()
         vm = GraphPanelVM(session)
-        # Create 2 axes (0.5 each)
+        # Create 2 axes (0.5 each): first signal fills the panel, second splits it.
+        vm.create_new_axis("sig0")
         vm.create_new_axis("sig1")
         assert len(vm.axes) == 2
 
@@ -173,6 +179,7 @@ class TestAxisResizing:
 
         session = Session()
         vm = GraphPanelVM(session)
+        vm.create_new_axis("sig0")
         vm.create_new_axis("sig1")
 
         # Try to move divider 0 down so much that below axis disappears
