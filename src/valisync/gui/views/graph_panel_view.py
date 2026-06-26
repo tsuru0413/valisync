@@ -48,6 +48,14 @@ ZONE_Y_INNER = "y_inner"
 ZONE_Y_OUTER = "y_outer"
 ZONE_NONE = "none"
 
+# Fixed pixel width shared by every stacked Y-axis so their tick spines (and
+# right-aligned tick numbers) line up into one vertical edge. Sized for ~6-digit
+# / scientific labels (e.g. "-1.2e+06" ≈ 48px) plus tick marks and the unit
+# label. Fixed — not data-dependent — so the layout never shifts when the
+# displayed signals change. Larger magnitudes stay within it via pyqtgraph's
+# automatic SI-prefix / scientific tick formatting.
+_Y_AXIS_FIXED_WIDTH = 72
+
 # Wheel zoom factors (factor < 1 zooms in, keeping the cursor fixed).
 _WHEEL_IN = 0.8
 _WHEEL_OUT = 1.25
@@ -118,6 +126,36 @@ def cursor_for_zone(zone: str) -> Qt.CursorShape:
     return Qt.CursorShape.ArrowCursor
 
 
+class _AlignedAxisItem(pg.AxisItem):
+    """Left axis whose tick labels use one consistent notation.
+
+    pyqtgraph formats each tick independently, so a single axis can mix plain
+    ("500000") and scientific ("1e+06") labels. When any tick falls back to
+    scientific notation, render every non-zero tick in scientific (keeping
+    pyqtgraph's significant-figure precision; "0" stays "0") so the column reads
+    uniformly.
+    """
+
+    def tickStrings(
+        self, values: list[float], scale: float, spacing: float
+    ) -> list[str]:
+        strings = super().tickStrings(values, scale, spacing)
+        if self.logMode or not any("e" in s for s in strings):
+            return strings
+        out: list[str] = []
+        for v in values:
+            vs = v * scale
+            if vs == 0:
+                out.append("0")
+                continue
+            # 6 significant figures like pyqtgraph's "%g", forced to exponential
+            # with trailing zeros trimmed: 5e5 -> "5e+05", 1.5e6 -> "1.5e+06".
+            mantissa, exp = (f"{vs:.5e}").split("e")
+            mantissa = mantissa.rstrip("0").rstrip(".")
+            out.append(f"{mantissa}e{exp}")
+        return out
+
+
 class GraphPanelView(QWidget):
     """PyQtGraph waveform view bound to a :class:`GraphPanelVM`."""
 
@@ -146,7 +184,7 @@ class GraphPanelView(QWidget):
         self.plot_widget = pg.GraphicsLayoutWidget()
         # The central layout manages axes in col 0 and the plot area in col 1.
         self._layout = self.plot_widget.ci.layout
-        self._layout.setColumnFixedWidth(0, 60)  # Width for Y-axes
+        self._layout.setColumnFixedWidth(0, _Y_AXIS_FIXED_WIDTH)  # Width for Y-axes
 
         # Shared X-axis at the bottom (linked to the first ViewBox).
         self._x_axis = pg.AxisItem(orientation="bottom")
@@ -267,8 +305,10 @@ class GraphPanelView(QWidget):
                 self._axis_layout.layout.setRowStretchFactor(
                     i * 2, int(axis_vm.height_ratio * 1000)
                 )
-                if axis_vm.unit:
-                    self._y_axes[i].setLabel(units=axis_vm.unit)
+                if axis_vm.name or axis_vm.unit:
+                    self._y_axes[i].setLabel(
+                        text=axis_vm.name or None, units=axis_vm.unit or None
+                    )
             return
 
         # Count mismatch: rebuild layout
@@ -293,7 +333,7 @@ class GraphPanelView(QWidget):
         # Row 0: Axes (Col 0), ViewBoxes (Col 1)
         # Row 1: empty (Col 0), X-axis (Col 1)
         root = self.plot_widget.ci.layout
-        root.setColumnFixedWidth(0, 60)
+        root.setColumnFixedWidth(0, _Y_AXIS_FIXED_WIDTH)
         root.setColumnStretchFactor(1, 1)  # Ensure plot area takes remaining width
         root.setRowStretchFactor(0, 1)
         root.setRowStretchFactor(1, 0)  # Fixed height for X-axis
@@ -321,9 +361,12 @@ class GraphPanelView(QWidget):
             # Create AxisItem. It is NOT linked to the ViewBox: the ViewBox uses
             # an expanded virtual range, so the axis range is driven directly
             # (refresh -> setRange) with the real data range instead.
-            axis = pg.AxisItem(orientation="left")
-            if axis_vm.unit:
-                axis.setLabel(units=axis_vm.unit)
+            axis = _AlignedAxisItem(orientation="left")
+            # Fixed width shared by all stacked axes so their spines/tick numbers
+            # align; overrides pyqtgraph's per-axis auto-width (which is ragged).
+            axis.setWidth(_Y_AXIS_FIXED_WIDTH)
+            if axis_vm.name or axis_vm.unit:
+                axis.setLabel(text=axis_vm.name or None, units=axis_vm.unit or None)
             self._y_axes.append(axis)
 
             # Add to Axis Sub-Layout

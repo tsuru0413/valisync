@@ -17,6 +17,7 @@ class YAxisVM(Observable):
         height_ratio: float = 1.0,
         column: int = 0,
         unit: str = "",
+        name: str = "",
     ) -> None:
         super().__init__()
         self.y_range = y_range
@@ -24,6 +25,8 @@ class YAxisVM(Observable):
         self.height_ratio = height_ratio
         self.column = column
         self.unit = unit
+        # Display name of the representative (first-added) signal on this axis.
+        self.name = name
 
     def set_range(self, lo: float | None, hi: float | None) -> None:
         """Set the vertical data range for this axis."""

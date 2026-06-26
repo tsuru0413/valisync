@@ -34,6 +34,9 @@ Thumbs.db
 # state). Durable artifacts live in docs/superpowers/ (plans) and .kiro/ (specs).
 .superpowers/
 
+# Issue-sharing scratch screenshots (not project documentation assets).
+docs/images/
+
 # Local environment overrides (potential secrets)
 .env
 .env.*

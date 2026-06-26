@@ -122,12 +122,17 @@ class GraphPanelVM(Observable):
             _PlottedEntry(signal_key=signal_key, color=color, axis_index=axis_index)
         )
 
-        # Propagate unit from signal to axis
+        # Propagate unit + representative name from signal to axis.
         sig = self._signal_map().get(signal_key)
         if sig and 0 <= axis_index < len(self._axes):
+            axis = self._axes[axis_index]
             unit = sig.metadata.get("unit", "")
             if unit:
-                self._axes[axis_index].unit = unit
+                axis.unit = unit
+            # The first signal added to an axis is its representative label;
+            # later joined signals do not replace it (first-wins).
+            if not axis.name:
+                axis.name = signal_key.split("::")[-1]
 
         self._auto_fit_ranges()
         self._invalidate_cache()
