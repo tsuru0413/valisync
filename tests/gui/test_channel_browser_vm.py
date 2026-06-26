@@ -80,8 +80,8 @@ def test_signal_item_contains_unit(tmp_path: Path) -> None:
         metadata={"unit": "km/h"},
     )
 
-    # Inject fake signal into session proxy (if we can) or mock session.signals
-    app_vm.session.signals = lambda: [sig]
+    # Inject a fake signal via the per-file public API the VM now uses.
+    app_vm.session.group_signals = lambda key: [sig]
     app_vm.set_active_file("test_key")
 
     assert len(vm.signals) == 1

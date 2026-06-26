@@ -47,7 +47,7 @@ ADAS ソフトウェア開発向けの時系列信号データ統合・同期・
 |---|---|---|---|
 | Phase 1 / valisync-core | Signal・Loader・Sync・Formula・補間・統計・Downsampler・Export・Session | 完了 (PR #2 merged) | `.kiro/specs/valisync-core/` |
 | Phase 2 / valisync-gui-mvp | GUI 歩く骨格: シェル/ドッキング・データ取込/閲覧・タブ/パネル・Y-T 波形・X/Y ズーム/パン・動的 LOD・X 軸同期・D&D・コンテキストメニュー | 完了 (PR #2 merged) | `.kiro/specs/valisync-gui-mvp/` |
-| Phase 2 / valisync-gui-file-browser | FileBrowser の分離: 読み込み済みファイルリストと選択ファイルごとの信号フラットリスト表示 | 完了 (PR #3 merged) | `.kiro/specs/valisync-gui-file-browser/` |
+| Phase 2 / valisync-gui-file-browser | FileBrowser の分離: 読み込み済みファイルリストと選択ファイルごとの信号フラットリスト表示 | 完了 (PR #3 merged)。再レビューで spec/実装の改善点を検出、S1 着手・S2–S5 残 — 詳細は [docs/file-browser-spec-revision-followup.md](docs/file-browser-spec-revision-followup.md) | `.kiro/specs/valisync-gui-file-browser/` |
 | Phase 2 / valisync-gui-axes | 複数Y軸レイアウト: リージョンベースのオーバーレイ・Auto-Fit 縮尺・複数列グリッド配置 | 完了 (PR #4 merged)。信号削除時の空リージョン残存は follow-up — 詳細は [docs/multi-axis-empty-region-followup.md](docs/multi-axis-empty-region-followup.md) | `.kiro/specs/valisync-gui-axes/` |
 
 > Phase 2 `valisync-gui` は 6 sub-spec に分解済み（mvp / axes / analysis / derived / views / script）。詳細は `docs/roadmap.md`。

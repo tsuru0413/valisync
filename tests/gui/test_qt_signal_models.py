@@ -74,7 +74,7 @@ def test_data_returns_name_and_unit(qtbot: QtBot, tmp_path: Path) -> None:
         source_file="",
         metadata={"unit": "V"},
     )
-    app_vm.session.signals = lambda: [sig]
+    app_vm.session.group_signals = lambda key: [sig]
     app_vm.set_active_file("k")
 
     assert model.data(model.index(0, 0), Qt.ItemDataRole.DisplayRole) == "a"
@@ -105,7 +105,7 @@ def test_signal_key_at_returns_full_key(qtbot: QtBot, tmp_path: Path) -> None:
         bus_type="",
         source_file="",
     )
-    app_vm.session.signals = lambda: [sig]
+    app_vm.session.group_signals = lambda key: [sig]
     app_vm.set_active_file("k")
 
     assert model.signal_key_at(model.index(0, 0)) == "k::a"

@@ -60,6 +60,36 @@ def test_load_csv_without_format_def_raises(tmp_path):
         Session().load(csv)
 
 
+def test_source_name_returns_basename_for_key(tmp_path):
+    """Public API for GUI to recover a file's display name from its group key."""
+    csv = tmp_path / "drive.csv"
+    _write_csv(csv, "t,speed", ["0.0,1.0"])
+    session = Session()
+    key = session.load(csv, format_def=_FMT)
+
+    assert session.source_name(key) == "drive.csv"
+    with pytest.raises(KeyError):
+        session.source_name("nope_99")
+
+
+def test_group_signals_returns_namespaced_signals_for_one_group(tmp_path):
+    """Public API to fetch only one file's signals (avoids scanning all files)."""
+    a = tmp_path / "a.csv"
+    b = tmp_path / "b.csv"
+    _write_csv(a, "t,speed", ["0.0,1.0"])
+    _write_csv(b, "t,rpm", ["0.0,2.0"])
+    session = Session()
+    ka = session.load(a, format_def=_FMT)
+    kb = session.load(b, format_def=_FMT)
+
+    only_a = session.group_signals(ka)
+    assert [s.name for s in only_a] == [f"{ka}::speed"]
+    only_b = session.group_signals(kb)
+    assert [s.name for s in only_b] == [f"{kb}::rpm"]
+    with pytest.raises(KeyError):
+        session.group_signals("nope_99")
+
+
 def test_load_many_reports_partial_failure(tmp_path):
     good = tmp_path / "good.csv"
     _write_csv(good, "t,v", ["0.0,1.0", "1.0,2.0"])

@@ -53,16 +53,15 @@ class FileBrowserVM(Observable):
     def _refresh(self) -> None:
         """Rebuild the filenames list from the AppViewModel state.
 
-        We recover the original source filename from the core Session's
-        SignalGroupManager using the keys registered in AppViewModel.
+        Recovers each file's display name via the Session public API
+        (``source_name``) — never reaching into Session internals.
         """
         files: list[str] = []
         for key in self._app_vm.loaded_file_keys:
             try:
-                group = self._app_vm.session._groups.group(key)
-                files.append(group.source_path.name)
-            except (KeyError, AttributeError):
-                # Fallback to key if group recovery fails
+                files.append(self._app_vm.session.source_name(key))
+            except KeyError:
+                # Fallback to the key if the name cannot be recovered.
                 files.append(key)
 
         self._files = files

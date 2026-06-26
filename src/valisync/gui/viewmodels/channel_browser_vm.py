@@ -54,21 +54,19 @@ class ChannelBrowserVM(Observable):
         if not active_key:
             return []
 
+        # Fetch only the active file's signals (no full-session scan).
+        try:
+            group_sigs = self._app_vm.session.group_signals(active_key)
+        except KeyError:
+            return []
+
         filter_lower = self._filter_text.lower()
         results: list[SignalItem] = []
 
-        for sig in self._app_vm.session.signals():
-            parts = sig.name.split(_SEP, 1)
-            if len(parts) == 2:
-                file_key, orig_name = parts
-            else:
-                file_key = orig_name = sig.name
+        for sig in group_sigs:
+            # sig.name is "{active_key}::{orig}"; strip the known prefix.
+            orig_name = sig.name.split(_SEP, 1)[1] if _SEP in sig.name else sig.name
 
-            # Only include signals from the active file
-            if file_key != active_key:
-                continue
-
-            # Apply filter
             if filter_lower and filter_lower not in orig_name.lower():
                 continue
 
@@ -128,12 +126,11 @@ class ChannelBrowserVM(Observable):
         if not active_key:
             return []
 
-        return [
-            sig.name
-            for sig in self._app_vm.session.signals()
-            if sig.name.startswith(f"{active_key}{_SEP}")
-            and sig.name not in self._hidden
-        ]
+        try:
+            group_sigs = self._app_vm.session.group_signals(active_key)
+        except KeyError:
+            return []
+        return [sig.name for sig in group_sigs if sig.name not in self._hidden]
 
     # ─── Event Handling ──────────────────────────────────────────────────────
 

@@ -46,18 +46,24 @@ graph TD
 ### AppViewModel (Modified)
 
 **State:**
-- `active_file_key: str | None`: The absolute path (key) of the currently selected file.
-- `loaded_files: list[str]`: List of keys for all loaded signal groups.
+- `active_file_key: str | None`: The key (e.g. `csv_1`) of the currently selected file.
+- `loaded_file_keys: list[str]`: Keys for all loaded signal groups.
 
 **Actions:**
 - `set_active_file(key: str | None) -> None`: Updates the state and calls `self._notify("active_file")`.
+
+> **Core (Session) public API — added in revision S1.** The GUI recovers display
+> names and per-file signals only through Session, never its internals:
+> - `Session.source_name(key) -> str`: source filename (basename) for a group key.
+> - `Session.group_signals(key) -> list[Signal]`: namespaced signals of one file
+>   (so a browser need not scan every loaded file).
 
 ### FileBrowserVM (New)
 
 **Role:** Manages the list of files available for selection.
 
 **State:**
-- `files: list[str]`: The list of filenames (basename) derived from `AppViewModel.loaded_files`.
+- `files: list[str]`: Filenames (basenames) recovered via `Session.source_name(key)` for each `AppViewModel.loaded_file_keys`.
 
 **Actions:**
 - `select_file(index: int) -> None`: Translates the list index to a file key and calls `AppViewModel.set_active_file(key)`.
@@ -75,7 +81,7 @@ graph TD
 
 **Observation:**
 - Subscribes to `AppViewModel` for `"active_file"` changes.
-- When notified, it fetches the `SignalGroup` for the `active_file_key` from the `Session`, flattens its signals into `SignalItem` objects, and notifies the View.
+- When notified, it fetches the active file's signals via `Session.group_signals(active_file_key)` (no full-session scan), maps them to `SignalItem` objects, and notifies the View.
 - **Unit extraction**: `unit = signal.metadata.get("unit", "")`.
 
 ## Views and Adapters
