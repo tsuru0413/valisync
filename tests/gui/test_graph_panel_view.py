@@ -290,7 +290,6 @@ class TestDrop:
         for ax in vm.axes:
             assert abs(ax.height_ratio - 1.0 / 3.0) < 1e-6
 
-
     def test_drag_enter_accepts_signal_mime(self, qtbot: QtBot, tmp_path: Path) -> None:
         from PySide6.QtGui import QDragEnterEvent
 

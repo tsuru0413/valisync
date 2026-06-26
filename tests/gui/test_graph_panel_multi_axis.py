@@ -280,9 +280,7 @@ class TestMultiAxisLayout:
         view.refresh()
 
         scene_vbs = [
-            it
-            for it in view.plot_widget.scene().items()
-            if isinstance(it, pg.ViewBox)
+            it for it in view.plot_widget.scene().items() if isinstance(it, pg.ViewBox)
         ]
         assert len(scene_vbs) == len(vm.axes), (
             f"{len(scene_vbs)} ViewBoxes in scene for {len(vm.axes)} axes "
