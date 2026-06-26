@@ -5,34 +5,34 @@ These tasks define the implementation sequence for the advanced Multi-Y axis lay
 ## Wave 0: ViewModel Core Expansion
 Refactor the state management to support multiple axes.
 
-- [ ] Task 0.1: Implement `YAxisVM` class (Observable) to hold range, top_ratio, height_ratio, column, and unit.
-- [ ] Task 0.2: Refactor `GraphPanelVM` to replace the single `y_range` with a `list[YAxisVM]`.
-- [ ] Task 0.3: Implement the "Auto-Fit" coordinate mapping logic in the ViewModel layer.
-  - [ ] **Red**: Add test in `tests/gui/test_graph_panel_vm.py` verifying raw-to-pixel mapping factors for various ratios.
-  - [ ] **Green**: Implement mapping calculations.
+- [x] Task 0.1: Implement `YAxisVM` class (Observable) to hold range, top_ratio, height_ratio, column, and unit.
+- [x] Task 0.2: Refactor `GraphPanelVM` to replace the single `y_range` with a `list[YAxisVM]`.
+- [x] Task 0.3: Implement the "Auto-Fit" coordinate mapping logic in the ViewModel layer.
+  - [x] **Red**: Add test in `tests/gui/test_graph_panel_vm.py` verifying raw-to-pixel mapping factors for various ratios.
+  - [x] **Green**: Implement mapping calculations.
 
 ## Wave 1: Custom UI Components
 Build the draggable dividers and specialized AxisItems.
 
-- [ ] Task 1.1: Create `RegionDividerItem` (a GraphicsObject) that provides a draggable horizontal line.
-- [ ] Task 1.2: Implement `AxisColumnLayout` (Nested `GraphicsLayout`) to manage a vertical stack of `AxisItem`s and dividers.
-- [ ] Task 1.3: Verify Real-time Ratio Updating.
-  - [ ] **Red**: Add test verifying that dragging a `RegionDividerItem` updates the `height_ratio` of adjacent `YAxisVM`s.
-  - [ ] **Green**: Wire mouse events to ViewModel updates.
+- [x] Task 1.1: Create `RegionDividerItem` (a GraphicsObject) that provides a draggable horizontal line.
+- [x] Task 1.2: Implement `AxisColumnLayout` (Nested `GraphicsLayout`) to manage a vertical stack of `AxisItem`s and dividers.
+- [x] Task 1.3: Verify Real-time Ratio Updating.
+  - [x] **Red**: Add test verifying that dragging a `RegionDividerItem` updates the `height_ratio` of adjacent `YAxisVM`s.
+  - [x] **Green**: Wire mouse events to ViewModel updates.
 
 ## Wave 2: Multi-ViewBox Overlay & Transformation
 Implement the core rendering logic.
 
-- [ ] Task 2.1: Modify `GraphPanelView` to instantiate and overlay multiple `ViewBox`es based on the `GraphPanelVM.axes` list.
-- [ ] Task 2.2: Apply the "Vertical Transform" (virtual range calculation) to each `ViewBox` to map it to its Home Region.
-- [ ] Task 2.3: Ensure X-axis synchronization (setXLink) across all overlaid ViewBoxes.
-- [ ] Task 2.4: Disable clipping (`setClipToView(False)`) to allow waveforms to draw across the entire panel.
+- [x] Task 2.1: Modify `GraphPanelView` to instantiate and overlay multiple `ViewBox`es based on the `GraphPanelVM.axes` list.
+- [x] Task 2.2: Apply the "Vertical Transform" (virtual range calculation) to each `ViewBox` to map it to its Home Region.
+- [x] Task 2.3: Ensure X-axis synchronization (setXLink) across all overlaid ViewBoxes.
+- [x] Task 2.4: Disable clipping (`setClipToView(False)`) to allow waveforms to draw across the entire panel.
 
 ## Wave 3: Drag & Drop Integration
 Finalize the contextual signal addition logic.
 
-- [ ] Task 3.1: Implement Drop Zone logic in `AxisItem` (Join Axis).
-- [ ] Task 3.2: Implement Drop Zone logic in plot area (New Region).
+- [x] Task 3.1: Implement Drop Zone logic in `AxisItem` (Join Axis).
+- [x] Task 3.2: Implement Drop Zone logic in plot area (New Region).
 - [ ] Task 3.3: Final E2E Verification.
   - [ ] **Verify**: Run `uv run valisync`, drag multiple signals with different units, adjust their heights, and verify auto-fit scaling and unclipped rendering.
 
