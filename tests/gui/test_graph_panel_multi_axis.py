@@ -258,3 +258,41 @@ class TestMultiAxisLayout:
             ax_lo, ax_hi = view._y_axes[i].range
             assert ax_lo == pytest.approx(lo, abs=1e-6), f"axis {i} low"
             assert ax_hi == pytest.approx(hi, abs=1e-6), f"axis {i} high"
+
+    def test_no_orphaned_viewboxes_after_adding_axes(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        """Rebuilding for each new axis must not leave stale ViewBoxes behind.
+
+        Regression: secondary ViewBoxes added directly to the scene were not
+        removed on rebuild (ci.clear() only drops layout-managed items), so a
+        signal from an intermediate build was drawn twice by the orphan.
+        """
+        import pyqtgraph as pg
+
+        session, _ = _loaded_session(tmp_path, n_signals=3)
+        keys = _keys(session)
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal_to_axis(keys[0], 0)
+        vm.create_new_axis(keys[1])
+        vm.create_new_axis(keys[2])
+        view.refresh()
+
+        scene_vbs = [
+            it
+            for it in view.plot_widget.scene().items()
+            if isinstance(it, pg.ViewBox)
+        ]
+        assert len(scene_vbs) == len(vm.axes), (
+            f"{len(scene_vbs)} ViewBoxes in scene for {len(vm.axes)} axes "
+            "(orphans left behind)"
+        )
+
+        # Each plotted signal must be drawn by exactly one ViewBox.
+        counts: dict[str, int] = {}
+        for vb in scene_vbs:
+            for it in vb.addedItems:
+                if isinstance(it, pg.PlotDataItem) and it.name():
+                    counts[it.name()] = counts.get(it.name(), 0) + 1
+        assert all(c == 1 for c in counts.values()), f"duplicated curves: {counts}"

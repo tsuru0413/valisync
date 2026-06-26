@@ -273,6 +273,13 @@ class GraphPanelView(QWidget):
 
         # Count mismatch: rebuild layout
         # (Slightly heavy but robust for now)
+        # Secondary ViewBoxes were added straight to the scene, so ci.clear()
+        # (which only drops layout-managed items) leaves them behind as orphans
+        # that keep drawing their stale curve. Remove them explicitly first.
+        for vb in self._view_boxes[1:]:
+            scene = vb.scene()
+            if scene is not None:
+                scene.removeItem(vb)
         self.plot_widget.ci.clear()
         self._y_axes.clear()
         self._view_boxes.clear()
