@@ -412,3 +412,42 @@ class TestMultiAxisLayout:
         assert len(set(widths)) == 1, f"ragged Y-axis widths: {widths}"
         # Wide enough for ~6-digit / scientific labels (e.g. "-1.2e+06").
         assert widths[0] >= 60, f"fixed Y-axis width too small: {widths[0]}"
+
+    def test_axis_tick_labels_use_uniform_scientific(self, qtbot: QtBot) -> None:
+        """When any tick on an axis is scientific, all non-zero ticks are too.
+
+        Plain pyqtgraph mixes e.g. "500000" and "1e+06" on the same axis; here
+        the whole axis switches to scientific (0 stays "0").
+        """
+        from valisync.gui.views.graph_panel_view import _AlignedAxisItem
+
+        ax = _AlignedAxisItem(orientation="left")
+        mixed = ax.tickStrings([0, 5e5, 1e6, -5e5, -1e6], 1.0, 5e5)
+        assert mixed == ["0", "5e+05", "1e+06", "-5e+05", "-1e+06"]
+        # Non-round values keep precision.
+        assert ax.tickStrings([0, 1.5e6], 1.0, 1.5e6) == ["0", "1.5e+06"]
+        # No scientific anywhere -> untouched.
+        assert ax.tickStrings([0, 0.5, 1.0], 1.0, 0.5) == ["0", "0.5", "1.0"]
+
+    def test_axis_label_shows_first_signal_name_and_unit(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        """The Y-axis label shows the representative signal's short name + unit.
+
+        Representative = first signal added to that axis; name = the part after
+        the namespace separator "::".
+        """
+        session, _ = _loaded_session(tmp_path, n_signals=2)
+        names = _keys(session)
+        for sig in session.signals():
+            sig.metadata["unit"] = "V"
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.create_new_axis(names[0])  # first signal -> representative
+        vm.add_signal_to_axis(names[1], 0)  # joined; must NOT change the label
+        view.refresh()
+
+        short = names[0].split("::")[-1]
+        assert vm.axes[0].name == short
+        assert view._y_axes[0].labelText == short
+        assert view._y_axes[0].labelUnits == "V"
