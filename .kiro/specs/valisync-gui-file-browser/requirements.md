@@ -48,3 +48,12 @@ Success criteria: "User loads multiple files via DataExplorer -> FileBrowser lis
 1. THE ChannelBrowser SHALL display exactly two columns: **Name** and **Unit**.
 2. THE "Unit" SHALL be extracted from the signal's metadata (if available).
 3. THE previously supported columns "Type", "Samples", and "Time Range" SHALL be removed to minimize horizontal clutter.
+
+### Requirement 7: File Unload (R7)
+**User Story:** As a user handling multiple datasets, I want to remove (unload) a loaded file I no longer need, so the file list and graphs stay uncluttered. *(Added in revision S3; this is the requirement that makes R5.3's "all files unloaded" reachable.)*
+1. THE FileBrowser SHALL provide a context-menu action ("Remove File") to unload the **selected** file (right-clicking a row selects it first).
+2. WHEN a file is unloaded, THE GUI_Application SHALL remove its Signal_Group from the Session. No confirmation dialog is shown (files can be re-loaded via the DataExplorer).
+3. WHEN the unloaded file is the Active File, THE Active File SHALL become `None` (the ChannelBrowser empties per R5.3).
+4. WHEN signals from the unloaded file are plotted in any Graph_Panel, THOSE curves SHALL be removed and the panel's axes reconciled so no empty region is left occupying space (removal is symmetric with signal addition).
+5. THE FileBrowser list SHALL update to no longer list the unloaded file.
+6. WHEN a Derived_Signal depends on the unloaded file (future capability; `Session.remove_group` refuses without `force`), THE unload SHALL be refused without side effects. *(Currently unreachable — Derived_Signals are out of scope until `valisync-gui-derived`.)*

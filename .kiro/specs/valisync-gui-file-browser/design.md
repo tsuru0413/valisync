@@ -115,12 +115,74 @@ self.addDockWidget(Qt.RightDockWidgetArea, self.channel_browser_dock)
 self.splitDockWidget(self.file_browser_dock, self.channel_browser_dock, Qt.Vertical)
 ```
 
+## Unload (R7)
+
+**Design principle — reconcile against the source of truth.** The `Session` is the
+single source of truth for loaded signals; every component that caches signal
+references (graph panels' plotted list, the active-file key, the file list)
+**reconciles against the Session** when the loaded set changes. Unload is one such
+change, not a special case — so removal is symmetric with addition and leaves no
+stale state.
+
+### Coordinator — `AppViewModel.unload_file(key)`
+1. `result = self._session.remove_group(key)`. If `not result.removed` (a
+   Derived_Signal depends on it — currently unreachable), return early with **no
+   side effects** (R7.6).
+2. Remove `key` from `_loaded_file_keys`.
+3. If `active_file_key == key`: set it to `None` and `_notify("active_file")`.
+4. `_notify("unloaded")`.
+
+### Reconcilers (subscribe to `AppViewModel`)
+- **FileBrowserVM** — already listens for `"loaded"`/`"unloaded"`; rebuilds the
+  list from `loaded_file_keys` (the `"unloaded"` listener, previously dead, is now
+  driven by this requirement). Adds `unload_selected()` → `AppViewModel.unload_file`.
+- **ChannelBrowserVM** — already reacts to `"active_file"`; empties when the active
+  file was cleared (R5.3). No change.
+- **GraphAreaVM** — gains `app_vm` as a **required** constructor dependency
+  (consistent with FileBrowserVM/ChannelBrowserVM holding `app_vm`; existing tests
+  updated). On `"unloaded"`, it calls `prune_missing_signals()` on **every panel in
+  every tab**.
+
+### `GraphPanelVM` changes
+- **`prune_missing_signals()`** *(new)*: drop every `_plotted` entry whose key is no
+  longer in `self._session.signals()`, then reconcile axes. Keyed on the Session
+  (not on the unloaded key), so it is correct regardless of *why* a signal
+  disappeared. `render_data()` already skips missing signals (`sig_map.get(...)`),
+  so this method cleans the lingering bookkeeping and triggers a re-render.
+- **Axis reconciliation on removal**: `remove_signal()` and `prune_missing_signals()`
+  call `_normalize_axes()` after removing, so empty axes are pruned and the survivors
+  re-split equally (R7.4). This makes removal symmetric with `create_new_axis`
+  (which already normalizes) and **resolves the previously-deferred
+  empty-region-after-removal follow-up** (`docs/multi-axis-empty-region-followup.md`).
+
+### View — `FileBrowserView`
+- Implement `contextMenuEvent`: right-click selects the row under the cursor, then
+  shows a `QMenu` with a single "Remove File" action (enabled when a file is
+  selected), wired to `FileBrowserVM.unload_selected()`.
+
+```mermaid
+graph TD
+    CtxMenu["FileBrowserView: Remove File"] --> FBVM["FileBrowserVM.unload_selected()"]
+    FBVM --> AppVM["AppViewModel.unload_file(key)"]
+    AppVM -->|remove_group| Session[Session]
+    AppVM -. notify active_file .-> CBVM[ChannelBrowserVM → empty]
+    AppVM -. notify unloaded .-> FBVM2[FileBrowserVM → refresh list]
+    AppVM -. notify unloaded .-> GAVM[GraphAreaVM → panels.prune_missing_signals]
+    GAVM --> GPVM["GraphPanelVM: prune + _normalize_axes"]
+```
+
 ## Testing Strategy
 
 1.  **VM Unit Tests**:
     - Verify `AppViewModel.set_active_file` notifies observers.
     - Verify `ChannelBrowserVM` updates its list correctly when `active_file_key` changes.
+    - Verify `AppViewModel.unload_file` removes the group, clears the active file when
+      it matches, and notifies `"unloaded"`.
+    - Verify `GraphPanelVM.prune_missing_signals` drops only signals absent from the
+      Session and reconciles axes (no empty region).
 2.  **Adapter Tests**:
     - Verify `SignalTableModel` correctly maps `signal.metadata["unit"]` to column 1.
 3.  **Integration Tests**:
     - Use `QtBot` to select an item in `FileBrowserView` and assert that `ChannelBrowserView` displays the expected signals.
+    - Unload a file whose signals are plotted; assert the curves and any now-empty
+      axis are gone and the file leaves the FileBrowser list.
