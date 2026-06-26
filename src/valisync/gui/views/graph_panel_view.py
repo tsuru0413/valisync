@@ -73,31 +73,6 @@ def pan_range(lo: float, hi: float, delta: float) -> tuple[float, float]:
     return (lo + delta, hi + delta)
 
 
-def full_y_range(
-    y_lo: float, y_hi: float, top_ratio: float, height_ratio: float
-) -> tuple[float, float]:
-    """Calculate the full ViewBox Y-range to map [y_lo, y_hi] to a sub-region.
-
-       This implements the 'unclipped overlay' mapping (R4).
-    The full ViewBox
-       occupies the entire panel; we set its Y-range such that the data range
-       [y_lo, y_hi] corresponds to the vertical strip [top_ratio, top_ratio+height].
-    """
-    if height_ratio <= 0:
-        return y_lo, y_hi
-
-    # Formulas derived from linear mapping:
-    # Y_full_lo = y_hi - (1 - top_ratio) * (y_hi - y_lo) / height_ratio
-    # Y_full_hi = y_hi + top_ratio * (y_hi - y_lo) / height_ratio
-    span = y_hi - y_lo
-    if span <= 0:
-        span = 1.0  # Avoid division by zero
-
-    full_lo = y_hi - (1 - top_ratio) * span / height_ratio
-    full_hi = y_hi + top_ratio * span / height_ratio
-    return full_lo, full_hi
-
-
 def classify_zone(
     px: float,
     py: float,
@@ -248,21 +223,39 @@ class GraphPanelView(QWidget):
             item.setData(curve.timestamps, curve.values)
             item.setPen(pg.mkPen(curve.color))
 
-        # 5. Update Ranges
+        # 5. Update geometry and ranges
+        # The overlaid secondary ViewBoxes must track the master's plot rect on
+        # every render (the layout reflows the master after axis/divider changes).
+        self._sync_overlay_geometry()
+
         # Shared X-range
         if self.vm.x_range is not None:
             for vb in self._view_boxes:
                 vb.setXRange(*self.vm.x_range, padding=0)
 
-        # Individual Y-ranges (using unclipped overlay formula)
+        # Per-axis Y mapping: the ViewBox gets the expanded *virtual* range so its
+        # data lands in its home region, while the AxisItem shows the real data
+        # range so its tick labels stay correct.
         for i, axis_vm in enumerate(self.vm.axes):
             if axis_vm.y_range is not None:
-                vb = self._view_boxes[i]
                 y_lo, y_hi = axis_vm.y_range
-                full_lo, full_hi = full_y_range(
-                    y_lo, y_hi, axis_vm.top_ratio, axis_vm.height_ratio
-                )
-                vb.setYRange(full_lo, full_hi, padding=0)
+                full_lo, full_hi = axis_vm.calculate_virtual_range()
+                self._view_boxes[i].setYRange(full_lo, full_hi, padding=0)
+                self._y_axes[i].setRange(y_lo, y_hi)
+
+    def _sync_overlay_geometry(self) -> None:
+        """Align every overlaid ViewBox to the master's plot rect.
+
+        Secondary ViewBoxes live directly in the scene (so waveforms draw
+        unclipped across the whole panel); their geometry must follow the
+        master's, otherwise they keep a stale rect and render their waveforms
+        outside their home region.
+        """
+        if not self._view_boxes:
+            return
+        rect = self._view_boxes[0].sceneBoundingRect()
+        for vb in self._view_boxes[1:]:
+            vb.setGeometry(rect)
 
     def _reconcile_axes(self) -> None:
         """Ensure the number of AxisItems, ViewBoxes, and Dividers matches the VM."""
@@ -318,9 +311,10 @@ class GraphPanelView(QWidget):
             else:
                 vb.setXLink(master_vb)
 
-            # Create AxisItem
+            # Create AxisItem. It is NOT linked to the ViewBox: the ViewBox uses
+            # an expanded virtual range, so the axis range is driven directly
+            # (refresh -> setRange) with the real data range instead.
             axis = pg.AxisItem(orientation="left")
-            axis.linkToView(vb)
             if axis_vm.unit:
                 axis.setLabel(units=axis_vm.unit)
             self._y_axes.append(axis)
@@ -338,13 +332,10 @@ class GraphPanelView(QWidget):
                 self.plot_widget.addItem(vb, row=0, col=1)
                 master_vb = vb
             else:
-                # Secondary ViewBoxes are added to the scene and follow the master's geometry
+                # Secondary ViewBoxes are added to the scene and overlay the
+                # master's plot rect (kept in sync by _sync_overlay_geometry).
                 vb.setXLink(master_vb)
                 self.plot_widget.scene().addItem(vb)
-                master_vb.sigResized.connect(
-                    lambda vb=vb, master=master_vb: vb.setGeometry(master.geometry())
-                )
-                vb.setGeometry(master_vb.geometry())
 
             # Add Divider if not the last axis
             if i < n_axes - 1:
@@ -354,9 +345,14 @@ class GraphPanelView(QWidget):
                 self._axis_layout.addItem(divider, row=row + 1, col=0)
                 self._axis_layout.layout.setRowFixedHeight(row + 1, 1)
 
+        # The VM always holds at least one axis, so the master ViewBox is set.
+        assert master_vb is not None
         # Add X-axis at the bottom (Row 1, Col 1)
         self.plot_widget.addItem(self._x_axis, row=1, col=1)
         self._x_axis.linkToView(master_vb)
+        # Keep overlays aligned when the window (and thus the master) resizes
+        # without a VM change, since refresh() is not called in that case.
+        master_vb.sigResized.connect(self._sync_overlay_geometry)
         # Add legend to the master ViewBox
         self._legend.setParentItem(master_vb)
 

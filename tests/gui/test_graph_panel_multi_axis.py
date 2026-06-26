@@ -190,3 +190,71 @@ class TestMultiAxisLayout:
         root_layout = view.plot_widget.ci.layout
         assert root_layout.rowStretchFactor(0) == 1
         assert root_layout.rowStretchFactor(1) == 0
+
+    def test_waveforms_render_in_their_home_regions(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        """Each axis's data range must map into its own vertical region.
+
+        Regression for the multi-ViewBox vertical-transform bug: secondary
+        ViewBoxes kept stale geometry, so their waveforms were drawn outside
+        their home region (e.g. the bottom region rendered empty).
+        """
+        session, _ = _loaded_session(tmp_path, n_signals=3)
+        keys = _keys(session)
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal_to_axis(keys[0], 0)
+        vm.create_new_axis(keys[1])
+        vm.create_new_axis(keys[2])
+
+        view.resize(1000, 700)
+        view.show()
+        qtbot.waitExposed(view)
+        # Wait until the layout assigns the plot area real geometry.
+        qtbot.waitUntil(
+            lambda: view._view_boxes[0].geometry().height() > 100, timeout=2000
+        )
+        view.refresh()
+
+        master = view._view_boxes[0].geometry()
+        top, height = master.y(), master.height()
+        for i, axis_vm in enumerate(vm.axes):
+            assert axis_vm.y_range is not None
+            y_lo, y_hi = axis_vm.y_range
+            p_hi = view._view_boxes[i].mapViewToScene(QPointF(0.0, y_hi)).y()
+            p_lo = view._view_boxes[i].mapViewToScene(QPointF(0.0, y_lo)).y()
+            band_top = top + axis_vm.top_ratio * height
+            band_bot = top + (axis_vm.top_ratio + axis_vm.height_ratio) * height
+            tol = 2.0
+            assert band_top - tol <= p_hi <= band_bot + tol, (
+                f"axis {i}: data top maps to {p_hi:.1f}, "
+                f"home band [{band_top:.1f}, {band_bot:.1f}]"
+            )
+            assert band_top - tol <= p_lo <= band_bot + tol, (
+                f"axis {i}: data bottom maps to {p_lo:.1f}, "
+                f"home band [{band_top:.1f}, {band_bot:.1f}]"
+            )
+
+    def test_y_axis_shows_data_range_not_virtual(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        """Y-axis ticks must reflect the data range, not the expanded virtual range.
+
+        The ViewBox uses an expanded 'virtual' range to place data in a sub-region;
+        the AxisItem must still display the real data range so its labels are correct.
+        """
+        session, _ = _loaded_session(tmp_path, n_signals=2)
+        keys = _keys(session)
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal_to_axis(keys[0], 0)
+        vm.create_new_axis(keys[1])
+        view.refresh()
+
+        for i, axis_vm in enumerate(vm.axes):
+            assert axis_vm.y_range is not None
+            lo, hi = axis_vm.y_range
+            ax_lo, ax_hi = view._y_axes[i].range
+            assert ax_lo == pytest.approx(lo, abs=1e-6), f"axis {i} low"
+            assert ax_hi == pytest.approx(hi, abs=1e-6), f"axis {i} high"
