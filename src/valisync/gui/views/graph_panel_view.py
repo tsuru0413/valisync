@@ -48,6 +48,14 @@ ZONE_Y_INNER = "y_inner"
 ZONE_Y_OUTER = "y_outer"
 ZONE_NONE = "none"
 
+# Fixed pixel width shared by every stacked Y-axis so their tick spines (and
+# right-aligned tick numbers) line up into one vertical edge. Sized for ~6-digit
+# / scientific labels (e.g. "-1.2e+06" ≈ 48px) plus tick marks and the unit
+# label. Fixed — not data-dependent — so the layout never shifts when the
+# displayed signals change. Larger magnitudes stay within it via pyqtgraph's
+# automatic SI-prefix / scientific tick formatting.
+_Y_AXIS_FIXED_WIDTH = 72
+
 # Wheel zoom factors (factor < 1 zooms in, keeping the cursor fixed).
 _WHEEL_IN = 0.8
 _WHEEL_OUT = 1.25
@@ -146,7 +154,7 @@ class GraphPanelView(QWidget):
         self.plot_widget = pg.GraphicsLayoutWidget()
         # The central layout manages axes in col 0 and the plot area in col 1.
         self._layout = self.plot_widget.ci.layout
-        self._layout.setColumnFixedWidth(0, 60)  # Width for Y-axes
+        self._layout.setColumnFixedWidth(0, _Y_AXIS_FIXED_WIDTH)  # Width for Y-axes
 
         # Shared X-axis at the bottom (linked to the first ViewBox).
         self._x_axis = pg.AxisItem(orientation="bottom")
@@ -293,7 +301,7 @@ class GraphPanelView(QWidget):
         # Row 0: Axes (Col 0), ViewBoxes (Col 1)
         # Row 1: empty (Col 0), X-axis (Col 1)
         root = self.plot_widget.ci.layout
-        root.setColumnFixedWidth(0, 60)
+        root.setColumnFixedWidth(0, _Y_AXIS_FIXED_WIDTH)
         root.setColumnStretchFactor(1, 1)  # Ensure plot area takes remaining width
         root.setRowStretchFactor(0, 1)
         root.setRowStretchFactor(1, 0)  # Fixed height for X-axis
@@ -322,6 +330,9 @@ class GraphPanelView(QWidget):
             # an expanded virtual range, so the axis range is driven directly
             # (refresh -> setRange) with the real data range instead.
             axis = pg.AxisItem(orientation="left")
+            # Fixed width shared by all stacked axes so their spines/tick numbers
+            # align; overrides pyqtgraph's per-axis auto-width (which is ragged).
+            axis.setWidth(_Y_AXIS_FIXED_WIDTH)
             if axis_vm.unit:
                 axis.setLabel(units=axis_vm.unit)
             self._y_axes.append(axis)

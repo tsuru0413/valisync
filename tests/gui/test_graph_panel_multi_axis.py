@@ -387,3 +387,28 @@ class TestMultiAxisLayout:
         assert after[2] == pytest.approx(before[2], abs=1e-3)
         # Ratios always remain a valid partition of the panel height.
         assert sum(after) == pytest.approx(1.0, abs=1e-6)
+
+    def test_stacked_yaxes_share_one_fixed_width(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        """All stacked Y-axes use a single fixed width.
+
+        So their tick spines (and right-aligned tick numbers) line up into one
+        vertical edge instead of being ragged per label magnitude. The width is
+        fixed (not data-dependent) and wide enough for ~6 digits / scientific
+        notation, so the layout never shifts when the displayed signals change.
+        """
+        session, _ = _loaded_session(tmp_path, n_signals=3)
+        keys = _keys(session)
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.create_new_axis(keys[0])
+        vm.create_new_axis(keys[1])
+        vm.create_new_axis(keys[2])
+        view.refresh()
+
+        widths = [round(ax.width(), 1) for ax in view._y_axes]
+        # One uniform width across every stacked axis.
+        assert len(set(widths)) == 1, f"ragged Y-axis widths: {widths}"
+        # Wide enough for ~6-digit / scientific labels (e.g. "-1.2e+06").
+        assert widths[0] >= 60, f"fixed Y-axis width too small: {widths[0]}"
