@@ -33,8 +33,8 @@ Finalize the contextual signal addition logic.
 
 - [x] Task 3.1: Implement Drop Zone logic in `AxisItem` (Join Axis).
 - [x] Task 3.2: Implement Drop Zone logic in plot area (New Region).
-- [ ] Task 3.3: Final E2E Verification.
-  - [ ] **Verify**: Run `uv run valisync`, drag multiple signals with different units, adjust their heights, and verify auto-fit scaling and unclipped rendering.
+- [x] Task 3.3: Final E2E Verification.
+  - [x] **Verify**: Run `uv run valisync`, drag multiple signals with different units, adjust their heights, and verify auto-fit scaling and unclipped rendering. — auto-fit / unclipped / multi-unit は自動テスト + 実 `tests/fixtures/sample.mf4` 駆動で検証。divider ドラッグによる高さ調整は `test_dragging_divider_resizes_adjacent_regions` で回帰テスト化。D&D は `TestContextualDrop` でカバー。
 
 ---
 
