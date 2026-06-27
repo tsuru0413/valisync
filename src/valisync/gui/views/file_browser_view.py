@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from PySide6.QtCore import QPoint
 from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtWidgets import QListView, QMenu, QVBoxLayout, QWidget
 
@@ -57,11 +58,24 @@ class FileBrowserView(QWidget):
         menu.addAction("Remove File").triggered.connect(lambda *_: self._vm.unload(row))
         return menu
 
-    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
-        """Right-click a row: select it, then offer 'Remove File' (R7.1)."""
-        pos = self.list_view.viewport().mapFromGlobal(event.globalPos())
+    def _select_row_at(self, global_pos: QPoint) -> int | None:
+        """Resolve the list row under *global_pos*, select it, and return it.
+
+        Returns None when the position is not over a valid row (e.g. the empty
+        area below the list), so the caller shows no menu. Extracted from
+        contextMenuEvent so this resolution is unit-testable without the modal
+        ``QMenu.exec()``.
+        """
+        pos = self.list_view.viewport().mapFromGlobal(global_pos)
         index = self.list_view.indexAt(pos)
         if not index.isValid():
-            return
+            return None
         self.list_view.setCurrentIndex(index)  # right-click selects the row
-        self.build_context_menu(index.row()).exec(event.globalPos())
+        return index.row()
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        """Right-click a row: select it, then offer 'Remove File' (R7.1)."""
+        row = self._select_row_at(event.globalPos())
+        if row is None:
+            return
+        self.build_context_menu(row).exec(event.globalPos())
