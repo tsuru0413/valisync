@@ -560,3 +560,17 @@ def test_normalize_splits_height_per_column() -> None:
     vm.axes[1].column = 0
     vm._normalize_axes()
     assert all(a.height_ratio == 1.0 for a in vm.axes)
+
+
+# ─── Task 0.3: create_new_axis targets inner column (rule A) ─────────────────
+
+
+def test_new_axis_lands_in_inner_column() -> None:
+    from valisync.core.session import Session
+
+    vm = GraphPanelVM(Session())
+    _inject_signal(vm, "sig::a")  # first signal — reuses placeholder axis 0
+    assert vm.axes[0].column == vm.column_count - 1  # placeholder must be in inner col
+    vm.create_new_axis("sig::b")
+    assert all(a.column == vm.column_count - 1 for a in vm.axes)  # both inner, stacked
+    assert [a.height_ratio for a in vm.axes] == [0.5, 0.5]

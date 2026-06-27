@@ -81,8 +81,8 @@ class GraphPanelVM(Observable):
         self._session = session
         self._plotted: list[_PlottedEntry] = []
         self.x_range: tuple[float, float] | None = None
-        self._axes: list[YAxisVM] = [YAxisVM()]
         self._column_count: int = 2
+        self._axes: list[YAxisVM] = [YAxisVM(column=self._column_count - 1)]
         self.panel_width_px: int = 800
         self.lod_active: bool = False
         self.last_rendered_points: int = 0
@@ -157,7 +157,7 @@ class GraphPanelVM(Observable):
         prunes any empty axis (e.g. the initial placeholder) so the first signal
         fills the whole panel and subsequent signals split it into equal regions.
         """
-        self._axes.append(YAxisVM())
+        self._axes.append(YAxisVM(column=self._column_count - 1))
         self.add_signal_to_axis(signal_key, len(self._axes) - 1)
         self._normalize_axes()
         self._notify("axes")
