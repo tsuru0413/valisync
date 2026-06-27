@@ -451,3 +451,40 @@ class TestMultiAxisLayout:
         assert vm.axes[0].name == short
         assert view._y_axes[0].labelText == short
         assert view._y_axes[0].labelUnits == "V"
+
+    def test_remove_signal_prunes_now_empty_axis(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        """Removing the only signal on an axis drops that axis (no empty region)."""
+        session, _ = _loaded_session(tmp_path, n_signals=2)
+        keys = _keys(session)
+        vm = GraphPanelVM(session)
+        vm.create_new_axis(keys[0])
+        vm.create_new_axis(keys[1])
+        assert len(vm.axes) == 2
+
+        vm.remove_signal(keys[0])
+
+        assert len(vm.axes) == 1  # empty axis pruned
+        assert vm.axes[0].height_ratio == 1.0
+        plotted = [p["signal_key"] for p in vm.inspect()["plotted_signals"]]
+        assert plotted == [keys[1]]
+
+    def test_prune_missing_signals_drops_signals_absent_from_session(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        """prune_missing_signals removes plotted entries no longer in the Session."""
+        session, _ = _loaded_session(tmp_path, n_signals=2)
+        keys = _keys(session)
+        vm = GraphPanelVM(session)
+        vm.create_new_axis(keys[0])
+        vm.create_new_axis(keys[1])
+
+        # Simulate keys[0] no longer existing in the Session.
+        remaining = [s for s in session.signals() if s.name != keys[0]]
+        session.signals = lambda: remaining  # type: ignore[method-assign]
+        vm.prune_missing_signals()
+
+        plotted = [p["signal_key"] for p in vm.inspect()["plotted_signals"]]
+        assert plotted == [keys[1]]
+        assert len(vm.axes) == 1  # axes reconciled
