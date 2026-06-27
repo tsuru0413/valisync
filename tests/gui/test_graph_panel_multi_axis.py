@@ -101,7 +101,14 @@ class TestContextualDrop:
         assert vm.axes[0].height_ratio == 1.0
         assert vm.axes[0].top_ratio == 0.0
 
-    def test_drop_on_y_axis_joins_that_axis(self, qtbot: QtBot, tmp_path: Path) -> None:
+    def test_plain_drop_on_empty_y_axis_places_signal(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        """Plain drop (no modifier) onto an empty axis writes the signal onto axis 0.
+
+        Under R5 this is an overwrite of an empty axis — the observable result is
+        the same as the old join behaviour: the signal lands on axis 0.
+        """
         session, _ = _loaded_session(tmp_path)
         key = _keys(session)[0]
         vm = GraphPanelVM(session)
@@ -126,6 +133,122 @@ class TestContextualDrop:
         plotted = vm.inspect()["plotted_signals"]
         assert plotted[0]["signal_key"] == key
         assert plotted[0]["axis_index"] == 0
+
+    def test_plain_drop_on_populated_axis_overwrites(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        """Plain drop (no modifier) onto a populated axis replaces its signals.
+
+        R5 key behaviour: a plain drop replaces the axis contents — signal A is
+        removed and only the dropped signal B remains on axis 0.
+        """
+        from PySide6.QtWidgets import QApplication
+
+        session, _ = _loaded_session(tmp_path, n_signals=2)
+        key_a, key_b = _keys(session)[:2]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        # Populate axis 0 with signal A.
+        vm.add_signal_to_axis(key_a, 0)
+
+        # Stub geometry helpers so the drop hits ZONE_Y_INNER / axis 0.
+        view._zone_at = lambda pos: "y_inner"  # type: ignore
+        view._axis_index_at = lambda pos: 0  # type: ignore
+
+        # Hold mime in a local variable — GC'd mime mid-send is a known pitfall.
+        mime = encode_signal_keys([key_b])
+        event = QDropEvent(
+            QPointF(10.0, 100.0),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        # Try sendEvent for the real Qt dispatch path; dropEvent is the fallback.
+        routed = QApplication.sendEvent(view, event)
+        if not routed or _signals_on_axis(vm, 0) == [key_a]:
+            # sendEvent did not route to dropEvent under offscreen — use handler path.
+            view.dropEvent(event)
+
+        # Plain drop must replace: only key_b remains, key_a is gone.
+        assert _signals_on_axis(vm, 0) == [key_b]
+
+    def test_ctrl_drop_on_populated_axis_adds_signal(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        """Ctrl+drop onto a populated axis adds the new signal (keeps both).
+
+        R5: Ctrl modifier means join — the existing signal and the dropped signal
+        must both be present on axis 0 after the drop.
+        """
+        from PySide6.QtWidgets import QApplication
+
+        session, _ = _loaded_session(tmp_path, n_signals=2)
+        key_a, key_b = _keys(session)[:2]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        # Populate axis 0 with signal A.
+        vm.add_signal_to_axis(key_a, 0)
+
+        view._zone_at = lambda pos: "y_inner"  # type: ignore
+        view._axis_index_at = lambda pos: 0  # type: ignore
+
+        mime = encode_signal_keys([key_b])
+        event = QDropEvent(
+            QPointF(10.0, 100.0),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.ControlModifier,
+        )
+        routed = QApplication.sendEvent(view, event)
+        if not routed or key_b not in _signals_on_axis(vm, 0):
+            view.dropEvent(event)
+
+        # Ctrl-add must keep both signals.
+        assert set(_signals_on_axis(vm, 0)) == {key_a, key_b}
+
+    def test_plain_drop_on_plot_background_creates_new_axis(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        """Plain drop on the plot background creates a new axis (unchanged R5 rule).
+
+        The plot-background branch is unaffected by the R5 overwrite/Ctrl-add
+        change — each dropped signal still calls create_new_axis.
+
+        Pre-populate axis 0 with key_a so the placeholder is already consumed;
+        then a plot drop of key_b must create a second axis (len goes 1 → 2).
+        """
+        from PySide6.QtWidgets import QApplication
+
+        session, _ = _loaded_session(tmp_path, n_signals=2)
+        key_a, key_b = _keys(session)[:2]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        # Consume the placeholder so the VM is in a real (non-trivial) state.
+        vm.add_signal_to_axis(key_a, 0)
+        before = len(vm.axes)  # == 1
+
+        view._zone_at = lambda pos: "plot"  # type: ignore
+
+        mime = encode_signal_keys([key_b])
+        event = QDropEvent(
+            QPointF(100.0, 100.0),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        routed = QApplication.sendEvent(view, event)
+        if not routed or len(vm.axes) == before:
+            # sendEvent did not route to dropEvent under offscreen — use handler path.
+            view.dropEvent(event)
+
+        # A new axis must have been created (1 → 2).
+        assert len(vm.axes) > before
 
     def test_drop_multiple_signals_on_plot_creates_multiple_axes(
         self, qtbot: QtBot, tmp_path: Path

@@ -646,13 +646,23 @@ class GraphPanelView(QWidget):
 
         pos = event.position()
         zone = self._zone_at(pos)
+        ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
 
-        for key in keys:
-            if zone in (ZONE_Y_INNER, ZONE_Y_OUTER):
-                axis_idx = self._axis_index_at(pos)
-                self.vm.add_signal_to_axis(key, axis_idx)
+        if zone in (ZONE_Y_INNER, ZONE_Y_OUTER):
+            axis_idx = self._axis_index_at(pos)
+            if ctrl:
+                # Ctrl = join: add each dropped signal alongside existing ones.
+                for key in keys:
+                    self.vm.add_signal_to_axis(key, axis_idx)
             else:
-                # Dropped on plot area (ZONE_PLOT) or elsewhere: create new axis
+                # Plain drop = overwrite (R5): replace axis contents with ALL
+                # dropped signals — first via overwrite, rest via add.
+                self.vm.overwrite_axis(keys[0], axis_idx)
+                for key in keys[1:]:
+                    self.vm.add_signal_to_axis(key, axis_idx)
+        else:
+            # Dropped on plot area (ZONE_PLOT) or elsewhere: create new axis.
+            for key in keys:
                 self.vm.create_new_axis(key)
 
         event.acceptProposedAction()
