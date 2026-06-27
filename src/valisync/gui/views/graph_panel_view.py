@@ -418,17 +418,26 @@ class GraphPanelView(QWidget):
             sub.addItem(axis, row=row_of[i], col=0)
             sub.layout.setRowStretchFactor(row_of[i], int(axis_vm.height_ratio * 1000))
 
-        # Dividers sit between consecutive axes within a column, just below the
-        # upper axis. axis_index keeps today's VM-index resize semantics (proper
-        # column-scoped resize is a follow-up); existing single-column dividers
-        # are unaffected since order matches there.
-        for i in range(len(self.vm.axes) - 1):
-            divider = RegionDividerItem(self.vm, i)
-            self._dividers.append(divider)
-            sub = self._axis_layouts[col_of[i]]
-            drow = row_of[i] + 1
-            sub.addItem(divider, row=drow, col=0)
-            sub.layout.setRowFixedHeight(drow, 1)
+        # Dividers sit between vertically-consecutive axes WITHIN a column, just
+        # below the upper axis. The divider's axis_index is the upper axis's
+        # vertical RANK in its column (not a VM index) and it carries that
+        # column, so resize_axis stays column-scoped and follows vertical
+        # (top_ratio) order — correct even when VM-index order diverges from
+        # vertical order after a move_axis_to_column. ``placement`` is grouped by
+        # column then ranked top→bottom, so counting per column gives each
+        # column's vertical axis count; a divider at vertical rank k sits at
+        # sub-layout row ``k*2 + 1`` (between axis rows ``k*2`` and ``(k+1)*2``).
+        axes_per_col: dict[int, int] = {}
+        for _vm_index, col, _row in placement:
+            axes_per_col[col] = axes_per_col.get(col, 0) + 1
+        for col, n_axes in axes_per_col.items():
+            sub = self._axis_layouts[col]
+            for rank in range(n_axes - 1):
+                divider = RegionDividerItem(self.vm, rank, column=col)
+                self._dividers.append(divider)
+                drow = rank * 2 + 1
+                sub.addItem(divider, row=drow, col=0)
+                sub.layout.setRowFixedHeight(drow, 1)
 
         # The VM always holds at least one axis, so the master ViewBox is set.
         assert master_vb is not None

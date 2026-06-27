@@ -700,3 +700,81 @@ def test_view_builds_one_sublayout_per_column(qtbot: QtBot) -> None:
 
     assert sorted(view.axis_columns()) == [0, 1]
     assert view.plot_grid_column() == 2
+
+
+# ─── Task 1.2: column-scoped, vertical-order resize_axis + within-column handles ─
+
+
+def test_resize_axis_is_scoped_to_one_column() -> None:
+    """A column-scoped resize moves the divider between that column's
+    vertically-adjacent pair and never touches another column's axes.
+
+    A lone OUTER-column axis makes VM-index order diverge from the inner
+    column's vertical order, so a VM-index-based resize would be wrong; the
+    column-scoped path must resize the inner pair only.
+    """
+    from valisync.core.session import Session
+
+    vm = GraphPanelVM(Session())
+    _inject_signal(vm, "sig::a")
+    vm.move_axis_to_column(0, 0)  # lone axis in OUTER col 0
+    vm.create_new_axis("sig::b")
+    vm.create_new_axis("sig::c")  # two axes in INNER col
+    inner = vm.column_count - 1
+    top, bot = _col(vm, inner)  # inner pair, top->bottom
+    outer = _col(vm, 0)[0]  # lone outer axis (1.0)
+    vm.resize_axis(0, 0.1, column=inner)  # grow inner top axis by 0.1
+    assert top.height_ratio + bot.height_ratio == pytest.approx(1.0)  # column fills
+    assert top.height_ratio > bot.height_ratio  # top grew
+    assert outer.height_ratio == pytest.approx(1.0)  # OTHER column untouched
+
+
+def test_dragging_divider_is_column_scoped(qtbot: QtBot, tmp_path: Path) -> None:
+    """Handler-path: dragging a within-column divider resizes that column's
+    vertically-adjacent pair (top grows, bottom shrinks) — not a VM-index pair.
+
+    A lone OUTER-column axis makes VM-index order diverge from the inner
+    column's vertical order, so a VM-index-based resize would touch the wrong
+    (cross-column) axes; the column-scoped divider must not.
+
+    Honest-layering note: this drives ``RegionDividerItem.mouseDragEvent``
+    directly (the divider-style handler path), NOT a full ``sendEvent`` Layer B;
+    the real OS drag path is confirmed by Layer C / manual per
+    ``docs/gui-testing-layers.md``.
+    """
+    session, _ = _loaded_session(tmp_path, n_signals=3)
+    keys = _keys(session)
+    vm = GraphPanelVM(session)
+    view = _make_view(qtbot, vm)
+    vm.add_signal_to_axis(keys[0], 0)
+    vm.move_axis_to_column(0, 0)  # lone axis in OUTER col 0
+    vm.create_new_axis(keys[1])  # INNER col, top
+    vm.create_new_axis(keys[2])  # INNER col, bottom
+    inner = vm.column_count - 1
+
+    view.resize(1000, 700)
+    view.show()
+    qtbot.waitExposed(view)
+    qtbot.waitUntil(lambda: view._view_boxes[0].geometry().height() > 100, timeout=2000)
+
+    top, bot = _col(vm, inner)
+    before_top, before_bot = top.height_ratio, bot.height_ratio
+    assert before_top == pytest.approx(0.5) and before_bot == pytest.approx(0.5)
+    outer_before = _col(vm, 0)[0].height_ratio
+
+    divider = view._dividers[0]  # within-column divider for the inner pair
+    view_h = divider.getViewWidget().height()
+    assert view_h > 0
+    dy = 0.15 * view_h  # drag down by 15% of the view height
+    divider.mouseDragEvent(_DragEvent(QPointF(0, 0), QPointF(0, 0), start=True))
+    divider.mouseDragEvent(_DragEvent(QPointF(0, dy), QPointF(0, 0)))
+    divider.mouseDragEvent(_DragEvent(QPointF(0, dy), QPointF(0, dy), finish=True))
+
+    delta = dy / view_h  # == 0.15
+    top, bot = _col(vm, inner)  # re-read (top_ratio may have shifted)
+    assert top.height_ratio == pytest.approx(before_top + delta, abs=1e-3)
+    assert bot.height_ratio == pytest.approx(before_bot - delta, abs=1e-3)
+    assert top.height_ratio > bot.height_ratio  # top region grew
+    assert sum(a.height_ratio for a in _col(vm, inner)) == pytest.approx(1.0, abs=1e-6)
+    # The OTHER column's lone axis is untouched (no cross-column resize).
+    assert _col(vm, 0)[0].height_ratio == pytest.approx(outer_before)

@@ -14,10 +14,15 @@ if TYPE_CHECKING:
 class RegionDividerItem(pg.GraphicsWidget):
     """A horizontal divider that can be dragged to resize adjacent axes."""
 
-    def __init__(self, vm: GraphPanelVM, axis_index: int) -> None:
+    def __init__(
+        self, vm: GraphPanelVM, axis_index: int, column: int | None = None
+    ) -> None:
         super().__init__()
         self.vm = vm
+        # When ``column`` is set, ``axis_index`` is the upper axis's vertical
+        # RANK within that column; otherwise it is the legacy VM index.
         self.axis_index = axis_index
+        self.column = column
         self._hovering = False
         self.setAcceptHoverEvents(True)
         # Give it some thickness for easier dragging
@@ -70,5 +75,11 @@ class RegionDividerItem(pg.GraphicsWidget):
                 height = view.height()
                 if height > 0:
                     delta_ratio = delta.y() / height
-                    self.vm.resize_axis(self.axis_index, delta_ratio)
+                    if self.column is None:
+                        # Legacy call kept byte-identical (no column kwarg).
+                        self.vm.resize_axis(self.axis_index, delta_ratio)
+                    else:
+                        self.vm.resize_axis(
+                            self.axis_index, delta_ratio, column=self.column
+                        )
             ev.accept()
