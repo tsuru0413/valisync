@@ -8,12 +8,30 @@ Tests verify:
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QListView
+from PySide6.QtCore import QPoint
+from PySide6.QtGui import QContextMenuEvent
+from PySide6.QtWidgets import QApplication, QListView
 from pytestqt.qtbot import QtBot
 
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
 from valisync.gui.views.file_browser_view import FileBrowserView
+
+
+def _send_context_menu_event(list_view: QListView, pos: QPoint) -> None:
+    """Deliver a real ``QContextMenuEvent`` to the list's viewport at *pos*.
+
+    This drives the SAME path a real OS right-click takes — viewport →
+    ``CustomContextMenu`` policy → ``customContextMenuRequested`` — instead of
+    emitting the signal directly. A regression in that routing (e.g. the context
+    menu policy being dropped) is therefore caught here, not silently passed by a
+    direct ``emit`` (see docs/gui-testing-layers.md, Layer B).
+    """
+    global_pos = list_view.viewport().mapToGlobal(pos)
+    QApplication.sendEvent(
+        list_view.viewport(),
+        QContextMenuEvent(QContextMenuEvent.Reason.Mouse, pos, global_pos),
+    )
 
 
 def test_view_contains_list_view(qtbot: QtBot) -> None:
@@ -111,14 +129,16 @@ def test_list_uses_custom_context_menu_policy(qtbot: QtBot) -> None:
 def test_right_click_on_row_opens_remove_menu_and_unloads(
     qtbot: QtBot, monkeypatch
 ) -> None:
-    """User-operation-equivalent: emit customContextMenuRequested — the signal Qt
-    fires on a real right-click on the list — at a row's position, and assert the
-    'Remove File' menu is built for that row, the row is selected, and triggering
-    the action unloads the file.
+    """User-operation-equivalent: send a real ``QContextMenuEvent`` to the list's
+    viewport at a row's position (the SAME routing a real OS right-click drives:
+    viewport → CustomContextMenu policy → customContextMenuRequested), and assert
+    the 'Remove File' menu is built for that row, the row is selected, and
+    triggering the action unloads the file.
 
-    This drives the SAME entry point a real right-click uses (the signal), so it
-    catches missing/incorrect wiring that a direct contextMenuEvent call cannot.
-    The modal .exec() is absorbed by spying build_context_menu (no headless block).
+    Sending the event (not emitting the signal) is what makes this a Layer-B test:
+    it exercises the policy + signal wiring, so dropping the context-menu policy —
+    which would break the real GUI while a direct ``emit`` still passed — fails
+    here. The modal .exec() is absorbed by spying build_context_menu.
     """
     from datetime import datetime
     from pathlib import Path
@@ -155,9 +175,10 @@ def test_right_click_on_row_opens_remove_menu_and_unloads(
 
     monkeypatch.setattr(view, "build_context_menu", spy_build)
 
-    # The signal carries a viewport-relative position; fire it over row 1 (b.csv).
+    # Drive a real QContextMenuEvent over row 1 (b.csv) — the SAME routing a real
+    # OS right-click uses, not a direct signal emit.
     pos = view.list_view.visualRect(view.model.index(1, 0)).center()
-    view.list_view.customContextMenuRequested.emit(pos)
+    _send_context_menu_event(view.list_view, pos)
 
     assert captured["row"] == 1
     assert view.list_view.currentIndex().row() == 1
@@ -168,12 +189,10 @@ def test_right_click_on_row_opens_remove_menu_and_unloads(
 
 
 def test_right_click_on_empty_area_shows_no_menu(qtbot: QtBot, monkeypatch) -> None:
-    """A right-click below the items (empty area) builds no menu."""
+    """A real right-click below the items (empty area) builds no menu."""
     from datetime import datetime
     from pathlib import Path
     from unittest.mock import Mock
-
-    from PySide6.QtCore import QPoint
 
     from valisync.core.models import SignalGroup
 
@@ -193,6 +212,6 @@ def test_right_click_on_empty_area_shows_no_menu(qtbot: QtBot, monkeypatch) -> N
         view, "build_context_menu", lambda row: built.append(row) or Mock()
     )
 
-    view.list_view.customContextMenuRequested.emit(QPoint(5, 10_000))
+    _send_context_menu_event(view.list_view, QPoint(5, 10_000))
 
     assert built == []  # no menu for empty space

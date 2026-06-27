@@ -155,8 +155,19 @@ git fetch --prune origin    # stale な remote tracking ref を掃除
 - 緊急性が低い → PR で履歴管理した方が後から経緯を追いやすい
 - ただし、**実装直後に CLAUDE.md / steering 更新するケース** (タスク完了の整理として) は実装と同じブランチ・PR にまとめてよい
 
-## 7. 関連ドキュメント
+## 7. GUI 実装時のテストレイヤー（必須）
+
+GUI（PySide6 / pyqtgraph）の機能・ユーザー操作を実装/変更するときは、**テストレイヤー方針に従うことを必須**とする。詳細・必須早見表: `docs/gui-testing-layers.md`。
+
+- **Layer A（ヘッドレス状態検証）**: 常に必須（CI）。
+- **Layer B（ヘッドレス実イベント経路検証 / `sendEvent`）**: **入力イベント（右クリック・D&D・キー・ドロップ等）に関わる変更では必須**（CI）。シグナルを直接 `emit` して済ませない（経路破壊を見逃すため）。
+- **Layer C（実 OS 入力 / `--realgui`）**: イベント経路を新規実装/変更したときはローカルで実機確認（`uv run pytest --realgui tests/realgui/`）。CI 除外。
+
+> 背景: PR #11 で「テストは緑だが実 GUI で右クリックメニューが出ない」false green が発生したため、入力系は実経路（Layer B）を必ず通す運用とした。
+
+## 8. 関連ドキュメント
 
 - `docs/development.md` — ローカル開発コマンド・品質ゲート詳細
+- `docs/gui-testing-layers.md` — GUI テストレイヤー（必須運用）
 - `docs/dual-agent-workflow.md` — Kiro + Claude Code 併用フロー
 - `.kiro/steering/spec-authoring.md` — spec 生成ルール (Wave 設計 / follow-up memo 運用)

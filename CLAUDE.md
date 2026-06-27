@@ -74,6 +74,8 @@ uv run mypy src/             # 型チェック
 
 コミット前に上記全てを通すのが本プロジェクトの品質ゲート。詳細は `docs/development.md` を参照。
 
+GUI 機能・操作を実装するときは **GUI テストレイヤー（Layer A/B 必須・CI / Layer C はローカル `--realgui`）** に従う。詳細: `docs/gui-testing-layers.md`（`.kiro/steering/workflow.md` §7 で必須化）。
+
 ## 開発環境の落とし穴
 
 詳細: `docs/development.md` 末尾参照。

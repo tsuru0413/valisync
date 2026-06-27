@@ -8,11 +8,39 @@ Strategies here are the common building blocks for the property-based tests:
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from hypothesis import assume, settings
 from hypothesis import strategies as st
 from hypothesis.extra.numpy import arrays
 
 from valisync.core.models import Signal
+
+# ─── Real-OS-input GUI tests (Layer C) opt-in gating ─────────────────────────
+# realgui-marked tests move the real cursor and issue genuine OS clicks; they
+# need a real display + Windows and are excluded from the default run and CI.
+# Run them deliberately with:  uv run pytest --realgui tests/realgui/
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--realgui",
+        action="store_true",
+        default=False,
+        help="run real-OS-input GUI tests (Layer C; require a real display + "
+        "Windows; excluded from the default run and CI)",
+    )
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    if config.getoption("--realgui"):
+        return
+    skip_realgui = pytest.mark.skip(reason="real-OS-input test; pass --realgui to run")
+    for item in items:
+        if "realgui" in item.keywords:
+            item.add_marker(skip_realgui)
+
 
 # Default profile: fast feedback during development
 settings.register_profile("default", max_examples=200)
