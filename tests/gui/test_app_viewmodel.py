@@ -159,3 +159,21 @@ def test_loaded_file_keys_exposes_list(tmp_path: Path) -> None:
     key = vm.request_load(csv_file, _csv_format())
 
     assert vm.loaded_file_keys == [key]
+
+
+def test_unload_file_removes_group_clears_active_and_notifies(tmp_path: Path) -> None:
+    """unload_file removes the group, clears a matching active file, and notifies."""
+    vm = AppViewModel()
+    key = vm.request_load(_write_csv(tmp_path / "a.csv"), _csv_format())
+    vm.set_active_file(key)
+
+    notifications: list[str] = []
+    vm.subscribe(notifications.append)
+
+    vm.unload_file(key)
+
+    assert key not in vm.loaded_file_keys
+    assert vm.active_file_key is None
+    assert vm.signals() == []
+    assert "unloaded" in notifications
+    assert "active_file" in notifications
