@@ -176,6 +176,35 @@ class GraphPanelVM(Observable):
         self._normalize_axes()
         self._notify("axes")
 
+    def move_axis_to_column(
+        self, axis_index: int, column: int, position: int | None = None
+    ) -> None:
+        """Move an axis to *column*, inserting at vertical *position* (0=top, None=bottom).
+
+        The source slot is vacated and re-split by _normalize_axes (rule 1: equal
+        re-split per column). `position` is the insertion index among the destination
+        column's other members. Existing 2-arg callers append at the bottom.
+        """
+        column = max(0, min(column, self._column_count - 1))
+        moved = self._axes[axis_index]
+        moved.column = column
+        others = sorted(
+            [a for a in self._axes if a.column == column and a is not moved],
+            key=lambda a: a.top_ratio,
+        )
+        if not others:
+            moved.top_ratio = 0.0
+        elif position is None or position >= len(others):
+            moved.top_ratio = others[-1].top_ratio + 1.0  # bottom
+        elif position <= 0:
+            moved.top_ratio = others[0].top_ratio - 1.0  # top
+        else:
+            moved.top_ratio = (
+                others[position - 1].top_ratio + others[position].top_ratio
+            ) / 2.0
+        self._normalize_axes()
+        self._notify("axes")
+
     def _normalize_axes(self) -> None:
         """Keep one region per signal-bearing axis (min 1) and split equally per column.
 

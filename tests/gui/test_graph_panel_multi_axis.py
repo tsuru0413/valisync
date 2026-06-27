@@ -604,3 +604,33 @@ def test_add_signal_to_axis_keeps_both() -> None:
     _inject_signal(vm, "sig::a")
     vm.add_signal_to_axis("sig::b", 0)
     assert set(_signals_on_axis(vm, 0)) == {"sig::a", "sig::b"}
+
+
+# ─── Task 0.5: move_axis_to_column ───────────────────────────────────────────
+
+
+def test_move_axis_to_column_revacates_source() -> None:
+    from valisync.core.session import Session
+
+    vm = GraphPanelVM(Session())
+    _inject_signal(vm, "sig::a")
+    vm.create_new_axis("sig::b")
+    vm.move_axis_to_column(0, 0)  # move first inner axis to outer column 0
+    assert vm.axes[0].column == 0 and vm.axes[0].height_ratio == 1.0  # alone in col 0
+    assert _col(vm, vm.column_count - 1)[0].height_ratio == 1.0  # remaining fills inner
+
+
+def test_move_axis_inserts_at_given_vertical_position() -> None:
+    from valisync.core.session import Session
+
+    vm = GraphPanelVM(Session())
+    _inject_signal(vm, "sig::a")
+    vm.create_new_axis("sig::b")
+    inner = vm.column_count - 1
+    a, b = vm.axes[0], vm.axes[1]  # both inner; a above b
+    vm.move_axis_to_column(
+        1, inner, position=0
+    )  # move b to the TOP of the inner column
+    col = _col(vm, inner)  # column members, top->bottom
+    assert col[0] is b and col[1] is a  # b is now the topmost
+    assert col[0].top_ratio < col[1].top_ratio  # equal-split, b on top
