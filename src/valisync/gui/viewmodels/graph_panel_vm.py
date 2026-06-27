@@ -114,6 +114,11 @@ class GraphPanelVM(Observable):
     def set_column_count(self, n: int) -> None:
         """Set the column count, clamped to >= 1, then reconcile axes and notify."""
         self._column_count = max(1, n)
+        # Clamp any axis stranded in a now-out-of-range column; otherwise
+        # _reconcile_axes would place it in the plot's own root grid cell
+        # (column == column_count) and overlap the layout.
+        for a in self._axes:
+            a.column = min(a.column, self._column_count - 1)
         self._normalize_axes()
         self._notify("axes")
 
@@ -192,6 +197,10 @@ class GraphPanelVM(Observable):
         re-split per column). `position` is the insertion index among the destination
         column's other members. Existing 2-arg callers append at the bottom.
         """
+        # A stale drag index (e.g. axes re-split mid-drag) must be a no-op, not
+        # an IndexError.
+        if not (0 <= axis_index < len(self._axes)):
+            return
         column = max(0, min(column, self._column_count - 1))
         moved = self._axes[axis_index]
         moved.column = column

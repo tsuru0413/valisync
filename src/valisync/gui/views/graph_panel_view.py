@@ -601,16 +601,25 @@ class GraphPanelView(QWidget):
         )
 
     def _axis_index_at(self, pos: QPointF) -> int:
-        """Identify which Y-axis is at *pos*."""
-        # Simple vertical split for now based on relative height
+        """Identify which Y-axis is at *pos*.
+
+        The cursor's COLUMN is resolved first (same band math as
+        ``_axis_drop_target``); only axes in that column are then matched on the
+        vertical band. Without the column filter an outer-column axis that spans
+        the full height (band ``[0, 1]``) would match every ``y_rel`` and steal
+        drops/zoom gestures aimed at the inner column.
+        """
         if not self._y_axes:
             return 0
 
+        col = max(0, min(int(pos.x() // _Y_AXIS_FIXED_WIDTH), self.vm.column_count - 1))
         plot_rect = self._plot_rect_in_widget()
         y_rel = (pos.y() - plot_rect.top()) / plot_rect.height()
 
         for i, axis_vm in enumerate(self.vm.axes):
-            if axis_vm.top_ratio <= y_rel <= axis_vm.top_ratio + axis_vm.height_ratio:
+            if axis_vm.column == col and (
+                axis_vm.top_ratio <= y_rel <= axis_vm.top_ratio + axis_vm.height_ratio
+            ):
                 return i
         return 0
 

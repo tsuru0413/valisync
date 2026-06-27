@@ -1020,3 +1020,56 @@ def test_view_renders_configured_column_count(qtbot: QtBot) -> None:
     # _normalize_axes does not migrate existing axes to the new inner column
     # (column_count-1=2) when signals are present; the axis stays at column 1.
     assert view.axis_columns() == [1]
+
+
+# ─── Final-review fixes: column-aware _axis_index_at + column clamping ─────────
+
+
+def test_axis_index_at_respects_column(qtbot: QtBot) -> None:
+    """``_axis_index_at`` resolves the cursor's COLUMN before the vertical band.
+
+    Regression: after an axis is moved to the outer column it often spans the
+    full height (band ``[0, 1]``), so a column-blind scan matched EVERY ``y_rel``
+    and a drop/zoom in the INNER column wrongly targeted the outer-column axis.
+    The column must be resolved from ``pos.x()`` first, then only same-column
+    axes are considered in the vertical-band test.
+    """
+    view, vm = _mounted_panel(qtbot, columns=2)
+    _inject_signal(vm, "sig::a")  # axis 0 -> inner col 1
+    vm.move_axis_to_column(0, 0)  # move axis 0 to OUTER col 0 (full height)
+    vm.create_new_axis("sig::b")  # axis 1 -> inner col 1 (full height)
+    view.refresh()
+
+    # Deterministic geometry: plot rect spans y in [0, 300].
+    view._plot_rect_in_widget = lambda: QRectF(200.0, 0.0, 600.0, 300.0)  # type: ignore
+    w = _Y_AXIS_FIXED_WIDTH
+    # A point in the INNER column band (x in [W, 2W)) at mid-height must resolve
+    # to the inner axis (index 1), NOT the column-0 full-height axis (index 0).
+    assert view._axis_index_at(QPointF(w * 1.5, 150.0)) == 1
+    # A point in the OUTER column band resolves to axis 0.
+    assert view._axis_index_at(QPointF(w * 0.5, 150.0)) == 0
+
+
+def test_set_column_count_clamps_existing_axis_columns() -> None:
+    """Reducing column_count clamps any axis stranded in an out-of-range column.
+
+    Otherwise ``_reconcile_axes`` would ``addLayout`` the stranded axis into the
+    plot's own root grid cell (column == column_count), overlapping the layout.
+    """
+    from valisync.core.session import Session
+
+    vm = GraphPanelVM(Session())
+    _inject_signal(vm, "sig::a")  # axis in inner col 1 (count == 2)
+    vm.set_column_count(1)  # reduce to a single column
+    assert all(a.column == 0 for a in vm.axes)  # clamped into the only column
+
+
+def test_move_axis_to_column_out_of_range_index_is_noop() -> None:
+    """A stale/out-of-range axis index is a no-op, not an ``IndexError``."""
+    from valisync.core.session import Session
+
+    vm = GraphPanelVM(Session())
+    _inject_signal(vm, "sig::a")
+    vm.move_axis_to_column(99, 0)  # stale drag index must not raise
+    assert len(vm.axes) == 1
+    assert vm.axes[0].column == vm.column_count - 1  # state unchanged
