@@ -9,6 +9,7 @@ in different outcomes:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 from PySide6.QtCore import QPointF, Qt
@@ -19,6 +20,7 @@ from tests.gui.test_graph_panel_view import _keys, _loaded_session, _make_view
 from valisync.gui.adapters.qt_signal_models import encode_signal_keys
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 from valisync.gui.viewmodels.y_axis_vm import YAxisVM
+from valisync.gui.views.graph_panel_view import GraphPanelView
 
 
 class _DragEvent:
@@ -647,3 +649,39 @@ def test_inspect_exposes_column_count_and_axis_fields() -> None:
     assert snap["column_count"] == 2
     for ax in snap["axes"]:
         assert "column" in ax and "top_ratio" in ax and "height_ratio" in ax
+
+
+# ─── Task 1.1: render N axis columns + plot as the last grid column ───────────
+
+
+def _mounted_panel(
+    qtbot: QtBot, columns: int = 2
+) -> tuple[GraphPanelView, GraphPanelVM]:
+    """Mount a GraphPanelView over a fresh VM with *columns* layout columns.
+
+    Uses an empty Session — the Task 1.1 assertions read only the view's grid
+    structure (axis_columns / plot_grid_column), not real signal data.
+    """
+    from valisync.core.session import Session
+
+    vm = GraphPanelVM(Session())
+    vm.set_column_count(columns)
+    view = cast(GraphPanelView, _make_view(qtbot, vm))
+    return view, vm
+
+
+def test_view_builds_one_sublayout_per_column(qtbot: QtBot) -> None:
+    """Each occupied column gets its own axis sub-layout; the plot sits last.
+
+    With two axes split across columns 0 (outer) and 1 (inner) of a 2-column
+    layout, the view exposes one axis sub-layout per occupied column and the
+    plot ViewBox container occupies root column ``column_count``.
+    """
+    view, vm = _mounted_panel(qtbot, columns=2)
+    _inject_signal(vm, "sig::a")
+    vm.move_axis_to_column(0, 0)  # axis in OUTER col 0
+    vm.create_new_axis("sig::b")  # axis in INNER col 1
+    view.refresh()
+
+    assert sorted(view.axis_columns()) == [0, 1]
+    assert view.plot_grid_column() == 2

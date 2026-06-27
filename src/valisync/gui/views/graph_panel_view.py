@@ -171,20 +171,25 @@ class GraphPanelView(QWidget):
         self._y_axes: list[pg.AxisItem] = []
         self._view_boxes: list[pg.ViewBox] = []
         self._dividers: list[RegionDividerItem] = []
-        # Assigned later in _reconcile_axes; declared here (no runtime binding,
-        # so the hasattr(_axis_layout) guard still holds) to let mypy resolve
-        # their type at the use sites in refresh().
+        # One axis sub-layout per occupied column (root col = the column index).
+        # Empty until the first _reconcile_axes build.
+        self._axis_layouts: dict[int, pg.GraphicsLayout] = {}
+        # Snapshot of the last-built grid structure (column_count + per-axis
+        # column/row placement); lets _reconcile_axes take a fast path that only
+        # retunes row stretch + labels when nothing structural changed.
+        self._build_signature: tuple[object, ...] = ()
+        # Assigned in _reconcile_axes' rebuild path; declared here (no runtime
+        # binding) so mypy resolves its type at the use sites in refresh().
         self._legend: pg.LegendItem
-        self._axis_layout: pg.GraphicsLayout
         self._drag_zone: str | None = None
         self._drag_start: QPointF | None = None
         self._drop_active = False
         self._removable = True
 
         self.plot_widget = pg.GraphicsLayoutWidget()
-        # The central layout manages axes in col 0 and the plot area in col 1.
+        # The central layout stacks Y-axis sub-layouts in columns 0..N-1 and the
+        # plot area in column N (= vm.column_count); _reconcile_axes owns it.
         self._layout = self.plot_widget.ci.layout
-        self._layout.setColumnFixedWidth(0, _Y_AXIS_FIXED_WIDTH)  # Width for Y-axes
 
         # Shared X-axis at the bottom (linked to the first ViewBox).
         self._x_axis = pg.AxisItem(orientation="bottom")
@@ -295,15 +300,47 @@ class GraphPanelView(QWidget):
         for vb in self._view_boxes[1:]:
             vb.setGeometry(rect)
 
-    def _reconcile_axes(self) -> None:
-        """Ensure the number of AxisItems, ViewBoxes, and Dividers matches the VM."""
-        n_axes = len(self.vm.axes)
+    def _axis_placement(self) -> list[tuple[int, int, int]]:
+        """Map each VM axis to its grid slot as ``(vm_index, column, row)``.
 
-        # If count matches, just update stretch factors and labels in the sub-layout
-        if hasattr(self, "_axis_layout") and len(self._y_axes) == n_axes:
-            for i, axis_vm in enumerate(self.vm.axes):
-                self._axis_layout.layout.setRowStretchFactor(
-                    i * 2, int(axis_vm.height_ratio * 1000)
+        Within a column, axes stack top→bottom by ``top_ratio`` (mirroring the
+        VM's ``_col`` helper); ``row = rank * 2`` so the odd rows in between stay
+        free for the dividers that separate consecutive axes.
+        """
+        by_col: dict[int, list[tuple[float, int]]] = {}
+        for i, ax in enumerate(self.vm.axes):
+            by_col.setdefault(ax.column, []).append((ax.top_ratio, i))
+        placement: list[tuple[int, int, int]] = []
+        for col in sorted(by_col):
+            for rank, (_top, i) in enumerate(sorted(by_col[col])):
+                placement.append((i, col, rank * 2))
+        return placement
+
+    def _reconcile_axes(self) -> None:
+        """Reconcile AxisItems, ViewBoxes, and Dividers with the VM's axes/columns.
+
+        AxisItems are grouped into one sub-layout per occupied column (root
+        col = the axis's column); the plot ViewBox container occupies root
+        col = ``column_count`` and every lower column reserves fixed Y-axis
+        width, so empty columns stay as drop-target gutters for a later task.
+
+        The ViewBox overlay model is unchanged: ``_view_boxes[0]`` is the
+        layout-managed master and the rest are scene items kept aligned to it by
+        ``_sync_overlay_geometry``; ``_view_boxes[i]``/``_y_axes[i]`` stay paired
+        with ``vm.axes[i]`` so ``refresh()``'s index mapping still holds.
+        """
+        placement = self._axis_placement()
+        signature = (self.vm.column_count, tuple(sorted(placement)))
+
+        # Fast path: column grouping and vertical order are identical, so only
+        # height_ratio/labels could have changed (e.g. a divider drag). Retune
+        # row stretch + labels in place instead of rebuilding — this keeps the
+        # dragged divider object alive rather than recreating it under the cursor.
+        if self._axis_layouts and signature == self._build_signature:
+            for i, col, row in placement:
+                axis_vm = self.vm.axes[i]
+                self._axis_layouts[col].layout.setRowStretchFactor(
+                    row, int(axis_vm.height_ratio * 1000)
                 )
                 if axis_vm.name or axis_vm.unit:
                     self._y_axes[i].setLabel(
@@ -311,11 +348,10 @@ class GraphPanelView(QWidget):
                     )
             return
 
-        # Count mismatch: rebuild layout
-        # (Slightly heavy but robust for now)
-        # Secondary ViewBoxes were added straight to the scene, so ci.clear()
-        # (which only drops layout-managed items) leaves them behind as orphans
-        # that keep drawing their stale curve. Remove them explicitly first.
+        # Structure changed: rebuild. Secondary ViewBoxes live straight in the
+        # scene (so waveforms draw unclipped), so ci.clear() — which only drops
+        # layout-managed items — leaves them behind as orphans that keep drawing
+        # their stale curve. Remove them explicitly first.
         for vb in self._view_boxes[1:]:
             scene = vb.scene()
             if scene is not None:
@@ -325,38 +361,47 @@ class GraphPanelView(QWidget):
         self._view_boxes.clear()
         self._dividers.clear()
         self._items.clear()  # Clear items to force re-adding to new ViewBoxes
+        self._axis_layouts = {}
 
         # We'll use a single legend for the whole panel
         self._legend = pg.LegendItem()
 
-        # Root layout configuration (2x2)
-        # Row 0: Axes (Col 0), ViewBoxes (Col 1)
-        # Row 1: empty (Col 0), X-axis (Col 1)
+        # Root layout: columns 0..N-1 each reserve fixed Y-axis width (so empty
+        # columns stay as fixed-width drop-target gutters); the plot column N
+        # takes the remaining width. Row 0 = axes/plot, row 1 = fixed X-axis.
+        column_count = self.vm.column_count
         root = self.plot_widget.ci.layout
-        root.setColumnFixedWidth(0, _Y_AXIS_FIXED_WIDTH)
-        root.setColumnStretchFactor(1, 1)  # Ensure plot area takes remaining width
+        for c in range(column_count):
+            root.setColumnFixedWidth(c, _Y_AXIS_FIXED_WIDTH)
+        root.setColumnStretchFactor(column_count, 1)
         root.setRowStretchFactor(0, 1)
         root.setRowStretchFactor(1, 0)  # Fixed height for X-axis
 
-        # Add Axis Sub-Layout
-        self._axis_layout = self.plot_widget.addLayout(row=0, col=0)
+        # One axis sub-layout per occupied column, in its matching root column.
+        for col in sorted({c for _, c, _ in placement}):
+            self._axis_layouts[col] = self.plot_widget.addLayout(row=0, col=col)
 
-        # Primary ViewBox (the one at the bottom usually has the X-axis)
-        master_vb = None
+        row_of = {i: row for i, _c, row in placement}
+        col_of = {i: c for i, c, _row in placement}
 
-        for i in range(n_axes):
-            axis_vm = self.vm.axes[i]
-
-            # Create ViewBox
+        # Create ViewBoxes + AxisItems in VM order so _view_boxes[i]/_y_axes[i]
+        # stay paired with vm.axes[i]; AxisItems are PLACED by column/row.
+        master_vb: pg.ViewBox | None = None
+        for i, axis_vm in enumerate(self.vm.axes):
             vb = pg.ViewBox()
             vb.setMouseEnabled(x=False, y=False)
             vb.disableAutoRange()
             self._view_boxes.append(vb)
 
             if master_vb is None:
+                # Master ViewBox is layout-managed in the plot column.
                 master_vb = vb
+                self.plot_widget.addItem(vb, row=0, col=column_count)
             else:
+                # Secondary ViewBoxes overlay the master's plot rect (kept in
+                # sync by _sync_overlay_geometry) and share its X range.
                 vb.setXLink(master_vb)
+                self.plot_widget.scene().addItem(vb)
 
             # Create AxisItem. It is NOT linked to the ViewBox: the ViewBox uses
             # an expanded virtual range, so the axis range is driven directly
@@ -369,44 +414,43 @@ class GraphPanelView(QWidget):
                 axis.setLabel(text=axis_vm.name or None, units=axis_vm.unit or None)
             self._y_axes.append(axis)
 
-            # Add to Axis Sub-Layout
-            row = i * 2
-            self._axis_layout.addItem(axis, row=row, col=0)
-            self._axis_layout.layout.setRowStretchFactor(
-                row, int(axis_vm.height_ratio * 1000)
-            )
+            sub = self._axis_layouts[col_of[i]]
+            sub.addItem(axis, row=row_of[i], col=0)
+            sub.layout.setRowStretchFactor(row_of[i], int(axis_vm.height_ratio * 1000))
 
-            # Add ViewBox to the root layout (Col 1)
-            if i == 0:
-                # Primary ViewBox is managed by the layout in Col 1, Row 0
-                self.plot_widget.addItem(vb, row=0, col=1)
-                master_vb = vb
-            else:
-                # Secondary ViewBoxes are added to the scene and overlay the
-                # master's plot rect (kept in sync by _sync_overlay_geometry).
-                vb.setXLink(master_vb)
-                self.plot_widget.scene().addItem(vb)
-
-            # Add Divider if not the last axis
-            if i < n_axes - 1:
-                divider = RegionDividerItem(self.vm, i)
-                self._dividers.append(divider)
-                # Dividers are in between axis rows in the sub-layout
-                self._axis_layout.addItem(divider, row=row + 1, col=0)
-                self._axis_layout.layout.setRowFixedHeight(row + 1, 1)
+        # Dividers sit between consecutive axes within a column, just below the
+        # upper axis. axis_index keeps today's VM-index resize semantics (proper
+        # column-scoped resize is a follow-up); existing single-column dividers
+        # are unaffected since order matches there.
+        for i in range(len(self.vm.axes) - 1):
+            divider = RegionDividerItem(self.vm, i)
+            self._dividers.append(divider)
+            sub = self._axis_layouts[col_of[i]]
+            drow = row_of[i] + 1
+            sub.addItem(divider, row=drow, col=0)
+            sub.layout.setRowFixedHeight(drow, 1)
 
         # The VM always holds at least one axis, so the master ViewBox is set.
         assert master_vb is not None
-        # Add X-axis at the bottom (Row 1, Col 1)
-        self.plot_widget.addItem(self._x_axis, row=1, col=1)
+        # Add X-axis at the bottom of the plot column (Row 1).
+        self.plot_widget.addItem(self._x_axis, row=1, col=column_count)
         self._x_axis.linkToView(master_vb)
         # Keep overlays aligned when the window (and thus the master) resizes
         # without a VM change, since refresh() is not called in that case.
         master_vb.sigResized.connect(self._sync_overlay_geometry)
         # Add legend to the master ViewBox
         self._legend.setParentItem(master_vb)
+        self._build_signature = signature
 
     # ─── Test/introspection surface ────────────────────────────────────────────
+
+    def axis_columns(self) -> list[int]:
+        """Return the sorted root grid columns that currently hold an AxisItem."""
+        return sorted(self._axis_layouts)
+
+    def plot_grid_column(self) -> int:
+        """Return the root grid column reserved for the plot ViewBox container."""
+        return self.vm.column_count
 
     def curve_keys(self) -> list[str]:
         """Return the signal keys currently drawn (one PlotDataItem each)."""
