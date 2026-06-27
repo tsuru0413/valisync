@@ -89,66 +89,41 @@ def test_context_menu_remove_unloads_file(qtbot: QtBot) -> None:
     assert vm.files == ["b.csv"]
 
 
-def test_context_menu_event_resolves_and_selects_row(qtbot: QtBot) -> None:
-    """Right-click row resolution: a position over a file row resolves+selects
-    it; a position over empty space resolves to None (no menu).
+def test_list_uses_custom_context_menu_policy(qtbot: QtBot) -> None:
+    """The list MUST use CustomContextMenu so Qt emits customContextMenuRequested
+    on a real right-click.
 
-    Guards the contextMenuEvent path that build_context_menu alone cannot cover —
-    its modal .exec() keeps the real event handler out of the menu test, so the
-    row-resolution logic is extracted into _select_row_at and tested here.
+    The previous contextMenuEvent-override-on-the-container approach relied on the
+    right-click propagating up from the child QListView, which does not fire — so
+    the menu never appeared in the real GUI. This asserts the policy that makes the
+    real-right-click signal fire.
     """
-    from datetime import datetime
-    from pathlib import Path
-
-    from PySide6.QtCore import QPoint
-
-    from valisync.core.models import SignalGroup
+    from PySide6.QtCore import Qt
 
     app_vm = AppViewModel()
-    k1 = app_vm.session._groups.add(
-        SignalGroup((), Path("/path/to/a.csv").absolute(), "CSV", datetime.now())
-    )
-    k2 = app_vm.session._groups.add(
-        SignalGroup((), Path("/path/to/b.csv").absolute(), "CSV", datetime.now())
-    )
-    app_vm._loaded_keys = [k1, k2]
-    vm = FileBrowserVM(app_vm)
-    view = FileBrowserView(vm)
+    app_vm._loaded_keys = ["a.mf4"]
+    view = FileBrowserView(FileBrowserVM(app_vm))
     qtbot.addWidget(view)
-    view.resize(200, 200)
-    view.show()
-    qtbot.waitExposed(view)
-    qtbot.waitUntil(
-        lambda: view.list_view.visualRect(view.model.index(0, 0)).height() > 0,
-        timeout=2000,
-    )
 
-    # A point over row 1 resolves to row 1 and selects it.
-    rect1 = view.list_view.visualRect(view.model.index(1, 0))
-    over_row1 = view.list_view.viewport().mapToGlobal(rect1.center())
-    assert view._select_row_at(over_row1) == 1
-    assert view.list_view.currentIndex().row() == 1
-
-    # A point far past the last item is empty space -> None (no menu shown).
-    far_below = view.list_view.viewport().mapToGlobal(QPoint(5, 10_000))
-    assert view._select_row_at(far_below) is None
+    assert view.list_view.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
 
 
-def test_right_click_event_drives_remove_menu_for_row_under_cursor(
+def test_right_click_on_row_opens_remove_menu_and_unloads(
     qtbot: QtBot, monkeypatch
 ) -> None:
-    """Virtual right-click E2E: synthesize a QContextMenuEvent over a file row
-    and drive the *real* contextMenuEvent. It selects the row under the cursor
-    and builds the 'Remove File' menu for that row; triggering the action unloads
-    that file. build_context_menu is spied so the real menu is captured while the
-    modal .exec() is absorbed by a stand-in (no headless block).
+    """User-operation-equivalent: emit customContextMenuRequested — the signal Qt
+    fires on a real right-click on the list — at a row's position, and assert the
+    'Remove File' menu is built for that row, the row is selected, and triggering
+    the action unloads the file.
+
+    This drives the SAME entry point a real right-click uses (the signal), so it
+    catches missing/incorrect wiring that a direct contextMenuEvent call cannot.
+    The modal .exec() is absorbed by spying build_context_menu (no headless block).
     """
     from datetime import datetime
     from pathlib import Path
     from unittest.mock import Mock
 
-    from PySide6.QtGui import QContextMenuEvent
-
     from valisync.core.models import SignalGroup
 
     app_vm = AppViewModel()
@@ -170,31 +145,54 @@ def test_right_click_event_drives_remove_menu_for_row_under_cursor(
         timeout=2000,
     )
 
-    # Spy build_context_menu: capture the real menu + row, return a stand-in
-    # whose .exec() is a no-op so the modal popup never blocks the headless run.
     captured: dict = {}
     real_build = view.build_context_menu
 
     def spy_build(row: int) -> object:
         captured["row"] = row
         captured["menu"] = real_build(row)
-        return Mock()  # contextMenuEvent calls .exec() on this -> no-op
+        return Mock()  # the slot calls .exec() on this -> no-op
 
     monkeypatch.setattr(view, "build_context_menu", spy_build)
 
-    # Synthesize a right-click whose global position lands on row 1 (b.csv).
-    rect1 = view.list_view.visualRect(view.model.index(1, 0))
-    global_pos = view.list_view.viewport().mapToGlobal(rect1.center())
-    event = QContextMenuEvent(
-        QContextMenuEvent.Reason.Mouse, view.mapFromGlobal(global_pos), global_pos
-    )
-    view.contextMenuEvent(event)
+    # The signal carries a viewport-relative position; fire it over row 1 (b.csv).
+    pos = view.list_view.visualRect(view.model.index(1, 0)).center()
+    view.list_view.customContextMenuRequested.emit(pos)
 
-    # The real handler selected row 1 and built the 'Remove File' menu for it.
     assert captured["row"] == 1
     assert view.list_view.currentIndex().row() == 1
     assert [a.text() for a in captured["menu"].actions()] == ["Remove File"]
 
-    # Triggering the action unloads the file at that row (b.csv).
     captured["menu"].actions()[0].trigger()
     assert vm.files == ["a.csv"]
+
+
+def test_right_click_on_empty_area_shows_no_menu(qtbot: QtBot, monkeypatch) -> None:
+    """A right-click below the items (empty area) builds no menu."""
+    from datetime import datetime
+    from pathlib import Path
+    from unittest.mock import Mock
+
+    from PySide6.QtCore import QPoint
+
+    from valisync.core.models import SignalGroup
+
+    app_vm = AppViewModel()
+    k = app_vm.session._groups.add(
+        SignalGroup((), Path("/path/to/a.csv").absolute(), "CSV", datetime.now())
+    )
+    app_vm._loaded_keys = [k]
+    view = FileBrowserView(FileBrowserVM(app_vm))
+    qtbot.addWidget(view)
+    view.resize(200, 200)
+    view.show()
+    qtbot.waitExposed(view)
+
+    built: list[int] = []
+    monkeypatch.setattr(
+        view, "build_context_menu", lambda row: built.append(row) or Mock()
+    )
+
+    view.list_view.customContextMenuRequested.emit(QPoint(5, 10_000))
+
+    assert built == []  # no menu for empty space
