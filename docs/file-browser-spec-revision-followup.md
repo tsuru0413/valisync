@@ -1,7 +1,7 @@
 # valisync-gui-file-browser spec/実装 再レビュー 改善メモ
 
 > 関連 spec: `valisync-gui-file-browser`（完了・PR #3 merged）。
-> 発見の経緯: 「実装が別エージェント作成の可能性」を踏まえた実装レビュー → 続けて「spec 自体も別エージェント作成の可能性」を踏まえた**再レビュー**で、**実装の不具合の多くが spec(特に design)の欠陥に由来**すると判明した。本メモに再レビュー結果（S1–S5）を記録し、S1 を spec+コードのセット改訂として着手、S2–S5 を後続バックログとする。
+> 発見の経緯: 「実装が別エージェント作成の可能性」を踏まえた実装レビュー → 続けて「spec 自体も別エージェント作成の可能性」を踏まえた**再レビュー**で、**実装の不具合の多くが spec(特に design)の欠陥に由来**すると判明した。本メモに再レビュー結果（S1–S5）を記録し、S1・S3 を spec+コードのセット改訂として実装、S2/S4/S5 を後続バックログとする。
 
 ## 課題（再レビューの要点）
 
@@ -21,9 +21,11 @@
 ### S2: R5.2「100ms 以内更新」が裏付け無し
 - 要件はあるが design/実装に担保機構が無く、検証テストも無い。S1 のキャッシュ化で実態は改善するが、要件として**検証可能化（テスト）or 緩和**が必要。
 
-### S3: unload スレッドが spec 三層で不整合
-- R5.3 が「all files unloaded」に言及、design が `"unloaded"` event に言及、実装は `"unloaded"` の死蔵リスナー。だが unload を課す要件は無く `Session.remove_group` も未接続。
-- **改善案**: unload を要件化して実装（AppVM に `unload_file`+`"unloaded"` 通知→`remove_group`）するか、不要なら死蔵リスナー削除＋R5.3 文言修正。要ユーザー判断。
+### S3（完了）: unload スレッドが spec 三層で不整合 → R7 として要件化＋root 実装
+- R5.3 が「all files unloaded」に言及、design が `"unloaded"` event に言及、実装は `"unloaded"` の死蔵リスナー。だが unload を課す要件は無く `Session.remove_group` も未接続だった。
+- **対応（このブランチ）**: unload を **R7（File Unload）として要件化**し、root 設計（option C）で実装。`AppViewModel.unload_file`→`Session.remove_group`→`"unloaded"` 通知。**`GraphAreaVM` が `AppViewModel` を購読してパネル整合（load=refresh / unload=prune）を所有**し、MainWindow からパネル調整を撤去。`GraphPanelVM.prune_missing_signals` ＋ `remove_signal` の `_normalize_axes` で曲線除去と空リージョン解消（信号追加と対称）。FileBrowserView に「Remove File」コンテキストメニュー。死蔵だった `"unloaded"` リスナーは本要件で駆動される実リスナーになった。
+- **副次**: 信号削除時の空リージョン残存 follow-up（`docs/multi-axis-empty-region-followup.md`）も同時に解消。
+- 関連コミット: `eab395b`/`d664402`/`a976eab`/`e891b01`/`2354324`/`5d28d60`/`cf70c9b`。spec: requirements R7 ＋ design「Unload (R7)」節。実装計画: `docs/superpowers/plans/2026-06-27-file-unload.md`。
 
 ### S4: 要件が親 spec に未トレース / 暗黙要件
 - axes が R8.6–8.18 を親 `valisync-gui` から抽出したのに対し、file-browser は独自 R1–R6（親 29 要件に未マップ）。D&D・context-menu の保持は success-criteria の散文のみで要件化されていない。
@@ -36,7 +38,7 @@
 ## 採用方針（推奨）
 
 - **今回（このブランチ/PR）**: S1 をセット改訂として実装（core 公開 API + VM/adapter 修正 + design.md 訂正 + tasks.md チェック更新）。
-- **後続**: S2（検証テスト）, S3（unload 要否の判断→実装 or 削除）, S4（親トレース＋要件追記）, S5(残りの wave 再構成) を順次。spec 化が要るほどの規模ではなく、本 spec の design/requirements への追記で吸収可能。
+- **後続**: ~~S3（unload）~~ ✅ 完了（R7 として要件化＋root 実装）。残り S2（検証テスト）, S4（親トレース＋要件追記）, S5(残りの wave 再構成) を順次。spec 化が要るほどの規模ではなく、本 spec の design/requirements への追記で吸収可能。
 
 ## 関連リンク
 - spec: `.kiro/specs/valisync-gui-file-browser/{requirements,design,tasks}.md`
