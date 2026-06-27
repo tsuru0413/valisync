@@ -94,8 +94,9 @@ class TestLoadRefresh:
 
         panel = window.graph_area_vm.panels(0)[0]  # type: ignore[attr-defined]
         panel.add_signal(sig_name)
-        # Force the stale-empty-cache situation cleared by the load refresh:
-        window._refresh_panels()  # type: ignore[attr-defined]
+        # GraphAreaVM refreshes panels on the "loaded" notification; this test
+        # loads via session.load directly, so refresh the panel explicitly.
+        panel.refresh()
 
         curves = panel.render_data()
         drawn = next(c for c in curves if c.name == sig_name)
