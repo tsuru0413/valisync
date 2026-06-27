@@ -574,3 +574,33 @@ def test_new_axis_lands_in_inner_column() -> None:
     vm.create_new_axis("sig::b")
     assert all(a.column == vm.column_count - 1 for a in vm.axes)  # both inner, stacked
     assert [a.height_ratio for a in vm.axes] == [0.5, 0.5]
+
+
+# ─── Task 0.4: overwrite_axis + Ctrl-add semantics ───────────────────────────
+
+
+def _signals_on_axis(vm: GraphPanelVM, axis_index: int) -> list[str]:
+    """Return signal keys plotted on *axis_index*, in insertion order."""
+    return [
+        p["signal_key"]
+        for p in vm.inspect()["plotted_signals"]
+        if p["axis_index"] == axis_index
+    ]
+
+
+def test_overwrite_axis_replaces_signals_on_that_axis() -> None:
+    from valisync.core.session import Session
+
+    vm = GraphPanelVM(Session())
+    _inject_signal(vm, "sig::a")  # axis 0 has 'a'
+    vm.overwrite_axis("sig::b", 0)
+    assert _signals_on_axis(vm, 0) == ["sig::b"]  # 'a' replaced
+
+
+def test_add_signal_to_axis_keeps_both() -> None:
+    from valisync.core.session import Session
+
+    vm = GraphPanelVM(Session())
+    _inject_signal(vm, "sig::a")
+    vm.add_signal_to_axis("sig::b", 0)
+    assert set(_signals_on_axis(vm, 0)) == {"sig::a", "sig::b"}

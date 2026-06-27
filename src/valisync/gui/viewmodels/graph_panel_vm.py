@@ -150,6 +150,20 @@ class GraphPanelVM(Observable):
         self._invalidate_cache()
         self._notify("signals")
 
+    def overwrite_axis(self, signal_key: str, axis_index: int) -> None:
+        """Replace all signals on *axis_index* with *signal_key*.
+
+        Existing plotted entries on that axis are dropped, the axis label/unit
+        are cleared so the new signal becomes the representative, then
+        ``add_signal_to_axis`` re-adds the signal, auto-fits, and notifies.
+        ``add_signal_to_axis`` (the Ctrl-add path) is left completely unchanged.
+        """
+        self._plotted = [e for e in self._plotted if e.axis_index != axis_index]
+        if 0 <= axis_index < len(self._axes):
+            self._axes[axis_index].name = ""
+            self._axes[axis_index].unit = ""
+        self.add_signal_to_axis(signal_key, axis_index)
+
     def create_new_axis(self, signal_key: str) -> None:
         """Add *signal_key* as a new vertical region.
 
