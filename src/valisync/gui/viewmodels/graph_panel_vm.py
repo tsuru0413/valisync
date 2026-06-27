@@ -171,7 +171,14 @@ class GraphPanelVM(Observable):
         prunes any empty axis (e.g. the initial placeholder) so the first signal
         fills the whole panel and subsequent signals split it into equal regions.
         """
-        self._axes.append(YAxisVM(column=self._column_count - 1))
+        new_col = self._column_count - 1
+        same_col = [a.top_ratio for a in self._axes if a.column == new_col]
+        new_axis = YAxisVM(column=new_col)
+        # Give the new axis a transient top_ratio that sorts it after all
+        # existing axes in the same column so _normalize_axes places it at the
+        # bottom (rule A: new axis appends below existing ones).
+        new_axis.top_ratio = (max(same_col) + 1.0) if same_col else 0.0
+        self._axes.append(new_axis)
         self.add_signal_to_axis(signal_key, len(self._axes) - 1)
         self._normalize_axes()
         self._notify("axes")

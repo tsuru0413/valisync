@@ -578,6 +578,21 @@ def test_new_axis_lands_in_inner_column() -> None:
     assert [a.height_ratio for a in vm.axes] == [0.5, 0.5]
 
 
+def test_third_new_axis_lands_at_bottom() -> None:
+    from valisync.core.session import Session
+
+    vm = GraphPanelVM(Session())
+    _inject_signal(vm, "sig::a")  # a (first signal, placeholder axis)
+    vm.create_new_axis("sig::b")  # b
+    vm.create_new_axis("sig::c")  # c
+    inner = vm.column_count - 1
+    col = _col(vm, inner)  # axes in inner column, top->bottom
+    assert col[0] is vm.axes[0]  # a stays at the top
+    assert col[1] is vm.axes[1]  # b in the middle
+    assert col[2] is vm.axes[2]  # c (newest) at the BOTTOM
+    assert [a.height_ratio for a in col] == [1 / 3, 1 / 3, 1 / 3]
+
+
 # ─── Task 0.4: overwrite_axis + Ctrl-add semantics ───────────────────────────
 
 
