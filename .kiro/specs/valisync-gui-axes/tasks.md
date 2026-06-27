@@ -15,7 +15,7 @@ Refactor the state management to support multiple axes.
 Build the draggable dividers and specialized AxisItems.
 
 - [x] Task 1.1: Create `RegionDividerItem` (a GraphicsObject) that provides a draggable horizontal line.
-- [x] Task 1.2: Implement `AxisColumnLayout` (Nested `GraphicsLayout`) to manage a vertical stack of `AxisItem`s and dividers.
+- [x] Task 1.2: Implement per-column sub-layouts (`_axis_layouts: dict[int, GraphicsLayout]`) to manage a vertical stack of `AxisItem`s and dividers for each occupied column. (Originally specified as `AxisColumnLayout`; the actual implementation uses a dictionary of `GraphicsLayout` objects keyed by column index — see Revision R1 below.)
 - [x] Task 1.3: Verify Real-time Ratio Updating.
   - [x] **Red**: Add test verifying that dragging a `RegionDividerItem` updates the `height_ratio` of adjacent `YAxisVM`s.
   - [x] **Green**: Wire mouse events to ViewModel updates.
@@ -37,6 +37,16 @@ Finalize the contextual signal addition logic.
   - [x] **Verify**: Run `uv run valisync`, drag multiple signals with different units, adjust their heights, and verify auto-fit scaling and unclipped rendering. — auto-fit / unclipped / multi-unit は自動テスト + 実 `tests/fixtures/sample.mf4` 駆動で検証。divider ドラッグによる高さ調整は `test_dragging_divider_resizes_adjacent_regions` で回帰テスト化。D&D は `TestContextualDrop` でカバー。
 
 ---
+
+## Revision R1: Multi-Column (re-review)
+
+> **背景**: PR #4 merged 時点では R1（Multi-Column Y-Axis Grid）は tasks 全 `[x]`・完了扱いだったが、実コードは**単一列の縦積み**にとどまり、複数列グリッドは未実装だった。`feature/valisync-gui-axes-multicolumn` ブランチで 2026-06-27 に実装完了。実装計画: `docs/superpowers/plans/2026-06-27-multi-column-y-axis.md`。
+
+- [x] **Rev-0.5**: VM column model — `GraphPanelVM.column_count` (default 2, `set_column_count(n)` clamps ≥1); `create_new_axis` appends to inner column bottom (Rule A); `move_axis_to_column(index, column, position)` vacates source + equal-re-splits destination.
+- [x] **Rev-1.4**: View N-column layout — `_reconcile_axes` builds `_axis_layouts: dict[col → GraphicsLayout]`; plot at root col = `column_count`; empty columns hold fixed-width slots ("余白" drop-target gutters); per-axis `RegionDividerItem` handles drive `resize_axis(boundary_index, delta, column=…)` (column-scoped vertical-order).
+- [x] **Rev-1.5**: Signal drop rules (R5 revision) — plain drop on axis = `overwrite_axis`; Ctrl+drop = `add_signal_to_axis`; drop on background = `create_new_axis` (Rule A).
+- [x] **Rev-1.6**: Axis-move D&D + drop feedback — `AXIS_INDEX_MIME` drag source; `_axis_drop_target` computes `(column, position)`; **insertion line** feedback for occupied columns; **whole-column highlight** for empty columns; source axis dimmed during drag.
+- [x] **Rev-3.3**: Verification — VM column logic covered by Layer A tests; view drop/move logic covered by Layer A/B via direct handler calls; real D&D delivery path (QDrag startup + hit-test + child→parent bubbling) is Layer C / manual only (see `docs/gui-testing-layers.md`).
 
 ### Task Dependency Graph
 ```json

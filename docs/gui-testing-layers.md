@@ -32,6 +32,16 @@ PR #11 で、FileBrowser の「Remove File」右クリックメニューが**実
 - **注意点**: DPI 変換（論理→物理 = `* devicePixelRatioF()`）、ウィンドウ最前面化、マウス占有。回帰検出というより**経路の最終確認**用。
 - **実例**: `tests/realgui/test_file_browser_realclick.py`。
 
+### Layer C 専用ケース: D&D の実配送経路は合成イベントで再現できない
+
+コンテキストメニュー（`QContextMenuEvent`）は `sendEvent` で viewport に届き Layer B で実経路を再現できる。しかし **D&D の実配送経路は合成 `QApplication.sendEvent` では再現できない**（実測済み）。
+
+**背景**: `GraphPanelView` は「コンテナ (`GraphPanelView`) が DND 契約を持ち、子 `GraphicsLayoutWidget` は `setAcceptDrops(False)`」という設計になっている。実ドラッグでは Qt の DND マネージャが子→親へバブリングして親の `dropEvent` に届く。しかし合成 `sendEvent`（親 / 子 / viewport いずれに送っても）は `QApplication::notify` の D&D 特別処理により座標下の子（ドロップ無効）へ配送され、親に届かない。子の無いプレーン `QWidget` では `sendEvent(QDropEvent)` が `dropEvent` に到達し、`setAcceptDrops` 無しでは到達しないことも確認済み。
+
+**テスト戦略の分割**:
+- **ドロップ*ロジック*（ゾーン→VM メソッド: 上書き / Ctrl 追加 / 新規 / `_axis_drop_target` 等）**: `view.dropEvent(event)` を直接呼ぶハンドラ直叩きで **Layer A/B** 検証（`_zone_at` / `_axis_index_at` をスタブ、MIME はローカル保持）。
+- **実ドロップ配送経路**（QDrag 起動＋ヒットテスト＋子→親バブリング＋`setAcceptDrops` 配線）: **Layer C（`--realgui`）でのみ検証**。
+
 ## 必須運用（GUI 実装時のルール）
 
 | 変更の種類 | Layer A | Layer B | Layer C |
