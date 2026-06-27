@@ -229,7 +229,7 @@ class TestGraphAreaPanelWiring:
     def _area(self, qtbot: QtBot) -> tuple[object, GraphAreaVM]:
         from valisync.gui.views.graph_area_view import GraphAreaView
 
-        vm = GraphAreaVM(Session())
+        vm = GraphAreaVM(AppViewModel(Session()))
         view = GraphAreaView(vm)
         qtbot.addWidget(view)
         return view, vm

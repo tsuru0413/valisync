@@ -80,8 +80,8 @@ def test_signal_item_contains_unit(tmp_path: Path) -> None:
         metadata={"unit": "km/h"},
     )
 
-    # Inject fake signal into session proxy (if we can) or mock session.signals
-    app_vm.session.signals = lambda: [sig]
+    # Inject a fake signal via the per-file public API the VM now uses.
+    app_vm.session.group_signals = lambda key: [sig]
     app_vm.set_active_file("test_key")
 
     assert len(vm.signals) == 1
@@ -105,3 +105,41 @@ def test_filter_narrows_flat_list(tmp_path: Path) -> None:
     vm.set_filter("sig_a")
     assert len(vm.signals) == 1
     assert vm.signals[0].name == "sig_a"
+
+
+def test_active_file_switch_fetches_only_active_group_no_full_scan(
+    tmp_path: Path,
+) -> None:
+    """R5.2: switching the Active File reads only that file's signals via
+    group_signals(active) and never scans the whole Session (session.signals).
+
+    Guards the per-file mechanism (introduced in S1) that keeps the update cheap
+    — O(active-file signals), not O(total signals) — against a regression that
+    reintroduces a full scan. A robust, hardware-independent stand-in for the
+    old unverifiable wall-clock "within 100ms".
+    """
+    vm, app_vm, key = _setup_vm(tmp_path)
+    session = app_vm.session
+    real_group_signals = session.group_signals
+
+    full_scan_calls = 0
+    group_calls: list[str] = []
+
+    def spy_signals() -> list[Signal]:
+        nonlocal full_scan_calls
+        full_scan_calls += 1
+        return []
+
+    def spy_group_signals(k: str) -> list[Signal]:
+        group_calls.append(k)
+        return real_group_signals(k)
+
+    session.signals = spy_signals  # type: ignore[method-assign]
+    session.group_signals = spy_group_signals  # type: ignore[method-assign]
+
+    app_vm.set_active_file(key)
+    items = vm.signals  # the master-detail update the view consumes
+
+    assert {s.name for s in items} == {"sig_a", "sig_b"}
+    assert group_calls == [key]  # only the active group was fetched
+    assert full_scan_calls == 0  # the full Session was never scanned

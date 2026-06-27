@@ -54,6 +54,23 @@ class AppViewModel(Observable):
         self._active_file_key = key
         self._notify("active_file")
 
+    def unload_file(self, key: str) -> None:
+        """Unload a loaded file: remove its group from the Session and reconcile.
+
+        Refused without side effects when a Derived_Signal depends on the group
+        (``Session.remove_group`` returns ``removed=False``). Currently
+        unreachable — Derived_Signals are out of scope until valisync-gui-derived.
+        """
+        result = self._session.remove_group(key)
+        if not result.removed:
+            return
+        if key in self._loaded_keys:
+            self._loaded_keys.remove(key)
+        if self._active_file_key == key:
+            self._active_file_key = None
+            self._notify("active_file")
+        self._notify("unloaded")
+
     # ─── Load ────────────────────────────────────────────────────────────────
 
     def request_load(

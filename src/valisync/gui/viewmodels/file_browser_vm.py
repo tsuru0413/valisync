@@ -45,6 +45,16 @@ class FileBrowserVM(Observable):
         else:
             self._app_vm.set_active_file(None)
 
+    def unload(self, index: int) -> None:
+        """Unload the file at list *index* (no-op when out of range).
+
+        Delegates to ``AppViewModel.unload_file``; the resulting ``"unloaded"``
+        notification refreshes this VM's list via :meth:`_on_app_change`.
+        """
+        keys = self._app_vm.loaded_file_keys
+        if 0 <= index < len(keys):
+            self._app_vm.unload_file(keys[index])
+
     def _on_app_change(self, change: str) -> None:
         """Handle notifications from AppViewModel."""
         if change in ("loaded", "unloaded"):
@@ -53,16 +63,15 @@ class FileBrowserVM(Observable):
     def _refresh(self) -> None:
         """Rebuild the filenames list from the AppViewModel state.
 
-        We recover the original source filename from the core Session's
-        SignalGroupManager using the keys registered in AppViewModel.
+        Recovers each file's display name via the Session public API
+        (``source_name``) — never reaching into Session internals.
         """
         files: list[str] = []
         for key in self._app_vm.loaded_file_keys:
             try:
-                group = self._app_vm.session._groups.group(key)
-                files.append(group.source_path.name)
-            except (KeyError, AttributeError):
-                # Fallback to key if group recovery fails
+                files.append(self._app_vm.session.source_name(key))
+            except KeyError:
+                # Fallback to the key if the name cannot be recovered.
                 files.append(key)
 
         self._files = files

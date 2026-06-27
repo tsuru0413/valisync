@@ -50,13 +50,12 @@ class MainWindow(QMainWindow):
     def __init__(self, app_vm: AppViewModel) -> None:
         super().__init__()
         self.app_vm = app_vm
-        session = app_vm.session
         self.setWindowTitle("ValiSync")
 
         # ── Shared ViewModels (one Session) ──────────────────────────────────
         self.file_browser_vm = FileBrowserVM(app_vm)
         self.channel_browser_vm = ChannelBrowserVM(app_vm)
-        self.graph_area_vm = GraphAreaVM(session)
+        self.graph_area_vm = GraphAreaVM(app_vm)
 
         # ── Views ────────────────────────────────────────────────────────────
         self.file_browser_view = FileBrowserView(self.file_browser_vm)
@@ -136,13 +135,7 @@ class MainWindow(QMainWindow):
     def _on_app_change(self, change: str) -> None:
         if change == "loaded":
             self.channel_browser_vm.refresh()
-            self._refresh_panels()
-
-    def _refresh_panels(self) -> None:
-        """Invalidate every panel's render cache so new data is drawn (⑥)."""
-        for tab_index in range(len(self.graph_area_vm.tabs())):
-            for panel in self.graph_area_vm.panels(tab_index):
-                panel.refresh()
+            # Panels are reconciled by GraphAreaVM, which subscribes to app_vm.
 
     def _add_to_active_panel(self, keys: list[str]) -> None:
         """Plot *keys* on the first panel of the active tab (the 'active' panel)."""

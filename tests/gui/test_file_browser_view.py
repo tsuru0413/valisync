@@ -60,3 +60,30 @@ def test_empty_selection_clears_vm(qtbot: QtBot) -> None:
     view.list_view.selectionModel().clearSelection()
 
     assert app_vm.active_file_key is None
+
+
+def test_context_menu_remove_unloads_file(qtbot: QtBot) -> None:
+    from datetime import datetime
+    from pathlib import Path
+
+    from valisync.core.models import SignalGroup
+
+    app_vm = AppViewModel()
+    k1 = app_vm.session._groups.add(
+        SignalGroup((), Path("/path/to/a.csv").absolute(), "CSV", datetime.now())
+    )
+    k2 = app_vm.session._groups.add(
+        SignalGroup((), Path("/path/to/b.csv").absolute(), "CSV", datetime.now())
+    )
+    app_vm._loaded_keys = [k1, k2]
+    vm = FileBrowserVM(app_vm)
+    view = FileBrowserView(vm)
+    qtbot.addWidget(view)
+    assert vm.files == ["a.csv", "b.csv"]
+
+    menu = view.build_context_menu(0)
+    actions = menu.actions()
+    assert [act.text() for act in actions] == ["Remove File"]
+    actions[0].trigger()
+
+    assert vm.files == ["b.csv"]

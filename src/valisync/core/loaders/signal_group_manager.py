@@ -54,24 +54,44 @@ class SignalGroupManager:
         """Return the Signal_Group registered under ``key`` (original signal names)."""
         return self._groups[key]
 
-    def signals(self) -> list[Signal]:
-        """Return every signal across all groups, name-spaced by its group key.
+    def source_name(self, key: str) -> str:
+        """Original source filename (basename) for the group under ``key``.
 
-        The returned Signals share the stored timestamp/value arrays; only the
-        name is rewritten to ``{key}{KEY_SEPARATOR}{original_name}``.
+        Public recovery point for the GUI display name (the class otherwise
+        leaves display-name recovery to the GUI layer). Raises KeyError if the
+        key is unknown.
         """
+        return self._groups[key].source_path.name
+
+    @staticmethod
+    def _namespaced(key: str, group: SignalGroup) -> list[Signal]:
+        """Rewrite a group's signal names to ``{key}{KEY_SEPARATOR}{name}``.
+
+        The returned Signals share the stored timestamp/value arrays.
+        """
+        return [
+            Signal(
+                name=f"{key}{KEY_SEPARATOR}{sig.name}",
+                timestamps=sig.timestamps,
+                values=sig.values,
+                file_format=sig.file_format,
+                bus_type=sig.bus_type,
+                source_file=sig.source_file,
+                metadata=sig.metadata,
+            )
+            for sig in group.signals
+        ]
+
+    def group_signals(self, key: str) -> list[Signal]:
+        """Namespaced signals for a single group (KeyError if key is unknown).
+
+        Lets callers fetch one file's signals without scanning every group.
+        """
+        return self._namespaced(key, self._groups[key])
+
+    def signals(self) -> list[Signal]:
+        """Return every signal across all groups, name-spaced by its group key."""
         result: list[Signal] = []
         for key, group in self._groups.items():
-            for sig in group.signals:
-                result.append(
-                    Signal(
-                        name=f"{key}{KEY_SEPARATOR}{sig.name}",
-                        timestamps=sig.timestamps,
-                        values=sig.values,
-                        file_format=sig.file_format,
-                        bus_type=sig.bus_type,
-                        source_file=sig.source_file,
-                        metadata=sig.metadata,
-                    )
-                )
+            result.extend(self._namespaced(key, group))
         return result

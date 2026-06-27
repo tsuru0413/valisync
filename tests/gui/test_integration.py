@@ -94,8 +94,9 @@ class TestLoadRefresh:
 
         panel = window.graph_area_vm.panels(0)[0]  # type: ignore[attr-defined]
         panel.add_signal(sig_name)
-        # Force the stale-empty-cache situation cleared by the load refresh:
-        window._refresh_panels()  # type: ignore[attr-defined]
+        # GraphAreaVM refreshes panels on the "loaded" notification; this test
+        # loads via session.load directly, so refresh the panel explicitly.
+        panel.refresh()
 
         curves = panel.render_data()
         drawn = next(c for c in curves if c.name == sig_name)
@@ -148,3 +149,34 @@ class TestDataExplorer:
         view.action_add_source.trigger()
 
         assert str(folder) in view.sources()
+
+
+# ─── Unload → remove curves + empty active browser (R7) ────────────────────────
+
+
+class TestUnload:
+    def test_unload_removes_file_signals_and_curves(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        """E2E: unloading a plotted file removes its curves, empties the active
+        ChannelBrowser, and drops it from the FileBrowser."""
+        window = build_main_window()
+        qtbot.addWidget(window)
+        key = window.app_vm.request_load(_mf4(tmp_path), None)
+        sig_name = f"{key}::speed"
+
+        # Make it active and plot its signal on the active panel.
+        window.app_vm.set_active_file(key)
+        panel = window.graph_area_vm.panels(0)[0]
+        panel.add_signal(sig_name)
+        assert [p["signal_key"] for p in panel.inspect()["plotted_signals"]] == [
+            sig_name
+        ]
+
+        # Unload via the FileBrowser VM (same path the context menu drives).
+        window.file_browser_vm.unload(0)
+
+        assert window.app_vm.loaded_file_keys == []
+        assert window.app_vm.active_file_key is None
+        assert window.channel_browser_vm.signals == []
+        assert [p["signal_key"] for p in panel.inspect()["plotted_signals"]] == []

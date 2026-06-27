@@ -176,8 +176,25 @@ class GraphPanelVM(Observable):
             axis.height_ratio = h
 
     def remove_signal(self, signal_key: str) -> None:
-        """Remove *signal_key* from the plot."""
+        """Remove *signal_key* from the plot and reconcile axes."""
         self._plotted = [e for e in self._plotted if e.signal_key != signal_key]
+        self._normalize_axes()
+        self._invalidate_cache()
+        self._notify("signals")
+
+    def prune_missing_signals(self) -> None:
+        """Drop plotted signals no longer present in the Session, reconcile axes.
+
+        Keyed on the Session (not on any specific unloaded key), so it is correct
+        regardless of why a signal disappeared.  ``render_data`` already skips
+        absent signals; this clears the lingering bookkeeping and re-splits axes.
+        """
+        present = {s.name for s in self._session.signals()}
+        kept = [e for e in self._plotted if e.signal_key in present]
+        if len(kept) == len(self._plotted):
+            return
+        self._plotted = kept
+        self._normalize_axes()
         self._invalidate_cache()
         self._notify("signals")
 

@@ -5,47 +5,47 @@ These tasks define the implementation sequence for extracting the FileBrowser an
 ## Wave 0: AppViewModel Foundation
 Establish the cross-component communication channel.
 
-- [ ] Task 0.1: Add `active_file_key` state and `set_active_file` method to `AppViewModel`.
-  - [ ] **Red**: Add test in `tests/gui/test_app_viewmodel.py` verifying `set_active_file` notifies observers with the correct tag.
-  - [ ] **Green**: Implement property and setter in `AppViewModel`.
-- [ ] Task 0.2: Ensure `AppViewModel.loaded_files` (or similar) is correctly populated from the Session.
-  - [ ] **Verify**: Run `pytest tests/gui/test_app_viewmodel.py`.
+- [x] Task 0.1: Add `active_file_key` state and `set_active_file` method to `AppViewModel`.
+  - [x] **Red**: Add test in `tests/gui/test_app_viewmodel.py` verifying `set_active_file` notifies observers with the correct tag.
+  - [x] **Green**: Implement property and setter in `AppViewModel`.
+- [x] Task 0.2: Ensure `AppViewModel.loaded_files` (or similar) is correctly populated from the Session.
+  - [x] **Verify**: Run `pytest tests/gui/test_app_viewmodel.py`.
 
 ## Wave 1: FileBrowser Component
 Create the "Master" component for file selection.
 
-- [ ] Task 1.1: Implement `FileBrowserVM`.
-  - [ ] **Red**: Add `tests/gui/test_file_browser_vm.py` verifying file list generation (basenames) and `select_file` interaction with `AppViewModel`.
-  - [ ] **Green**: Implement `FileBrowserVM` with `AppViewModel` subscription.
-- [ ] Task 1.2: Implement `FileListModel` adapter.
-  - [ ] **Red**: Add test in `tests/gui/test_qt_signal_models.py` verifying row count and `data()` output for a list of file keys.
-  - [ ] **Green**: Implement `FileListModel` in `src/valisync/gui/adapters/qt_signal_models.py`.
-- [ ] Task 1.3: Implement `FileBrowserView`.
-  - [ ] **Red**: Add `tests/gui/test_file_browser_view.py` verifying `QListView` integration and selection signal emission to VM.
-  - [ ] **Green**: Implement `FileBrowserView` class using `QListView`.
+- [x] Task 1.1: Implement `FileBrowserVM`.
+  - [x] **Red**: Add `tests/gui/test_file_browser_vm.py` verifying file list generation (basenames) and `select_file` interaction with `AppViewModel`.
+  - [x] **Green**: Implement `FileBrowserVM` with `AppViewModel` subscription.
+- [x] Task 1.2: Implement `FileListModel` adapter.
+  - [x] **Red**: Add test in `tests/gui/test_qt_signal_models.py` verifying row count and `data()` output for a list of file keys.
+  - [x] **Green**: Implement `FileListModel` in `src/valisync/gui/adapters/qt_signal_models.py`.
+- [x] Task 1.3: Implement `FileBrowserView`.
+  - [x] **Red**: Add `tests/gui/test_file_browser_view.py` verifying `QListView` integration and selection signal emission to VM.
+  - [x] **Green**: Implement `FileBrowserView` class using `QListView`.
 
 ## Wave 2: ChannelBrowser Transformation
 Refactor the "Detail" component into a flat tabular view.
 
-- [ ] Task 2.1: Refactor `ChannelBrowserVM`.
-  - [ ] **Red**: Update `tests/gui/test_channel_browser_vm.py` to assert a flat list of `SignalItem` objects instead of a tree. Verify it reacts to `active_file_key` changes.
-  - [ ] **Green**: Strip tree logic from `ChannelBrowserVM` and implement `active_file` observation. Extract `unit` metadata.
-- [ ] Task 2.2: Refactor `SignalTreeModel` to `SignalTableModel`.
-  - [ ] **Red**: Update `tests/gui/test_qt_signal_models.py` to verify `SignalTableModel` provides 2 columns (Name, Unit).
-  - [ ] **Green**: Rewrite the adapter in `src/valisync/gui/adapters/qt_signal_models.py`. Delete `TreeItem` classes if no longer used.
-- [ ] Task 2.3: Refactor `ChannelBrowserView`.
-  - [ ] **Red**: Update `tests/gui/test_channel_browser_view.py`. Assert tree decoration is disabled and context menu logic still maps to correct signal keys.
-  - [ ] **Green**: Configure `QTreeView` for flat display. Update search/filter logic.
+- [x] Task 2.1: Refactor `ChannelBrowserVM`.
+  - [x] **Red**: Update `tests/gui/test_channel_browser_vm.py` to assert a flat list of `SignalItem` objects instead of a tree. Verify it reacts to `active_file_key` changes.
+  - [x] **Green**: Strip tree logic from `ChannelBrowserVM` and implement `active_file` observation. Extract `unit` metadata.
+- [x] Task 2.2: Refactor `SignalTreeModel` to `SignalTableModel`.
+  - [x] **Red**: Update `tests/gui/test_qt_signal_models.py` to verify `SignalTableModel` provides 2 columns (Name, Unit).
+  - [x] **Green**: Rewrite the adapter in `src/valisync/gui/adapters/qt_signal_models.py`. Delete `TreeItem` classes if no longer used.
+- [x] Task 2.3: Refactor `ChannelBrowserView`.
+  - [x] **Red**: Update `tests/gui/test_channel_browser_view.py`. Assert tree decoration is disabled and context menu logic still maps to correct signal keys.
+  - [x] **Green**: Configure `QTreeView` for flat display. Update search/filter logic.
 
 ## Wave 3: Integration and Layout
 Finalize the new layout in the main window.
 
-- [ ] Task 3.1: Mount `FileBrowser` in `MainWindow`.
-  - [ ] **Act**: Modify `MainWindow.__init__` to instantiate FB components. Add `file_dock` to the right area.
-- [ ] Task 3.2: Configure vertical stack layout.
-  - [ ] **Act**: Use `splitDockWidget` in `MainWindow` to place `file_dock` above `channel_dock`.
-- [ ] Task 3.3: Verify End-to-End Workflow.
-  - [ ] **Verify**: Run `uv run valisync`, load two files, verify selecting one updates the signal list of the other. Verify drag-to-plot still works.
+- [x] Task 3.1: Mount `FileBrowser` in `MainWindow`.
+  - [x] **Act**: Modify `MainWindow.__init__` to instantiate FB components. Add `file_dock` to the right area.
+- [x] Task 3.2: Configure vertical stack layout.
+  - [x] **Act**: Use `splitDockWidget` in `MainWindow` to place `file_dock` above `channel_dock`.
+- [x] Task 3.3: Verify End-to-End Workflow.
+  - [x] **Verify**: Run `uv run valisync`, load two files, verify selecting one updates the signal list of the other. Verify drag-to-plot still works.
 
 ---
 
@@ -66,3 +66,34 @@ Finalize the new layout in the main window.
   ]
 }
 ```
+
+
+---
+
+## Revision S1 (再レビュー反映)
+
+別エージェント作成の可能性を踏まえた spec/実装の再レビューにより、design が実在しない
+Session API を前提としていた点を修正:
+
+- `Session.source_name(key)` / `Session.group_signals(key)` を**公開API化**（`SignalGroupManager` にも追加）。
+- `FileBrowserVM` の `session._groups`(private) 直接アクセスを除去、`ChannelBrowserVM` /
+  `SignalTableModel` の全信号走査を per-file 取得＋スナップショットキャッシュに修正。
+- design.md を実 API に合わせて訂正。
+
+S1 以降の追跡: **S2（性能要件の検証可能化）・S3（File Unload/R7）・S4（D&D/メニュー要件化＋親トレース）は実装/改訂済み**、S5 は下記のとおり close。詳細は
+[docs/file-browser-spec-revision-followup.md](../../../docs/file-browser-spec-revision-followup.md)。
+
+## Revision S5: wave 規約違反 — close（再構成しない）
+
+**事実**: 本 tasks.md は spec-authoring「同じファイルを編集する複数タスクを同 wave に置かない」に違反している:
+- Wave 0: Task 0.1・0.2 がともに `AppViewModel` を編集
+- Wave 3: Task 3.1・3.2 がともに `MainWindow` を編集
+
+**判断（close・再構成しない）**: 本 spec は **完了・PR #3 merged**（全タスク `[x]`）。
+`.kiro/steering/spec-authoring.md` は「**既に進行中の spec は wave 番号の振り直しは
+行わない（進捗との整合性を保つため）**」と定めており、完了済み spec の wave 再構成は
+**便益ゼロ（全タスク消化済み）かつ当該規約に反する**。よって本項は修正せず close とする。
+
+**教訓（再発防止）**: 同一ファイルを編集するタスクは別 wave へ — これは既に
+spec-authoring.md（Wave 設計ルール／レビューチェックリスト）に明文化済みのため、
+今後の新規 spec 生成時に遵守する。本件は「過去 spec の負債を遡及修正しない」典型例。

@@ -19,7 +19,7 @@ from PySide6.QtCore import (
     Qt,
 )
 
-from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
+from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM, SignalItem
 from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
 
 _Index = QModelIndex | QPersistentModelIndex
@@ -76,17 +76,21 @@ class SignalTableModel(QAbstractTableModel):
     def __init__(self, vm: ChannelBrowserVM, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._vm = vm
+        # Snapshot the VM's signal list so per-cell lookups (rowCount/data) are
+        # O(1) instead of recomputing the whole list on every cell.
+        self._rows: list[SignalItem] = list(vm.signals)
         self._vm.subscribe(self._on_vm_change)
 
     def _on_vm_change(self, change: str) -> None:
         if change in ("signals", "filter"):
             self.beginResetModel()
+            self._rows = list(self._vm.signals)
             self.endResetModel()
 
     def rowCount(self, parent: _Index = QModelIndex()) -> int:
         if parent.isValid():
             return 0
-        return len(self._vm.signals)
+        return len(self._rows)
 
     def columnCount(self, parent: _Index = QModelIndex()) -> int:
         return len(self.HEADERS)
@@ -95,11 +99,10 @@ class SignalTableModel(QAbstractTableModel):
         if not index.isValid():
             return None
 
-        signals = self._vm.signals
-        if not (0 <= index.row() < len(signals)):
+        if not (0 <= index.row() < len(self._rows)):
             return None
 
-        item = signals[index.row()]
+        item = self._rows[index.row()]
         col = index.column()
 
         if role == Qt.ItemDataRole.DisplayRole:
@@ -128,9 +131,8 @@ class SignalTableModel(QAbstractTableModel):
         """Return the namespaced signal key for a row."""
         if not index.isValid():
             return None
-        signals = self._vm.signals
-        if 0 <= index.row() < len(signals):
-            return signals[index.row()].key
+        if 0 <= index.row() < len(self._rows):
+            return self._rows[index.row()].key
         return None
 
     def flags(self, index: _Index) -> Qt.ItemFlag:

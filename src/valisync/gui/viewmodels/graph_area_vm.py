@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from valisync.core.session import Session
+from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 from valisync.gui.viewmodels.observable import Observable
 
@@ -36,17 +36,40 @@ class GraphAreaVM(Observable):
     - active_tab_index is always a valid index into _tabs.
     """
 
-    def __init__(self, session: Session) -> None:
+    def __init__(self, app_vm: AppViewModel) -> None:
         super().__init__()
-        self._session = session
+        self._app_vm = app_vm
+        self._session = app_vm.session
         # Guards re-entrancy while pushing a synced range to sibling panels.
         self._propagating = False
         self._panel_unsubs: dict[int, Callable[[], None]] = {}
         # Start with one tab containing one empty GraphPanelVM.
-        first_panel = GraphPanelVM(session)
+        first_panel = GraphPanelVM(self._session)
         self._tabs: list[_Tab] = [_Tab(name="Tab 1", panels=[first_panel])]
         self.active_tab_index: int = 0
         self._subscribe_panel(first_panel)
+        # Own panel reconciliation for app-level data events (load/unload).
+        self._app_unsub = app_vm.subscribe(self._on_app_change)
+
+    # ─── App-level reconciliation ─────────────────────────────────────────────
+
+    def _on_app_change(self, change: str) -> None:
+        """Reconcile every panel against the Session on app-level data events.
+
+        On ``"loaded"`` a signal added before its data existed must re-render;
+        on ``"unloaded"`` panels drop signals whose group is gone (R7.4). This is
+        the panel coordination previously done by ``MainWindow``.
+        """
+        if change == "loaded":
+            self._for_each_panel(lambda p: p.refresh())
+        elif change == "unloaded":
+            self._for_each_panel(lambda p: p.prune_missing_signals())
+
+    def _for_each_panel(self, fn: Callable[[GraphPanelVM], None]) -> None:
+        """Apply *fn* to every panel across all tabs."""
+        for tab in self._tabs:
+            for panel in tab.panels:
+                fn(panel)
 
     # ─── X-sync wiring ────────────────────────────────────────────────────────
 

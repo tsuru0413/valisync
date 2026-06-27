@@ -117,6 +117,21 @@ class Session:
         """Every loaded signal, name-spaced by its group key."""
         return self._groups.signals()
 
+    def source_name(self, key: str) -> str:
+        """Original source filename (basename) for the group under ``key``.
+
+        Public recovery point so the GUI never reaches into Session internals
+        to display a file's name. Raises KeyError for an unknown key.
+        """
+        return self._groups.source_name(key)
+
+    def group_signals(self, key: str) -> list[Signal]:
+        """Namespaced signals for a single loaded file (KeyError if unknown).
+
+        Lets callers fetch one file's signals without scanning every group.
+        """
+        return self._groups.group_signals(key)
+
     def evaluate_formula(
         self,
         expression: str,
