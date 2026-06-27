@@ -14,6 +14,7 @@ import pytest
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from valisync.core.session import Session
+from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 from valisync.gui.views.graph_panel_view import ZONE_X_INNER, GraphPanelView
 
@@ -23,7 +24,7 @@ from valisync.gui.views.graph_panel_view import ZONE_X_INNER, GraphPanelView
 def _make_area(qtbot: QtBot) -> tuple[object, GraphAreaVM]:
     from valisync.gui.views.graph_area_view import GraphAreaView
 
-    vm = GraphAreaVM(Session())
+    vm = GraphAreaVM(AppViewModel(Session()))
     vm.add_panel(0)  # 2 panels in tab 0
     view = GraphAreaView(vm)
     qtbot.addWidget(view)

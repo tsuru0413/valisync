@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QLabel, QSplitter, QTabWidget
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from valisync.core.session import Session
+from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 
@@ -24,7 +25,7 @@ from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 def _make_area(qtbot: QtBot, **kwargs: object) -> object:
     from valisync.gui.views.graph_area_view import GraphAreaView
 
-    vm = GraphAreaVM(Session())
+    vm = GraphAreaVM(AppViewModel(Session()))
     view = GraphAreaView(vm, **kwargs)  # type: ignore[arg-type]
     qtbot.addWidget(view)
     return view
@@ -173,7 +174,7 @@ class TestLifecycle:
         """A destroyed view must not leave a live VM callback into a dead widget."""
         from valisync.core.session import Session
 
-        vm = GraphAreaVM(Session())
+        vm = GraphAreaVM(AppViewModel(Session()))
         from valisync.gui.views.graph_area_view import GraphAreaView
 
         view = GraphAreaView(vm)

@@ -153,7 +153,7 @@ class TestFileDropToGraphArea:
     def _make_area(self, qtbot: QtBot) -> object:
         from valisync.gui.views.graph_area_view import GraphAreaView
 
-        view = GraphAreaView(GraphAreaVM(Session()))
+        view = GraphAreaView(GraphAreaVM(AppViewModel(Session())))
         qtbot.addWidget(view)
         return view
 

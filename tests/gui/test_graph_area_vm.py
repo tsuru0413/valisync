@@ -29,6 +29,7 @@ import pytest
 
 from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.session import Session
+from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 
@@ -66,26 +67,26 @@ def _write_csv(path: Path) -> Path:
 
 def test_initial_state_has_one_tab(tmp_path: Path) -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     tabs = vm.tabs()
     assert len(tabs) == 1
 
 
 def test_initial_tab_named_tab1(tmp_path: Path) -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     assert vm.tabs()[0].name == "Tab 1"
 
 
 def test_initial_active_tab_index_is_zero() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     assert vm.active_tab_index == 0
 
 
 def test_initial_tab_has_one_panel() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     panels = vm.panels(0)
     assert len(panels) == 1
     assert isinstance(panels[0], GraphPanelVM)
@@ -96,28 +97,28 @@ def test_initial_tab_has_one_panel() -> None:
 
 def test_add_tab_returns_index() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     idx = vm.add_tab()
     assert idx == 1
 
 
 def test_add_tab_makes_new_tab_active() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_tab()
     assert vm.active_tab_index == 1
 
 
 def test_add_tab_auto_names_tab2() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_tab()
     assert vm.tabs()[1].name == "Tab 2"
 
 
 def test_add_tab_auto_names_sequential() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_tab()
     vm.add_tab()
     assert vm.tabs()[2].name == "Tab 3"
@@ -125,14 +126,14 @@ def test_add_tab_auto_names_sequential() -> None:
 
 def test_add_tab_with_explicit_name() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_tab(name="My Tab")
     assert vm.tabs()[1].name == "My Tab"
 
 
 def test_add_tab_new_tab_has_one_panel() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_tab()
     panels = vm.panels(1)
     assert len(panels) == 1
@@ -141,7 +142,7 @@ def test_add_tab_new_tab_has_one_panel() -> None:
 
 def test_add_tab_notifies_subscribers() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     changes: list[str] = []
     vm.subscribe(changes.append)
     vm.add_tab()
@@ -154,14 +155,14 @@ def test_add_tab_notifies_subscribers() -> None:
 
 def test_remove_tab_rejects_when_only_one_tab() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     with pytest.raises(ValueError, match="last"):
         vm.remove_tab(0)
 
 
 def test_remove_tab_removes_the_tab() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_tab(name="Second")
     vm.remove_tab(0)
     assert len(vm.tabs()) == 1
@@ -170,7 +171,7 @@ def test_remove_tab_removes_the_tab() -> None:
 
 def test_remove_tab_adjusts_active_index_when_active_removed() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_tab()
     # active is 1, remove tab 1 → active should be 0
     vm.remove_tab(1)
@@ -179,7 +180,7 @@ def test_remove_tab_adjusts_active_index_when_active_removed() -> None:
 
 def test_remove_tab_keeps_active_index_when_earlier_tab_removed() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_tab()
     vm.add_tab()
     # active=2, remove tab 0 → active shifts to 1
@@ -189,7 +190,7 @@ def test_remove_tab_keeps_active_index_when_earlier_tab_removed() -> None:
 
 def test_remove_tab_notifies_subscribers() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_tab()
     changes: list[str] = []
     vm.subscribe(changes.append)
@@ -202,35 +203,35 @@ def test_remove_tab_notifies_subscribers() -> None:
 
 def test_rename_tab_rejects_empty_string() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     with pytest.raises(ValueError):
         vm.rename_tab(0, "")
 
 
 def test_rename_tab_rejects_name_longer_than_32_chars() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     with pytest.raises(ValueError):
         vm.rename_tab(0, "x" * 33)
 
 
 def test_rename_tab_accepts_name_of_32_chars() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.rename_tab(0, "x" * 32)
     assert vm.tabs()[0].name == "x" * 32
 
 
 def test_rename_tab_accepts_name_of_1_char() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.rename_tab(0, "A")
     assert vm.tabs()[0].name == "A"
 
 
 def test_rename_tab_notifies_subscribers() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     changes: list[str] = []
     vm.subscribe(changes.append)
     vm.rename_tab(0, "NewName")
@@ -242,7 +243,7 @@ def test_rename_tab_notifies_subscribers() -> None:
 
 def test_set_active_tab_changes_active_index() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_tab()
     vm.set_active_tab(0)
     assert vm.active_tab_index == 0
@@ -250,7 +251,7 @@ def test_set_active_tab_changes_active_index() -> None:
 
 def test_set_active_tab_notifies_subscribers() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_tab()
     changes: list[str] = []
     vm.subscribe(changes.append)
@@ -263,14 +264,14 @@ def test_set_active_tab_notifies_subscribers() -> None:
 
 def test_add_panel_returns_new_panel_index() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     idx = vm.add_panel(0)
     assert idx == 1
 
 
 def test_add_panel_appends_graphpanelvm() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_panel(0)
     panels = vm.panels(0)
     assert len(panels) == 2
@@ -279,7 +280,7 @@ def test_add_panel_appends_graphpanelvm() -> None:
 
 def test_add_panel_rejects_when_8_panels_exist() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     for _ in range(7):
         vm.add_panel(0)
     # now 8 panels — next one must be rejected
@@ -289,7 +290,7 @@ def test_add_panel_rejects_when_8_panels_exist() -> None:
 
 def test_add_panel_notifies_subscribers() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     changes: list[str] = []
     vm.subscribe(changes.append)
     vm.add_panel(0)
@@ -301,14 +302,14 @@ def test_add_panel_notifies_subscribers() -> None:
 
 def test_remove_panel_rejects_last_panel() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     with pytest.raises(ValueError, match="last"):
         vm.remove_panel(0, 0)
 
 
 def test_remove_panel_removes_the_panel() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_panel(0)
     vm.remove_panel(0, 0)
     assert len(vm.panels(0)) == 1
@@ -316,7 +317,7 @@ def test_remove_panel_removes_the_panel() -> None:
 
 def test_remove_panel_notifies_subscribers() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_panel(0)
     changes: list[str] = []
     vm.subscribe(changes.append)
@@ -329,21 +330,21 @@ def test_remove_panel_notifies_subscribers() -> None:
 
 def test_set_x_sync_default_is_true() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     tab = vm.tabs()[0]
     assert tab.x_sync_enabled is True
 
 
 def test_set_x_sync_disables() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.set_x_sync(0, False)
     assert vm.tabs()[0].x_sync_enabled is False
 
 
 def test_set_x_sync_re_enables() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.set_x_sync(0, False)
     vm.set_x_sync(0, True)
     assert vm.tabs()[0].x_sync_enabled is True
@@ -351,7 +352,7 @@ def test_set_x_sync_re_enables() -> None:
 
 def test_set_x_sync_notifies_subscribers() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     changes: list[str] = []
     vm.subscribe(changes.append)
     vm.set_x_sync(0, False)
@@ -363,7 +364,7 @@ def test_set_x_sync_notifies_subscribers() -> None:
 
 def test_propagate_x_range_with_sync_on_sets_all_panels() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_panel(0)  # now 2 panels
     vm.set_x_sync(0, True)
     vm.propagate_x_range(0, 1.0, 5.0)
@@ -373,7 +374,7 @@ def test_propagate_x_range_with_sync_on_sets_all_panels() -> None:
 
 def test_propagate_x_range_with_sync_off_leaves_panels_unchanged() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_panel(0)  # now 2 panels
     vm.set_x_sync(0, False)
     vm.propagate_x_range(0, 1.0, 5.0)
@@ -383,7 +384,7 @@ def test_propagate_x_range_with_sync_off_leaves_panels_unchanged() -> None:
 
 def test_propagate_x_range_does_not_affect_other_tabs() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_tab()
     vm.set_x_sync(0, True)
     vm.propagate_x_range(0, 1.0, 5.0)
@@ -397,7 +398,7 @@ def test_propagate_x_range_does_not_affect_other_tabs() -> None:
 
 def test_panel_range_change_propagates_when_sync_on() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_panel(0)  # 2 panels
     vm.set_x_sync(0, True)
     p0, p1 = vm.panels(0)
@@ -409,7 +410,7 @@ def test_panel_range_change_propagates_when_sync_on() -> None:
 
 def test_panel_range_change_independent_when_sync_off() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_panel(0)
     vm.set_x_sync(0, False)
     p0, p1 = vm.panels(0)
@@ -421,7 +422,7 @@ def test_panel_range_change_independent_when_sync_off() -> None:
 
 def test_panel_range_change_does_not_cross_tabs() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_tab()  # tab 1
     vm.set_x_sync(0, True)
     vm.set_x_sync(1, True)
@@ -435,7 +436,7 @@ def test_panel_range_change_does_not_cross_tabs() -> None:
 
 def test_newly_added_panel_participates_in_sync() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.set_x_sync(0, True)
     p0 = vm.panels(0)[0]
     vm.add_panel(0)  # subscribe the new panel
@@ -448,7 +449,7 @@ def test_newly_added_panel_participates_in_sync() -> None:
 
 def test_sync_does_not_recurse_infinitely() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_panel(0)
     vm.set_x_sync(0, True)
     p0, p1 = vm.panels(0)
@@ -465,7 +466,7 @@ def test_sync_does_not_recurse_infinitely() -> None:
 
 def test_active_tab_returns_current_tab() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_tab(name="Second")
     vm.set_active_tab(1)
     assert vm.active_tab().name == "Second"
@@ -476,7 +477,7 @@ def test_active_tab_returns_current_tab() -> None:
 
 def test_inspect_initial_state() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     info = vm.inspect()
     assert info["active_tab_index"] == 0
     assert len(info["tabs"]) == 1
@@ -488,7 +489,7 @@ def test_inspect_initial_state() -> None:
 
 def test_inspect_reflects_added_tab() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_tab(name="Second")
     info = vm.inspect()
     assert len(info["tabs"]) == 2
@@ -498,7 +499,24 @@ def test_inspect_reflects_added_tab() -> None:
 
 def test_inspect_reflects_panel_count() -> None:
     session = _make_session()
-    vm = GraphAreaVM(session)
+    vm = GraphAreaVM(AppViewModel(session))
     vm.add_panel(0)
     info = vm.inspect()
     assert info["tabs"][0]["panel_count"] == 2
+
+
+def test_graph_area_prunes_panels_when_file_unloaded(tmp_path: Path) -> None:
+    """GraphAreaVM subscribes to AppViewModel: unloading a file prunes its
+    plotted signals from every panel (R7.4)."""
+    app_vm = AppViewModel()
+    key = app_vm.request_load(_write_csv(tmp_path / "a.csv"), _csv_format())
+    vm = GraphAreaVM(app_vm)
+    panel = vm.panels(0)[0]
+    panel.add_signal(f"{key}::speed")
+    assert [p["signal_key"] for p in panel.inspect()["plotted_signals"]] == [
+        f"{key}::speed"
+    ]
+
+    app_vm.unload_file(key)  # AppViewModel notifies "unloaded"; GraphAreaVM reacts
+
+    assert [p["signal_key"] for p in panel.inspect()["plotted_signals"]] == []
