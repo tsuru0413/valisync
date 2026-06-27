@@ -488,3 +488,25 @@ class TestMultiAxisLayout:
         plotted = [p["signal_key"] for p in vm.inspect()["plotted_signals"]]
         assert plotted == [keys[1]]
         assert len(vm.axes) == 1  # axes reconciled
+
+
+# ─── Task 0.1: column_count ──────────────────────────────────────────────────
+
+
+def test_default_column_count_is_two() -> None:
+    from valisync.core.session import Session
+
+    vm = GraphPanelVM(Session())
+    assert vm.column_count == 2
+
+
+def test_set_column_count_notifies_and_clamps() -> None:
+    from valisync.core.session import Session
+
+    vm = GraphPanelVM(Session())
+    seen: list[str] = []
+    vm.subscribe(lambda tag: seen.append(tag))
+    vm.set_column_count(3)
+    assert vm.column_count == 3 and "axes" in seen
+    vm.set_column_count(0)  # invalid
+    assert vm.column_count == 1  # clamped to >=1

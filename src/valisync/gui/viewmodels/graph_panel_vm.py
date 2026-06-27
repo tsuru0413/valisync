@@ -82,6 +82,7 @@ class GraphPanelVM(Observable):
         self._plotted: list[_PlottedEntry] = []
         self.x_range: tuple[float, float] | None = None
         self._axes: list[YAxisVM] = [YAxisVM()]
+        self._column_count: int = 2
         self.panel_width_px: int = 800
         self.lod_active: bool = False
         self.last_rendered_points: int = 0
@@ -104,6 +105,17 @@ class GraphPanelVM(Observable):
     def axes(self) -> list[YAxisVM]:
         """Return the list of Y-axes."""
         return self._axes
+
+    @property
+    def column_count(self) -> int:
+        """Number of vertical columns for Y-axis layout (default 2)."""
+        return self._column_count
+
+    def set_column_count(self, n: int) -> None:
+        """Set the column count, clamped to >= 1, then reconcile axes and notify."""
+        self._column_count = max(1, n)
+        self._normalize_axes()
+        self._notify("axes")
 
     # ─── Signal list management ──────────────────────────────────────────────
 
