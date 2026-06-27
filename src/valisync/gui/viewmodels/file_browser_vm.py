@@ -45,6 +45,16 @@ class FileBrowserVM(Observable):
         else:
             self._app_vm.set_active_file(None)
 
+    def unload(self, index: int) -> None:
+        """Unload the file at list *index* (no-op when out of range).
+
+        Delegates to ``AppViewModel.unload_file``; the resulting ``"unloaded"``
+        notification refreshes this VM's list via :meth:`_on_app_change`.
+        """
+        keys = self._app_vm.loaded_file_keys
+        if 0 <= index < len(keys):
+            self._app_vm.unload_file(keys[index])
+
     def _on_app_change(self, change: str) -> None:
         """Handle notifications from AppViewModel."""
         if change in ("loaded", "unloaded"):

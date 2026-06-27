@@ -71,3 +71,21 @@ def test_refreshes_on_loaded_notification() -> None:
 
     assert fb_vm.files == ["data1.mf4"]
     assert "files" in notifications
+
+
+def test_unload_removes_file_from_list() -> None:
+    app_vm = AppViewModel()
+    k1 = app_vm.session._groups.add(
+        SignalGroup((), Path("/path/to/a.csv").absolute(), "CSV", datetime.now())
+    )
+    k2 = app_vm.session._groups.add(
+        SignalGroup((), Path("/path/to/b.csv").absolute(), "CSV", datetime.now())
+    )
+    app_vm._loaded_keys = [k1, k2]
+    fb_vm = FileBrowserVM(app_vm)
+    assert fb_vm.files == ["a.csv", "b.csv"]
+
+    fb_vm.unload(0)
+
+    assert fb_vm.files == ["b.csv"]
+    assert fb_vm.unload(5) is None  # out of range is a safe no-op
