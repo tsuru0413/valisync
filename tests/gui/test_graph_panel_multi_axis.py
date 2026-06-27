@@ -18,6 +18,7 @@ from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 from tests.gui.test_graph_panel_view import _keys, _loaded_session, _make_view
 from valisync.gui.adapters.qt_signal_models import encode_signal_keys
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+from valisync.gui.viewmodels.y_axis_vm import YAxisVM
 
 
 class _DragEvent:
@@ -510,3 +511,52 @@ def test_set_column_count_notifies_and_clamps() -> None:
     assert vm.column_count == 3 and "axes" in seen
     vm.set_column_count(0)  # invalid
     assert vm.column_count == 1  # clamped to >=1
+
+
+# ─── Task 0.2: helpers (reused by later wave tasks) ──────────────────────────
+
+
+def _inject_signal(vm: GraphPanelVM, key: str) -> None:
+    """Add ONE signal as ONE axis to *vm*.
+
+    Uses the existing placeholder axis 0 for the very first signal so it fills
+    the whole panel; subsequent calls each append a new axis.
+    """
+    if not vm.inspect()["plotted_signals"]:
+        vm.add_signal_to_axis(key, 0)
+    else:
+        vm.create_new_axis(key)
+
+
+def _inject_two_signals(vm: GraphPanelVM) -> None:
+    """Produce exactly 2 stacked axes on *vm* using synthetic keys."""
+    vm.add_signal_to_axis("sig::a", 0)
+    vm.create_new_axis("sig::b")
+
+
+def _col(vm: GraphPanelVM, col: int) -> list[YAxisVM]:
+    """Return axes in *col*, sorted top-to-bottom by top_ratio."""
+    return sorted([a for a in vm.axes if a.column == col], key=lambda a: a.top_ratio)
+
+
+# ─── Task 0.2: column-aware _normalize_axes ──────────────────────────────────
+
+
+def test_normalize_splits_height_per_column() -> None:
+    from valisync.core.session import Session
+
+    vm = GraphPanelVM(Session())
+    _inject_two_signals(vm)  # 2 axes, both col=0 by default
+
+    # Move both axes to column 1 (inner column)
+    vm.axes[0].column, vm.axes[1].column = 1, 1
+    vm._normalize_axes()
+    assert [(a.top_ratio, a.height_ratio) for a in _col(vm, 1)] == [
+        (0.0, 0.5),
+        (0.5, 0.5),
+    ]
+
+    # Move axis 1 to column 0 — each axis is now alone in its own column
+    vm.axes[1].column = 0
+    vm._normalize_axes()
+    assert all(a.height_ratio == 1.0 for a in vm.axes)

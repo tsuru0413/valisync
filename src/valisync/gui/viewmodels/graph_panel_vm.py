@@ -163,29 +163,43 @@ class GraphPanelVM(Observable):
         self._notify("axes")
 
     def _normalize_axes(self) -> None:
-        """Keep one region per signal-bearing axis (min 1) and split equally.
+        """Keep one region per signal-bearing axis (min 1) and split equally per column.
 
         Empty axes (the initial placeholder, or an axis whose signals were all
         moved away) must not occupy panel space — otherwise a real signal would
         render at a fraction of the panel height with blank regions beside it.
         Re-indexes plotted entries to the compacted axis positions.
+
+        Within each column, axes split the full column height equally.  Relative
+        top-to-bottom order within a column is preserved by sorting on the
+        pre-existing top_ratio before reassigning layout fractions.
         """
         used = sorted({e.axis_index for e in self._plotted})
         if not used:
-            # No signals plotted: collapse to a single full-height placeholder.
+            # No signals plotted: collapse to a single full-height placeholder
+            # in the inner (last) column.
             keep = self._axes[0] if self._axes else YAxisVM()
             keep.top_ratio, keep.height_ratio = 0.0, 1.0
+            keep.column = self._column_count - 1
             self._axes = [keep]
             return
         remap = {old: new for new, old in enumerate(used)}
         self._axes = [self._axes[old] for old in used]
         for entry in self._plotted:
             entry.axis_index = remap[entry.axis_index]
-        n = len(self._axes)
-        h = 1.0 / n
-        for i, axis in enumerate(self._axes):
-            axis.top_ratio = i * h
-            axis.height_ratio = h
+
+        # Group axes by column, then split height equally within each group.
+        # Relative top-to-bottom order is preserved by sorting on top_ratio.
+        col_groups: dict[int, list[YAxisVM]] = {}
+        for axis in self._axes:
+            col_groups.setdefault(axis.column, []).append(axis)
+
+        for axes_in_col in col_groups.values():
+            axes_in_col_sorted = sorted(axes_in_col, key=lambda a: a.top_ratio)
+            h = 1.0 / len(axes_in_col_sorted)
+            for i, axis in enumerate(axes_in_col_sorted):
+                axis.top_ratio = i * h
+                axis.height_ratio = h
 
     def remove_signal(self, signal_key: str) -> None:
         """Remove *signal_key* from the plot and reconcile axes."""
