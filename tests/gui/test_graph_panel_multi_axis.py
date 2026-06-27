@@ -634,3 +634,16 @@ def test_move_axis_inserts_at_given_vertical_position() -> None:
     col = _col(vm, inner)  # column members, top->bottom
     assert col[0] is b and col[1] is a  # b is now the topmost
     assert col[0].top_ratio < col[1].top_ratio  # equal-split, b on top
+
+
+# ─── Task 0.6: inspect() exposes column_count ────────────────────────────────
+
+
+def test_inspect_exposes_column_count_and_axis_fields() -> None:
+    from valisync.core.session import Session
+
+    vm = GraphPanelVM(Session())
+    snap = vm.inspect()
+    assert snap["column_count"] == 2
+    for ax in snap["axes"]:
+        assert "column" in ax and "top_ratio" in ax and "height_ratio" in ax

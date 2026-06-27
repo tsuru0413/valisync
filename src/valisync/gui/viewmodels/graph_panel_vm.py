@@ -520,6 +520,7 @@ class GraphPanelVM(Observable):
                 }
                 for ax in self._axes
             ],
+            "column_count": self._column_count,
             "panel_width_px": self.panel_width_px,
             "lod_active": self.lod_active,
             "last_rendered_points": self.last_rendered_points,
