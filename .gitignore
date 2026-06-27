@@ -57,3 +57,6 @@ tests/fixtures/*.csv
 
 # Migration script auto-backups (uncomment if scripts auto-create backups)
 # data/*_backup_*/
+
+# superpowers brainstorm mockups (local visual companion)
+.superpowers/
