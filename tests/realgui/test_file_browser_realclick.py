@@ -1,0 +1,112 @@
+"""Layer C: real-OS-input GUI test for the FileBrowser "Remove File" menu.
+
+Opt-in — run with ``--realgui``. Requires a real display + Windows: it moves the
+physical cursor and issues a genuine right-click via Win32 ``SendInput``/
+``mouse_event``, then asserts the context menu actually popped up. This is the
+only tier that exercises the OS → Qt event translation (WM_CONTEXTMENU →
+QContextMenuEvent) that a synthesized event cannot. Excluded from the default run
+and from CI — see ``docs/gui-testing-layers.md`` (Layer C).
+
+Run deliberately (e.g. before release, or after touching context-menu / event
+routing) on a Windows machine with a real display::
+
+    uv run pytest --realgui tests/realgui/
+
+Note: this hijacks the mouse cursor for ~1s while it runs.
+"""
+
+from __future__ import annotations
+
+import ctypes
+import sys
+from datetime import datetime
+from pathlib import Path
+
+import pytest
+from pytestqt.qtbot import QtBot
+
+pytestmark = pytest.mark.realgui
+
+_MOUSEEVENTF_RIGHTDOWN = 0x0008
+_MOUSEEVENTF_RIGHTUP = 0x0010
+
+
+def test_remove_file_menu_appears_on_real_os_right_click(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    if sys.platform != "win32":
+        pytest.skip("real OS right-click uses Win32 mouse_event (Windows-only)")
+
+    from PySide6.QtCore import QEventLoop, Qt, QTimer
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtWidgets import QApplication, QMenu
+
+    if QGuiApplication.platformName() == "offscreen":
+        pytest.skip(
+            "requires a real display — run: uv run pytest --realgui tests/realgui/"
+        )
+
+    from valisync.core.models import SignalGroup
+    from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+    from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
+    from valisync.gui.views.file_browser_view import FileBrowserView
+
+    user32 = ctypes.windll.user32
+
+    # Two loaded files so the FileBrowser list has rows to right-click.
+    app_vm = AppViewModel()
+    k1 = app_vm.session._groups.add(
+        SignalGroup((), Path("a.csv").absolute(), "CSV", datetime.now())
+    )
+    k2 = app_vm.session._groups.add(
+        SignalGroup((), Path("b.csv").absolute(), "CSV", datetime.now())
+    )
+    app_vm._loaded_keys = [k1, k2]
+
+    view = FileBrowserView(FileBrowserVM(app_vm))
+    qtbot.addWidget(view)
+    view.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+    view.setGeometry(300, 300, 360, 240)
+    view.show()
+    qtbot.waitExposed(view)
+    qtbot.waitUntil(
+        lambda: view.list_view.visualRect(view.model.index(0, 0)).height() > 0,
+        timeout=3000,
+    )
+
+    lv = view.list_view
+    dpr = view.devicePixelRatioF()
+    center = lv.visualRect(view.model.index(0, 0)).center()
+    gp = lv.viewport().mapToGlobal(center)
+    # Qt reports logical global coords; SetCursorPos wants physical pixels.
+    phys_x, phys_y = round(gp.x() * dpr), round(gp.y() * dpr)
+
+    captured: dict[str, object] = {}
+
+    def do_real_right_click() -> None:
+        user32.SetCursorPos(int(phys_x), int(phys_y))
+        user32.mouse_event(_MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
+        user32.mouse_event(_MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+        # A real menu opens modally here; capture() fires inside that loop.
+
+    loop = QEventLoop()
+
+    def capture() -> None:
+        popup = QApplication.activePopupWidget()
+        captured["type"] = type(popup).__name__ if popup is not None else None
+        QApplication.primaryScreen().grabWindow(0).save(str(tmp_path / "realclick.png"))
+        if isinstance(popup, QMenu):
+            captured["actions"] = [a.text() for a in popup.actions()]
+            popup.close()
+        loop.quit()
+
+    QTimer.singleShot(300, do_real_right_click)
+    QTimer.singleShot(900, capture)
+    QTimer.singleShot(4000, loop.quit)  # safety net
+    loop.exec()
+
+    assert captured.get("type") == "QMenu", (
+        "no context menu appeared on a real OS right-click; "
+        f"got {captured.get('type')!r}. screenshot: {tmp_path / 'realclick.png'}"
+    )
+    assert captured.get("actions") == ["Remove File"]

@@ -56,9 +56,11 @@ uv run pytest -k "test_name"           # 名前一致で絞り込み
 
 GUI は `pytest-qt` + `QT_QPA_PLATFORM=offscreen`（`tests/gui/conftest.py` で設定）でヘッドレス実行する。MVVM 境界の一次情報源は `.kiro/specs/valisync-gui-mvp/design.md`。
 
+**テストレイヤー（必須運用）**: 入力イベント系は「ヘッドレス状態検証（Layer A）」だけでなく「実イベント経路を `sendEvent` で通すヘッドレス検証（Layer B）」を必須とし、経路を新規/変更したときは実 OS 入力（Layer C, `--realgui`）でローカル実機確認する。詳細・早見表: `docs/gui-testing-layers.md`。
+
 **原則: ピクセルでなく構造化状態を assert する**（VM の `inspect()` / View が公開する投影状態）。実装で確立したパターン:
 
-- **コンテキストメニュー**: View は `build_context_menu()->QMenu` を返し、テストは `action.text()` / `isEnabled()`（グレーアウト）/ `trigger()` を検査。`contextMenuEvent` はそれを `exec` するだけの薄いグルー
+- **コンテキストメニュー**: View は `build_context_menu()->QMenu` を返し、テストは `action.text()` / `isEnabled()`（グレーアウト）/ `trigger()` を検査（Layer A）。**加えて起動経路は実イベントで検証する（Layer B）**: アイテムビューでは `QListView` に `CustomContextMenu` ポリシーを設定し `customContextMenuRequested` で駆動する（`contextMenuEvent` をコンテナで override すると子ビューからイベントが伝播せず実 GUI で出ない — PR #11）。テストは `QApplication.sendEvent(viewport, QContextMenuEvent(...))` で起動を検査し、シグナルを直接 `emit` しない
 - **ズーム/パン**: 「ゾーン判定・範囲演算」は純関数（`classify_zone`/`zoom_range`/`pan_range`）、「ジェスチャ適用」はデータ座標メソッド（`apply_zone_drag`/`apply_zone_wheel`/`reset_zone`）として検査。Qt イベント→ピクセル写像のグルーは offscreen 幾何が不安定なため **smoke（no-crash）のみ**
 - **波形描画**: `curve_keys()`/`curve_xy()`/`pen_color()`/`legend_labels()` で投影を検査 + `QWidget.grab()` のスモーク
 
