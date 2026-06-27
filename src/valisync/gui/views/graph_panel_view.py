@@ -18,10 +18,13 @@ count.  Live drag-preview with a debounce timer is a noted refinement (R9.5).
 
 from __future__ import annotations
 
+from typing import Any
+
 import pyqtgraph as pg
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QContextMenuEvent,
+    QDrag,
     QDragEnterEvent,
     QDragLeaveEvent,
     QDragMoveEvent,
@@ -33,8 +36,11 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QMenu, QVBoxLayout, QWidget
 
 from valisync.gui.adapters.qt_signal_models import (
+    AXIS_INDEX_MIME,
     SIGNAL_KEYS_MIME,
+    decode_axis_index,
     decode_signal_keys,
+    encode_axis_index,
 )
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 from valisync.gui.views.region_divider_item import RegionDividerItem
@@ -134,7 +140,19 @@ class _AlignedAxisItem(pg.AxisItem):
     scientific notation, render every non-zero tick in scientific (keeping
     pyqtgraph's significant-figure precision; "0" stays "0") so the column reads
     uniformly.
+
+    The axis also acts as a drag SOURCE for the axis-move gesture: a left-drag
+    starts a ``QDrag`` carrying this axis's VM index (set by the view), which the
+    panel's drop sink decodes to relocate the axis. The VM index is ``None`` on a
+    bare instance (e.g. unit-tested in isolation), making the drag a no-op there.
     """
+
+    # Set per-build by the view (_reconcile_axes); None => not draggable.
+    _vm_axis_index: int | None = None
+
+    def set_vm_axis_index(self, index: int) -> None:
+        """Tell this axis which VM axis index a drag from it should carry."""
+        self._vm_axis_index = index
 
     def tickStrings(
         self, values: list[float], scale: float, spacing: float
@@ -154,6 +172,25 @@ class _AlignedAxisItem(pg.AxisItem):
             mantissa = mantissa.rstrip("0").rstrip(".")
             out.append(f"{mantissa}e{exp}")
         return out
+
+    def mouseDragEvent(self, ev: Any) -> None:
+        """Start an axis-move QDrag on left-drag (real delivery is Layer-C/manual).
+
+        The base ``AxisItem.mouseDragEvent`` only pans a *linked* ViewBox; these
+        axes are unlinked, so it no-ops and is safe to override. Offscreen Qt
+        cannot run the blocking drag loop, so this path is verified by Layer C /
+        manual, not the headless Layer B suite.
+        """
+        if self._vm_axis_index is None or ev.button() != Qt.MouseButton.LeftButton:
+            ev.ignore()
+            return
+        if ev.isStart():
+            view = self.getViewWidget()
+            if view is not None:
+                drag = QDrag(view)
+                drag.setMimeData(encode_axis_index(self._vm_axis_index))
+                drag.exec(Qt.DropAction.MoveAction)
+        ev.accept()
 
 
 class GraphPanelView(QWidget):
@@ -410,6 +447,8 @@ class GraphPanelView(QWidget):
             # Fixed width shared by all stacked axes so their spines/tick numbers
             # align; overrides pyqtgraph's per-axis auto-width (which is ragged).
             axis.setWidth(_Y_AXIS_FIXED_WIDTH)
+            # Tag the axis with its VM index so a drag from it carries that index.
+            axis.set_vm_axis_index(i)
             if axis_vm.name or axis_vm.unit:
                 axis.setLabel(text=axis_vm.name or None, units=axis_vm.unit or None)
             self._y_axes.append(axis)
@@ -549,6 +588,29 @@ class GraphPanelView(QWidget):
                 return i
         return 0
 
+    def _axis_drop_target(self, pos: QPointF) -> tuple[int, int]:
+        """Map a widget-space *pos* to an axis-move target ``(column, position)``.
+
+        The column is the fixed-width Y-axis band ``pos.x()`` falls in (clamped to
+        ``0..column_count-1``). The vertical *position* is the insertion index
+        among that column's axes: with N axes there are N+1 boundaries (each
+        axis's top edge plus the column bottom), and the nearest boundary to
+        ``pos.y()`` wins. An empty/lone column inserts at position 0.
+        """
+        col = max(0, min(int(pos.x() // _Y_AXIS_FIXED_WIDTH), self.vm.column_count - 1))
+        rect = self._plot_rect_in_widget()
+        col_axes = sorted(
+            (a for a in self.vm.axes if a.column == col), key=lambda a: a.top_ratio
+        )
+        if not col_axes:
+            return (col, 0)
+        top, h = rect.top(), rect.height()
+        boundaries = [top + a.top_ratio * h for a in col_axes] + [top + h]
+        position = min(
+            range(len(boundaries)), key=lambda k: abs(boundaries[k] - pos.y())
+        )
+        return (col, position)
+
     def _data_value(self, pos: QPointF, axis: str) -> float | None:
         try:
             axis_idx = self._axis_index_at(pos)
@@ -621,14 +683,16 @@ class GraphPanelView(QWidget):
         )
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        if event.mimeData().hasFormat(SIGNAL_KEYS_MIME):
+        md = event.mimeData()
+        if md.hasFormat(SIGNAL_KEYS_MIME) or md.hasFormat(AXIS_INDEX_MIME):
             self._set_drop_highlight(True)
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:
-        if event.mimeData().hasFormat(SIGNAL_KEYS_MIME):
+        md = event.mimeData()
+        if md.hasFormat(SIGNAL_KEYS_MIME) or md.hasFormat(AXIS_INDEX_MIME):
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -639,6 +703,17 @@ class GraphPanelView(QWidget):
 
     def dropEvent(self, event: QDropEvent) -> None:
         self._set_drop_highlight(False)
+
+        # Axis-move drop: relocate an existing axis to the target column/position.
+        # Checked BEFORE signal-key handling so the two gestures never overlap;
+        # only fires when the drag actually carried an axis index.
+        axis_index = decode_axis_index(event.mimeData())
+        if axis_index is not None:
+            col, position = self._axis_drop_target(event.position())
+            self.vm.move_axis_to_column(axis_index, col, position)
+            event.acceptProposedAction()
+            return
+
         keys = decode_signal_keys(event.mimeData())
         if not keys:
             event.ignore()

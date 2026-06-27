@@ -26,6 +26,11 @@ _Index = QModelIndex | QPersistentModelIndex
 
 SIGNAL_KEYS_MIME = "application/x-valisync-signal-keys"
 
+# Distinct mime type for an axis-move drag (relocate an existing axis to another
+# column/position), so the GraphPanelView drop sink can tell it apart from a
+# signal-key drop (add/overwrite a signal) carried under SIGNAL_KEYS_MIME.
+AXIS_INDEX_MIME = "application/x-valisync-axis-index"
+
 
 def encode_signal_keys(keys: list[str]) -> QMimeData:
     """Pack *keys* into a QMimeData payload under :data:`SIGNAL_KEYS_MIME`."""
@@ -40,6 +45,23 @@ def decode_signal_keys(md: QMimeData) -> list[str]:
         return []
     raw = bytes(md.data(SIGNAL_KEYS_MIME).data()).decode("utf-8")
     return raw.split("\n") if raw else []
+
+
+def encode_axis_index(index: int) -> QMimeData:
+    """Pack an axis VM *index* into a QMimeData payload under :data:`AXIS_INDEX_MIME`."""
+    md = QMimeData()
+    md.setData(AXIS_INDEX_MIME, str(index).encode("utf-8"))
+    return md
+
+
+def decode_axis_index(md: QMimeData) -> int | None:
+    """Extract the axis index from *md*; ``None`` if it carries no such payload."""
+    if not md.hasFormat(AXIS_INDEX_MIME):
+        return None
+    try:
+        return int(bytes(md.data(AXIS_INDEX_MIME).data()).decode("utf-8"))
+    except (ValueError, TypeError):
+        return None
 
 
 class FileListModel(QAbstractListModel):

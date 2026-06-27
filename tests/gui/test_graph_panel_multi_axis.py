@@ -12,15 +12,15 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QDropEvent
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from tests.gui.test_graph_panel_view import _keys, _loaded_session, _make_view
-from valisync.gui.adapters.qt_signal_models import encode_signal_keys
+from valisync.gui.adapters.qt_signal_models import encode_axis_index, encode_signal_keys
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 from valisync.gui.viewmodels.y_axis_vm import YAxisVM
-from valisync.gui.views.graph_panel_view import GraphPanelView
+from valisync.gui.views.graph_panel_view import _Y_AXIS_FIXED_WIDTH, GraphPanelView
 
 
 class _DragEvent:
@@ -901,3 +901,47 @@ def test_dragging_divider_is_column_scoped(qtbot: QtBot, tmp_path: Path) -> None
     assert sum(a.height_ratio for a in _col(vm, inner)) == pytest.approx(1.0, abs=1e-6)
     # The OTHER column's lone axis is untouched (no cross-column resize).
     assert _col(vm, 0)[0].height_ratio == pytest.approx(outer_before)
+
+
+# ─── Task 1.4a: axis-move drag/drop → move_axis_to_column (testable core) ─────
+
+
+def test_axis_drop_target_resolves_column_and_position(qtbot: QtBot) -> None:
+    """``_axis_drop_target`` maps a widget pos -> (column, insertion position)."""
+    view, vm = _mounted_panel(qtbot, columns=2)
+    _inject_signal(vm, "sig::a")
+    vm.move_axis_to_column(0, 0)  # one axis in OUTER col 0
+    vm.create_new_axis("sig::b")
+    vm.create_new_axis("sig::c")  # two axes in INNER col 1
+    view.refresh()
+
+    # Deterministic geometry: plot rect spans y in [0, 300].
+    view._plot_rect_in_widget = lambda: QRectF(200.0, 0.0, 600.0, 300.0)  # type: ignore
+    w = _Y_AXIS_FIXED_WIDTH
+    # x in column 0's band, y near the very top -> (0, 0) (lone column -> position 0).
+    assert view._axis_drop_target(QPointF(w * 0.5, 5.0)) == (0, 0)
+    # x in inner column 1's band, y near the TOP boundary -> (1, 0).
+    assert view._axis_drop_target(QPointF(w * 1.5, 2.0)) == (1, 0)
+    # x in inner column, y near the BOTTOM -> (1, 2) (n+1 boundaries: 0,1,2 for 2 axes).
+    assert view._axis_drop_target(QPointF(w * 1.5, 299.0)) == (1, 2)
+
+
+def test_axis_move_drop_calls_move_to_target(qtbot: QtBot) -> None:
+    """A dropped axis-index mime relocates that axis via ``move_axis_to_column``."""
+    view, vm = _mounted_panel(qtbot, columns=2)
+    _inject_signal(vm, "sig::a")
+    vm.create_new_axis("sig::b")  # both inner (col 1)
+    view.refresh()
+    moved = vm.axes[1]  # move axis index 1 (b)
+    view._axis_drop_target = lambda pos: (0, 0)  # type: ignore  # force target
+    mime = encode_axis_index(1)  # hold local (a GC'd mime mid-send is a known pitfall)
+    event = QDropEvent(
+        QPointF(10.0, 10.0),
+        Qt.DropAction.MoveAction,
+        mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    view.dropEvent(event)  # handler-path (sendEvent can't route drops to this view)
+    assert moved.column == 0  # b moved to outer column 0
+    assert _col(vm, 0)[0] is moved  # and it's there
