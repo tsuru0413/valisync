@@ -80,5 +80,20 @@ Session API を前提としていた点を修正:
   `SignalTableModel` の全信号走査を per-file 取得＋スナップショットキャッシュに修正。
 - design.md を実 API に合わせて訂正。
 
-残課題 S2–S5（性能要件の検証、unload 要否、親 spec トレース、wave 再構成）は
-[docs/file-browser-spec-revision-followup.md](../../../docs/file-browser-spec-revision-followup.md) に記録。
+S1 以降の追跡: **S2（性能要件の検証可能化）・S3（File Unload/R7）・S4（D&D/メニュー要件化＋親トレース）は実装/改訂済み**、S5 は下記のとおり close。詳細は
+[docs/file-browser-spec-revision-followup.md](../../../docs/file-browser-spec-revision-followup.md)。
+
+## Revision S5: wave 規約違反 — close（再構成しない）
+
+**事実**: 本 tasks.md は spec-authoring「同じファイルを編集する複数タスクを同 wave に置かない」に違反している:
+- Wave 0: Task 0.1・0.2 がともに `AppViewModel` を編集
+- Wave 3: Task 3.1・3.2 がともに `MainWindow` を編集
+
+**判断（close・再構成しない）**: 本 spec は **完了・PR #3 merged**（全タスク `[x]`）。
+`.kiro/steering/spec-authoring.md` は「**既に進行中の spec は wave 番号の振り直しは
+行わない（進捗との整合性を保つため）**」と定めており、完了済み spec の wave 再構成は
+**便益ゼロ（全タスク消化済み）かつ当該規約に反する**。よって本項は修正せず close とする。
+
+**教訓（再発防止）**: 同一ファイルを編集するタスクは別 wave へ — これは既に
+spec-authoring.md（Wave 設計ルール／レビューチェックリスト）に明文化済みのため、
+今後の新規 spec 生成時に遵守する。本件は「過去 spec の負債を遡及修正しない」典型例。
