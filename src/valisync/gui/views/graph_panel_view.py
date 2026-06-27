@@ -23,6 +23,8 @@ from typing import Any
 import pyqtgraph as pg
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
+    QBrush,
+    QColor,
     QContextMenuEvent,
     QDrag,
     QDragEnterEvent,
@@ -30,10 +32,17 @@ from PySide6.QtGui import (
     QDragMoveEvent,
     QDropEvent,
     QMouseEvent,
+    QPen,
     QResizeEvent,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QMenu, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QGraphicsLineItem,
+    QGraphicsRectItem,
+    QMenu,
+    QVBoxLayout,
+    QWidget,
+)
 
 from valisync.gui.adapters.qt_signal_models import (
     AXIS_INDEX_MIME,
@@ -222,6 +231,10 @@ class GraphPanelView(QWidget):
         self._drag_start: QPointF | None = None
         self._drop_active = False
         self._removable = True
+        # Axis-move drag feedback: lazily created, reused per drag, nulled on rebuild.
+        self._axis_move_line: QGraphicsLineItem | None = None
+        self._axis_move_highlight: QGraphicsRectItem | None = None
+        self._axis_move_dimmed_index: int | None = None
 
         self.plot_widget = pg.GraphicsLayoutWidget()
         # The central layout stacks Y-axis sub-layouts in columns 0..N-1 and the
@@ -385,10 +398,23 @@ class GraphPanelView(QWidget):
                     )
             return
 
-        # Structure changed: rebuild. Secondary ViewBoxes live straight in the
-        # scene (so waveforms draw unclipped), so ci.clear() — which only drops
-        # layout-managed items — leaves them behind as orphans that keep drawing
-        # their stale curve. Remove them explicitly first.
+        # Structure changed: rebuild.
+        # Clear and explicitly remove axis-move feedback items before ci.clear();
+        # they live directly in the scene (not the layout), so ci.clear() would
+        # leave them as stale orphans — mirrors the secondary-ViewBox discipline.
+        self._clear_axis_move_feedback()
+        for _fb_item in (self._axis_move_line, self._axis_move_highlight):
+            if _fb_item is not None:
+                _fb_scene = _fb_item.scene()
+                if _fb_scene is not None:
+                    _fb_scene.removeItem(_fb_item)
+        self._axis_move_line = None
+        self._axis_move_highlight = None
+
+        # Secondary ViewBoxes live straight in the scene (so waveforms draw
+        # unclipped), so ci.clear() — which only drops layout-managed items —
+        # leaves them behind as orphans that keep drawing their stale curve.
+        # Remove them explicitly first.
         for vb in self._view_boxes[1:]:
             scene = vb.scene()
             if scene is not None:
@@ -611,6 +637,98 @@ class GraphPanelView(QWidget):
         )
         return (col, position)
 
+    # ─── Axis-move drag feedback ───────────────────────────────────────────────
+
+    def _ensure_feedback_items(self) -> None:
+        """Lazily create and register the axis-move feedback items in the scene.
+
+        Items are created once and reused for every drag-move notification;
+        show/hide toggles replace recreate-per-event to avoid scene churn.
+        """
+        scene = self.plot_widget.scene()
+        if self._axis_move_line is None:
+            line = QGraphicsLineItem()
+            pen = QPen(QColor(255, 165, 0))  # orange
+            pen.setWidth(3)
+            line.setPen(pen)
+            line.setZValue(100)
+            line.setVisible(False)
+            scene.addItem(line)
+            self._axis_move_line = line
+        if self._axis_move_highlight is None:
+            rect_item = QGraphicsRectItem()
+            rect_item.setBrush(QBrush(QColor(255, 165, 0, 60)))  # translucent orange
+            rect_item.setPen(QPen(Qt.PenStyle.NoPen))
+            rect_item.setZValue(100)
+            rect_item.setVisible(False)
+            scene.addItem(rect_item)
+            self._axis_move_highlight = rect_item
+
+    def _update_axis_move_feedback(self, source_index: int, pos: QPointF) -> None:
+        """Update insertion-line / column-highlight while an axis-move drag is active.
+
+        Called from ``dragMoveEvent`` on every cursor move.  For a non-empty
+        target column an orange line snaps to the nearest of the N+1 axis
+        boundaries; for an empty column the whole band is highlighted instead.
+        The source axis is dimmed to signal it is being relocated.
+        """
+        self._ensure_feedback_items()
+        col, position = self._axis_drop_target(pos)
+        rect = self._plot_rect_in_widget()
+        W = _Y_AXIS_FIXED_WIDTH
+        x_start = float(col * W)
+        x_end = float((col + 1) * W)
+        col_axes = sorted(
+            (a for a in self.vm.axes if a.column == col), key=lambda a: a.top_ratio
+        )
+
+        # Dim the source axis (idempotent on repeated calls for the same source).
+        if 0 <= source_index < len(self._y_axes):
+            self._y_axes[source_index].setOpacity(0.35)
+            self._axis_move_dimmed_index = source_index
+
+        if not col_axes:
+            # Empty column: highlight the full column band instead of a line.
+            assert self._axis_move_highlight is not None
+            assert self._axis_move_line is not None
+            self._axis_move_highlight.setRect(
+                QRectF(x_start, rect.top(), float(W), rect.height())
+            )
+            self._axis_move_highlight.setVisible(True)
+            self._axis_move_line.setVisible(False)
+        else:
+            # Non-empty column: show insertion line at the nearest boundary.
+            boundaries = [
+                rect.top() + a.top_ratio * rect.height() for a in col_axes
+            ] + [rect.top() + rect.height()]
+            boundary_y = boundaries[position]
+            assert self._axis_move_line is not None
+            assert self._axis_move_highlight is not None
+            self._axis_move_line.setLine(x_start, boundary_y, x_end, boundary_y)
+            self._axis_move_line.setVisible(True)
+            self._axis_move_highlight.setVisible(False)
+
+    def _axis_move_line_y(self) -> float:
+        """Return the scene-y of the current insertion line (test introspection)."""
+        if self._axis_move_line is None:
+            return 0.0
+        return self._axis_move_line.line().y1()
+
+    def _clear_axis_move_feedback(self) -> None:
+        """Hide feedback items and restore any dimmed axis's opacity.
+
+        Called on drag-leave, drop completion, and at the start of every
+        structural rebuild so no stale visual state leaks across rebuilds.
+        """
+        if self._axis_move_line is not None:
+            self._axis_move_line.setVisible(False)
+        if self._axis_move_highlight is not None:
+            self._axis_move_highlight.setVisible(False)
+        if self._axis_move_dimmed_index is not None:
+            if 0 <= self._axis_move_dimmed_index < len(self._y_axes):
+                self._y_axes[self._axis_move_dimmed_index].setOpacity(1.0)
+            self._axis_move_dimmed_index = None
+
     def _data_value(self, pos: QPointF, axis: str) -> float | None:
         try:
             axis_idx = self._axis_index_at(pos)
@@ -694,11 +812,15 @@ class GraphPanelView(QWidget):
         md = event.mimeData()
         if md.hasFormat(SIGNAL_KEYS_MIME) or md.hasFormat(AXIS_INDEX_MIME):
             event.acceptProposedAction()
+            axis_index = decode_axis_index(md)
+            if axis_index is not None:
+                self._update_axis_move_feedback(axis_index, event.position())
         else:
             event.ignore()
 
     def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:
         self._set_drop_highlight(False)
+        self._clear_axis_move_feedback()
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event: QDropEvent) -> None:
@@ -711,6 +833,7 @@ class GraphPanelView(QWidget):
         if axis_index is not None:
             col, position = self._axis_drop_target(event.position())
             self.vm.move_axis_to_column(axis_index, col, position)
+            self._clear_axis_move_feedback()
             event.acceptProposedAction()
             return
 

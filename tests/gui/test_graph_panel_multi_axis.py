@@ -945,3 +945,52 @@ def test_axis_move_drop_calls_move_to_target(qtbot: QtBot) -> None:
     view.dropEvent(event)  # handler-path (sendEvent can't route drops to this view)
     assert moved.column == 0  # b moved to outer column 0
     assert _col(vm, 0)[0] is moved  # and it's there
+
+
+# ─── Task 1.4b: axis-move drop-feedback visuals ──────────────────────────────
+
+
+def test_axis_move_feedback_insertion_line_at_boundary(qtbot: QtBot) -> None:
+    """_update_axis_move_feedback shows an insertion line at the nearest boundary.
+
+    Handler-path: drives _update_axis_move_feedback directly with a stubbed
+    _plot_rect_in_widget so geometry is deterministic.  Placement (not pixel
+    appearance) is asserted; pixel appearance is Layer C / manual.
+    """
+    view, vm = _mounted_panel(qtbot, columns=2)
+    _inject_signal(vm, "sig::a")
+    vm.create_new_axis("sig::b")  # two axes in inner col 1
+    view.refresh()
+
+    view._plot_rect_in_widget = lambda: QRectF(200.0, 0.0, 600.0, 300.0)  # type: ignore
+    W = _Y_AXIS_FIXED_WIDTH
+    # inner col (col 1): x = W*1.5; y = 2.0 → nearest boundary is the top (y ≈ 0.0)
+    view._update_axis_move_feedback(0, QPointF(W * 1.5, 2.0))
+
+    # Insertion line is visible and sits at the top boundary y
+    assert view._axis_move_line.isVisible()
+    assert abs(view._axis_move_line_y() - 0.0) < 1.0
+    # Source axis 0 is dimmed
+    assert view._y_axes[0].opacity() < 1.0
+
+    view._clear_axis_move_feedback()
+    assert not view._axis_move_line.isVisible()
+    assert view._y_axes[0].opacity() == 1.0
+
+
+def test_axis_move_feedback_empty_column_highlights(qtbot: QtBot) -> None:
+    """_update_axis_move_feedback highlights the whole column when it is empty.
+
+    Handler-path with stubbed geometry; pixel appearance is Layer C / manual.
+    """
+    view, vm = _mounted_panel(qtbot, columns=2)
+    _inject_signal(vm, "sig::a")  # one axis in inner col 1; col 0 is empty
+    view.refresh()
+
+    view._plot_rect_in_widget = lambda: QRectF(200.0, 0.0, 600.0, 300.0)  # type: ignore
+    W = _Y_AXIS_FIXED_WIDTH
+    # col 0 (empty): x = W*0.5 = 36
+    view._update_axis_move_feedback(0, QPointF(W * 0.5, 150.0))
+
+    assert view._axis_move_highlight.isVisible()
+    assert not view._axis_move_line.isVisible()
