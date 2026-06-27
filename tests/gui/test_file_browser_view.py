@@ -132,3 +132,69 @@ def test_context_menu_event_resolves_and_selects_row(qtbot: QtBot) -> None:
     # A point far past the last item is empty space -> None (no menu shown).
     far_below = view.list_view.viewport().mapToGlobal(QPoint(5, 10_000))
     assert view._select_row_at(far_below) is None
+
+
+def test_right_click_event_drives_remove_menu_for_row_under_cursor(
+    qtbot: QtBot, monkeypatch
+) -> None:
+    """Virtual right-click E2E: synthesize a QContextMenuEvent over a file row
+    and drive the *real* contextMenuEvent. It selects the row under the cursor
+    and builds the 'Remove File' menu for that row; triggering the action unloads
+    that file. build_context_menu is spied so the real menu is captured while the
+    modal .exec() is absorbed by a stand-in (no headless block).
+    """
+    from datetime import datetime
+    from pathlib import Path
+    from unittest.mock import Mock
+
+    from PySide6.QtGui import QContextMenuEvent
+
+    from valisync.core.models import SignalGroup
+
+    app_vm = AppViewModel()
+    k1 = app_vm.session._groups.add(
+        SignalGroup((), Path("/path/to/a.csv").absolute(), "CSV", datetime.now())
+    )
+    k2 = app_vm.session._groups.add(
+        SignalGroup((), Path("/path/to/b.csv").absolute(), "CSV", datetime.now())
+    )
+    app_vm._loaded_keys = [k1, k2]
+    vm = FileBrowserVM(app_vm)
+    view = FileBrowserView(vm)
+    qtbot.addWidget(view)
+    view.resize(200, 200)
+    view.show()
+    qtbot.waitExposed(view)
+    qtbot.waitUntil(
+        lambda: view.list_view.visualRect(view.model.index(0, 0)).height() > 0,
+        timeout=2000,
+    )
+
+    # Spy build_context_menu: capture the real menu + row, return a stand-in
+    # whose .exec() is a no-op so the modal popup never blocks the headless run.
+    captured: dict = {}
+    real_build = view.build_context_menu
+
+    def spy_build(row: int) -> object:
+        captured["row"] = row
+        captured["menu"] = real_build(row)
+        return Mock()  # contextMenuEvent calls .exec() on this -> no-op
+
+    monkeypatch.setattr(view, "build_context_menu", spy_build)
+
+    # Synthesize a right-click whose global position lands on row 1 (b.csv).
+    rect1 = view.list_view.visualRect(view.model.index(1, 0))
+    global_pos = view.list_view.viewport().mapToGlobal(rect1.center())
+    event = QContextMenuEvent(
+        QContextMenuEvent.Reason.Mouse, view.mapFromGlobal(global_pos), global_pos
+    )
+    view.contextMenuEvent(event)
+
+    # The real handler selected row 1 and built the 'Remove File' menu for it.
+    assert captured["row"] == 1
+    assert view.list_view.currentIndex().row() == 1
+    assert [a.text() for a in captured["menu"].actions()] == ["Remove File"]
+
+    # Triggering the action unloads the file at that row (b.csv).
+    captured["menu"].actions()[0].trigger()
+    assert vm.files == ["a.csv"]
