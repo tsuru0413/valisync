@@ -11,10 +11,16 @@ chain that synthetic events cannot:
   1. Real WM_LBUTTONDOWN on the inner-column AxisItem.
   2. WM_MOUSEMOVE events cross pyqtgraph's drag threshold → ``_AlignedAxisItem.
      mouseDragEvent`` fires with ``isStart()==True``.
-  3. ``QDrag.exec`` starts (blocking, with its own nested Qt event loop) —
-     QTimers keep firing inside it, so the move/release sequence continues.
+  3. ``QDrag.exec`` starts and blocks the GUI thread inside Windows' OLE
+     ``DoDragDrop`` modal loop.  That loop does NOT pump Qt single-shot timers,
+     so the move/release sequence is injected from a BACKGROUND OS THREAD on
+     wall-clock time (real ``mouse_event`` input drives the modal loop).  Driving
+     it from ``QTimer`` instead would stall forever — the original bug.
   4. More WM_MOUSEMOVE events drive the view's ``dragMoveEvent`` (drop feedback).
   5. WM_LBUTTONUP → ``dropEvent`` on the view → ``move_axis_to_column`` on the VM.
+
+A watchdog (ESC + LEFTUP after 3 s) guarantees the drag can never hang the
+machine even if the synthetic drop fails to complete.
 
 Excluded from the default run and CI — see ``docs/gui-testing-layers.md`` (Layer C).
 
@@ -30,8 +36,11 @@ real Windows display.
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -39,10 +48,12 @@ from pytestqt.qtbot import QtBot
 
 pytestmark = pytest.mark.realgui
 
-# Win32 mouse_event flag constants
+# Win32 input constants
 _MOUSEEVENTF_MOVE = 0x0001
 _MOUSEEVENTF_LEFTDOWN = 0x0002
 _MOUSEEVENTF_LEFTUP = 0x0004
+_KEYEVENTF_KEYUP = 0x0002
+_VK_ESCAPE = 0x1B
 
 
 def test_axis_drag_from_inner_column_to_outer_column(
@@ -62,7 +73,7 @@ def test_axis_drag_from_inner_column_to_outer_column(
     if sys.platform != "win32":
         pytest.skip("real OS drag uses Win32 mouse_event (Windows-only)")
 
-    from PySide6.QtCore import QEventLoop, QPoint, Qt, QTimer
+    from PySide6.QtCore import QPoint, Qt
     from PySide6.QtGui import QGuiApplication
     from PySide6.QtWidgets import QApplication
 
@@ -114,7 +125,6 @@ def test_axis_drag_from_inner_column_to_outer_column(
     # GraphPanelVM defaults to column_count=2 with one placeholder axis in
     # column 1 (inner).  Reusing the placeholder for k0 and creating a new axis
     # for k1 produces two equal-height regions, both in column 1.
-
     vm = GraphPanelVM(session)
     vm.add_signal_to_axis(k0, 0)  # fills the placeholder → axis 0, col 1, top half
     vm.create_new_axis(k1)  # axis 1, col 1, bottom half
@@ -124,9 +134,29 @@ def test_axis_drag_from_inner_column_to_outer_column(
         "setup error: both axes must start in the inner column before the drag"
     )
 
-    # ─── View: fixed geometry so cursor math is deterministic ─────────────────
+    # ─── View: a thin capturing subclass ──────────────────────────────────────
+    # Inherits all drag/drop behaviour unchanged; it only adds two harness side
+    # effects so we can observe the *real* path: (1) grab a screenshot from
+    # inside dragMoveEvent — the GUI thread, while the drag is live, is the only
+    # safe moment to capture the drop-feedback overlay — and (2) flag when
+    # dropEvent actually fires so the main loop knows the drag resolved.
 
-    view = GraphPanelView(vm)
+    class _CapturingView(GraphPanelView):
+        mid_path: str = ""
+        drop_seen: bool = False
+
+        def dragMoveEvent(self, ev: object) -> None:  # type: ignore[override]
+            super().dragMoveEvent(ev)  # type: ignore[arg-type]
+            if self.mid_path:
+                with contextlib.suppress(Exception):
+                    QApplication.primaryScreen().grabWindow(0).save(self.mid_path)
+
+        def dropEvent(self, ev: object) -> None:  # type: ignore[override]
+            super().dropEvent(ev)  # type: ignore[arg-type]
+            self.drop_seen = True
+
+    view = _CapturingView(vm)
+    view.mid_path = str(tmp_path / "mid_drag.png")
     qtbot.addWidget(view)
     view.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
     view.setGeometry(300, 300, 800, 600)
@@ -145,17 +175,15 @@ def test_axis_drag_from_inner_column_to_outer_column(
     # ─── DPI conversion factor (logical → physical pixels) ────────────────────
     # Qt coordinates are logical pixels.  Win32 SetCursorPos and mouse_event
     # require physical pixels on HiDPI displays.
-
     dpr = view.devicePixelRatioF()
 
     # ─── Source: centre of vm.axes[0]'s AxisItem in the inner column ──────────
     # _y_axes[0] is the _AlignedAxisItem for vm.axes[0] (column 1, top half).
     # sceneBoundingRect() gives the bounding rect in pyqtgraph scene coords;
-    # mapFromScene converts to the plot_widget's viewport pixel coords.
-
+    # mapFromScene converts to the plot_widget's viewport pixel coords (QPoint).
     src_item = view._y_axes[0]  # type: ignore[attr-defined]
     scene_center = src_item.sceneBoundingRect().center()
-    src_vp = view.plot_widget.mapFromScene(scene_center).toPoint()  # type: ignore[attr-defined]
+    src_vp = view.plot_widget.mapFromScene(scene_center)  # type: ignore[attr-defined]
     src_global = view.plot_widget.viewport().mapToGlobal(src_vp)  # type: ignore[attr-defined]
     src_phys_x = round(src_global.x() * dpr)
     src_phys_y = round(src_global.y() * dpr)
@@ -164,7 +192,6 @@ def test_axis_drag_from_inner_column_to_outer_column(
     # Column 0 occupies x ∈ [0, _Y_AXIS_FIXED_WIDTH) in view widget space.
     # Dropping at x = W//2 makes _axis_drop_target() return column=0:
     #   col = int(W//2 // W) = 0.
-
     tgt_logi = view.mapToGlobal(QPoint(_Y_AXIS_FIXED_WIDTH // 2, view.height() // 2))
     tgt_phys_x = round(tgt_logi.x() * dpr)
     tgt_phys_y = round(tgt_logi.y() * dpr)
@@ -173,81 +200,67 @@ def test_axis_drag_from_inner_column_to_outer_column(
     mid_phys_x = (src_phys_x + tgt_phys_x) // 2
     mid_phys_y = (src_phys_y + tgt_phys_y) // 2
 
-    # ─── Event sequence ───────────────────────────────────────────────────────
+    # ─── Real-OS gesture driven from a BACKGROUND THREAD ──────────────────────
+    # WHY a thread (not QTimer): QDrag.exec() enters Windows' OLE DoDragDrop
+    # modal loop, which does NOT pump Qt single-shot timers, so QTimer-driven
+    # moves/release stall forever (the original bug — see module docstring).  A
+    # plain OS thread issues real mouse_event() input on wall-clock time, which
+    # DOES drive the modal loop, so the drop completes.
+    finished = threading.Event()  # main → worker: the gesture resolved
 
-    captured: dict[str, object] = {}
-    loop = QEventLoop()
+    def _at(x: int, y: int, flag: int) -> None:
+        user32.SetCursorPos(int(x), int(y))
+        user32.mouse_event(flag, 0, 0, 0, 0)
 
-    def do_press() -> None:
-        user32.SetCursorPos(int(src_phys_x), int(src_phys_y))
-        user32.mouse_event(_MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    def drive() -> None:
+        time.sleep(0.3)  # let the main thread reach its event pump
+        _at(src_phys_x, src_phys_y, _MOUSEEVENTF_LEFTDOWN)
+        time.sleep(0.1)
+        # Cross pyqtgraph's 4-px threshold → QDrag.exec starts on the main thread.
+        _at(src_phys_x + 15, src_phys_y, _MOUSEEVENTF_MOVE)
+        time.sleep(0.2)
+        _at(mid_phys_x, mid_phys_y, _MOUSEEVENTF_MOVE)
+        time.sleep(0.2)
+        _at(tgt_phys_x, tgt_phys_y, _MOUSEEVENTF_MOVE)
+        time.sleep(0.3)  # let dragMoveEvent render feedback + grab the mid shot
+        _at(tgt_phys_x, tgt_phys_y, _MOUSEEVENTF_LEFTUP)  # drop
+        # Watchdog: if the drop did not unblock the main thread within 3 s, the
+        # drag is stuck — cancel with ESC and force the button up.
+        if not finished.wait(timeout=3.0):
+            user32.keybd_event(_VK_ESCAPE, 0, 0, 0)
+            user32.keybd_event(_VK_ESCAPE, 0, _KEYEVENTF_KEYUP, 0)
+            user32.mouse_event(_MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
-    def do_move_threshold() -> None:
-        # Cross pyqtgraph's default 4-px drag threshold.  Moving 15 physical
-        # pixels guarantees > 4 logical pixels even at 2x DPI (15 / 2 = 7.5).
-        user32.SetCursorPos(int(src_phys_x + 15), int(src_phys_y))
-        user32.mouse_event(_MOUSEEVENTF_MOVE, 0, 0, 0, 0)
+    worker = threading.Thread(target=drive, daemon=True)
+    worker.start()
 
-    def do_move_mid() -> None:
-        user32.SetCursorPos(int(mid_phys_x), int(mid_phys_y))
-        user32.mouse_event(_MOUSEEVENTF_MOVE, 0, 0, 0, 0)
+    # Pump the GUI thread until the drop fires or the worker gives up.
+    # processEvents() blocks inside QDrag.exec while the drag is live; the
+    # worker's LEFTUP (or watchdog ESC) is what lets it return.
+    deadline = time.monotonic() + 15.0
+    while not view.drop_seen and worker.is_alive() and time.monotonic() < deadline:
+        QApplication.processEvents()
+        time.sleep(0.01)
+    finished.set()  # release the worker's watchdog wait
+    worker.join(timeout=4.0)
 
-    def do_move_to_target() -> None:
-        user32.SetCursorPos(int(tgt_phys_x), int(tgt_phys_y))
-        user32.mouse_event(_MOUSEEVENTF_MOVE, 0, 0, 0, 0)
-
-    def do_screenshot_mid() -> None:
-        # QDrag.exec runs its own nested event loop; QTimer shots continue to
-        # fire inside it.  Grab the full screen while the drag is in-flight to
-        # capture the drop-feedback overlay (column highlight / insertion line /
-        # dimmed source axis).
-        QApplication.primaryScreen().grabWindow(0).save(  # type: ignore[attr-defined]
-            str(tmp_path / "mid_drag.png")
-        )
-
-    def do_release() -> None:
-        user32.SetCursorPos(int(tgt_phys_x), int(tgt_phys_y))
-        user32.mouse_event(_MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-
-    def do_screenshot_after() -> None:
-        # dropEvent has been called; view.refresh() has updated the layout.
-        # Snapshot the VM state and grab a post-drag screenshot.
-        QApplication.primaryScreen().grabWindow(0).save(  # type: ignore[attr-defined]
+    # Settle the layout, then grab the post-drop screenshot on the GUI thread.
+    for _ in range(3):
+        QApplication.processEvents()
+    with contextlib.suppress(Exception):
+        QApplication.primaryScreen().grabWindow(0).save(
             str(tmp_path / "after_drag.png")
         )
-        captured["column"] = vm.axes[0].column
-        captured["n_axes"] = len(vm.axes)
-        loop.quit()
-
-    # Timings (ms from loop.exec start):
-    #   200  - press at source
-    #   400  - small threshold move (ensures pyqtgraph sees a drag, not a click)
-    #   600  - move to midpoint
-    #   800  - move to target (inside QDrag.exec nested loop at this point)
-    #   900  - mid-drag screenshot
-    #   1000 - release at target, dropEvent fires, move_axis_to_column called
-    #   1500 - post-drop screenshot + capture VM state
-    #   6000 - safety net quit (if something stalls)
-    QTimer.singleShot(200, do_press)
-    QTimer.singleShot(400, do_move_threshold)
-    QTimer.singleShot(600, do_move_mid)
-    QTimer.singleShot(800, do_move_to_target)
-    QTimer.singleShot(900, do_screenshot_mid)
-    QTimer.singleShot(1000, do_release)
-    QTimer.singleShot(1500, do_screenshot_after)
-    QTimer.singleShot(6000, loop.quit)  # safety net
-
-    loop.exec()
 
     # ─── Assertions ───────────────────────────────────────────────────────────
-    # After the drag: axis 0 (k0) must have relocated to outer column 0.
-    # The panel must still hold exactly 2 axes (axis 1 stays in column 1).
-
-    assert captured.get("column") == 0, (
+    # After the drag: axis 0 (k0) must have relocated to outer column 0, and the
+    # panel must still hold exactly 2 axes (axis 1 stays in column 1).
+    assert view.drop_seen, (
+        "no dropEvent fired — the real-OS drag never completed (watchdog "
+        f"cancelled it). Screenshots saved to {tmp_path}"
+    )
+    assert vm.axes[0].column == 0, (
         "axis did not relocate to outer column 0 after real-OS drag; "
-        f"got column={captured.get('column')!r}. "
-        f"Screenshots saved to {tmp_path}"
+        f"got column={vm.axes[0].column!r}. Screenshots saved to {tmp_path}"
     )
-    assert captured.get("n_axes") == 2, (
-        f"expected 2 axes after drag, got n_axes={captured.get('n_axes')!r}"
-    )
+    assert len(vm.axes) == 2, f"expected 2 axes after drag, got {len(vm.axes)}"
