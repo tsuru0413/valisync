@@ -18,23 +18,38 @@ count.  Live drag-preview with a debounce timer is a noted refinement (R9.5).
 
 from __future__ import annotations
 
+from typing import Any
+
 import pyqtgraph as pg
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
+    QBrush,
+    QColor,
     QContextMenuEvent,
+    QDrag,
     QDragEnterEvent,
     QDragLeaveEvent,
     QDragMoveEvent,
     QDropEvent,
     QMouseEvent,
+    QPen,
     QResizeEvent,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QMenu, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QGraphicsLineItem,
+    QGraphicsRectItem,
+    QMenu,
+    QVBoxLayout,
+    QWidget,
+)
 
 from valisync.gui.adapters.qt_signal_models import (
+    AXIS_INDEX_MIME,
     SIGNAL_KEYS_MIME,
+    decode_axis_index,
     decode_signal_keys,
+    encode_axis_index,
 )
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 from valisync.gui.views.region_divider_item import RegionDividerItem
@@ -134,7 +149,19 @@ class _AlignedAxisItem(pg.AxisItem):
     scientific notation, render every non-zero tick in scientific (keeping
     pyqtgraph's significant-figure precision; "0" stays "0") so the column reads
     uniformly.
+
+    The axis also acts as a drag SOURCE for the axis-move gesture: a left-drag
+    starts a ``QDrag`` carrying this axis's VM index (set by the view), which the
+    panel's drop sink decodes to relocate the axis. The VM index is ``None`` on a
+    bare instance (e.g. unit-tested in isolation), making the drag a no-op there.
     """
+
+    # Set per-build by the view (_reconcile_axes); None => not draggable.
+    _vm_axis_index: int | None = None
+
+    def set_vm_axis_index(self, index: int) -> None:
+        """Tell this axis which VM axis index a drag from it should carry."""
+        self._vm_axis_index = index
 
     def tickStrings(
         self, values: list[float], scale: float, spacing: float
@@ -155,6 +182,25 @@ class _AlignedAxisItem(pg.AxisItem):
             out.append(f"{mantissa}e{exp}")
         return out
 
+    def mouseDragEvent(self, ev: Any) -> None:
+        """Start an axis-move QDrag on left-drag (real delivery is Layer-C/manual).
+
+        The base ``AxisItem.mouseDragEvent`` only pans a *linked* ViewBox; these
+        axes are unlinked, so it no-ops and is safe to override. Offscreen Qt
+        cannot run the blocking drag loop, so this path is verified by Layer C /
+        manual, not the headless Layer B suite.
+        """
+        if self._vm_axis_index is None or ev.button() != Qt.MouseButton.LeftButton:
+            ev.ignore()
+            return
+        if ev.isStart():
+            view = self.getViewWidget()
+            if view is not None:
+                drag = QDrag(view)
+                drag.setMimeData(encode_axis_index(self._vm_axis_index))
+                drag.exec(Qt.DropAction.MoveAction)
+        ev.accept()
+
 
 class GraphPanelView(QWidget):
     """PyQtGraph waveform view bound to a :class:`GraphPanelVM`."""
@@ -171,20 +217,29 @@ class GraphPanelView(QWidget):
         self._y_axes: list[pg.AxisItem] = []
         self._view_boxes: list[pg.ViewBox] = []
         self._dividers: list[RegionDividerItem] = []
-        # Assigned later in _reconcile_axes; declared here (no runtime binding,
-        # so the hasattr(_axis_layout) guard still holds) to let mypy resolve
-        # their type at the use sites in refresh().
+        # One axis sub-layout per occupied column (root col = the column index).
+        # Empty until the first _reconcile_axes build.
+        self._axis_layouts: dict[int, pg.GraphicsLayout] = {}
+        # Snapshot of the last-built grid structure (column_count + per-axis
+        # column/row placement); lets _reconcile_axes take a fast path that only
+        # retunes row stretch + labels when nothing structural changed.
+        self._build_signature: tuple[object, ...] = ()
+        # Assigned in _reconcile_axes' rebuild path; declared here (no runtime
+        # binding) so mypy resolves its type at the use sites in refresh().
         self._legend: pg.LegendItem
-        self._axis_layout: pg.GraphicsLayout
         self._drag_zone: str | None = None
         self._drag_start: QPointF | None = None
         self._drop_active = False
         self._removable = True
+        # Axis-move drag feedback: lazily created, reused per drag, nulled on rebuild.
+        self._axis_move_line: QGraphicsLineItem | None = None
+        self._axis_move_highlight: QGraphicsRectItem | None = None
+        self._axis_move_dimmed_index: int | None = None
 
         self.plot_widget = pg.GraphicsLayoutWidget()
-        # The central layout manages axes in col 0 and the plot area in col 1.
+        # The central layout stacks Y-axis sub-layouts in columns 0..N-1 and the
+        # plot area in column N (= vm.column_count); _reconcile_axes owns it.
         self._layout = self.plot_widget.ci.layout
-        self._layout.setColumnFixedWidth(0, _Y_AXIS_FIXED_WIDTH)  # Width for Y-axes
 
         # Shared X-axis at the bottom (linked to the first ViewBox).
         self._x_axis = pg.AxisItem(orientation="bottom")
@@ -295,15 +350,47 @@ class GraphPanelView(QWidget):
         for vb in self._view_boxes[1:]:
             vb.setGeometry(rect)
 
-    def _reconcile_axes(self) -> None:
-        """Ensure the number of AxisItems, ViewBoxes, and Dividers matches the VM."""
-        n_axes = len(self.vm.axes)
+    def _axis_placement(self) -> list[tuple[int, int, int]]:
+        """Map each VM axis to its grid slot as ``(vm_index, column, row)``.
 
-        # If count matches, just update stretch factors and labels in the sub-layout
-        if hasattr(self, "_axis_layout") and len(self._y_axes) == n_axes:
-            for i, axis_vm in enumerate(self.vm.axes):
-                self._axis_layout.layout.setRowStretchFactor(
-                    i * 2, int(axis_vm.height_ratio * 1000)
+        Within a column, axes stack top→bottom by ``top_ratio`` (mirroring the
+        VM's ``_col`` helper); ``row = rank * 2`` so the odd rows in between stay
+        free for the dividers that separate consecutive axes.
+        """
+        by_col: dict[int, list[tuple[float, int]]] = {}
+        for i, ax in enumerate(self.vm.axes):
+            by_col.setdefault(ax.column, []).append((ax.top_ratio, i))
+        placement: list[tuple[int, int, int]] = []
+        for col in sorted(by_col):
+            for rank, (_top, i) in enumerate(sorted(by_col[col])):
+                placement.append((i, col, rank * 2))
+        return placement
+
+    def _reconcile_axes(self) -> None:
+        """Reconcile AxisItems, ViewBoxes, and Dividers with the VM's axes/columns.
+
+        AxisItems are grouped into one sub-layout per occupied column (root
+        col = the axis's column); the plot ViewBox container occupies root
+        col = ``column_count`` and every lower column reserves fixed Y-axis
+        width, so empty columns stay as drop-target gutters for a later task.
+
+        The ViewBox overlay model is unchanged: ``_view_boxes[0]`` is the
+        layout-managed master and the rest are scene items kept aligned to it by
+        ``_sync_overlay_geometry``; ``_view_boxes[i]``/``_y_axes[i]`` stay paired
+        with ``vm.axes[i]`` so ``refresh()``'s index mapping still holds.
+        """
+        placement = self._axis_placement()
+        signature = (self.vm.column_count, tuple(sorted(placement)))
+
+        # Fast path: column grouping and vertical order are identical, so only
+        # height_ratio/labels could have changed (e.g. a divider drag). Retune
+        # row stretch + labels in place instead of rebuilding — this keeps the
+        # dragged divider object alive rather than recreating it under the cursor.
+        if self._axis_layouts and signature == self._build_signature:
+            for i, col, row in placement:
+                axis_vm = self.vm.axes[i]
+                self._axis_layouts[col].layout.setRowStretchFactor(
+                    row, int(axis_vm.height_ratio * 1000)
                 )
                 if axis_vm.name or axis_vm.unit:
                     self._y_axes[i].setLabel(
@@ -311,11 +398,23 @@ class GraphPanelView(QWidget):
                     )
             return
 
-        # Count mismatch: rebuild layout
-        # (Slightly heavy but robust for now)
-        # Secondary ViewBoxes were added straight to the scene, so ci.clear()
-        # (which only drops layout-managed items) leaves them behind as orphans
-        # that keep drawing their stale curve. Remove them explicitly first.
+        # Structure changed: rebuild.
+        # Clear and explicitly remove axis-move feedback items before ci.clear();
+        # they live directly in the scene (not the layout), so ci.clear() would
+        # leave them as stale orphans — mirrors the secondary-ViewBox discipline.
+        self._clear_axis_move_feedback()
+        for _fb_item in (self._axis_move_line, self._axis_move_highlight):
+            if _fb_item is not None:
+                _fb_scene = _fb_item.scene()
+                if _fb_scene is not None:
+                    _fb_scene.removeItem(_fb_item)
+        self._axis_move_line = None
+        self._axis_move_highlight = None
+
+        # Secondary ViewBoxes live straight in the scene (so waveforms draw
+        # unclipped), so ci.clear() — which only drops layout-managed items —
+        # leaves them behind as orphans that keep drawing their stale curve.
+        # Remove them explicitly first.
         for vb in self._view_boxes[1:]:
             scene = vb.scene()
             if scene is not None:
@@ -325,38 +424,47 @@ class GraphPanelView(QWidget):
         self._view_boxes.clear()
         self._dividers.clear()
         self._items.clear()  # Clear items to force re-adding to new ViewBoxes
+        self._axis_layouts = {}
 
         # We'll use a single legend for the whole panel
         self._legend = pg.LegendItem()
 
-        # Root layout configuration (2x2)
-        # Row 0: Axes (Col 0), ViewBoxes (Col 1)
-        # Row 1: empty (Col 0), X-axis (Col 1)
+        # Root layout: columns 0..N-1 each reserve fixed Y-axis width (so empty
+        # columns stay as fixed-width drop-target gutters); the plot column N
+        # takes the remaining width. Row 0 = axes/plot, row 1 = fixed X-axis.
+        column_count = self.vm.column_count
         root = self.plot_widget.ci.layout
-        root.setColumnFixedWidth(0, _Y_AXIS_FIXED_WIDTH)
-        root.setColumnStretchFactor(1, 1)  # Ensure plot area takes remaining width
+        for c in range(column_count):
+            root.setColumnFixedWidth(c, _Y_AXIS_FIXED_WIDTH)
+        root.setColumnStretchFactor(column_count, 1)
         root.setRowStretchFactor(0, 1)
         root.setRowStretchFactor(1, 0)  # Fixed height for X-axis
 
-        # Add Axis Sub-Layout
-        self._axis_layout = self.plot_widget.addLayout(row=0, col=0)
+        # One axis sub-layout per occupied column, in its matching root column.
+        for col in sorted({c for _, c, _ in placement}):
+            self._axis_layouts[col] = self.plot_widget.addLayout(row=0, col=col)
 
-        # Primary ViewBox (the one at the bottom usually has the X-axis)
-        master_vb = None
+        row_of = {i: row for i, _c, row in placement}
+        col_of = {i: c for i, c, _row in placement}
 
-        for i in range(n_axes):
-            axis_vm = self.vm.axes[i]
-
-            # Create ViewBox
+        # Create ViewBoxes + AxisItems in VM order so _view_boxes[i]/_y_axes[i]
+        # stay paired with vm.axes[i]; AxisItems are PLACED by column/row.
+        master_vb: pg.ViewBox | None = None
+        for i, axis_vm in enumerate(self.vm.axes):
             vb = pg.ViewBox()
             vb.setMouseEnabled(x=False, y=False)
             vb.disableAutoRange()
             self._view_boxes.append(vb)
 
             if master_vb is None:
+                # Master ViewBox is layout-managed in the plot column.
                 master_vb = vb
+                self.plot_widget.addItem(vb, row=0, col=column_count)
             else:
+                # Secondary ViewBoxes overlay the master's plot rect (kept in
+                # sync by _sync_overlay_geometry) and share its X range.
                 vb.setXLink(master_vb)
+                self.plot_widget.scene().addItem(vb)
 
             # Create AxisItem. It is NOT linked to the ViewBox: the ViewBox uses
             # an expanded virtual range, so the axis range is driven directly
@@ -365,48 +473,58 @@ class GraphPanelView(QWidget):
             # Fixed width shared by all stacked axes so their spines/tick numbers
             # align; overrides pyqtgraph's per-axis auto-width (which is ragged).
             axis.setWidth(_Y_AXIS_FIXED_WIDTH)
+            # Tag the axis with its VM index so a drag from it carries that index.
+            axis.set_vm_axis_index(i)
             if axis_vm.name or axis_vm.unit:
                 axis.setLabel(text=axis_vm.name or None, units=axis_vm.unit or None)
             self._y_axes.append(axis)
 
-            # Add to Axis Sub-Layout
-            row = i * 2
-            self._axis_layout.addItem(axis, row=row, col=0)
-            self._axis_layout.layout.setRowStretchFactor(
-                row, int(axis_vm.height_ratio * 1000)
-            )
+            sub = self._axis_layouts[col_of[i]]
+            sub.addItem(axis, row=row_of[i], col=0)
+            sub.layout.setRowStretchFactor(row_of[i], int(axis_vm.height_ratio * 1000))
 
-            # Add ViewBox to the root layout (Col 1)
-            if i == 0:
-                # Primary ViewBox is managed by the layout in Col 1, Row 0
-                self.plot_widget.addItem(vb, row=0, col=1)
-                master_vb = vb
-            else:
-                # Secondary ViewBoxes are added to the scene and overlay the
-                # master's plot rect (kept in sync by _sync_overlay_geometry).
-                vb.setXLink(master_vb)
-                self.plot_widget.scene().addItem(vb)
-
-            # Add Divider if not the last axis
-            if i < n_axes - 1:
-                divider = RegionDividerItem(self.vm, i)
+        # Dividers sit between vertically-consecutive axes WITHIN a column, just
+        # below the upper axis. The divider's axis_index is the upper axis's
+        # vertical RANK in its column (not a VM index) and it carries that
+        # column, so resize_axis stays column-scoped and follows vertical
+        # (top_ratio) order — correct even when VM-index order diverges from
+        # vertical order after a move_axis_to_column. ``placement`` is grouped by
+        # column then ranked top→bottom, so counting per column gives each
+        # column's vertical axis count; a divider at vertical rank k sits at
+        # sub-layout row ``k*2 + 1`` (between axis rows ``k*2`` and ``(k+1)*2``).
+        axes_per_col: dict[int, int] = {}
+        for _vm_index, col, _row in placement:
+            axes_per_col[col] = axes_per_col.get(col, 0) + 1
+        for col, n_axes in axes_per_col.items():
+            sub = self._axis_layouts[col]
+            for rank in range(n_axes - 1):
+                divider = RegionDividerItem(self.vm, rank, column=col)
                 self._dividers.append(divider)
-                # Dividers are in between axis rows in the sub-layout
-                self._axis_layout.addItem(divider, row=row + 1, col=0)
-                self._axis_layout.layout.setRowFixedHeight(row + 1, 1)
+                drow = rank * 2 + 1
+                sub.addItem(divider, row=drow, col=0)
+                sub.layout.setRowFixedHeight(drow, 1)
 
         # The VM always holds at least one axis, so the master ViewBox is set.
         assert master_vb is not None
-        # Add X-axis at the bottom (Row 1, Col 1)
-        self.plot_widget.addItem(self._x_axis, row=1, col=1)
+        # Add X-axis at the bottom of the plot column (Row 1).
+        self.plot_widget.addItem(self._x_axis, row=1, col=column_count)
         self._x_axis.linkToView(master_vb)
         # Keep overlays aligned when the window (and thus the master) resizes
         # without a VM change, since refresh() is not called in that case.
         master_vb.sigResized.connect(self._sync_overlay_geometry)
         # Add legend to the master ViewBox
         self._legend.setParentItem(master_vb)
+        self._build_signature = signature
 
     # ─── Test/introspection surface ────────────────────────────────────────────
+
+    def axis_columns(self) -> list[int]:
+        """Return the sorted root grid columns that currently hold an AxisItem."""
+        return sorted(self._axis_layouts)
+
+    def plot_grid_column(self) -> int:
+        """Return the root grid column reserved for the plot ViewBox container."""
+        return self.vm.column_count
 
     def curve_keys(self) -> list[str]:
         """Return the signal keys currently drawn (one PlotDataItem each)."""
@@ -483,18 +601,142 @@ class GraphPanelView(QWidget):
         )
 
     def _axis_index_at(self, pos: QPointF) -> int:
-        """Identify which Y-axis is at *pos*."""
-        # Simple vertical split for now based on relative height
+        """Identify which Y-axis is at *pos*.
+
+        The cursor's COLUMN is resolved first (same band math as
+        ``_axis_drop_target``); only axes in that column are then matched on the
+        vertical band. Without the column filter an outer-column axis that spans
+        the full height (band ``[0, 1]``) would match every ``y_rel`` and steal
+        drops/zoom gestures aimed at the inner column.
+        """
         if not self._y_axes:
             return 0
 
+        col = max(0, min(int(pos.x() // _Y_AXIS_FIXED_WIDTH), self.vm.column_count - 1))
         plot_rect = self._plot_rect_in_widget()
         y_rel = (pos.y() - plot_rect.top()) / plot_rect.height()
 
         for i, axis_vm in enumerate(self.vm.axes):
-            if axis_vm.top_ratio <= y_rel <= axis_vm.top_ratio + axis_vm.height_ratio:
+            if axis_vm.column == col and (
+                axis_vm.top_ratio <= y_rel <= axis_vm.top_ratio + axis_vm.height_ratio
+            ):
                 return i
         return 0
+
+    def _axis_drop_target(self, pos: QPointF) -> tuple[int, int]:
+        """Map a widget-space *pos* to an axis-move target ``(column, position)``.
+
+        The column is the fixed-width Y-axis band ``pos.x()`` falls in (clamped to
+        ``0..column_count-1``). The vertical *position* is the insertion index
+        among that column's axes: with N axes there are N+1 boundaries (each
+        axis's top edge plus the column bottom), and the nearest boundary to
+        ``pos.y()`` wins. An empty/lone column inserts at position 0.
+        """
+        col = max(0, min(int(pos.x() // _Y_AXIS_FIXED_WIDTH), self.vm.column_count - 1))
+        rect = self._plot_rect_in_widget()
+        col_axes = sorted(
+            (a for a in self.vm.axes if a.column == col), key=lambda a: a.top_ratio
+        )
+        if not col_axes:
+            return (col, 0)
+        top, h = rect.top(), rect.height()
+        boundaries = [top + a.top_ratio * h for a in col_axes] + [top + h]
+        position = min(
+            range(len(boundaries)), key=lambda k: abs(boundaries[k] - pos.y())
+        )
+        return (col, position)
+
+    # ─── Axis-move drag feedback ───────────────────────────────────────────────
+
+    def _ensure_feedback_items(self) -> None:
+        """Lazily create and register the axis-move feedback items in the scene.
+
+        Items are created once and reused for every drag-move notification;
+        show/hide toggles replace recreate-per-event to avoid scene churn.
+        """
+        scene = self.plot_widget.scene()
+        if self._axis_move_line is None:
+            line = QGraphicsLineItem()
+            pen = QPen(QColor(255, 165, 0))  # orange
+            pen.setWidth(3)
+            line.setPen(pen)
+            line.setZValue(100)
+            line.setVisible(False)
+            scene.addItem(line)
+            self._axis_move_line = line
+        if self._axis_move_highlight is None:
+            rect_item = QGraphicsRectItem()
+            rect_item.setBrush(QBrush(QColor(255, 165, 0, 60)))  # translucent orange
+            rect_item.setPen(QPen(Qt.PenStyle.NoPen))
+            rect_item.setZValue(100)
+            rect_item.setVisible(False)
+            scene.addItem(rect_item)
+            self._axis_move_highlight = rect_item
+
+    def _update_axis_move_feedback(self, source_index: int, pos: QPointF) -> None:
+        """Update insertion-line / column-highlight while an axis-move drag is active.
+
+        Called from ``dragMoveEvent`` on every cursor move.  For a non-empty
+        target column an orange line snaps to the nearest of the N+1 axis
+        boundaries; for an empty column the whole band is highlighted instead.
+        The source axis is dimmed to signal it is being relocated.
+        """
+        self._ensure_feedback_items()
+        col, position = self._axis_drop_target(pos)
+        rect = self._plot_rect_in_widget()
+        W = _Y_AXIS_FIXED_WIDTH
+        x_start = float(col * W)
+        x_end = float((col + 1) * W)
+        col_axes = sorted(
+            (a for a in self.vm.axes if a.column == col), key=lambda a: a.top_ratio
+        )
+
+        # Dim the source axis (idempotent on repeated calls for the same source).
+        if 0 <= source_index < len(self._y_axes):
+            self._y_axes[source_index].setOpacity(0.35)
+            self._axis_move_dimmed_index = source_index
+
+        if not col_axes:
+            # Empty column: highlight the full column band instead of a line.
+            assert self._axis_move_highlight is not None
+            assert self._axis_move_line is not None
+            self._axis_move_highlight.setRect(
+                QRectF(x_start, rect.top(), float(W), rect.height())
+            )
+            self._axis_move_highlight.setVisible(True)
+            self._axis_move_line.setVisible(False)
+        else:
+            # Non-empty column: show insertion line at the nearest boundary.
+            boundaries = [
+                rect.top() + a.top_ratio * rect.height() for a in col_axes
+            ] + [rect.top() + rect.height()]
+            boundary_y = boundaries[position]
+            assert self._axis_move_line is not None
+            assert self._axis_move_highlight is not None
+            self._axis_move_line.setLine(x_start, boundary_y, x_end, boundary_y)
+            self._axis_move_line.setVisible(True)
+            self._axis_move_highlight.setVisible(False)
+
+    def _axis_move_line_y(self) -> float:
+        """Return the scene-y of the current insertion line (test introspection)."""
+        if self._axis_move_line is None:
+            return 0.0
+        return self._axis_move_line.line().y1()
+
+    def _clear_axis_move_feedback(self) -> None:
+        """Hide feedback items and restore any dimmed axis's opacity.
+
+        Called on drag-leave, drop completion, and at the start of every
+        structural rebuild so no stale visual state leaks across rebuilds.
+        """
+        if self._axis_move_line is not None:
+            self._axis_move_line.setVisible(False)
+        if self._axis_move_highlight is not None:
+            self._axis_move_highlight.setVisible(False)
+        if self._axis_move_dimmed_index is not None:
+            if 0 <= self._axis_move_dimmed_index < len(self._y_axes):
+                self._y_axes[self._axis_move_dimmed_index].setOpacity(1.0)
+            self._axis_move_dimmed_index = None
 
     def _data_value(self, pos: QPointF, axis: str) -> float | None:
         try:
@@ -568,24 +810,42 @@ class GraphPanelView(QWidget):
         )
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        if event.mimeData().hasFormat(SIGNAL_KEYS_MIME):
+        md = event.mimeData()
+        if md.hasFormat(SIGNAL_KEYS_MIME) or md.hasFormat(AXIS_INDEX_MIME):
             self._set_drop_highlight(True)
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:
-        if event.mimeData().hasFormat(SIGNAL_KEYS_MIME):
+        md = event.mimeData()
+        if md.hasFormat(SIGNAL_KEYS_MIME) or md.hasFormat(AXIS_INDEX_MIME):
             event.acceptProposedAction()
+            axis_index = decode_axis_index(md)
+            if axis_index is not None:
+                self._update_axis_move_feedback(axis_index, event.position())
         else:
             event.ignore()
 
     def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:
         self._set_drop_highlight(False)
+        self._clear_axis_move_feedback()
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event: QDropEvent) -> None:
         self._set_drop_highlight(False)
+
+        # Axis-move drop: relocate an existing axis to the target column/position.
+        # Checked BEFORE signal-key handling so the two gestures never overlap;
+        # only fires when the drag actually carried an axis index.
+        axis_index = decode_axis_index(event.mimeData())
+        if axis_index is not None:
+            col, position = self._axis_drop_target(event.position())
+            self.vm.move_axis_to_column(axis_index, col, position)
+            self._clear_axis_move_feedback()
+            event.acceptProposedAction()
+            return
+
         keys = decode_signal_keys(event.mimeData())
         if not keys:
             event.ignore()
@@ -593,13 +853,23 @@ class GraphPanelView(QWidget):
 
         pos = event.position()
         zone = self._zone_at(pos)
+        ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
 
-        for key in keys:
-            if zone in (ZONE_Y_INNER, ZONE_Y_OUTER):
-                axis_idx = self._axis_index_at(pos)
-                self.vm.add_signal_to_axis(key, axis_idx)
+        if zone in (ZONE_Y_INNER, ZONE_Y_OUTER):
+            axis_idx = self._axis_index_at(pos)
+            if ctrl:
+                # Ctrl = join: add each dropped signal alongside existing ones.
+                for key in keys:
+                    self.vm.add_signal_to_axis(key, axis_idx)
             else:
-                # Dropped on plot area (ZONE_PLOT) or elsewhere: create new axis
+                # Plain drop = overwrite (R5): replace axis contents with ALL
+                # dropped signals — first via overwrite, rest via add.
+                self.vm.overwrite_axis(keys[0], axis_idx)
+                for key in keys[1:]:
+                    self.vm.add_signal_to_axis(key, axis_idx)
+        else:
+            # Dropped on plot area (ZONE_PLOT) or elsewhere: create new axis.
+            for key in keys:
                 self.vm.create_new_axis(key)
 
         event.acceptProposedAction()

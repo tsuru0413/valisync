@@ -28,8 +28,8 @@ This sub-spec defines the implementation of an advanced multi-Y axis system. The
 
 ### Requirement 5: Context-Aware Drag and Drop (R5)
 **User Story:** As an analyst, I want to decide where a signal goes based on where I drop it.
-1. WHEN a signal is dropped onto an existing Y-axis scale, IT SHALL join that axis and adopt its scale/region.
-2. WHEN a signal is dropped onto the main plot area (background), THE GUI_Application SHALL create a new Y-axis and a new independent region for it.
+1. WHEN a signal is dropped onto an existing Y-axis scale, IT SHALL **replace (overwrite)** that axis's signal assignment with the dropped signal. WHEN dropped with **Ctrl held**, IT SHALL **add/join** the signal to that axis instead of replacing.
+2. WHEN a signal is dropped onto the main plot area (background), THE GUI_Application SHALL create a new Y-axis and assign the signal to it. The new axis SHALL be appended at the bottom of the **inner column** (`column_count−1`) — **Rule A: fill-inner-first**.
 
 ### Requirement 6: Stable Layout on Deletion (R6)
 **User Story:** As an analyst, I don't want my signals jumping around when I remove a secondary channel.

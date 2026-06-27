@@ -11,13 +11,13 @@ graph TD
     subgraph View (PyQtGraph)
         G_Widget[GraphicsLayoutWidget]
         Root_Layout[Root Grid Layout]
-        Col_Layout[Column Nested Layout]
+        Col_Layouts["_axis_layouts: dict[col → GraphicsLayout]"]
         Main_VB[Overlaid ViewBoxes]
         Axis_Item[AxisItems]
         
         G_Widget --> Root_Layout
-        Root_Layout --> Col_Layout
-        Col_Layout --> Axis_Item
+        Root_Layout --> Col_Layouts
+        Col_Layouts --> Axis_Item
         Root_Layout --> Main_VB
     end
     subgraph ViewModel
@@ -49,8 +49,10 @@ graph TD
 ## Views
 
 ### Layout Structure
-- **Root Layout**: A single row, multiple columns grid. The last column is always reserved for the wave plot area.
-- **Column Layouts**: Each axis column is a `pyqtgraph.GraphicsLayout` added to a cell of the Root Layout. This allows independent row heights per column.
+- **Root Layout**: A single row, N+1 columns grid where N = `column_count` (default **2**, per-panel, set via `GraphPanelVM.set_column_count(n)`; clamps ≥ 1). The wave plot area is placed at root col = `column_count` (always the rightmost slot).
+- **Per-Column Sub-Layouts** (`_axis_layouts: dict[int, GraphicsLayout]`): One `pyqtgraph.GraphicsLayout` per *occupied* column, keyed by column index, placed at root grid col = column index. Columns that have no axes are not added to `_axis_layouts` but still hold a fixed-width slot in the root grid — they serve as empty **drop-target gutters** ("余白").
+- **Fill-Inner-First (Rule A)**: New axes are always appended at the bottom of the **inner column** (`column_count−1`). An axis can subsequently be moved to any column via D&D.
+- **Per-Axis Resize Handles**: `RegionDividerItem` objects are placed between vertically-adjacent axes within each column. Dragging a handle calls `resize_axis(boundary_index, delta, column=…)` — resize is **column-scoped** (only axes within the same column are affected), ordered by their vertical position (`top_ratio`).
 
 ### Coordinate Mapping (The "Secret")
 To achieve "Auto-Fit" without clipping, we apply a custom **Vertical Transform** to each `ViewBox`:
@@ -69,5 +71,16 @@ To achieve "Auto-Fit" without clipping, we apply a custom **Vertical Transform**
 - The `ViewBox` transforms are updated in real-time, causing the waveforms to stretch/compress.
 
 ### Drag and Drop Routing
-1. Drop on `AxisItem`: Signal joins the existing `YAxisVM`.
-2. Drop on Plot Area: Creates a new `YAxisVM` with a default `height_ratio` (e.g., 0.3) in the first available slot.
+
+#### Signal Drop
+1. **Drop on `AxisItem`**: Calls `overwrite_axis` — **replaces** the axis's signal assignment with the dropped signal.
+2. **Ctrl+Drop on `AxisItem`**: Calls `add_signal_to_axis` — **adds/joins** the signal to the existing `YAxisVM` without replacing.
+3. **Drop on plot area (background)**: Calls `create_new_axis` — creates a new `YAxisVM` in the inner column (Rule A: `column_count−1`, appended at column bottom).
+
+#### Axis Move (D&D)
+- An axis carries its source index as drag data (`AXIS_INDEX_MIME`).
+- On drop, `_axis_drop_target(pos)` computes `(column, position)` and calls `move_axis_to_column(index, column, position)`. The source slot is vacated; the destination column is equal-re-split among its new set of axes.
+- **Drop feedback during drag**:
+  - **Occupied column**: An **insertion line** snaps to the nearest of N+1 boundary candidates (top of first axis / between adjacent axes / bottom of last axis).
+  - **Empty column (余白)**: The **whole column is highlighted** (no insertion line, as there are no boundaries).
+  - **Source axis**: Dimmed as a placeholder during the drag and vacated on successful drop.

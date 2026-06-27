@@ -81,7 +81,8 @@ class GraphPanelVM(Observable):
         self._session = session
         self._plotted: list[_PlottedEntry] = []
         self.x_range: tuple[float, float] | None = None
-        self._axes: list[YAxisVM] = [YAxisVM()]
+        self._column_count: int = 2
+        self._axes: list[YAxisVM] = [YAxisVM(column=self._column_count - 1)]
         self.panel_width_px: int = 800
         self.lod_active: bool = False
         self.last_rendered_points: int = 0
@@ -104,6 +105,22 @@ class GraphPanelVM(Observable):
     def axes(self) -> list[YAxisVM]:
         """Return the list of Y-axes."""
         return self._axes
+
+    @property
+    def column_count(self) -> int:
+        """Number of vertical columns for Y-axis layout (default 2)."""
+        return self._column_count
+
+    def set_column_count(self, n: int) -> None:
+        """Set the column count, clamped to >= 1, then reconcile axes and notify."""
+        self._column_count = max(1, n)
+        # Clamp any axis stranded in a now-out-of-range column; otherwise
+        # _reconcile_axes would place it in the plot's own root grid cell
+        # (column == column_count) and overlap the layout.
+        for a in self._axes:
+            a.column = min(a.column, self._column_count - 1)
+        self._normalize_axes()
+        self._notify("axes")
 
     # ─── Signal list management ──────────────────────────────────────────────
 
@@ -138,6 +155,20 @@ class GraphPanelVM(Observable):
         self._invalidate_cache()
         self._notify("signals")
 
+    def overwrite_axis(self, signal_key: str, axis_index: int) -> None:
+        """Replace all signals on *axis_index* with *signal_key*.
+
+        Existing plotted entries on that axis are dropped, the axis label/unit
+        are cleared so the new signal becomes the representative, then
+        ``add_signal_to_axis`` re-adds the signal, auto-fits, and notifies.
+        ``add_signal_to_axis`` (the Ctrl-add path) is left completely unchanged.
+        """
+        self._plotted = [e for e in self._plotted if e.axis_index != axis_index]
+        if 0 <= axis_index < len(self._axes):
+            self._axes[axis_index].name = ""
+            self._axes[axis_index].unit = ""
+        self.add_signal_to_axis(signal_key, axis_index)
+
     def create_new_axis(self, signal_key: str) -> None:
         """Add *signal_key* as a new vertical region.
 
@@ -145,35 +176,89 @@ class GraphPanelVM(Observable):
         prunes any empty axis (e.g. the initial placeholder) so the first signal
         fills the whole panel and subsequent signals split it into equal regions.
         """
-        self._axes.append(YAxisVM())
+        new_col = self._column_count - 1
+        same_col = [a.top_ratio for a in self._axes if a.column == new_col]
+        new_axis = YAxisVM(column=new_col)
+        # Give the new axis a transient top_ratio that sorts it after all
+        # existing axes in the same column so _normalize_axes places it at the
+        # bottom (rule A: new axis appends below existing ones).
+        new_axis.top_ratio = (max(same_col) + 1.0) if same_col else 0.0
+        self._axes.append(new_axis)
         self.add_signal_to_axis(signal_key, len(self._axes) - 1)
         self._normalize_axes()
         self._notify("axes")
 
+    def move_axis_to_column(
+        self, axis_index: int, column: int, position: int | None = None
+    ) -> None:
+        """Move an axis to *column*, inserting at vertical *position* (0=top, None=bottom).
+
+        The source slot is vacated and re-split by _normalize_axes (rule 1: equal
+        re-split per column). `position` is the insertion index among the destination
+        column's other members. Existing 2-arg callers append at the bottom.
+        """
+        # A stale drag index (e.g. axes re-split mid-drag) must be a no-op, not
+        # an IndexError.
+        if not (0 <= axis_index < len(self._axes)):
+            return
+        column = max(0, min(column, self._column_count - 1))
+        moved = self._axes[axis_index]
+        moved.column = column
+        others = sorted(
+            [a for a in self._axes if a.column == column and a is not moved],
+            key=lambda a: a.top_ratio,
+        )
+        if not others:
+            moved.top_ratio = 0.0
+        elif position is None or position >= len(others):
+            moved.top_ratio = others[-1].top_ratio + 1.0  # bottom
+        elif position <= 0:
+            moved.top_ratio = others[0].top_ratio - 1.0  # top
+        else:
+            moved.top_ratio = (
+                others[position - 1].top_ratio + others[position].top_ratio
+            ) / 2.0
+        self._normalize_axes()
+        self._notify("axes")
+
     def _normalize_axes(self) -> None:
-        """Keep one region per signal-bearing axis (min 1) and split equally.
+        """Keep one region per signal-bearing axis (min 1) and split equally per column.
 
         Empty axes (the initial placeholder, or an axis whose signals were all
         moved away) must not occupy panel space — otherwise a real signal would
         render at a fraction of the panel height with blank regions beside it.
         Re-indexes plotted entries to the compacted axis positions.
+
+        Within each column, axes split the full column height equally.  Relative
+        top-to-bottom order within a column is preserved by sorting on the
+        pre-existing top_ratio before reassigning layout fractions.
         """
         used = sorted({e.axis_index for e in self._plotted})
         if not used:
-            # No signals plotted: collapse to a single full-height placeholder.
+            # No signals plotted: collapse to a single full-height placeholder
+            # in the inner (last) column.
             keep = self._axes[0] if self._axes else YAxisVM()
             keep.top_ratio, keep.height_ratio = 0.0, 1.0
+            keep.column = self._column_count - 1
             self._axes = [keep]
             return
         remap = {old: new for new, old in enumerate(used)}
         self._axes = [self._axes[old] for old in used]
         for entry in self._plotted:
             entry.axis_index = remap[entry.axis_index]
-        n = len(self._axes)
-        h = 1.0 / n
-        for i, axis in enumerate(self._axes):
-            axis.top_ratio = i * h
-            axis.height_ratio = h
+
+        # Group axes by column, then split height equally within each group.
+        # Relative top-to-bottom order is preserved by sorting on top_ratio.
+        col_groups: dict[int, list[YAxisVM]] = {}
+        for axis in self._axes:
+            col_groups.setdefault(axis.column, []).append(axis)
+
+        for axes_in_col in col_groups.values():
+            axes_in_col_sorted = sorted(axes_in_col, key=lambda a: a.top_ratio)
+            h = 1.0 / len(axes_in_col_sorted)
+            for i, axis in enumerate(axes_in_col_sorted):
+                axis.top_ratio = i * h
+                axis.height_ratio = h
 
     def remove_signal(self, signal_key: str) -> None:
         """Remove *signal_key* from the plot and reconcile axes."""
@@ -397,17 +482,35 @@ class GraphPanelVM(Observable):
         self._cache[cache_key] = curves
         return curves
 
-    def resize_axis(self, divider_index: int, delta_ratio: float) -> None:
-        """Resize two adjacent axes by moving the divider between them.
+    def resize_axis(
+        self, divider_index: int, delta_ratio: float, column: int | None = None
+    ) -> None:
+        """Resize two vertically-adjacent axes by moving the divider between them.
 
-        divider_index 0 is between axis 0 and 1.
         delta_ratio is positive for moving the divider down.
-        """
-        if divider_index < 0 or divider_index >= len(self._axes) - 1:
-            return
 
-        above = self._axes[divider_index]
-        below = self._axes[divider_index + 1]
+        When *column* is given, the divider is scoped to that column and the two
+        affected axes are the vertically-adjacent pair (ordered by ``top_ratio``)
+        at ranks ``divider_index`` / ``divider_index + 1`` — correct even when
+        VM-index order diverges from vertical order (after ``move_axis_to_column``).
+        When *column* is None (legacy callers), ``divider_index`` indexes the
+        VM-index-adjacent pair instead.
+        """
+        if column is None:
+            # Legacy: VM-index-adjacent pair (kept for existing callers/tests).
+            if divider_index < 0 or divider_index >= len(self._axes) - 1:
+                return
+            above = self._axes[divider_index]
+            below = self._axes[divider_index + 1]
+        else:
+            col_axes = sorted(
+                [a for a in self._axes if a.column == column],
+                key=lambda a: a.top_ratio,
+            )
+            if divider_index < 0 or divider_index >= len(col_axes) - 1:
+                return
+            above = col_axes[divider_index]
+            below = col_axes[divider_index + 1]
 
         # Ensure minimum height (e.g., 5%)
         min_h = 0.05
@@ -451,6 +554,7 @@ class GraphPanelVM(Observable):
                 }
                 for ax in self._axes
             ],
+            "column_count": self._column_count,
             "panel_width_px": self.panel_width_px,
             "lod_active": self.lod_active,
             "last_rendered_points": self.last_rendered_points,
