@@ -39,7 +39,7 @@ Success criteria: "User loads multiple files via DataExplorer -> FileBrowser lis
 ### Requirement 5: Master-Detail Synchronization (R5)
 **User Story:** As a user, I expect the signal list to be perfectly synced with my file selection.
 1. THE ChannelBrowser SHALL display only the signals contained within the **Active File**.
-2. WHEN the Active File changes, the ChannelBrowser SHALL update its content within 100ms.
+2. WHEN the Active File changes, THE ChannelBrowser SHALL refresh by fetching **only that file's signals** (via `Session.group_signals(active_key)`) and SHALL NOT scan the full Session, so the update cost scales with the active file's signal count, not the total number of loaded signals. *(Revised in S2: the original "within 100ms" was an unverifiable wall-clock target with no enforcing mechanism. This states the per-file mechanism that delivers responsiveness and is guarded by a structural test asserting no full-session scan — see `tests/gui/test_channel_browser_vm.py`.)*
 3. WHEN no file is selected (e.g., initial state or all files unloaded), the ChannelBrowser SHALL be empty.
 4. WHEN multiple files are selected (if supported in future), the selection behavior SHALL prioritize the first selected item as the Active File.
 
