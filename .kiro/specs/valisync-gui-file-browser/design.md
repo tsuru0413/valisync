@@ -138,10 +138,16 @@ stale state.
   driven by this requirement). Adds `unload_selected()` → `AppViewModel.unload_file`.
 - **ChannelBrowserVM** — already reacts to `"active_file"`; empties when the active
   file was cleared (R5.3). No change.
-- **GraphAreaVM** — gains `app_vm` as a **required** constructor dependency
-  (consistent with FileBrowserVM/ChannelBrowserVM holding `app_vm`; existing tests
-  updated). On `"unloaded"`, it calls `prune_missing_signals()` on **every panel in
-  every tab**.
+- **GraphAreaVM** — takes `app_vm` as its constructor argument (deriving `session`
+  from `app_vm.session`) and **subscribes to `AppViewModel` itself**, owning panel
+  reconciliation for app-level data events: on `"loaded"` it refreshes every
+  panel's render cache; on `"unloaded"` it calls `prune_missing_signals()` on every
+  panel. This makes it consistent with the other sub-VMs (FileBrowserVM /
+  ChannelBrowserVM hold `app_vm`) and **removes panel coordination from
+  `MainWindow`** — the previous `MainWindow._on_app_change → _refresh_panels` on
+  `"loaded"` moves here, so load and unload are reconciled the same way by the VM
+  that owns the panels. Its ~50 existing tests change `GraphAreaVM(session)` →
+  `GraphAreaVM(AppViewModel(session))`.
 
 ### `GraphPanelVM` changes
 - **`prune_missing_signals()`** *(new)*: drop every `_plotted` entry whose key is no
@@ -167,8 +173,9 @@ graph TD
     AppVM -->|remove_group| Session[Session]
     AppVM -. notify active_file .-> CBVM[ChannelBrowserVM → empty]
     AppVM -. notify unloaded .-> FBVM2[FileBrowserVM → refresh list]
-    AppVM -. notify unloaded .-> GAVM[GraphAreaVM → panels.prune_missing_signals]
-    GAVM --> GPVM["GraphPanelVM: prune + _normalize_axes"]
+    AppVM -. notify loaded/unloaded .-> GAVM["GraphAreaVM (subscribes)"]
+    GAVM -->|unloaded| GPVM["each GraphPanelVM: prune_missing_signals + _normalize_axes"]
+    GAVM -->|loaded| GPVM2["each GraphPanelVM: refresh"]
 ```
 
 ## Testing Strategy
