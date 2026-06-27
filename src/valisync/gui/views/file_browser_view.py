@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtWidgets import QListView, QVBoxLayout, QWidget
+from PySide6.QtGui import QContextMenuEvent
+from PySide6.QtWidgets import QListView, QMenu, QVBoxLayout, QWidget
 
 from valisync.gui.adapters.qt_signal_models import FileListModel
 
@@ -49,3 +50,18 @@ class FileBrowserView(QWidget):
             self._vm.select_file(indexes[0].row())
         else:
             self._vm.select_file(-1)
+
+    def build_context_menu(self, row: int) -> QMenu:
+        """Single-action menu ('Remove File') wired to unload list *row*."""
+        menu = QMenu(self)
+        menu.addAction("Remove File").triggered.connect(lambda *_: self._vm.unload(row))
+        return menu
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        """Right-click a row: select it, then offer 'Remove File' (R7.1)."""
+        pos = self.list_view.viewport().mapFromGlobal(event.globalPos())
+        index = self.list_view.indexAt(pos)
+        if not index.isValid():
+            return
+        self.list_view.setCurrentIndex(index)  # right-click selects the row
+        self.build_context_menu(index.row()).exec(event.globalPos())
