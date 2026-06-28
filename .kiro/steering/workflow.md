@@ -162,6 +162,8 @@ GUI（PySide6 / pyqtgraph）の機能・ユーザー操作を実装/変更する
 - **Layer A（ヘッドレス状態検証）**: 常に必須（CI）。
 - **Layer B（ヘッドレス実イベント経路検証 / `sendEvent`）**: **入力イベント（右クリック・D&D・キー・ドロップ等）に関わる変更では必須**（CI）。シグナルを直接 `emit` して済ませない（経路破壊を見逃すため）。
 - **Layer C（実 OS 入力 / `--realgui`）**: イベント経路を新規実装/変更したときはローカルで実機確認（`uv run pytest --realgui tests/realgui/`）。CI 除外。
+- **realgui 証拠ゲート（①）**: GUI 入力経路の変更は、該当 realgui の実行証拠（視覚項目は `/verify` 観測）を **merge 前に要求**。非 Windows 等で実行不可なら「ゲート未充足」扱い（`skipped` を検証済みと誤認しない）。実行は `/gui-verify`。詳細: `docs/gui-testing-layers.md`。
+- **realgui 実質性（②）**: realgui のアサートは実経路でしか証明できない結果を検証する（VM 再チェック・スクショ保存だけは不可）。計画時の受け入れ要件設計は `/gui-test-plan`。
 
 > 背景: PR #11 で「テストは緑だが実 GUI で右クリックメニューが出ない」false green が発生したため、入力系は実経路（Layer B）を必ず通す運用とした。
 

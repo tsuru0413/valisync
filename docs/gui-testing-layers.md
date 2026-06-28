@@ -54,6 +54,28 @@ PR #11 で、FileBrowser の「Remove File」右クリックメニューが**実
 - イベント経路（ポリシー・伝播・ヒットテスト）を新規実装/変更したら、リリース前や挙動が疑わしいときに **Layer C をローカル実行**して実機確認する。
 - TDD: いずれのレイヤーも RED→GREEN で書く。特に Layer B は「壊れたコードで一度落ちる」ことを確認してから通す（systematic-debugging の検証手順）。
 
+## realgui（Layer C）の実質性ルール（②）
+
+realgui のアサーションは「**実経路でしか証明できない結果**」を検証すること。次を満たさないものは不可:
+
+1. **Layer A/B で再チェック不能なものを対象にする** — OS→Qt 配送・ヒットテスト・**描画結果**。VM 状態の再チェックだけは Layer A と重複（naive）。
+2. **「人間が何を見て合格と判断するか」を列挙**し、各観測項目を割り当てる:
+   - **自動アサート可**（`QApplication.activePopupWidget()` でメニュー出現、ウィジェット可視/ジオメトリ、要素数）→ テスト内で直接 assert。
+   - **視覚/描画**（ハイライト色・挿入線位置・dimmed source・波形 unclip）→ スクショ＋ `/verify` 観測（安定なら pixel サンプル）。
+3. **「スクショ保存だけ・アサート無し」は禁止**。
+
+> アンチパターン: 実ドラッグ後に `vm.axes[i].column` だけ assert ＋スクショ保存（VM 再チェック＝Layer A と重複、視覚結果は未検証）。
+
+## realgui 証拠ゲート（①）
+
+realgui は `--realgui` オプトイン＋CI 自動スキップで高頻度にスキップされ、「skipped」が「検証済み」と誤認される。これを断つため、GUI 入力経路（`src/valisync/gui/`）の変更は **merge 前に realgui 実行証拠を要求**する:
+
+- 変更経路に対応する `tests/realgui/test_*.py` を `uv run pytest --realgui tests/realgui/test_X.py`（**該当のみ**）で実行し、pass ログ＋スクショを残す。視覚項目は `/verify` 観測で代替可。
+- **環境制約（非 Windows・ディスプレイ無し）で実行できない場合は「ゲート未充足」**として扱う（`skipped` を緑＝検証済みと誤認しない）。
+- 実行は `/gui-verify` スキルが scoped に自動化する。
+
+> 実際に Layer C を書くときの**駆動レシピ・落とし穴**は `.claude/skills/gui-verify/reference/realgui-recipe.md` 参照。
+
 ## コマンド早見表
 
 ```bash
