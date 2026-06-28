@@ -707,7 +707,7 @@ def _col(vm: GraphPanelVM, col: int) -> list[YAxisVM]:
     return sorted([a for a in vm.axes if a.column == col], key=lambda a: a.top_ratio)
 
 
-# ─── Task 0.2: column-aware _normalize_axes ──────────────────────────────────
+# ─── Task 0.2: column-aware _relayout_columns ────────────────────────────────
 
 
 def test_normalize_splits_height_per_column() -> None:
@@ -1085,7 +1085,7 @@ def test_view_renders_configured_column_count(qtbot: QtBot) -> None:
       * places the plot ViewBox in the next column (``column_count``).
 
     After set_column_count(3) the axis stays in column 1 (its original inner
-    column when count=2). _normalize_axes only migrates the *placeholder* to
+    column when count=2). _compact_axes only migrates the *placeholder* to
     ``column_count-1`` when there are no signals; with a signal present the
     column assignment is unchanged.
     """
@@ -1095,7 +1095,7 @@ def test_view_renders_configured_column_count(qtbot: QtBot) -> None:
     assert view.plot_grid_column() == 2  # plot in root col 2 => cols 0,1 reserved
     vm.set_column_count(3)  # public setter notifies "axes" -> view refreshes
     assert view.plot_grid_column() == 3  # now plot in col 3 => cols 0,1,2 reserved
-    # _normalize_axes does not migrate existing axes to the new inner column
+    # _compact_axes does not migrate existing axes to the new inner column
     # (column_count-1=2) when signals are present; the axis stays at column 1.
     assert view.axis_columns() == [1]
 

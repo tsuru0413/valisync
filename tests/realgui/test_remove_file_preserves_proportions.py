@@ -146,9 +146,13 @@ def test_remove_file_preserves_graph_panel_proportions(
     heights_before = [
         a.height_ratio for a in sorted(panel.axes, key=lambda a: a.top_ratio)
     ]
+    # Capture the post-drag state now so a failed drag is diagnosable (no later
+    # screenshot is taken if this assertion fires).
+    with contextlib.suppress(Exception):
+        QApplication.primaryScreen().grabWindow(0).save(str(tmp_path / "drag.png"))
     assert abs(heights_before[0] - heights_before[1]) > 0.02, (
         "real divider drag did not change region heights; "
-        f"got {heights_before}. Tune coords/timing — see tmp_path screenshots."
+        f"got {heights_before}. Tune coords/timing — see {tmp_path / 'drag.png'}."
     )
 
     # ─── FileBrowserView (for the real Remove File right-click) ───────────────
@@ -178,7 +182,11 @@ def test_remove_file_preserves_graph_panel_proportions(
     menu = QApplication.activePopupWidget()
     with contextlib.suppress(Exception):
         QApplication.primaryScreen().grabWindow(0).save(str(tmp_path / "menu.png"))
-    remove_action = next(a for a in menu.actions() if a.text() == "Remove File")
+    remove_action = next((a for a in menu.actions() if a.text() == "Remove File"), None)
+    assert remove_action is not None, (
+        f"'Remove File' action not in menu; actions={[a.text() for a in menu.actions()]}. "
+        f"Screenshots: {tmp_path}"
+    )
     remove_action.trigger()
     menu.close()
     for _ in range(3):
