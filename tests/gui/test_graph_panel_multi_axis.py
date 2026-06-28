@@ -799,14 +799,24 @@ def test_add_signal_to_axis_keeps_both() -> None:
 
 
 def test_move_axis_to_column_revacates_source() -> None:
+    """空の列へ移動した軸は元の高さを保つ(全高化しない)。移動元の帯は空白。"""
     from valisync.core.session import Session
 
     vm = GraphPanelVM(Session())
     _inject_signal(vm, "sig::a")
-    vm.create_new_axis("sig::b")
-    vm.move_axis_to_column(0, 0)  # move first inner axis to outer column 0
-    assert vm.axes[0].column == 0 and vm.axes[0].height_ratio == 1.0  # alone in col 0
-    assert _col(vm, vm.column_count - 1)[0].height_ratio == 1.0  # remaining fills inner
+    vm.create_new_axis("sig::b")  # 2 axes inner, equal-split 0.5/0.5
+    a, b = vm.axes[0], vm.axes[1]
+    vm.move_axis_to_column(0, 0)  # a を空の outer col 0 へ
+
+    # 移動軸は元の高さ 0.5 を保持(1.0 に拡張しない)
+    assert a.column == 0
+    assert a.top_ratio == pytest.approx(0.0)
+    assert a.height_ratio == pytest.approx(0.5)
+    # 移動元 inner: b は touch されず、抜けた上半分(0.0-0.5)は空白のまま
+    inner_axis = _col(vm, vm.column_count - 1)[0]
+    assert inner_axis is b
+    assert inner_axis.top_ratio == pytest.approx(0.5)
+    assert inner_axis.height_ratio == pytest.approx(0.5)
 
 
 def test_move_axis_inserts_at_given_vertical_position() -> None:
@@ -1274,3 +1284,95 @@ def test_layout_column_preserving_divides_when_overflow() -> None:
     assert sum(ax.height_ratio for ax in (a, x, b)) == pytest.approx(1.0)
     # a:b ratio 6:4 preserved
     assert a.height_ratio / b.height_ratio == pytest.approx(0.6 / 0.4)
+
+
+# ─── Task: move_axis_to_column height preservation ───────────────────────────
+
+
+def test_reorder_within_column_keeps_heights() -> None:
+    """同列内の並べ替えは高さを保持し縦順だけ変える(0.6/0.4 を維持・等分にしない)。"""
+    from valisync.core.session import Session
+
+    vm = GraphPanelVM(Session())
+    _inject_signal(vm, "sig::a")
+    vm.create_new_axis("sig::b")  # 2 axes, inner column, equal-split 0.5/0.5
+    inner = vm.column_count - 1
+    # ユーザーが divider で 0.6/0.4 に調整した状態を再現
+    vm.axes[0].top_ratio, vm.axes[0].height_ratio = 0.0, 0.6
+    vm.axes[1].top_ratio, vm.axes[1].height_ratio = 0.6, 0.4
+    a, b = vm.axes[0], vm.axes[1]
+
+    vm.move_axis_to_column(1, inner, position=0)  # b を最上段へ並べ替え
+
+    col = _col(vm, inner)  # top -> bottom
+    assert col[0] is b and col[1] is a  # 縦順が入れ替わった
+    assert b.top_ratio == pytest.approx(0.0)
+    assert b.height_ratio == pytest.approx(0.4)  # 高さ保持(0.5 にしない)
+    assert a.top_ratio == pytest.approx(0.4)
+    assert a.height_ratio == pytest.approx(0.6)  # 高さ保持
+
+
+def test_cross_column_move_fits_keeps_heights() -> None:
+    """移動先に余裕(合計 <= 1.0) -> 割らない。移動軸は元の高さ、移動元は空白。"""
+    from valisync.core.session import Session
+
+    vm = GraphPanelVM(Session())
+    _inject_signal(vm, "sig::a")  # axis 0
+    vm.create_new_axis("sig::b")  # axis 1
+    vm.create_new_axis("sig::c")  # axis 2  (3 axes inner)
+    # 配置: col0 に R(0.4)。col1 に P(0.5, top0) と X(0.3, top0.5)。
+    vm.axes[0].column, vm.axes[0].top_ratio, vm.axes[0].height_ratio = 0, 0.0, 0.4
+    vm.axes[1].column, vm.axes[1].top_ratio, vm.axes[1].height_ratio = 1, 0.0, 0.5
+    vm.axes[2].column, vm.axes[2].top_ratio, vm.axes[2].height_ratio = 1, 0.5, 0.3
+    r, p, x = vm.axes[0], vm.axes[1], vm.axes[2]
+
+    vm.move_axis_to_column(2, 0, position=None)  # X を col0 の最下段へ
+
+    # 移動先 col0: R(0.4) + X(0.3) = 0.7 <= 1.0 -> 割らない・余り 0.3 は空白
+    assert x.column == 0
+    assert r.top_ratio == pytest.approx(0.0)
+    assert r.height_ratio == pytest.approx(0.4)  # 既存は高さ保持
+    assert x.top_ratio == pytest.approx(0.4)
+    assert x.height_ratio == pytest.approx(0.3)  # 移動軸は元の高さ
+    assert sum(a.height_ratio for a in _col(vm, 0)) == pytest.approx(0.7)  # 空白あり
+    # 移動元 col1: P は touch されず、抜けた帯(0.5-0.8)は空白
+    assert p.column == 1
+    assert p.top_ratio == pytest.approx(0.0)
+    assert p.height_ratio == pytest.approx(0.5)
+
+
+def test_cross_column_move_overflow_divides_by_sum() -> None:
+    """移動先が満杯へ移動(合計 > 1.0) -> その列を合計で割って 1.0(相対比維持)。"""
+    from valisync.core.session import Session
+
+    vm = GraphPanelVM(Session())
+    _inject_signal(vm, "sig::a")  # axis 0
+    vm.create_new_axis("sig::b")  # axis 1
+    vm.create_new_axis("sig::c")  # axis 2
+    # col1 にもう1軸 Y を用意(移動元に空白が残ることを確認するため)
+    vm.create_new_axis("sig::a")  # axis 3 を col1 に作って整える
+    a_ax, b_ax, x, y = vm.axes[0], vm.axes[1], vm.axes[2], vm.axes[3]
+    # 配置: col0 に A(0.6, top0) と B(0.4, top0.6) で満杯。col1 に X(0.5) と Y(0.5)。
+    # NOTE: assignments must come AFTER the last create_new_axis (which calls
+    # _relayout_columns and would reset any earlier manual heights).
+    a_ax.column, a_ax.top_ratio, a_ax.height_ratio = 0, 0.0, 0.6
+    b_ax.column, b_ax.top_ratio, b_ax.height_ratio = 0, 0.6, 0.4
+    x.column, x.top_ratio, x.height_ratio = 1, 0.0, 0.5
+    y.column, y.top_ratio, y.height_ratio = 1, 0.5, 0.5
+
+    vm.move_axis_to_column(2, 0, position=0)  # X を col0 の最上段へ
+
+    # 移動先 col0: X(0.5)+A(0.6)+B(0.4)=1.5 -> /1.5
+    assert x.column == 0
+    assert x.height_ratio == pytest.approx(1.0 / 3.0)
+    assert a_ax.height_ratio == pytest.approx(0.4)
+    assert b_ax.height_ratio == pytest.approx(0.4 / 1.5)
+    assert x.top_ratio == pytest.approx(0.0)
+    assert a_ax.top_ratio == pytest.approx(1.0 / 3.0)
+    assert sum(a.height_ratio for a in _col(vm, 0)) == pytest.approx(1.0)
+    # 既存 A:B の 6:4 比は維持
+    assert a_ax.height_ratio / b_ax.height_ratio == pytest.approx(0.6 / 0.4)
+    # 移動元 col1: Y は touch されず、抜けた帯(0.0-0.5)は空白
+    assert y.column == 1
+    assert y.top_ratio == pytest.approx(0.5)
+    assert y.height_ratio == pytest.approx(0.5)

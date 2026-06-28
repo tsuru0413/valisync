@@ -195,13 +195,13 @@ class GraphPanelVM(Observable):
     ) -> None:
         """Move an axis to *column*, inserting at vertical *position* (0=top, None=bottom).
 
-        The source slot is vacated and re-split by _relayout_columns (rule 1:
-        equal re-split per column). `position` is the insertion index among the
-        destination column's other members. Existing 2-arg callers append at the
-        bottom.
+        Heights are **preserved, not equal-split**.  The destination column is
+        re-stacked keeping each axis's height (scaled down only if the column
+        would overflow — see :meth:`_layout_column_preserving`); the source
+        column is left untouched, so the vacated band stays blank (mirroring
+        removal).  A same-column move is therefore a pure reorder.  A stale drag
+        index (e.g. axes changed mid-drag) is a no-op, not an ``IndexError``.
         """
-        # A stale drag index (e.g. axes re-split mid-drag) must be a no-op, not
-        # an IndexError.
         if not (0 <= axis_index < len(self._axes)):
             return
         column = max(0, min(column, self._column_count - 1))
@@ -211,18 +211,12 @@ class GraphPanelVM(Observable):
             [a for a in self._axes if a.column == column and a is not moved],
             key=lambda a: a.top_ratio,
         )
-        if not others:
-            moved.top_ratio = 0.0
-        elif position is None or position >= len(others):
-            moved.top_ratio = others[-1].top_ratio + 1.0  # bottom
-        elif position <= 0:
-            moved.top_ratio = others[0].top_ratio - 1.0  # top
+        if position is None or position >= len(others):
+            insert_at = len(others)
         else:
-            moved.top_ratio = (
-                others[position - 1].top_ratio + others[position].top_ratio
-            ) / 2.0
-        self._compact_axes()
-        self._relayout_columns()
+            insert_at = max(0, position)
+        ordered = [*others[:insert_at], moved, *others[insert_at:]]
+        self._layout_column_preserving(ordered)
         self._notify("axes")
 
     def _compact_axes(self) -> None:
