@@ -41,7 +41,6 @@ _PALETTE: tuple[str, ...] = (
 # 9 decimal places = ~1 ns precision on seconds timestamps, more than sufficient.
 _CACHE_KEY_DECIMALS: int = 9
 
-# Minimum height ratio for a single axis (5%)
 MIN_H: float = 0.05
 
 
@@ -576,7 +575,7 @@ class GraphPanelVM(Observable):
             (a for a in self._axes if a.column == axis.column),
             key=lambda a: a.top_ratio,
         )
-        rank = col_axes.index(axis)
+        rank = next(i for i, a in enumerate(col_axes) if a is axis)
 
         if edge == "bottom":
             # bottom = top + height moves; top fixed. New bottom limited by next.top or 1.0.

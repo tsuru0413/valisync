@@ -22,6 +22,7 @@ def test_resize_bottom_grows_into_gap_below_others_unchanged() -> None:
         0.5,
     )  # bottom moved, top fixed
     assert (a.top_ratio, a.height_ratio) == (0.0, 0.3)  # neighbour unchanged
+    assert vm._notified == ["axes"]
 
 
 def test_resize_bottom_does_not_push_neighbour() -> None:
@@ -32,6 +33,7 @@ def test_resize_bottom_does_not_push_neighbour() -> None:
     vm.resize_axis_edge(0, "bottom", 0.3)
     assert (a.top_ratio, a.height_ratio) == (0.0, 0.5)  # clamped: no growth
     assert (b.top_ratio, b.height_ratio) == (0.5, 0.5)  # neighbour not pushed
+    assert vm._notified == ["axes"]
 
 
 def test_resize_bottom_shrink_clamped_to_min_height_top_fixed() -> None:
@@ -42,6 +44,7 @@ def test_resize_bottom_shrink_clamped_to_min_height_top_fixed() -> None:
     assert a.top_ratio == 0.0  # opposite (top) edge fixed
     assert round(a.height_ratio, 6) == 0.05  # clamped to MIN_H
     assert (b.top_ratio, b.height_ratio) == (0.5, 0.5)
+    assert vm._notified == ["axes"]
 
 
 def test_resize_top_grows_upward_into_gap_bottom_fixed() -> None:
@@ -51,6 +54,7 @@ def test_resize_top_grows_upward_into_gap_bottom_fixed() -> None:
     vm.resize_axis_edge(0, "top", -0.4)
     assert round(b.top_ratio, 6) == 0.0
     assert round(b.height_ratio, 6) == 1.0  # bottom (0.4+0.6=1.0) fixed
+    assert vm._notified == ["axes"]
 
 
 def test_resize_top_does_not_push_neighbour_above() -> None:
@@ -60,3 +64,4 @@ def test_resize_top_does_not_push_neighbour_above() -> None:
     vm.resize_axis_edge(1, "top", -0.3)  # B top up: cannot pass A.bottom (0.5)
     assert (b.top_ratio, b.height_ratio) == (0.5, 0.5)
     assert (a.top_ratio, a.height_ratio) == (0.0, 0.5)
+    assert vm._notified == ["axes"]
