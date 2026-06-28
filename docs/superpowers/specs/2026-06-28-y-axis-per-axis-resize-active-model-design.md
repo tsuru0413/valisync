@@ -191,8 +191,11 @@
 
 - **`classify_zone` のYゾーンは保持（プラン逸脱・根拠あり）**: 計画では widget レベルの `classify_zone` を「X専用に縮退」とした。しかし `classify_zone` の `ZONE_Y_INNER/ZONE_Y_OUTER` は **`dropEvent` の R5 ドロップ判定**（信号をYストリップへ落とす＝該当軸へ追加/上書き、プロットへ落とす＝新規軸）でも消費される。X専用に縮退すると全ドロップが「新規軸作成」に落ち R5 上書き/Ctrl結合が壊れるため、**`classify_zone` はYゾーンを返したまま**とし、Yの**ズーム/パン/wheel/dblクリック/カーソル消費のみ**を撤去した。Y操作（リサイズ/ズーム/パン/移動）は `_AlignedAxisItem` 上のアクティブ軸ジェスチャへ移行済み。回帰ガード: ドロップ系テスト（`test_graph_panel_multi_axis`・`test_graph_panel_view`）が緑のまま。
 - **ホバーカーソルは `_AlignedAxisItem` 自身に設定**（`hoverMoveEvent`→`setCursor`）。観測は `axis.cursor().shape()`（`view.cursor()` ではない）。
+- **リサイズは絶対座標追従（`grip_resize_delta`、root-cause 修正）**: グリップ端はカーソルを **パネル全高に対する比率** で追従する。旧実装はピクセル差をスパイン高（`height_ratio*panel`）で割っており移動量が 1/height_ratio 倍に膨張→カーソルとエッジがずれ最小高へ暴走（上端ちらつき・下端ミスマッチ）。`grip_resize_delta(cursor_y, panel_top, panel_h, grab_offset, edge)` は軸高を引数に取らない（高さ非依存）設計でこれを封じる。回帰ガード: `test_axis_zone_classify` の `grip_delta_*`。
+- **軸移動後の初回ジェスチャは rebuild を遅延（QDrag モーダル外へ）**: 軸移動の `QDrag.exec()`（Windows OLE モーダルループ）内で `dropEvent`→軸 rebuild すると、`GraphicsScene` が破棄済みアイテムへ press/drag/hover 参照を残し、移動後の初回リサイズが誤配送（no-op、さらに再帰 QDrag で**無限ハング**）。`dropEvent` の `move_axis_to_column` を `QTimer.singleShot(0, _apply_deferred_axis_move)` で次イベントループターンへ遅延し、rebuild 後に `reset_scene_drag_state(scene)` で `dragButtons/dragItem/clickEvents/lastDrag/lastHoverEvent` をクリア→次ジェスチャは `itemsNearEvent` で実アイテムを再発見。診断は `faulthandler.dump_traceback_later` ＋ zone 座標ログ。回帰ガード: realgui `test_move_then_resize`、headless `test_apply_deferred_axis_move_*`。詳細メモ: `gui_realgui_qdrag_rebuild_stale_scene`。
+- **移動フレームは 8px ＋ 短軸は h/4 上限（掴みやすさ修正＝Symptom 2）**: `FRAME` 3→8px。3px ヘアラインは SizeAll カーソルが境界でちらつき掴み損ねが頻発したため拡幅（左右端＝幅固定の自然な掴み代）。上下バンドは `classify_axis_zone` で `v_frame=min(frame, h/4)` にキャップし、リサイズで縮んだ短軸でも中央にズーム/パン内部を残す（フレーム全潰れ防止）。回帰ガード: `test_axis_zone_classify` の FRAME=8 / h/4 ケース。
 - **realgui 実機所見（Layer C 証拠ゲート）**:
   - Model B は「隣接軸を押さない」ため、連続レイアウト（隙間なし）では下端グリップを**下げて拡大は不可**（正しい no-op）。拡大は隣を縮めて隙間を作ってから。テストは下端グリップを**上げて縮小**で検証。
   - pyqtgraph のホバー配送は**漸進的な実移動**が必要（一発の `SetCursorPos` では `hoverMoveEvent` が出ない）。カーソル検証は小刻みスイープ＋配送リトライで駆動。
-  - フレーム=移動の QDrag は、閾値超えの最初の移動を**垂直**にして lx を frame 帯（3px）内に保つ必要がある（`mouseDragEvent` の isStart は閾値超え後の `ev.pos()` でゾーン分類するため、水平移動だと frame を外れ pan 誤判定）。
+  - フレーム=移動の QDrag は、閾値超えの最初の移動を**垂直**にして lx を frame 帯（現 8px）内に保つ必要がある（`mouseDragEvent` の isStart は閾値超え後の `ev.pos()` でゾーン分類するため、水平移動だと frame を外れ pan 誤判定）。realgui の pan テストは逆に、拡幅した frame を避け掴み位置をスパイン幅の 0.25（内部）に置く。
   - グリップ矩形がスパイン上端を約3px はみ出す（左ガター列内で完結し非干渉＝案C維持・cosmetic、follow-up）。
