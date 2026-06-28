@@ -69,10 +69,10 @@ valisync/
 ├── data/
 │   ├── formats/                           # FormatDefinition JSON files (runtime)
 │   └── formulas/                          # FormulaDefinition JSON files (Phase 3)
-├── docs/
+├── docs/                                   # 運用知識・superpowers spec/plan
+│   └── superpowers/{specs,plans}/          # 計画の一次情報（新規）
 ├── .kiro/
-│   ├── steering/                          # project-wide rules
-│   └── specs/                             # per-feature requirements/design/tasks
+│   └── specs/                              # 完了済み Phase1/2 のアーカイブ（要件/設計/タスク）
 ├── .github/workflows/
 ├── pyproject.toml
 └── uv.lock

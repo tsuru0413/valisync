@@ -47,4 +47,4 @@
 ## 関連リンク
 - spec: `.kiro/specs/valisync-gui-file-browser/{requirements,design,tasks}.md`
 - 改修対象(実装): `src/valisync/core/session.py`, `src/valisync/core/loaders/signal_group_manager.py`, `src/valisync/gui/viewmodels/{file_browser_vm,channel_browser_vm}.py`, `src/valisync/gui/adapters/qt_signal_models.py`
-- 規約: `.kiro/steering/spec-authoring.md`
+- 規約: `docs/workflow.md`（計画・実装フロー）
