@@ -15,6 +15,7 @@
     - 観測: <人間が見て合格と判断する項目>
 - **②実質性チェック**: <観測項目→「自動アサート可（API 名）」/「視覚（スクショ＋/verify）」の割当。naive（スクショのみ・VM 再チェック）なら指摘>
 - **①証拠ゲート**: `- [ ] uv run pytest --realgui tests/realgui/test_X.py + 証拠添付`（該当時のみ）
+- **realgui 掴み点監査**（ゾーン幾何＝frame 幅/grip 寸法/軸幅 等を変える変更時のみ）: <既存 realgui の全掴み点を境界マージンで再チェック。move/QDrag ゾーンへの誤侵入は assert 失敗でなくハング>
 - **honest layering note**: <ある場合。例「ハンドラ直叩きは Layer B ではない」>
 
 > 非 GUI タスクは「Layer A のみ・realgui 不要・標準 Red/Green」とだけ返す。
