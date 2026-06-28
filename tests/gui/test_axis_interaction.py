@@ -64,6 +64,20 @@ def panel(qtbot: QtBot) -> GraphPanelView:
     return view
 
 
+# ─── Task 8: guard — no widget-level wheel/double-click zoom ─────────────────
+
+
+def test_widget_has_no_wheel_or_doubleclick_zoom(panel: GraphPanelView) -> None:
+    """GraphPanelView must NOT define wheelEvent or mouseDoubleClickEvent.
+
+    Y zoom/pan has moved to _AlignedAxisItem (Task 6).  Neither wheel-zoom nor
+    double-click-reset is adopted for X either (those will come via context menu
+    later).  This test guards against accidental re-introduction.
+    """
+    assert "wheelEvent" not in type(panel).__dict__
+    assert "mouseDoubleClickEvent" not in type(panel).__dict__
+
+
 # ─── Layer A: state API ────────────────────────────────────────────────────────
 
 

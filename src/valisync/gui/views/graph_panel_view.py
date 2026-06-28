@@ -34,7 +34,6 @@ from PySide6.QtGui import (
     QMouseEvent,
     QPen,
     QResizeEvent,
-    QWheelEvent,
 )
 from PySide6.QtWidgets import (
     QGraphicsLineItem,
@@ -78,11 +77,6 @@ AXZONE_PAN = "ax_pan"
 # automatic SI-prefix / scientific tick formatting.
 _Y_AXIS_FIXED_WIDTH = 72
 
-# Wheel zoom factors (factor < 1 zooms in, keeping the cursor fixed).
-_WHEEL_IN = 0.8
-_WHEEL_OUT = 1.25
-
-
 # ─── Pure interaction helpers (headless-testable) ─────────────────────────────
 
 
@@ -116,6 +110,11 @@ def classify_zone(
     The X-axis strip below the plot and the Y-axis strip left of it are each
     split into an *inner* half (closer to the plot) and an *outer* half (closer
     to the window edge).  Inner = range-select zoom; outer = pan.
+
+    NOTE: ZONE_Y_INNER / ZONE_Y_OUTER are still returned unchanged even though
+    widget-level Y zoom/pan was removed (Task 8).  These zones continue to serve
+    as drop-target geometry in dropEvent (R5 overwrite / Ctrl-join routing).
+    _AlignedAxisItem now owns all Y zoom/pan interaction.
     """
     left, right = plot_rect.left(), plot_rect.right()
     top, bottom = plot_rect.top(), plot_rect.bottom()
@@ -169,11 +168,13 @@ def classify_axis_zone(
 
 
 def cursor_for_zone(zone: str) -> Qt.CursorShape:
-    """Map a zone to the hover cursor that hints its gesture (R9.7 / R10.7)."""
+    """Map a zone to the hover cursor that hints its gesture (R9.7 / R10.7).
+
+    Y zones fall through to ArrowCursor: _AlignedAxisItem owns the Y hover
+    cursor (Task 6); the widget must not impose a competing SizeVerCursor.
+    """
     if zone in (ZONE_X_INNER, ZONE_X_OUTER):
         return Qt.CursorShape.SizeHorCursor
-    if zone in (ZONE_Y_INNER, ZONE_Y_OUTER):
-        return Qt.CursorShape.SizeVerCursor
     return Qt.CursorShape.ArrowCursor
 
 
@@ -899,33 +900,15 @@ class GraphPanelView(QWidget):
     # ─── Gesture application (data-coordinate; the zoom/pan contract) ───────────
 
     def apply_zone_drag(self, zone: str, start_value: float, end_value: float) -> None:
-        """Apply a drag in *zone*: inner = range-select zoom, outer = pan."""
+        """Apply a drag in *zone*: inner = range-select zoom, outer = pan.
+
+        Only X zones are handled here; Y zoom/pan is owned by _AlignedAxisItem (Task 8).
+        """
         if zone == ZONE_X_INNER:
             self.vm.set_x_range(*ordered_pair(start_value, end_value))
         elif zone == ZONE_X_OUTER and self.vm.x_range is not None:
             lo, hi = self.vm.x_range
             self.vm.set_x_range(*pan_range(lo, hi, start_value - end_value))
-        elif zone == ZONE_Y_INNER:
-            self.vm.set_y_range(*ordered_pair(start_value, end_value))
-        elif zone == ZONE_Y_OUTER and self.vm.y_range is not None:
-            lo, hi = self.vm.y_range
-            self.vm.set_y_range(*pan_range(lo, hi, start_value - end_value))
-
-    def apply_zone_wheel(self, zone: str, center_value: float, factor: float) -> None:
-        """Zoom the zone's axis about *center_value* by *factor*."""
-        if zone in (ZONE_X_INNER, ZONE_X_OUTER) and self.vm.x_range is not None:
-            lo, hi = self.vm.x_range
-            self.vm.set_x_range(*zoom_range(lo, hi, center_value, factor))
-        elif zone in (ZONE_Y_INNER, ZONE_Y_OUTER) and self.vm.y_range is not None:
-            lo, hi = self.vm.y_range
-            self.vm.set_y_range(*zoom_range(lo, hi, center_value, factor))
-
-    def reset_zone(self, zone: str) -> None:
-        """Reset the zone's axis to the full data extent (double-click, R9.6)."""
-        if zone in (ZONE_X_INNER, ZONE_X_OUTER):
-            self.vm.reset_x()
-        elif zone in (ZONE_Y_INNER, ZONE_Y_OUTER):
-            self.vm.reset_y()
 
     # ─── Pixel ↔ zone/data glue (best-effort; smoke-tested) ─────────────────────
 
@@ -1102,11 +1085,12 @@ class GraphPanelView(QWidget):
     # ─── Mouse / wheel handlers (thin glue over the gesture methods) ────────────
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        # Only the left button drives zoom/pan; right-click opens the context
-        # menu and must not start a drag gesture.
+        # Only the left button drives X zoom/pan; right-click opens the context
+        # menu and must not start a drag gesture.  Y zoom/pan is owned by
+        # _AlignedAxisItem (Task 8) so only X zones start a widget-level drag.
         if event.button() == Qt.MouseButton.LeftButton:
             zone = self._zone_at(event.position())
-            if zone in (ZONE_X_INNER, ZONE_X_OUTER, ZONE_Y_INNER, ZONE_Y_OUTER):
+            if zone in (ZONE_X_INNER, ZONE_X_OUTER):
                 self._drag_zone = zone
                 self._drag_start = event.position()
         super().mousePressEvent(event)
@@ -1118,7 +1102,8 @@ class GraphPanelView(QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if self._drag_zone is not None and self._drag_start is not None:
-            axis = "x" if self._drag_zone in (ZONE_X_INNER, ZONE_X_OUTER) else "y"
+            # _drag_zone can only be an X zone (Y zoom/pan moved to _AlignedAxisItem).
+            axis = "x"
             start = self._data_value(self._drag_start, axis)
             end = self._data_value(event.position(), axis)
             if start is not None and end is not None:
@@ -1126,26 +1111,6 @@ class GraphPanelView(QWidget):
         self._drag_zone = None
         self._drag_start = None
         super().mouseReleaseEvent(event)
-
-    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
-        self.reset_zone(self._zone_at(event.position()))
-        super().mouseDoubleClickEvent(event)
-
-    def wheelEvent(self, event: QWheelEvent) -> None:
-        zone = self._zone_at(event.position())
-        axis = (
-            "x"
-            if zone in (ZONE_X_INNER, ZONE_X_OUTER)
-            else "y"
-            if zone in (ZONE_Y_INNER, ZONE_Y_OUTER)
-            else None
-        )
-        if axis is not None:
-            center = self._data_value(event.position(), axis)
-            if center is not None:
-                factor = _WHEEL_IN if event.angleDelta().y() > 0 else _WHEEL_OUT
-                self.apply_zone_wheel(zone, center, factor)
-        event.accept()
 
     # ─── Drag-and-drop sink (R12.4) ────────────────────────────────────────────
 
