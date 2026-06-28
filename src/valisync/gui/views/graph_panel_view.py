@@ -22,7 +22,7 @@ from __future__ import annotations
 from typing import Any
 
 import pyqtgraph as pg
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -189,6 +189,34 @@ def grip_resize_delta(
         return 0.0
     cursor_ratio = (cursor_scene_y - panel_top) / panel_height
     return (cursor_ratio + grip_offset) - current_edge_ratio
+
+
+def reset_scene_drag_state(scene: Any) -> None:
+    """Clear a pyqtgraph GraphicsScene's press/drag bookkeeping after a modal QDrag.
+
+    ``QDrag.exec`` (launched from ``mouseDragEvent`` to move an axis) runs Windows'
+    OLE modal loop, which swallows the mouse-release — so ``GraphicsScene.
+    mouseReleaseEvent`` never runs its own reset and leaves ``dragButtons`` /
+    ``dragItem`` / ``clickEvents`` / ``lastDrag`` pointing at the source item, which
+    the axis-move rebuild has since deleted. The NEXT press is then delivered to
+    that stale ``dragItem`` with ``isStart=False``, so the first grip-resize (or
+    re-grab to move) after a move silently does nothing. This replicates
+    pyqtgraph's release-time reset so the next gesture starts clean. No-op if the
+    scene is missing or lacks the attributes (defensive across pyqtgraph versions).
+    """
+    if scene is None:
+        return
+    scene.dragButtons = []
+    scene.dragItem = None
+    scene.clickEvents = []
+    scene.lastDrag = None
+    # Also forget the last hover: pyqtgraph picks a *new* drag's target from
+    # lastHoverEvent.dragItems() (GraphicsScene.sendDragEvent), and after the move
+    # rebuild that still points at the destroyed source item. Clearing it forces
+    # re-discovery of the live item under the cursor via itemsNearEvent — otherwise
+    # the next drag is delivered to the stale item in its old coordinate frame
+    # (cursor maps outside it → mis-classified as a frame-move → another QDrag → hang).
+    scene.lastHoverEvent = None
 
 
 def cursor_for_zone(zone: str) -> Qt.CursorShape:
@@ -523,8 +551,11 @@ class _AlignedAxisItem(pg.AxisItem):
                 return
             if self._zone == AXZONE_FRAME:
                 # Axis-move: launch a QDrag carrying the VM index so the panel's
-                # drop sink can relocate the axis. Verified Layer C only (the
-                # blocking drag.exec loop cannot run under the offscreen platform).
+                # drop sink can relocate the axis. The relayout is applied on the
+                # NEXT event-loop turn (GraphPanelView.dropEvent defers it) so the
+                # rebuild does not destroy this item while pyqtgraph's scene still
+                # holds drag references to it. Verified Layer C only (the blocking
+                # drag.exec loop cannot run under the offscreen platform).
                 if self._vm_axis_index is not None:
                     view = self._panel_view
                     if view is not None:
@@ -1200,6 +1231,20 @@ class GraphPanelView(QWidget):
         self._clear_axis_move_feedback()
         super().dragLeaveEvent(event)
 
+    def _apply_deferred_axis_move(
+        self, axis_index: int, col: int, position: int | None
+    ) -> None:
+        """Apply a deferred axis-move and clear pyqtgraph's stale scene state.
+
+        Runs one event-loop turn after the drop (see ``dropEvent``), so the QDrag
+        and its queued mouse events have fully unwound before the rebuild destroys
+        the old axis items.  The rebuild then replaces every axis item, so we drop
+        the scene's press/drag/hover bookkeeping (which still points at the old,
+        now-deleted items) — otherwise the next gesture is misrouted to a dead item.
+        """
+        self.vm.move_axis_to_column(axis_index, col, position)
+        reset_scene_drag_state(self.plot_widget.scene())
+
     def dropEvent(self, event: QDropEvent) -> None:
         self._set_drop_highlight(False)
 
@@ -1209,9 +1254,17 @@ class GraphPanelView(QWidget):
         axis_index = decode_axis_index(event.mimeData())
         if axis_index is not None:
             col, position = self._axis_drop_target(event.position())
-            self.vm.move_axis_to_column(axis_index, col, position)
             self._clear_axis_move_feedback()
             event.acceptProposedAction()
+            # Defer the relayout off the QDrag's modal call stack. Applying it here
+            # (inside drag.exec) rebuilds the axis items while pyqtgraph's scene
+            # still holds press/drag/hover references to the drag's source item, so
+            # the next gesture is delivered to that destroyed item — the first
+            # resize/move after a move broke (no-op, or a re-entrant QDrag hang).
+            # Running it on the next event-loop turn lets the drag fully unwind.
+            QTimer.singleShot(
+                0, lambda: self._apply_deferred_axis_move(axis_index, col, position)
+            )
             return
 
         keys = decode_signal_keys(event.mimeData())

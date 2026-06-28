@@ -807,6 +807,10 @@ def test_axis_move_drop_calls_move_to_target(qtbot: QtBot) -> None:
         Qt.KeyboardModifier.NoModifier,
     )
     view.dropEvent(event)  # handler-path (sendEvent can't route drops to this view)
+    # The relocation is deferred to the next event-loop turn (off the QDrag modal
+    # stack so the rebuild can't destroy the drag's source item mid-drag); pump
+    # until it lands.
+    qtbot.waitUntil(lambda: moved.column == 0, timeout=1000)
     assert moved.column == 0  # b moved to outer column 0
     assert _col(vm, 0)[0] is moved  # and it's there
 

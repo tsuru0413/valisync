@@ -26,7 +26,11 @@ from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from tests.gui._panel_factory import make_two_axis_panel
-from valisync.gui.views.graph_panel_view import GraphPanelView, _AlignedAxisItem
+from valisync.gui.views.graph_panel_view import (
+    GraphPanelView,
+    _AlignedAxisItem,
+    reset_scene_drag_state,
+)
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -425,3 +429,73 @@ def test_drag_ignored_when_not_active(
     started = it._begin_axis_drag(it.width() / 2, 2.0)
     assert started is False, "_begin_axis_drag must return False for inactive axis"
     assert not fired, "resize_axis_edge must not be called for an inactive axis"
+
+
+# ─── Fix: defer the axis-move rebuild off the QDrag modal stack ───────────────
+# Applying the relayout inside dropEvent (which runs inside the move's blocking
+# QDrag.exec) rebuilds the axis items while pyqtgraph's GraphicsScene still holds
+# press/drag/hover references to the drag's source item. The next gesture is then
+# delivered to that destroyed item (first resize/move after a move broke: a no-op,
+# or — once the stale press bookkeeping was cleared — a re-entrant QDrag hang). The
+# fix defers the move to the next event-loop turn and, after the rebuild, drops the
+# scene's stale bookkeeping. End-to-end proof is Layer C
+# (tests/realgui/test_move_then_resize.py).
+
+
+def test_reset_scene_drag_state_clears_bookkeeping() -> None:
+    """Layer A: reset_scene_drag_state zeroes the GraphicsScene drag/hover fields."""
+
+    class _Scene:
+        def __init__(self) -> None:
+            self.dragButtons = [Qt.MouseButton.LeftButton]
+            self.dragItem = object()
+            self.clickEvents = [object()]
+            self.lastDrag = object()
+            self.lastHoverEvent = object()
+
+    s = _Scene()
+    reset_scene_drag_state(s)
+    assert s.dragButtons == []
+    assert s.dragItem is None
+    assert s.clickEvents == []
+    assert s.lastDrag is None
+    # lastHoverEvent matters most: pyqtgraph picks a new drag's target from it, so a
+    # stale value re-binds the next gesture to the rebuilt-away item.
+    assert s.lastHoverEvent is None
+
+
+def test_reset_scene_drag_state_none_is_safe() -> None:
+    """Layer A: reset_scene_drag_state(None) is a no-op (defensive, no crash)."""
+    reset_scene_drag_state(None)
+
+
+def test_apply_deferred_axis_move_moves_and_resets_scene(
+    panel: GraphPanelView, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Layer B (wiring): _apply_deferred_axis_move relocates the axis AND drops the
+    scene's stale press/drag/hover bookkeeping, so the next gesture re-discovers the
+    live item instead of the rebuilt-away one.
+
+    This is the deferred callback dropEvent schedules; it runs after the QDrag has
+    unwound. End-to-end proof (real OS drag) is Layer C.
+    """
+    panel.set_active_axis(0)
+    scene = panel.plot_widget.scene()
+    assert scene is not None
+    # Seed the stale state pyqtgraph leaves when a modal QDrag eats the release.
+    scene.dragButtons = [Qt.MouseButton.LeftButton]
+    scene.dragItem = object()
+    scene.clickEvents = [object()]
+    scene.lastDrag = object()
+    scene.lastHoverEvent = object()
+    calls: list[tuple[int, int, int | None]] = []
+    monkeypatch.setattr(panel.vm, "move_axis_to_column", lambda *a: calls.append(a))
+
+    panel._apply_deferred_axis_move(1, 0, None)
+
+    assert calls == [(1, 0, None)], "the deferred callback must relocate the axis"
+    assert scene.dragButtons == []
+    assert scene.dragItem is None
+    assert scene.clickEvents == []
+    assert scene.lastDrag is None
+    assert scene.lastHoverEvent is None
