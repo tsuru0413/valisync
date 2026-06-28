@@ -274,7 +274,10 @@ def test_axis_drag_from_inner_column_to_outer_column(
         f"got {vm.axes[0].height_ratio!r}. Screenshots saved to {tmp_path}"
     )
     inner_axes = [a for a in vm.axes if a.column == 1]
-    assert len(inner_axes) == 1
+    assert len(inner_axes) == 1, (
+        f"expected 1 axis in inner column, got {len(inner_axes)}. "
+        f"Screenshots saved to {tmp_path}"
+    )
     assert inner_axes[0].top_ratio == pytest.approx(0.5, abs=0.05), (
         "inner remaining axis should keep its absolute top (blank gap above); "
         f"got top_ratio={inner_axes[0].top_ratio!r}. Screenshots saved to {tmp_path}"

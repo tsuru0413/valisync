@@ -832,7 +832,7 @@ def test_move_axis_inserts_at_given_vertical_position() -> None:
     )  # move b to the TOP of the inner column
     col = _col(vm, inner)  # column members, top->bottom
     assert col[0] is b and col[1] is a  # b is now the topmost
-    assert col[0].top_ratio < col[1].top_ratio  # equal-split, b on top
+    assert col[0].top_ratio < col[1].top_ratio  # height-preserving reorder, b on top
 
 
 # ─── Task 0.6: inspect() exposes column_count ────────────────────────────────
