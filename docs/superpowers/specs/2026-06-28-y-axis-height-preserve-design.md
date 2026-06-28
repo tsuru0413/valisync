@@ -44,16 +44,19 @@ _relayout_columns(*, preserve_heights) # レイアウト方針のみ。列ごと
     - Σ == 0 のゼロ除算ガード → 等分にフォールバック
 ```
 
-`_normalize_axes` は**後方互換の薄いラッパ**として残す（`_compact_axes()` → `_relayout_columns(preserve_heights=False)`）。既存テスト `test_normalize_splits_height_per_column` が `_normalize_axes()` を直接叩いているため、ラッパ温存が安全。
+`_normalize_axes` は**廃止する**（後方互換ラッパも残さない）。全呼び出し元が `_compact_axes()` → `_relayout_columns(...)` を**明示的に**呼ぶ。これにより各呼び出し元のコードを読むだけで「構造整合してから、等分 or 比例維持でレイアウトする」という意図が見え、隠れた挙動がなくなる。
 
-### 呼び出し側
+### 呼び出し側（全 5 箇所を置換）
 
-| 呼び出し元 | 方針 |
+| 呼び出し元 | 置換後 |
 |---|---|
-| `create_new_axis` / `move_axis_to_column` / `set_column_count` | `_normalize_axes()` ラッパを**そのまま呼び続ける**（＝ `_compact_axes()` → `_relayout_columns(preserve_heights=False)`、等分。意図的・差分ゼロ） |
+| `create_new_axis` / `move_axis_to_column` / `set_column_count` | `_compact_axes()` → `_relayout_columns(preserve_heights=False)`（等分。意図的） |
 | `remove_signal` / `prune_missing_signals` | `_compact_axes()` → `_relayout_columns(preserve_heights=True)`（比例維持） |
 
-> churn 最小化のため、等分側は `_normalize_axes()` ラッパを無変更で使い続け、削除側2メソッドだけを比例維持パスへ切り替える。
+- `create_new_axis` は初期 placeholder の刈り取りに `_compact_axes()` が必須（既存の核心挙動）。`move_axis_to_column` / `set_column_count` では `_compact_axes()` は実質 no-op だが無害（冪等）なので一貫して両方呼ぶ。
+- `_compact_axes()` が「全信号削除 → 単一 placeholder collapse」した場合でも、続く `_relayout_columns(...)` は単一軸に対し height 1.0 / top 0.0 を再代入するだけで冪等。collapse 分岐を特別扱いする必要はない。
+- docstring 内の `_normalize_axes` 参照（`create_new_axis` / `move_axis_to_column`）も新メソッド名へ更新する。
+- `_normalize_axes()` を直接叩く既存テスト `test_normalize_splits_height_per_column`（`tests/gui/test_graph_panel_multi_axis.py:678,686`）は `_relayout_columns(preserve_heights=False)` 直叩きへ更新する（同テストは等分レイアウトの検証であり、新メソッドで等価に表現できる）。
 
 これにより「削除時に等分リセットが走る」経路が**構造的に存在しなくなる**（削除パスは等分方針を呼ばない）＝バグが設計で不可能になる。`preserve_heights` は残るが、もはや構造と束ねた分岐ではなく**レイアウト方針の純粋な名前**であり band-aid ではない。
 
@@ -89,8 +92,8 @@ _relayout_columns(*, preserve_heights) # レイアウト方針のみ。列ごと
 2. `test_remove_one_signal_from_multisignal_axis_keeps_heights` — axis0 に2信号＋axis1、0.6/0.4 → axis0 から1信号だけ削除（刈り取り無し）→ 高さ不変。冪等性保証。
 3. `test_prune_missing_signals_preserves_remaining_proportions` — 3軸 0.5/0.3/0.2、`session.signals` 上書きで中央を消す（既存 prune テストのパターン）→ prune → 0.714/0.286。
 4. `test_remove_preserves_proportions_per_column` — 2列。col1 に3軸 0.5/0.3/0.2、col0 に2軸 0.5/0.5 → col1 中央削除 → col1 が 0.714/0.286、col0 は 0.5/0.5 不変。列スコープ保証。
-5. `test_relayout_total_zero_falls_back_to_equal` — 全 `height_ratio=0` で `_relayout_columns(preserve_heights=True)` を呼んでも ZeroDivisionError にならず等分。退避ガード（private 直叩き、既存 `_normalize_axes` 直叩きテストと同流儀）。
-6. 回帰 green 維持: 既存 `test_normalize_splits_height_per_column`（等分＝`_relayout(False)`）、`test_remove_signal_prunes_now_empty_axis`（`==1.0`）。
+5. `test_relayout_total_zero_falls_back_to_equal` — 全 `height_ratio=0` で `_relayout_columns(preserve_heights=True)` を呼んでも ZeroDivisionError にならず等分。退避ガード（private レイアウトメソッド直叩き、既存テストと同流儀）。
+6. 回帰: 既存 `test_normalize_splits_height_per_column` は呼び出しを `_relayout_columns(preserve_heights=False)` 直叩きへ更新し、等分アサーション（0.0/0.5・0.5/0.5、単独軸=1.0）は不変のまま green を維持（等分パスの回帰保証）。`test_remove_signal_prunes_now_empty_axis`（`==1.0`）は無変更で green 維持。
 
 ### Layer A/B — 決定論 結合 E2E（必須・CI）
 
