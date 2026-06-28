@@ -4,13 +4,13 @@ Opt-in — run with ``--realgui`` on Windows + a real display::
 
     uv run pytest --realgui tests/realgui/test_remove_file_preserves_proportions.py -q
 
-It (1) real-drags a region divider on a GraphPanelView to make the regions
-non-equal, then (2) issues a genuine right-click on a FileBrowserView row and
-triggers "Remove File", and asserts rendered geometry (strip fractions + blank-band
-absence), not VM height_ratio: survivors keep their absolute RENDERED strips and
-the removed middle band is genuinely blank in the scene. The divider drag is a
-plain pyqtgraph mouse drag (no QDrag/OLE modal loop), so it is driven inline
-with processEvents — no background drive thread is needed.
+It (1) makes the three regions non-equal via ``resize_axis_edge`` (the coupled
+region divider was removed with the active-axis model; the height setup is just
+scaffolding — the load-bearing Layer C subject is the file removal), then (2)
+issues a genuine right-click on a FileBrowserView row and triggers "Remove File",
+and asserts rendered geometry (strip fractions + blank-band absence), not VM
+height_ratio: survivors keep their absolute RENDERED strips and the removed middle
+band is genuinely blank in the scene.
 
 Robustness for unattended runs: each window is forced to the foreground before
 real input is sent (so clicks land on the intended widget, not whatever is under
@@ -154,8 +154,8 @@ def test_remove_file_preserves_graph_panel_proportions(
         QApplication.processEvents()
         qtbot.waitUntil(
             lambda: (
-                bool(gpv._dividers)  # type: ignore[attr-defined]
-                and gpv._dividers[0].sceneBoundingRect().width() > 0
+                len(gpv._y_axes) == 3  # type: ignore[attr-defined]
+                and gpv._view_boxes[0].sceneBoundingRect().height() > 100  # type: ignore[attr-defined]
             ),
             timeout=3000,
         )
@@ -166,40 +166,28 @@ def test_remove_file_preserves_graph_panel_proportions(
         def _phys(global_pt: object) -> tuple[int, int]:
             return round(global_pt.x() * dpr), round(global_pt.y() * dpr)  # type: ignore[attr-defined]
 
-        # Divider 0 sits between region 0 and region 1. Drag it UP to shrink
-        # region 0, making non-equal heights that should survive the removal.
-        div = gpv._dividers[0]  # type: ignore[attr-defined]
-        scene_c = div.sceneBoundingRect().center()
-        vp = gpv.plot_widget.mapFromScene(scene_c)  # type: ignore[attr-defined]
-        start_global = gpv.plot_widget.viewport().mapToGlobal(vp)  # type: ignore[attr-defined]
-        sx, sy = _phys(start_global)
-        drag_px = round(gpv.height() * 0.18 * dpr)  # move up ~18% of panel height
-
         def _at(x: int, y: int, flag: int) -> None:
             user32.SetCursorPos(int(x), int(y))
             user32.mouse_event(flag, 0, 0, 0, 0)
 
-        _at(sx, sy, _MOUSEEVENTF_LEFTDOWN)
-        QApplication.processEvents()
-        for step in range(1, 6):  # incremental moves so pyqtgraph emits deltas
-            _at(sx, sy - round(drag_px * step / 5), _MOUSEEVENTF_MOVE)
-            QApplication.processEvents()
-            time.sleep(0.03)
-        _at(sx, sy - drag_px, _MOUSEEVENTF_LEFTUP)
+        # Make the regions non-equal: shrink the top region via per-axis resize
+        # (model B) so its bottom edge moves up, opening a gap below it. The coupled
+        # divider this test used to drag was removed with the active-axis model; the
+        # height setup is scaffolding — the load-bearing real-input step is the
+        # right-click "Remove File" further down.
+        panel.resize_axis_edge(0, "bottom", -0.13)
         for _ in range(3):
             QApplication.processEvents()
 
-        # Region 0 must now differ from region 1 (the drag actually moved them).
+        # Region 0 must now differ from region 1 (the resize actually applied).
         heights_before = [
             a.height_ratio for a in sorted(panel.axes, key=lambda a: a.top_ratio)
         ]
-        # Capture the post-drag state now so a failed drag is diagnosable (no
-        # later screenshot is taken if this assertion fires).
         with contextlib.suppress(Exception):
-            QApplication.primaryScreen().grabWindow(0).save(str(tmp_path / "drag.png"))
+            QApplication.primaryScreen().grabWindow(0).save(str(tmp_path / "setup.png"))
         assert abs(heights_before[0] - heights_before[1]) > 0.02, (
-            "real divider drag did not change region heights; "
-            f"got {heights_before}. Tune coords/timing — see {tmp_path / 'drag.png'}."
+            "resize_axis_edge did not change region heights; "
+            f"got {heights_before}. See {tmp_path / 'setup.png'}."
         )
 
         # ─── FileBrowserView (for the real Remove File right-click) ───────────
