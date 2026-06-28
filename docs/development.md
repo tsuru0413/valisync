@@ -4,11 +4,20 @@
 
 関連:
 - `../CLAUDE.md` — エントリポイント
-- `../.kiro/steering/tech.md` — 技術選定の一次情報源
-- `dual-agent-workflow.md` — Kiro + Claude Code 併用開発ガイド
 - `policies.md` — プロジェクト方針
+- `workflow.md` — ブランチ/PR フロー・superpowers 計画フロー
 
 ---
+
+## 技術スタック
+
+- **言語/ランタイム**: Python 3.12+（`requires-python >= 3.12`）。コアは標準ライブラリ + numpy のみ、GUI は PySide6（LGPL）+ PyQtGraph。
+- **パッケージ管理**: uv（`pyproject.toml` + `uv.lock`）。build backend は setuptools（`pip install -e .` 可）。
+- **コア依存**: numpy（Signal のタイムスタンプ・値配列）。
+- **テスト**: pytest >= 8.0 / Hypothesis >= 6.100 / pytest-cov >= 5.0。カバレッジ下限 80%（`fail_under = 80`）。
+- **Lint/Format/型**: ruff（flake8/isort/black 代替）/ mypy。設定は `pyproject.toml`（`[tool.pytest.ini_options]` / `[tool.ruff]` / `[tool.mypy]`）。
+- **Coding Standards**: 型ヒントを全関数に付与 / immutable データは frozen dataclass + numpy array / インターフェースは Protocol で定義し具象で実装 / 変換処理は新オブジェクトを返す（元データ不変）/ FormatDefinition の永続化は JSON（`data/`）。
+- **GUI entry point**: `src/valisync/gui/app.py`。
 
 ## 品質ゲート
 
