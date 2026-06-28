@@ -93,10 +93,8 @@ def test_axis_spines_render_at_absolute_strips_with_blank_gap(
         )
 
 
-def test_axis_spine_aligned_with_its_waveform_viewbox(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
-    """Each region's axis spine strip matches its waveform ViewBox data strip."""
+def test_axis_spine_renders_at_absolute_strip(qtbot: QtBot, tmp_path: Path) -> None:
+    """Each spine renders at its absolute top strip (top_ratio / height_ratio from VM)."""
     session, _ = _loaded_session(tmp_path, n_signals=2)
     keys = sorted(_keys(session))
     vm = GraphPanelVM(session)
@@ -131,3 +129,24 @@ def test_no_divider_across_blank_gap(qtbot: QtBot, tmp_path: Path) -> None:
     qtbot.waitUntil(lambda: len(view._y_axes) == 2, timeout=2000)
     # A(0,0.5) and C(0.8,0.2) are NOT contiguous -> zero dividers between them.
     assert len(view._dividers) == 0
+
+
+def test_region_geometry_follows_resize(qtbot: QtBot, tmp_path: Path) -> None:
+    """After a window resize, each region's spine still renders at its absolute
+    strip (the sigResized -> _sync_overlay_geometry path keeps ratios)."""
+    session, _ = _loaded_session(tmp_path, n_signals=2)
+    keys = sorted(_keys(session))
+    vm = GraphPanelVM(session)
+    vm.create_new_axis(keys[0])
+    vm.create_new_axis(keys[1])
+    vm.axes[0].top_ratio, vm.axes[0].height_ratio = 0.0, 0.7
+    vm.axes[1].top_ratio, vm.axes[1].height_ratio = 0.7, 0.3
+    view = _mounted(qtbot, vm)
+    view.resize(1200, 900)
+    qtbot.waitUntil(lambda: _plot_rect(view).height() > 100, timeout=2000)
+    top0, h0 = _strip_of_axis(view, 0)
+    assert top0 == pytest.approx(0.0, abs=0.03)
+    assert h0 == pytest.approx(0.7, abs=0.03)
+    top1, h1 = _strip_of_axis(view, 1)
+    assert top1 == pytest.approx(0.7, abs=0.03)
+    assert h1 == pytest.approx(0.3, abs=0.03)

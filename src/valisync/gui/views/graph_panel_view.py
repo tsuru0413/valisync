@@ -388,7 +388,7 @@ class GraphPanelView(QWidget):
             upper = ordered[divider.axis_index]  # rank == upper region's vert index
             band = self._column_containers[col].sceneBoundingRect()
             y = R.y() + (upper.top_ratio + upper.height_ratio) * R.height()
-            divider.setGeometry(QRectF(band.x(), y - 2.0, band.width(), 4.0))
+            divider.setGeometry(QRectF(band.x(), y, band.width(), 4.0))
 
     def _axis_placement(self) -> list[tuple[int, int, int]]:
         """Map each VM axis to ``(vm_index, column, rank*2)``.
@@ -562,7 +562,7 @@ class GraphPanelView(QWidget):
         by_col: dict[int, list[int]] = {}
         for i, ax in enumerate(self.vm.axes):
             by_col.setdefault(ax.column, []).append(i)
-        for col, idxs in by_col.items():
+        for col, idxs in sorted(by_col.items()):
             ordered = sorted(idxs, key=lambda j: self.vm.axes[j].top_ratio)
             for rank in range(len(ordered) - 1):
                 upper = self.vm.axes[ordered[rank]]
