@@ -270,6 +270,27 @@ class GraphPanelVM(Observable):
                 axis.height_ratio = h
                 cursor += h
 
+    def _layout_column_preserving(self, axes_in_order: list[YAxisVM]) -> None:
+        """Lay out one column's axes top-to-bottom, preserving their heights.
+
+        Stacks ``axes_in_order`` from the top using each axis's current
+        ``height_ratio``.  Only when the heights sum to more than 1.0 (an axis
+        was added to an already-full column) are they scaled down uniformly to
+        fit — relative proportions are kept.  When they sum to less than 1.0 the
+        remainder stays a blank band at the bottom.  Used by
+        :meth:`move_axis_to_column`; the add / column-count paths use
+        :meth:`_relayout_columns` (equal split).
+        """
+        total = sum(a.height_ratio for a in axes_in_order)
+        if total > 1.0 + 1e-9:
+            scale = 1.0 / total
+            for axis in axes_in_order:
+                axis.height_ratio *= scale
+        cursor = 0.0
+        for axis in axes_in_order:
+            axis.top_ratio = cursor
+            cursor += axis.height_ratio
+
     def remove_signal(self, signal_key: str) -> None:
         """Remove *signal_key* from the plot and reconcile axes.
 

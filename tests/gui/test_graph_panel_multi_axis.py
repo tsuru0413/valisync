@@ -1232,3 +1232,45 @@ def test_unload_preserves_panel_proportions(qtbot: QtBot, tmp_path: Path) -> Non
     assert (cols[1].top_ratio, cols[1].height_ratio) == pytest.approx((0.8, 0.2))
     assert sum(a.height_ratio for a in panel.axes) == pytest.approx(0.7)
     assert len(view._view_boxes) == 2  # type: ignore[attr-defined]
+
+
+# ─── Task: _layout_column_preserving (height-preserving column layout) ────────
+
+
+def test_layout_column_preserving_keeps_heights_when_fits() -> None:
+    """合計 <= 1.0 なら縮小せず、各 height を保持し top を上から積む。余りは下部空白。"""
+    from valisync.core.session import Session
+    from valisync.gui.viewmodels.y_axis_vm import YAxisVM
+
+    vm = GraphPanelVM(Session())
+    a = YAxisVM(height_ratio=0.5)
+    b = YAxisVM(height_ratio=0.3)
+    vm._layout_column_preserving([a, b])
+
+    assert a.top_ratio == pytest.approx(0.0)
+    assert a.height_ratio == pytest.approx(0.5)
+    assert b.top_ratio == pytest.approx(0.5)
+    assert b.height_ratio == pytest.approx(0.3)  # no scaling (sum 0.8)
+    assert a.height_ratio + b.height_ratio == pytest.approx(0.8)  # remainder 0.2 blank
+
+
+def test_layout_column_preserving_divides_when_overflow() -> None:
+    """When sum > 1.0, scale uniformly by 1.0/sum (preserving proportions)."""
+    from valisync.core.session import Session
+    from valisync.gui.viewmodels.y_axis_vm import YAxisVM
+
+    vm = GraphPanelVM(Session())
+    a = YAxisVM(height_ratio=0.6)
+    x = YAxisVM(height_ratio=0.5)
+    b = YAxisVM(height_ratio=0.4)
+    vm._layout_column_preserving([a, x, b])  # sum 1.5 -> divide by 1.5
+
+    assert a.height_ratio == pytest.approx(0.4)
+    assert x.height_ratio == pytest.approx(1.0 / 3.0)
+    assert b.height_ratio == pytest.approx(0.4 / 1.5)  # approx 0.2667
+    assert a.top_ratio == pytest.approx(0.0)
+    assert x.top_ratio == pytest.approx(0.4)
+    assert b.top_ratio == pytest.approx(0.4 + 1.0 / 3.0)
+    assert sum(ax.height_ratio for ax in (a, x, b)) == pytest.approx(1.0)
+    # a:b ratio 6:4 preserved
+    assert a.height_ratio / b.height_ratio == pytest.approx(0.6 / 0.4)
