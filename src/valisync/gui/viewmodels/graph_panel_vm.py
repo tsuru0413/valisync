@@ -246,21 +246,33 @@ class GraphPanelVM(Observable):
         for entry in self._plotted:
             entry.axis_index = remap[entry.axis_index]
 
-    def _relayout_columns(self) -> None:
-        """Assign top_ratio/height_ratio per column, splitting height equally.
+    def _relayout_columns(self, *, preserve_heights: bool = False) -> None:
+        """Assign top_ratio/height_ratio per column.
 
         Axes are grouped by column; within each column the vertical order is
-        taken from the pre-existing top_ratio, then each column's axes split the
-        full column height equally.
+        taken from the pre-existing top_ratio. With ``preserve_heights=False``
+        each column's axes split the full column height equally. With
+        ``preserve_heights=True`` the existing height_ratios are renormalized to
+        sum to 1.0 per column (preserving the user's relative sizing after a
+        removal); a degenerate zero-sum column falls back to an equal split.
         """
         col_groups: dict[int, list[YAxisVM]] = {}
         for axis in self._axes:
             col_groups.setdefault(axis.column, []).append(axis)
         for axes_in_col in col_groups.values():
             ordered = sorted(axes_in_col, key=lambda a: a.top_ratio)
-            h = 1.0 / len(ordered)
+            n = len(ordered)
+            if preserve_heights:
+                total = sum(a.height_ratio for a in ordered)
+                heights = (
+                    [a.height_ratio / total for a in ordered]
+                    if total > 0
+                    else [1.0 / n] * n
+                )
+            else:
+                heights = [1.0 / n] * n
             cursor = 0.0
-            for axis in ordered:
+            for axis, h in zip(ordered, heights, strict=True):
                 axis.top_ratio = cursor
                 axis.height_ratio = h
                 cursor += h

@@ -687,6 +687,41 @@ def test_normalize_splits_height_per_column() -> None:
     assert all(a.height_ratio == 1.0 for a in vm.axes)
 
 
+def test_relayout_columns_preserves_proportions() -> None:
+    """preserve_heights=True renormalizes a sub-unity column to 1.0, keeping ratios."""
+    from valisync.core.session import Session
+
+    vm = GraphPanelVM(Session())
+    vm.add_signal_to_axis("s::a", 0)
+    vm.create_new_axis("s::c")  # 2 axes in inner column
+    # Heights summing to 0.7 simulate the post-prune state (a 0.3 axis removed).
+    vm.axes[0].top_ratio, vm.axes[0].height_ratio = 0.0, 0.5
+    vm.axes[1].top_ratio, vm.axes[1].height_ratio = 0.8, 0.2
+
+    vm._relayout_columns(preserve_heights=True)
+
+    assert vm.axes[0].height_ratio == pytest.approx(0.5 / 0.7)
+    assert vm.axes[1].height_ratio == pytest.approx(0.2 / 0.7)
+    assert vm.axes[0].top_ratio == pytest.approx(0.0)
+    assert vm.axes[1].top_ratio == pytest.approx(0.5 / 0.7)
+
+
+def test_relayout_total_zero_falls_back_to_equal() -> None:
+    """A degenerate zero-sum column falls back to an equal split (no ZeroDivision)."""
+    from valisync.core.session import Session
+
+    vm = GraphPanelVM(Session())
+    vm.add_signal_to_axis("s::a", 0)
+    vm.create_new_axis("s::b")
+    vm.axes[0].height_ratio = 0.0
+    vm.axes[1].height_ratio = 0.0
+
+    vm._relayout_columns(preserve_heights=True)
+
+    assert vm.axes[0].height_ratio == pytest.approx(0.5)
+    assert vm.axes[1].height_ratio == pytest.approx(0.5)
+
+
 # ─── Task 0.3: create_new_axis targets inner column (rule A) ─────────────────
 
 
