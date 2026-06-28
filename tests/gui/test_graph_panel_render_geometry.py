@@ -150,3 +150,57 @@ def test_region_geometry_follows_resize(qtbot: QtBot, tmp_path: Path) -> None:
     top1, h1 = _strip_of_axis(view, 1)
     assert top1 == pytest.approx(0.7, abs=0.03)
     assert h1 == pytest.approx(0.3, abs=0.03)
+
+
+def test_waveform_data_band_coincides_with_axis_spine_strip(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """The waveform (ViewBox data band) must render in the SAME absolute strip as
+    its axis spine — spine ticks and curve aligned, not just the spine geometry.
+
+    Maps each axis's data y-range through its ViewBox to scene coords
+    (mapViewToScene) and compares to the spine strip, BEFORE and AFTER a prune.
+    Guards waveform<->spine alignment, which the spine-only tests do not assert.
+    """
+    from PySide6.QtCore import QPointF
+
+    session, _ = _loaded_session(tmp_path, n_signals=3)
+    keys = sorted(_keys(session))
+    vm = GraphPanelVM(session)
+    vm.create_new_axis(keys[0])
+    vm.create_new_axis(keys[1])
+    vm.create_new_axis(keys[2])
+    vm.axes[0].top_ratio, vm.axes[0].height_ratio = 0.0, 0.2
+    vm.axes[1].top_ratio, vm.axes[1].height_ratio = 0.2, 0.5
+    vm.axes[2].top_ratio, vm.axes[2].height_ratio = 0.7, 0.3
+
+    view = _mounted(qtbot, vm)
+
+    def _assert_waveform_aligned_with_spine() -> None:
+        R = _plot_rect(view)
+        for i, ax in enumerate(vm.axes):
+            assert ax.y_range is not None, f"axis {i}: no y_range (data not mapped)"
+            y_lo, y_hi = ax.y_range
+            vb = view._view_boxes[i]
+            # data y_hi -> top of the data band; y_lo -> bottom (scene coords)
+            data_top = (vb.mapViewToScene(QPointF(0.0, y_hi)).y() - R.y()) / R.height()
+            data_bot = (vb.mapViewToScene(QPointF(0.0, y_lo)).y() - R.y()) / R.height()
+            spine_top, spine_h = _strip_of_axis(view, i)
+            spine_bot = spine_top + spine_h
+            assert data_top == pytest.approx(spine_top, abs=0.03), (
+                f"axis {i}: waveform top {data_top:.3f} != spine top {spine_top:.3f}"
+            )
+            assert data_bot == pytest.approx(spine_bot, abs=0.03), (
+                f"axis {i}: waveform bot {data_bot:.3f} != spine bot {spine_bot:.3f}"
+            )
+
+    _assert_waveform_aligned_with_spine()  # 3 contiguous regions
+
+    # Prune the middle: survivors keep absolute strips; the waveform must still
+    # coincide with its (repositioned) spine, leaving a real blank gap between.
+    remaining = [s for s in session.signals() if s.name != keys[1]]
+    session.signals = lambda: remaining  # type: ignore[method-assign]
+    vm.prune_missing_signals()
+    view.refresh()
+    qtbot.waitUntil(lambda: len(view._y_axes) == 2, timeout=2000)
+    _assert_waveform_aligned_with_spine()  # 2 survivors with a blank gap
