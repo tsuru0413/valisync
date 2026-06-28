@@ -17,6 +17,8 @@ spec 名 / `tasks.md` / writing-plans の下書きプラン / 自由記述のタ
 1. **変更種別を分類**: VM/純ロジック | ウィジェット構成・状態 | 入力イベント→ハンドラ。
 2. **必要レイヤー判定**（`docs/gui-testing-layers.md` の必須運用表）: A 必須 / B 要否 / C 要否＋根拠。
 3. **入力経路の再現可否**: `sendEvent` で実経路再現可（`QContextMenuEvent` 等）か、**Layer C 専用**（`QDrag` D&D は合成イベントで配送不可）か。新規/不明な経路は「**手法を確立せよ**」とフラグし `.claude/skills/gui-verify/reference/realgui-recipe.md` へ誘導。
+   - **realgui の掴み点はゾーン境界からマージンを取り、マジック比率でなくゾーン幾何から導出する**。掴み点が move/QDrag ゾーンへ誤侵入すると assert 失敗ではなく**ハング**になる（実例: pan テストの `spine.width()*0.10` が frame 3→8px 拡幅で move 帯に侵入しハング）。
+   - **ゾーン境界を動かす変更**（frame 幅・grip 寸法・軸幅 等）には「**既存 realgui の全掴み点を再監査せよ**」を分析ブロックに必ず出す（後追い破綻防止）。
 4. **②実質性ルーブリック適用**: 「人間が何を見て合格と判断するか」を列挙→各項目を「自動アサート可（`activePopupWidget()`・可視/ジオメトリ・要素数）」か「視覚（スクショ＋`/verify` 観測）」に割当。**スクショ保存だけ・VM 再チェックだけは naive としてフラグ**。
 5. **受け入れ要件 Red/Green/Verify**: Verify 段は `/run`・`/verify` がそのまま食える観測チェックリスト（起動 `uv run valisync` ＋手順＋観測項目）。
 6. **①証拠ゲート仕様**: 「該当 realgui を scoped 実行＋証拠添付」を**必須チェックボックス**としてプランに埋める仕様を出す（実行は `/gui-verify`）。
