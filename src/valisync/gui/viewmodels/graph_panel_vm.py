@@ -41,6 +41,8 @@ _PALETTE: tuple[str, ...] = (
 # 9 decimal places = ~1 ns precision on seconds timestamps, more than sufficient.
 _CACHE_KEY_DECIMALS: int = 9
 
+MIN_H: float = 0.05
+
 
 @dataclass
 class RenderCurve:
@@ -349,6 +351,13 @@ class GraphPanelVM(Observable):
         self._invalidate_cache()
         self._notify("range")
 
+    def set_axis_range(self, axis_index: int, lo: float, hi: float) -> None:
+        """Set the Y data range of one axis (active-axis zoom/pan target)."""
+        if not (0 <= axis_index < len(self._axes)):
+            return
+        self._axes[axis_index].set_range(min(lo, hi), max(lo, hi))
+        self._notify("axes")
+
     def reset_x(self) -> None:
         """Fit x_range to the union of all plotted signals' time extents."""
         lo: float | None = None
@@ -515,46 +524,46 @@ class GraphPanelVM(Observable):
         self._cache[cache_key] = curves
         return curves
 
-    def resize_axis(
-        self, divider_index: int, delta_ratio: float, column: int | None = None
-    ) -> None:
-        """Resize two vertically-adjacent axes by moving the divider between them.
+    def resize_axis_edge(self, axis_index: int, edge: str, delta_ratio: float) -> None:
+        """Resize a single axis by dragging one edge (model B).
 
-        delta_ratio is positive for moving the divider down.
-
-        When *column* is given, the divider is scoped to that column and the two
-        affected axes are the vertically-adjacent pair (ordered by ``top_ratio``)
-        at ranks ``divider_index`` / ``divider_index + 1`` — correct even when
-        VM-index order diverges from vertical order (after ``move_axis_to_column``).
-        When *column* is None (legacy callers), ``divider_index`` indexes the
-        VM-index-adjacent pair instead.
+        Only the dragged edge moves: the axis's opposite edge is anchored and the
+        neighbour is never pushed. Other axes are untouched; the adjacent gap on the
+        dragged side absorbs the change. ``delta_ratio`` is positive downward.
+        Constraints: min height 5%, don't pass the neighbour, don't move the opposite edge.
         """
-        if column is None:
-            # Legacy: VM-index-adjacent pair (kept for existing callers/tests).
-            if divider_index < 0 or divider_index >= len(self._axes) - 1:
-                return
-            above = self._axes[divider_index]
-            below = self._axes[divider_index + 1]
-        else:
-            col_axes = sorted(
-                [a for a in self._axes if a.column == column],
-                key=lambda a: a.top_ratio,
+        if not (0 <= axis_index < len(self._axes)):
+            return
+        axis = self._axes[axis_index]
+        col_axes = sorted(
+            (a for a in self._axes if a.column == axis.column),
+            key=lambda a: a.top_ratio,
+        )
+        rank = next(i for i, a in enumerate(col_axes) if a is axis)
+
+        if edge == "bottom":
+            # bottom = top + height moves; top fixed. New bottom limited by next.top or 1.0.
+            lower_bound = (
+                col_axes[rank + 1].top_ratio if rank + 1 < len(col_axes) else 1.0
             )
-            if divider_index < 0 or divider_index >= len(col_axes) - 1:
-                return
-            above = col_axes[divider_index]
-            below = col_axes[divider_index + 1]
-
-        # Ensure minimum height (e.g., 5%)
-        min_h = 0.05
-        if above.height_ratio + delta_ratio < min_h:
-            delta_ratio = min_h - above.height_ratio
-        if below.height_ratio - delta_ratio < min_h:
-            delta_ratio = below.height_ratio - min_h
-
-        above.height_ratio += delta_ratio
-        below.top_ratio += delta_ratio
-        below.height_ratio -= delta_ratio
+            new_bottom = axis.top_ratio + axis.height_ratio + delta_ratio
+            new_bottom = min(new_bottom, lower_bound)  # don't push neighbour
+            new_bottom = max(
+                new_bottom, axis.top_ratio + MIN_H
+            )  # min height (top fixed)
+            axis.height_ratio = new_bottom - axis.top_ratio
+        elif edge == "top":
+            # top moves; bottom = top + height fixed. New top limited by prev.bottom or 0.0.
+            upper = col_axes[rank - 1] if rank - 1 >= 0 else None
+            upper_bound = (upper.top_ratio + upper.height_ratio) if upper else 0.0
+            bottom = axis.top_ratio + axis.height_ratio
+            new_top = axis.top_ratio + delta_ratio
+            new_top = max(new_top, upper_bound)  # don't push neighbour
+            new_top = min(new_top, bottom - MIN_H)  # min height (bottom fixed)
+            axis.top_ratio = new_top
+            axis.height_ratio = bottom - new_top
+        else:
+            return
 
         self._notify("axes")
 

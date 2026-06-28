@@ -16,6 +16,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QDropEvent
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
+from tests.gui._panel_factory import make_two_axis_panel
 from tests.gui.test_graph_panel_view import (
     _csv_format,
     _keys,
@@ -27,48 +28,6 @@ from valisync.gui.adapters.qt_signal_models import encode_axis_index, encode_sig
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 from valisync.gui.viewmodels.y_axis_vm import YAxisVM
 from valisync.gui.views.graph_panel_view import _Y_AXIS_FIXED_WIDTH, GraphPanelView
-
-
-class _DragEvent:
-    """Duck-typed pyqtgraph MouseDragEvent.
-
-    Exposes the exact interface ``RegionDividerItem.mouseDragEvent`` consumes,
-    so a divider drag can be driven on the real view the same way a real mouse
-    drag would, without mocking the view or the ViewModel.
-    """
-
-    def __init__(
-        self,
-        pos: QPointF,
-        last_pos: QPointF,
-        *,
-        start: bool = False,
-        finish: bool = False,
-    ) -> None:
-        self._pos, self._last = pos, last_pos
-        self._start, self._finish = start, finish
-        self.accepted = False
-
-    def pos(self) -> QPointF:
-        return self._pos
-
-    def lastPos(self) -> QPointF:
-        return self._last
-
-    def isStart(self) -> bool:
-        return self._start
-
-    def isFinish(self) -> bool:
-        return self._finish
-
-    def button(self) -> Qt.MouseButton:
-        return Qt.MouseButton.LeftButton
-
-    def accept(self) -> None:
-        self.accepted = True
-
-    def ignore(self) -> None:
-        self.accepted = False
 
 
 class TestContextualDrop:
@@ -288,40 +247,6 @@ class TestContextualDrop:
             assert abs(ax.height_ratio - 0.5) < 1e-6
 
 
-class TestAxisResizing:
-    def test_resize_axis_updates_ratios(self, tmp_path: Path) -> None:
-        from valisync.core.session import Session
-
-        session = Session()
-        vm = GraphPanelVM(session)
-        # Create 2 axes (0.5 each): first signal fills the panel, second splits it.
-        vm.create_new_axis("sig0")
-        vm.create_new_axis("sig1")
-        assert len(vm.axes) == 2
-
-        # Move divider 0 down by 0.1
-        vm.resize_axis(0, 0.1)
-
-        assert vm.axes[0].height_ratio == pytest.approx(0.6)
-        assert vm.axes[1].top_ratio == pytest.approx(0.6)
-        assert vm.axes[1].height_ratio == pytest.approx(0.4)
-
-    def test_resize_axis_respects_minimum_height(self, tmp_path: Path) -> None:
-        from valisync.core.session import Session
-
-        session = Session()
-        vm = GraphPanelVM(session)
-        vm.create_new_axis("sig0")
-        vm.create_new_axis("sig1")
-
-        # Try to move divider 0 down so much that below axis disappears
-        vm.resize_axis(0, 0.6)  # 0.5 + 0.6 = 1.1 (invalid, should cap)
-
-        # Min height is 0.05
-        assert vm.axes[1].height_ratio == pytest.approx(0.05)
-        assert vm.axes[0].height_ratio == pytest.approx(0.95)
-
-
 class TestMultiAxisLayout:
     def test_unit_propagation(self, qtbot: QtBot, tmp_path: Path) -> None:
         """Verify that signal unit is propagated to the YAxisVM and then to AxisItem."""
@@ -475,50 +400,6 @@ class TestMultiAxisLayout:
                 if isinstance(it, pg.PlotDataItem) and it.name():
                     counts[it.name()] = counts.get(it.name(), 0) + 1
         assert all(c == 1 for c in counts.values()), f"duplicated curves: {counts}"
-
-    def test_dragging_divider_resizes_adjacent_regions(
-        self, qtbot: QtBot, tmp_path: Path
-    ) -> None:
-        """E2E: a divider drag resizes adjacent regions through the real VM.
-
-        Drives `RegionDividerItem.mouseDragEvent` on the real (shown) view with
-        synthesized start/move/finish events — the same handler path a real
-        mouse drag exercises — and checks the height ratios shift accordingly.
-        This is the "adjust their heights" gesture of the Task 3.3 E2E check.
-        """
-        session, _ = _loaded_session(tmp_path, n_signals=3)
-        keys = _keys(session)
-        vm = GraphPanelVM(session)
-        view = _make_view(qtbot, vm)
-        vm.add_signal_to_axis(keys[0], 0)
-        vm.create_new_axis(keys[1])
-        vm.create_new_axis(keys[2])
-        view.resize(1000, 700)
-        view.show()
-        qtbot.waitExposed(view)
-        qtbot.waitUntil(
-            lambda: view._view_boxes[0].geometry().height() > 100, timeout=2000
-        )
-
-        before = [a.height_ratio for a in vm.axes]
-        assert before == pytest.approx([1 / 3, 1 / 3, 1 / 3], abs=1e-3)
-
-        divider = view._dividers[0]  # divider between region 0 and region 1
-        view_h = divider.getViewWidget().height()
-        assert view_h > 0
-        dy = 0.15 * view_h  # drag down by 15% of the view height
-        divider.mouseDragEvent(_DragEvent(QPointF(0, 0), QPointF(0, 0), start=True))
-        divider.mouseDragEvent(_DragEvent(QPointF(0, dy), QPointF(0, 0)))
-        divider.mouseDragEvent(_DragEvent(QPointF(0, dy), QPointF(0, dy), finish=True))
-
-        after = [a.height_ratio for a in vm.axes]
-        delta = dy / view_h  # == 0.15
-        # Region 0 grows by ~delta, region 1 shrinks by ~delta, region 2 is fixed.
-        assert after[0] == pytest.approx(before[0] + delta, abs=1e-3)
-        assert after[1] == pytest.approx(before[1] - delta, abs=1e-3)
-        assert after[2] == pytest.approx(before[2], abs=1e-3)
-        # Ratios always remain a valid partition of the panel height.
-        assert sum(after) == pytest.approx(1.0, abs=1e-6)
 
     def test_stacked_yaxes_share_one_fixed_width(
         self, qtbot: QtBot, tmp_path: Path
@@ -886,84 +767,6 @@ def test_view_reserves_one_container_per_column(qtbot: QtBot) -> None:
     assert view.plot_grid_column() == 2
 
 
-# ─── Task 1.2: column-scoped, vertical-order resize_axis + within-column handles ─
-
-
-def test_resize_axis_is_scoped_to_one_column() -> None:
-    """A column-scoped resize moves the divider between that column's
-    vertically-adjacent pair and never touches another column's axes.
-
-    A lone OUTER-column axis makes VM-index order diverge from the inner
-    column's vertical order, so a VM-index-based resize would be wrong; the
-    column-scoped path must resize the inner pair only.
-    """
-    from valisync.core.session import Session
-
-    vm = GraphPanelVM(Session())
-    _inject_signal(vm, "sig::a")
-    vm.move_axis_to_column(0, 0)  # lone axis in OUTER col 0
-    vm.create_new_axis("sig::b")
-    vm.create_new_axis("sig::c")  # two axes in INNER col
-    inner = vm.column_count - 1
-    top, bot = _col(vm, inner)  # inner pair, top->bottom
-    outer = _col(vm, 0)[0]  # lone outer axis (1.0)
-    vm.resize_axis(0, 0.1, column=inner)  # grow inner top axis by 0.1
-    assert top.height_ratio + bot.height_ratio == pytest.approx(1.0)  # column fills
-    assert top.height_ratio > bot.height_ratio  # top grew
-    assert outer.height_ratio == pytest.approx(1.0)  # OTHER column untouched
-
-
-def test_dragging_divider_is_column_scoped(qtbot: QtBot, tmp_path: Path) -> None:
-    """Handler-path: dragging a within-column divider resizes that column's
-    vertically-adjacent pair (top grows, bottom shrinks) — not a VM-index pair.
-
-    A lone OUTER-column axis makes VM-index order diverge from the inner
-    column's vertical order, so a VM-index-based resize would touch the wrong
-    (cross-column) axes; the column-scoped divider must not.
-
-    Honest-layering note: this drives ``RegionDividerItem.mouseDragEvent``
-    directly (the divider-style handler path), NOT a full ``sendEvent`` Layer B;
-    the real OS drag path is confirmed by Layer C / manual per
-    ``docs/gui-testing-layers.md``.
-    """
-    session, _ = _loaded_session(tmp_path, n_signals=3)
-    keys = _keys(session)
-    vm = GraphPanelVM(session)
-    view = _make_view(qtbot, vm)
-    vm.add_signal_to_axis(keys[0], 0)
-    vm.move_axis_to_column(0, 0)  # lone axis in OUTER col 0
-    vm.create_new_axis(keys[1])  # INNER col, top
-    vm.create_new_axis(keys[2])  # INNER col, bottom
-    inner = vm.column_count - 1
-
-    view.resize(1000, 700)
-    view.show()
-    qtbot.waitExposed(view)
-    qtbot.waitUntil(lambda: view._view_boxes[0].geometry().height() > 100, timeout=2000)
-
-    top, bot = _col(vm, inner)
-    before_top, before_bot = top.height_ratio, bot.height_ratio
-    assert before_top == pytest.approx(0.5) and before_bot == pytest.approx(0.5)
-    outer_before = _col(vm, 0)[0].height_ratio
-
-    divider = view._dividers[0]  # within-column divider for the inner pair
-    view_h = divider.getViewWidget().height()
-    assert view_h > 0
-    dy = 0.15 * view_h  # drag down by 15% of the view height
-    divider.mouseDragEvent(_DragEvent(QPointF(0, 0), QPointF(0, 0), start=True))
-    divider.mouseDragEvent(_DragEvent(QPointF(0, dy), QPointF(0, 0)))
-    divider.mouseDragEvent(_DragEvent(QPointF(0, dy), QPointF(0, dy), finish=True))
-
-    delta = dy / view_h  # == 0.15
-    top, bot = _col(vm, inner)  # re-read (top_ratio may have shifted)
-    assert top.height_ratio == pytest.approx(before_top + delta, abs=1e-3)
-    assert bot.height_ratio == pytest.approx(before_bot - delta, abs=1e-3)
-    assert top.height_ratio > bot.height_ratio  # top region grew
-    assert sum(a.height_ratio for a in _col(vm, inner)) == pytest.approx(1.0, abs=1e-6)
-    # The OTHER column's lone axis is untouched (no cross-column resize).
-    assert _col(vm, 0)[0].height_ratio == pytest.approx(outer_before)
-
-
 # ─── Task 1.4a: axis-move drag/drop → move_axis_to_column (testable core) ─────
 
 
@@ -1004,6 +807,10 @@ def test_axis_move_drop_calls_move_to_target(qtbot: QtBot) -> None:
         Qt.KeyboardModifier.NoModifier,
     )
     view.dropEvent(event)  # handler-path (sendEvent can't route drops to this view)
+    # The relocation is deferred to the next event-loop turn (off the QDrag modal
+    # stack so the rebuild can't destroy the drag's source item mid-drag); pump
+    # until it lands.
+    qtbot.waitUntil(lambda: moved.column == 0, timeout=1000)
     assert moved.column == 0  # b moved to outer column 0
     assert _col(vm, 0)[0] is moved  # and it's there
 
@@ -1378,3 +1185,15 @@ def test_cross_column_move_overflow_divides_by_sum() -> None:
     assert y.column == 1
     assert y.top_ratio == pytest.approx(0.5)
     assert y.height_ratio == pytest.approx(0.5)
+
+
+# ─── Task 7: coupled divider removal ─────────────────────────────────────────
+
+
+def test_no_dividers_created(qtbot: QtBot) -> None:
+    """After Task 7, _dividers must be absent or empty; _y_axes still exist."""
+    panel = make_two_axis_panel()
+    qtbot.add_widget(panel)
+    assert not hasattr(panel, "_dividers") or panel._dividers == []
+    # _AlignedAxisItems still present for each axis
+    assert len(panel._y_axes) == len(panel.vm.axes)

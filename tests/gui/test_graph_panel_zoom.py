@@ -3,12 +3,13 @@
 The interaction logic is decomposed so it can be verified headlessly:
 - pure range math (zoom_range / pan_range / ordered_pair)
 - pixel-zone classification (classify_zone) and cursor mapping (cursor_for_zone)
-- data-coordinate gesture methods on the view (apply_zone_drag / apply_zone_wheel
-  / reset_zone) that update the VM range — these are the "drag/wheel/double-click
-  reflected in VM range" contract (R9.2-9.4/9.6, R10.2-10.4/10.6)
+- data-coordinate drag gesture methods on the view (apply_zone_drag, X axis only)
+  that update the VM range — R9.2-9.3, R10.2-10.3
 
-The thin Qt event handlers (mouse/wheel/double-click) translate raw events into
-these methods; they get a no-crash smoke test.
+Task 8 removed widget-level Y zoom/pan (apply_zone_wheel, reset_zone, wheelEvent,
+mouseDoubleClickEvent) and Y drag gestures.  Y interaction now lives entirely on
+_AlignedAxisItem.  Y zone classification (classify_zone) is KEPT because dropEvent
+uses ZONE_Y_INNER / ZONE_Y_OUTER for drop-target routing.
 
 TDD: written before the implementation; all must FAIL first.
 """
@@ -18,8 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QWheelEvent
+from PySide6.QtCore import QRectF, Qt
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from valisync.core.models import Delimiter, FormatDefinition
@@ -132,12 +132,14 @@ class TestZones:
     def test_cursor_shapes(self) -> None:
         assert cursor_for_zone(ZONE_X_INNER) == Qt.CursorShape.SizeHorCursor
         assert cursor_for_zone(ZONE_X_OUTER) == Qt.CursorShape.SizeHorCursor
-        assert cursor_for_zone(ZONE_Y_INNER) == Qt.CursorShape.SizeVerCursor
-        assert cursor_for_zone(ZONE_Y_OUTER) == Qt.CursorShape.SizeVerCursor
+        # Y zones return ArrowCursor: widget no longer imposes a Y cursor.
+        # _AlignedAxisItem owns the Y hover cursor (Task 8).
+        assert cursor_for_zone(ZONE_Y_INNER) == Qt.CursorShape.ArrowCursor
+        assert cursor_for_zone(ZONE_Y_OUTER) == Qt.CursorShape.ArrowCursor
         assert cursor_for_zone(ZONE_PLOT) == Qt.CursorShape.ArrowCursor
 
 
-# ─── Drag gestures → VM range (R9.2/9.3, R10.2/10.3) ───────────────────────────
+# ─── Drag gestures → VM range (X only; Y moved to _AlignedAxisItem) ────────────
 
 
 class TestDragGestures:
@@ -153,82 +155,4 @@ class TestDragGestures:
         # delta = start - end = +0.2 → window shifts to later data
         assert view.vm.x_range == pytest.approx((lo0 + 0.2, hi0 + 0.2))  # type: ignore[attr-defined]
 
-    def test_inner_y_drag_sets_range(self, qtbot: QtBot, tmp_path: Path) -> None:
-        view = _view_with_signal(qtbot, tmp_path)
-        view.apply_zone_drag(ZONE_Y_INNER, 30.0, 10.0)  # type: ignore[attr-defined]
-        assert view.vm.y_range == pytest.approx((10.0, 30.0))  # type: ignore[attr-defined]
-
-    def test_outer_y_drag_pans(self, qtbot: QtBot, tmp_path: Path) -> None:
-        view = _view_with_signal(qtbot, tmp_path)
-        lo0, hi0 = view.vm.y_range  # type: ignore[attr-defined]
-        view.apply_zone_drag(ZONE_Y_OUTER, 20.0, 5.0)  # type: ignore[attr-defined]
-        assert view.vm.y_range == pytest.approx((lo0 + 15.0, hi0 + 15.0))  # type: ignore[attr-defined]
-
-
-# ─── Wheel zoom → VM range (R9.4/R10.4) ────────────────────────────────────────
-
-
-class TestWheelZoom:
-    def test_wheel_zoom_in_x_narrows(self, qtbot: QtBot, tmp_path: Path) -> None:
-        view = _view_with_signal(qtbot, tmp_path)
-        lo0, hi0 = view.vm.x_range  # type: ignore[attr-defined]
-        view.apply_zone_wheel(ZONE_X_INNER, 0.5, 0.8)  # type: ignore[attr-defined]
-        lo, hi = view.vm.x_range  # type: ignore[attr-defined]
-        assert lo > lo0 and hi < hi0
-
-    def test_wheel_zoom_out_x_widens(self, qtbot: QtBot, tmp_path: Path) -> None:
-        view = _view_with_signal(qtbot, tmp_path)
-        lo0, hi0 = view.vm.x_range  # type: ignore[attr-defined]
-        view.apply_zone_wheel(ZONE_X_OUTER, 0.5, 1.25)  # type: ignore[attr-defined]
-        lo, hi = view.vm.x_range  # type: ignore[attr-defined]
-        assert lo < lo0 and hi > hi0
-
-    def test_wheel_zoom_y(self, qtbot: QtBot, tmp_path: Path) -> None:
-        view = _view_with_signal(qtbot, tmp_path)
-        lo0, hi0 = view.vm.y_range  # type: ignore[attr-defined]
-        view.apply_zone_wheel(ZONE_Y_INNER, 25.0, 0.8)  # type: ignore[attr-defined]
-        lo, hi = view.vm.y_range  # type: ignore[attr-defined]
-        assert lo > lo0 and hi < hi0
-
-
-# ─── Double-click reset → VM range (R9.6/R10.6) ────────────────────────────────
-
-
-class TestReset:
-    def test_reset_x_zone_refits(self, qtbot: QtBot, tmp_path: Path) -> None:
-        view = _view_with_signal(qtbot, tmp_path)
-        view.vm.set_x_range(0.2, 0.5)  # type: ignore[attr-defined]  # zoom in first
-        view.reset_zone(ZONE_X_INNER)  # type: ignore[attr-defined]
-        assert view.vm.x_range == pytest.approx((0.0, 0.99))  # type: ignore[attr-defined]
-
-    def test_reset_y_zone_refits(self, qtbot: QtBot, tmp_path: Path) -> None:
-        view = _view_with_signal(qtbot, tmp_path)
-        view.vm.set_y_range(10.0, 20.0)  # type: ignore[attr-defined]
-        view.reset_zone(ZONE_Y_OUTER)  # type: ignore[attr-defined]
-        assert view.vm.y_range == pytest.approx((0.0, 49.0))  # type: ignore[attr-defined]
-
-    def test_reset_plot_zone_is_noop(self, qtbot: QtBot, tmp_path: Path) -> None:
-        view = _view_with_signal(qtbot, tmp_path)
-        view.vm.set_x_range(0.2, 0.5)  # type: ignore[attr-defined]
-        view.reset_zone(ZONE_PLOT)  # type: ignore[attr-defined]
-        assert view.vm.x_range == pytest.approx((0.2, 0.5))  # type: ignore[attr-defined]
-
-
-# ─── Qt event glue smoke (no crash) ────────────────────────────────────────────
-
-
-class TestEventSmoke:
-    def test_wheel_event_does_not_crash(self, qtbot: QtBot, tmp_path: Path) -> None:
-        view = _view_with_signal(qtbot, tmp_path)
-        view.resize(400, 300)  # type: ignore[attr-defined]
-        event = QWheelEvent(
-            QPointF(200.0, 290.0),
-            QPointF(200.0, 290.0),
-            QPointF(0, 0).toPoint(),
-            QPointF(0, 120).toPoint(),
-            Qt.MouseButton.NoButton,
-            Qt.KeyboardModifier.NoModifier,
-            Qt.ScrollPhase.NoScrollPhase,
-            False,
-        )
-        view.wheelEvent(event)  # type: ignore[attr-defined]  # must not raise
+    # NOTE: Y drag tests removed (Task 8) — Y zoom/pan lives on _AlignedAxisItem.

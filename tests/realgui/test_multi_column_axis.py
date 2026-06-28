@@ -174,18 +174,24 @@ def test_axis_drag_from_inner_column_to_outer_column(
         timeout=3000,
     )
 
+    # Activate axis 0 — the new model accepts move/resize/zoom/pan only on the
+    # active axis, so the frame-zone press below is ignored unless it is active.
+    view.set_active_axis(0)
+    QApplication.processEvents()
+
     # ─── DPI conversion factor (logical → physical pixels) ────────────────────
     # Qt coordinates are logical pixels.  Win32 SetCursorPos and mouse_event
     # require physical pixels on HiDPI displays.
     dpr = view.devicePixelRatioF()
 
-    # ─── Source: centre of vm.axes[0]'s AxisItem in the inner column ──────────
+    # ─── Source: FRAME zone of vm.axes[0]'s spine (left edge, vertical centre) ─
+    # The active-axis model launches the move QDrag only from the spine's frame
+    # band (left edge within FRAME px); the spine centre is now the zoom zone.
     # _y_axes[0] is the _AlignedAxisItem for vm.axes[0] (column 1, top half).
-    # sceneBoundingRect() gives the bounding rect in pyqtgraph scene coords;
-    # mapFromScene converts to the plot_widget's viewport pixel coords (QPoint).
     src_item = view._y_axes[0]  # type: ignore[attr-defined]
-    scene_center = src_item.sceneBoundingRect().center()
-    src_vp = view.plot_widget.mapFromScene(scene_center)  # type: ignore[attr-defined]
+    _src_rect = src_item.sceneBoundingRect()
+    scene_src = QPoint(int(_src_rect.x() + 2), int(_src_rect.center().y()))
+    src_vp = view.plot_widget.mapFromScene(scene_src)  # type: ignore[attr-defined]
     src_global = view.plot_widget.viewport().mapToGlobal(src_vp)  # type: ignore[attr-defined]
     src_phys_x = round(src_global.x() * dpr)
     src_phys_y = round(src_global.y() * dpr)
@@ -218,8 +224,11 @@ def test_axis_drag_from_inner_column_to_outer_column(
         time.sleep(0.3)  # let the main thread reach its event pump
         _at(src_phys_x, src_phys_y, _MOUSEEVENTF_LEFTDOWN)
         time.sleep(0.1)
-        # Cross pyqtgraph's 4-px threshold → QDrag.exec starts on the main thread.
-        _at(src_phys_x + 15, src_phys_y, _MOUSEEVENTF_MOVE)
+        # Cross pyqtgraph's threshold with a VERTICAL move so the drag STARTS in the
+        # frame zone (lx stays in the 3-px frame band); a horizontal move would leave
+        # it and mis-classify the gesture as pan. QDrag.exec then starts on the main
+        # thread.
+        _at(src_phys_x, src_phys_y + 15, _MOUSEEVENTF_MOVE)
         time.sleep(0.2)
         _at(mid_phys_x, mid_phys_y, _MOUSEEVENTF_MOVE)
         time.sleep(0.2)

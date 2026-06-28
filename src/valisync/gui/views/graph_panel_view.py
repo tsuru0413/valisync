@@ -4,16 +4,17 @@ Task 8.2: project ``vm.render_data()`` (LOD-reduced by the VM) onto one
 ``PlotDataItem`` per curve, with colours and a legend; accept signal drops;
 report pixel width on resize.
 
-Task 8.3: custom X/Y zoom/pan built on inner/outer axis zones.  The interaction
-logic is split into pure, headless-testable pieces (zone classification, range
-math) and thin Qt event handlers.  The VM is the single source of truth for the
-visible range; every gesture calls ``set_x_range``/``set_y_range``/``reset_*``
-and the resulting notify re-projects the plot.  pyqtgraph's own mouse handling
-is disabled so the zone model fully owns interaction.
+Interaction model: the time (X) axis has always-on widget-level zoom/pan via
+inner/outer zones; each Y axis owns its resize/zoom/pan/move on its
+``_AlignedAxisItem``, accepted only while that axis is active.  The logic is
+split into pure, headless-testable pieces (zone classification, range math) and
+thin Qt event handlers.  The VM is the single source of truth for the visible
+range; gestures update it and the resulting notify re-projects the plot.
+pyqtgraph's own mouse handling is disabled so this model fully owns interaction.
 
-Zoom/pan are applied once per gesture (range-select/pan on release, wheel per
-notch), so the 16 ms budget is met by the VM's render cache + bounded point
-count.  Live drag-preview with a debounce timer is a noted refinement (R9.5).
+Zoom/pan are applied once per gesture (range-select / pan on release), so the
+16 ms budget is met by the VM's render cache + bounded point count.  Live
+drag-preview with a debounce timer is a noted refinement (R9.5).
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from __future__ import annotations
 from typing import Any
 
 import pyqtgraph as pg
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -34,7 +35,6 @@ from PySide6.QtGui import (
     QMouseEvent,
     QPen,
     QResizeEvent,
-    QWheelEvent,
 )
 from PySide6.QtWidgets import (
     QGraphicsLineItem,
@@ -53,7 +53,6 @@ from valisync.gui.adapters.qt_signal_models import (
     encode_axis_index,
 )
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
-from valisync.gui.views.region_divider_item import RegionDividerItem
 
 # ─── Axis interaction zones (R9.1 / R10.1) ────────────────────────────────────
 
@@ -64,6 +63,13 @@ ZONE_Y_INNER = "y_inner"
 ZONE_Y_OUTER = "y_outer"
 ZONE_NONE = "none"
 
+# Active Y-axis grip/frame/interior zones for resize gestures (Task 3).
+AXZONE_GRIP_TOP = "ax_grip_top"
+AXZONE_GRIP_BOTTOM = "ax_grip_bottom"
+AXZONE_FRAME = "ax_frame"
+AXZONE_ZOOM = "ax_zoom"
+AXZONE_PAN = "ax_pan"
+
 # Fixed pixel width shared by every stacked Y-axis so their tick spines (and
 # right-aligned tick numbers) line up into one vertical edge. Sized for ~6-digit
 # / scientific labels (e.g. "-1.2e+06" ≈ 48px) plus tick marks and the unit
@@ -71,11 +77,6 @@ ZONE_NONE = "none"
 # displayed signals change. Larger magnitudes stay within it via pyqtgraph's
 # automatic SI-prefix / scientific tick formatting.
 _Y_AXIS_FIXED_WIDTH = 72
-
-# Wheel zoom factors (factor < 1 zooms in, keeping the cursor fixed).
-_WHEEL_IN = 0.8
-_WHEEL_OUT = 1.25
-
 
 # ─── Pure interaction helpers (headless-testable) ─────────────────────────────
 
@@ -110,6 +111,11 @@ def classify_zone(
     The X-axis strip below the plot and the Y-axis strip left of it are each
     split into an *inner* half (closer to the plot) and an *outer* half (closer
     to the window edge).  Inner = range-select zoom; outer = pan.
+
+    NOTE: ZONE_Y_INNER / ZONE_Y_OUTER are still returned unchanged even though
+    widget-level Y zoom/pan was removed (Task 8).  These zones continue to serve
+    as drop-target geometry in dropEvent (R5 overwrite / Ctrl-join routing).
+    _AlignedAxisItem now owns all Y zoom/pan interaction.
     """
     left, right = plot_rect.left(), plot_rect.right()
     top, bottom = plot_rect.top(), plot_rect.bottom()
@@ -133,12 +139,100 @@ def classify_zone(
     return ZONE_NONE
 
 
+def classify_axis_zone(
+    lx: float,
+    ly: float,
+    w: float,
+    h: float,
+    *,
+    grip_w: float,
+    grip_h: float,
+    frame: float,
+    tol: float,
+) -> str:
+    """Classify an item-local point on an active axis spine into a gesture zone.
+
+    Priority: grip (resize) > frame border (move) > interior (inner=zoom / outer=pan).
+    Inner = right (plot-side); outer = left (window-edge side). The grip hit-area is
+    the centred grip rect expanded by *tol* for grabbability (NOT a full-width band).
+
+    The move-frame border is *frame* px on the left/right (the natural grab edge,
+    where width is fixed and ample). The top/bottom band is capped at h/4 so a short
+    (resized-down) axis always keeps a zoom/pan interior in its middle half instead
+    of collapsing entirely into the move-frame.
+    """
+    half = grip_w / 2.0
+    in_grip_x = abs(lx - w / 2.0) <= half + tol
+    if in_grip_x and ly <= grip_h + tol:
+        return AXZONE_GRIP_TOP
+    if in_grip_x and ly >= h - grip_h - tol:
+        return AXZONE_GRIP_BOTTOM
+    v_frame = min(frame, h / 4.0)
+    on_border = lx <= frame or lx >= w - frame or ly <= v_frame or ly >= h - v_frame
+    if on_border:
+        return AXZONE_FRAME
+    return AXZONE_ZOOM if lx >= w / 2.0 else AXZONE_PAN
+
+
+def grip_resize_delta(
+    cursor_scene_y: float,
+    panel_top: float,
+    panel_height: float,
+    grip_offset: float,
+    current_edge_ratio: float,
+) -> float:
+    """How far (in panel-height ratio) a grabbed axis edge must move to track the cursor.
+
+    The cursor's scene-Y is mapped to a fraction of the FULL panel height — the same
+    0..1 space as ``top_ratio``/``height_ratio`` — then the grab offset captured at
+    drag start is re-added and the current edge ratio subtracted. Absolute (not a
+    pixel delta) so it is immune to (a) the axis geometry shifting mid-drag, which a
+    top-edge resize causes, and (b) the per-axis-height scaling error of dividing a
+    pixel delta by the spine height (the cause of the cursor/edge mismatch and the
+    runaway-to-minimum).
+    """
+    if panel_height <= 0:
+        return 0.0
+    cursor_ratio = (cursor_scene_y - panel_top) / panel_height
+    return (cursor_ratio + grip_offset) - current_edge_ratio
+
+
+def reset_scene_drag_state(scene: Any) -> None:
+    """Clear a pyqtgraph GraphicsScene's press/drag bookkeeping after a modal QDrag.
+
+    ``QDrag.exec`` (launched from ``mouseDragEvent`` to move an axis) runs Windows'
+    OLE modal loop, which swallows the mouse-release — so ``GraphicsScene.
+    mouseReleaseEvent`` never runs its own reset and leaves ``dragButtons`` /
+    ``dragItem`` / ``clickEvents`` / ``lastDrag`` pointing at the source item, which
+    the axis-move rebuild has since deleted. The NEXT press is then delivered to
+    that stale ``dragItem`` with ``isStart=False``, so the first grip-resize (or
+    re-grab to move) after a move silently does nothing. This replicates
+    pyqtgraph's release-time reset so the next gesture starts clean. No-op if the
+    scene is missing or lacks the attributes (defensive across pyqtgraph versions).
+    """
+    if scene is None:
+        return
+    scene.dragButtons = []
+    scene.dragItem = None
+    scene.clickEvents = []
+    scene.lastDrag = None
+    # Also forget the last hover: pyqtgraph picks a *new* drag's target from
+    # lastHoverEvent.dragItems() (GraphicsScene.sendDragEvent), and after the move
+    # rebuild that still points at the destroyed source item. Clearing it forces
+    # re-discovery of the live item under the cursor via itemsNearEvent — otherwise
+    # the next drag is delivered to the stale item in its old coordinate frame
+    # (cursor maps outside it → mis-classified as a frame-move → another QDrag → hang).
+    scene.lastHoverEvent = None
+
+
 def cursor_for_zone(zone: str) -> Qt.CursorShape:
-    """Map a zone to the hover cursor that hints its gesture (R9.7 / R10.7)."""
+    """Map a zone to the hover cursor that hints its gesture (R9.7 / R10.7).
+
+    Y zones fall through to ArrowCursor: _AlignedAxisItem owns the Y hover
+    cursor (Task 6); the widget must not impose a competing SizeVerCursor.
+    """
     if zone in (ZONE_X_INNER, ZONE_X_OUTER):
         return Qt.CursorShape.SizeHorCursor
-    if zone in (ZONE_Y_INNER, ZONE_Y_OUTER):
-        return Qt.CursorShape.SizeVerCursor
     return Qt.CursorShape.ArrowCursor
 
 
@@ -157,12 +251,144 @@ class _AlignedAxisItem(pg.AxisItem):
     bare instance (e.g. unit-tested in isolation), making the drag a no-op there.
     """
 
-    # Set per-build by the view (_reconcile_axes); None => not draggable.
+    # Grip/frame/interior zone constants (Task 5 — matched by cursor_for_local).
+    GRIP_W: float = 40.0  # centred grip rect width (pixels)
+    GRIP_H: float = 8.0  # grip rect height (pixels)
+    # Move-frame border thickness. Wide enough to grab reliably and to keep the
+    # SizeAll move-cursor from flickering in a hairline band; the top/bottom band is
+    # capped at h/4 in classify_axis_zone so a short axis keeps a zoom/pan interior.
+    FRAME: float = 8.0
+    TOL: float = 4.0  # grip hit-area expansion for grabbability (pixels)
+
+    # Set per-build by the view (_reconcile_axes); None => not draggable/activatable.
     _vm_axis_index: int | None = None
+    # Back-reference to the parent GraphPanelView set by _reconcile_axes; None on
+    # bare instances (e.g. unit-tested in isolation) so click/hover events are no-ops.
+    _panel_view: GraphPanelView | None = None
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # Required so Qt delivers hoverMoveEvent / hoverLeaveEvent to this item.
+        self.setAcceptHoverEvents(True)
+        # Drag state (Task 6): reset on each drag start via _begin_axis_drag.
+        # _zone is the AXZONE_* constant set during isStart; the subsequent
+        # update/finish helpers read it to route to the correct VM method.
+        self._zone: str = AXZONE_FRAME  # placeholder; overwritten by _begin_axis_drag
+        self._drag_start_data: float = 0.0  # data-coordinate at drag-start cursor pos
+        self._drag_h: float = 0.0  # bounding-rect height captured at drag start
+        # (edge ratio - cursor ratio) captured when a grip is grabbed; re-added each
+        # update so the edge tracks the cursor without snapping to it on first move.
+        self._grip_offset: float = 0.0
 
     def set_vm_axis_index(self, index: int) -> None:
         """Tell this axis which VM axis index a drag from it should carry."""
         self._vm_axis_index = index
+
+    def set_panel_view(self, panel: GraphPanelView) -> None:
+        """Wire this axis back to the containing GraphPanelView for click activation."""
+        self._panel_view = panel
+
+    # ── Task 5: cursor mapping + active/hover frame ────────────────────────────
+
+    def cursor_for_local(self, lx: float, ly: float, h: float) -> Qt.CursorShape:
+        """Return the hover cursor for item-local point (lx, ly) on a spine of height h.
+
+        Pure (h is passed explicitly, not read from geometry) so it is headless-
+        testable without a scene.  Delegates zone classification to the module-
+        level ``classify_axis_zone`` and maps each zone to a cursor shape.
+        """
+        z = classify_axis_zone(
+            lx,
+            ly,
+            self.width(),
+            h,
+            grip_w=self.GRIP_W,
+            grip_h=self.GRIP_H,
+            frame=self.FRAME,
+            tol=self.TOL,
+        )
+        return {
+            AXZONE_GRIP_TOP: Qt.CursorShape.SizeVerCursor,
+            AXZONE_GRIP_BOTTOM: Qt.CursorShape.SizeVerCursor,
+            AXZONE_FRAME: Qt.CursorShape.SizeAllCursor,
+            AXZONE_ZOOM: Qt.CursorShape.CrossCursor,
+            AXZONE_PAN: Qt.CursorShape.OpenHandCursor,
+        }[z]
+
+    def _is_active_or_hover(self) -> bool:
+        """Return True if this axis is currently the active or hovered axis.
+
+        Reads transient UI state from ``_panel_view``; always False on bare
+        instances (``_panel_view`` is None) so painting stays a no-op there.
+        """
+        view = self._panel_view
+        if view is None or self._vm_axis_index is None:
+            return False
+        return self._vm_axis_index in (view._active_axis_index, view._hover_axis_index)
+
+    def hoverMoveEvent(self, ev: Any) -> None:
+        """Update hover state and cursor on mouse-over.
+
+        Called by Qt when the cursor enters or moves within this item's
+        bounding rect (requires ``setAcceptHoverEvents(True)`` in __init__).
+        Delegates state bookkeeping to ``GraphPanelView.set_hover_axis`` and
+        applies a zone-sensitive cursor only when this axis is also active.
+        """
+        view = self._panel_view
+        if view is None or self._vm_axis_index is None:
+            return
+        view.set_hover_axis(self._vm_axis_index)
+        if self._vm_axis_index == view._active_axis_index:
+            p = ev.pos()
+            self.setCursor(
+                self.cursor_for_local(p.x(), p.y(), self.boundingRect().height())
+            )
+        else:
+            self.unsetCursor()
+
+    def hoverLeaveEvent(self, ev: Any) -> None:
+        """Clear hover state and reset cursor when the mouse leaves the spine."""
+        view = self._panel_view
+        if view is not None:
+            view.set_hover_axis(None)
+        self.unsetCursor()
+
+    def paint(self, p: Any, *args: Any) -> None:
+        """Paint the spine, then overlay an active/hover frame and grip handles.
+
+        The overlay is Case C (spine outline only): an amber border when
+        hovered, plus two centred rounded grip rects when the axis is also
+        active (task 5).  Non-active/non-hover → base paint only, no cost.
+        """
+        super().paint(p, *args)
+        if not self._is_active_or_hover():
+            return
+        r = self.boundingRect()
+        p.save()
+        # Amber frame border — always shown while active OR hovered.
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QColor("#f59e0b"), 2))
+        p.drawRect(r.adjusted(1, 1, -1, -1))
+        # Grip handles — only shown when this axis is the ACTIVE axis.
+        if (
+            self._panel_view is not None
+            and self._vm_axis_index == self._panel_view._active_axis_index
+        ):
+            p.setBrush(QColor("#ffffff"))
+            p.setPen(QPen(QColor("#b45309"), 1))
+            cx = r.center().x()
+            for cy in (r.top() + 1.0, r.bottom() - 1.0):
+                p.drawRoundedRect(
+                    QRectF(
+                        cx - self.GRIP_W / 2,
+                        cy - self.GRIP_H / 2,
+                        self.GRIP_W,
+                        self.GRIP_H,
+                    ),
+                    3,
+                    3,
+                )
+        p.restore()
 
     def tickStrings(
         self, values: list[float], scale: float, spacing: float
@@ -183,23 +409,181 @@ class _AlignedAxisItem(pg.AxisItem):
             out.append(f"{mantissa}e{exp}")
         return out
 
-    def mouseDragEvent(self, ev: Any) -> None:
-        """Start an axis-move QDrag on left-drag (real delivery is Layer-C/manual).
+    def mouseClickEvent(self, ev: Any) -> None:
+        """Activate this axis on a left click (pyqtgraph scene event, not Qt press).
 
-        The base ``AxisItem.mouseDragEvent`` only pans a *linked* ViewBox; these
-        axes are unlinked, so it no-ops and is safe to override. Offscreen Qt
-        cannot run the blocking drag loop, so this path is verified by Layer C /
-        manual, not the headless Layer B suite.
+        pyqtgraph's GraphicsScene fires ``mouseClickEvent`` after a press+release
+        without a drag gesture — the same routing path that delivers
+        ``mouseDragEvent``.  The parent AxisItem.mouseClickEvent merely forwards
+        to the linked ViewBox; since these axes are *unlinked*, the parent is a
+        no-op and our override is the sole handler.  The click sets the panel's
+        active axis so Task 6's gesture dispatcher can route subsequent events to
+        the correct Y-axis.
         """
-        if self._vm_axis_index is None or ev.button() != Qt.MouseButton.LeftButton:
+        if ev.button() != Qt.MouseButton.LeftButton:
+            ev.ignore()
+            return
+        if self._panel_view is not None and self._vm_axis_index is not None:
+            self._panel_view.set_active_axis(self._vm_axis_index)
+        ev.accept()
+
+    # ── Task 6: zone-routed drag helpers ──────────────────────────────────────
+
+    def _panel_region(self) -> QRectF:
+        """Full panel plot rect (scene coords) — the pixel extent of the 0..1
+        height-ratio space. Unit rect on bare/unlaid-out instances."""
+        view = self._panel_view
+        if view is None or not view._view_boxes:
+            return QRectF(0.0, 0.0, 1.0, 1.0)
+        return view._view_boxes[0].sceneBoundingRect()
+
+    def _local_y_to_data(self, ly: float, h: float) -> float:
+        """Convert item-local y pixel to data-coordinate using the current y_range.
+
+        The spine maps linearly: top (ly=0) → y_hi, bottom (ly=h) → y_lo.
+        ``h`` is passed explicitly so callers can use the height captured at
+        drag-start even when the geometry changes mid-drag.
+        """
+        view = self._panel_view
+        if view is None or self._vm_axis_index is None:
+            return 0.0
+        rng = view.vm.axes[self._vm_axis_index].y_range or (0.0, 1.0)
+        lo, hi = rng
+        frac = min(max(ly / max(h, 1.0), 0.0), 1.0)  # 0=top → 1=bottom
+        return hi - frac * (hi - lo)  # top=hi, bottom=lo
+
+    def _begin_axis_drag(self, lx: float, ly: float) -> bool:
+        """Classify the drag start zone; return True if this axis should handle it.
+
+        Only the active axis accepts drag gestures. Stores ``_zone``,
+        ``_drag_start_data``, and ``_drag_h`` for use by the update/finish
+        helpers called during the same drag sequence.
+
+        Layer B direct-call surface: callers pass item-local (lx, ly) and
+        inspect _zone / VM side-effects; no real pyqtgraph event needed.
+        """
+        view = self._panel_view
+        if view is None or self._vm_axis_index != view._active_axis_index:
+            return False
+        h = self.boundingRect().height()
+        self._zone = classify_axis_zone(
+            lx,
+            ly,
+            self.width(),
+            h,
+            grip_w=self.GRIP_W,
+            grip_h=self.GRIP_H,
+            frame=self.FRAME,
+            tol=self.TOL,
+        )
+        self._drag_start_data = self._local_y_to_data(ly, h)
+        self._drag_h = h
+        return True
+
+    def _grip_grab_offset(self, cursor_scene_y: float) -> float:
+        """Offset (edge ratio - cursor ratio) at grab time, so the edge tracks the
+        cursor without snapping to it on the first move. 0 if state is unavailable."""
+        view = self._panel_view
+        if view is None or self._vm_axis_index is None:
+            return 0.0
+        region = self._panel_region()
+        if region.height() <= 0:
+            return 0.0
+        cursor_ratio = (cursor_scene_y - region.y()) / region.height()
+        axis = view.vm.axes[self._vm_axis_index]
+        edge_ratio = (
+            axis.top_ratio
+            if self._zone == AXZONE_GRIP_TOP
+            else axis.top_ratio + axis.height_ratio
+        )
+        return edge_ratio - cursor_ratio
+
+    def _update_axis_drag(self, cursor_scene_y: float) -> None:
+        """Track the grabbed grip edge to the cursor (absolute, panel-proportional).
+
+        Called on each intermediate drag event for AXZONE_GRIP_TOP/BOTTOM only.
+        ``cursor_scene_y`` is the cursor's scene Y; it maps to a panel-height ratio
+        and the dragged edge follows it via ``resize_axis_edge`` (model-B clamps
+        still apply). ZOOM/PAN commit at finish, not incrementally.
+        """
+        view = self._panel_view
+        if view is None or self._vm_axis_index is None:
+            return
+        if self._zone not in (AXZONE_GRIP_TOP, AXZONE_GRIP_BOTTOM):
+            return
+        region = self._panel_region()
+        axis = view.vm.axes[self._vm_axis_index]
+        if self._zone == AXZONE_GRIP_TOP:
+            edge, current = "top", axis.top_ratio
+        else:
+            edge, current = "bottom", axis.top_ratio + axis.height_ratio
+        delta = grip_resize_delta(
+            cursor_scene_y, region.y(), region.height(), self._grip_offset, current
+        )
+        view.vm.resize_axis_edge(self._vm_axis_index, edge, delta)
+
+    def _finish_axis_drag(self, lx: float, ly: float) -> None:
+        """Commit a zoom or pan on drag finish.
+
+        ZOOM: range-select — the two endpoints become the new y_range (VM
+        normalises lo/hi order). PAN: the data value that was at the cursor's
+        start position is shifted to the end position.
+        """
+        view = self._panel_view
+        if view is None or self._vm_axis_index is None:
+            return
+        end = self._local_y_to_data(ly, self._drag_h)
+        if self._zone == AXZONE_ZOOM:
+            view.vm.set_axis_range(self._vm_axis_index, self._drag_start_data, end)
+        elif self._zone == AXZONE_PAN:
+            rng = view.vm.axes[self._vm_axis_index].y_range or (0.0, 1.0)
+            lo, hi = rng
+            shift = self._drag_start_data - end
+            view.vm.set_axis_range(self._vm_axis_index, lo + shift, hi + shift)
+
+    def mouseDragEvent(self, ev: Any) -> None:
+        """Route left-drag by zone: grips → resize, frame → move QDrag,
+        inner → zoom, outer → pan.  Only the active axis accepts drag events.
+
+        The base AxisItem.mouseDragEvent only pans a *linked* ViewBox; these
+        axes are unlinked so the parent is a safe no-op. Real drag delivery
+        (OS → pyqtgraph scene → here) is Layer C; the helper logic (_begin /
+        _update / _finish) is verified by the Layer B tests directly.
+        """
+        if ev.button() != Qt.MouseButton.LeftButton:
             ev.ignore()
             return
         if ev.isStart():
-            view = self.getViewWidget()
-            if view is not None:
-                drag = QDrag(view)
-                drag.setMimeData(encode_axis_index(self._vm_axis_index))
-                drag.exec(Qt.DropAction.MoveAction)
+            p = ev.pos()
+            if not self._begin_axis_drag(p.x(), p.y()):
+                ev.ignore()
+                return
+            if self._zone == AXZONE_FRAME:
+                # Axis-move: launch a QDrag carrying the VM index so the panel's
+                # drop sink can relocate the axis. The relayout is applied on the
+                # NEXT event-loop turn (GraphPanelView.dropEvent defers it) so the
+                # rebuild does not destroy this item while pyqtgraph's scene still
+                # holds drag references to it. Verified Layer C only (the blocking
+                # drag.exec loop cannot run under the offscreen platform).
+                if self._vm_axis_index is not None:
+                    view = self._panel_view
+                    if view is not None:
+                        drag = QDrag(view)
+                        drag.setMimeData(encode_axis_index(self._vm_axis_index))
+                        drag.exec(Qt.DropAction.MoveAction)
+                ev.accept()
+                return
+            if self._zone in (AXZONE_GRIP_TOP, AXZONE_GRIP_BOTTOM):
+                # Capture the grab offset so the edge tracks the cursor 1:1 from here.
+                self._grip_offset = self._grip_grab_offset(ev.scenePos().y())
+        # Grips track the cursor absolutely (scene coords) so the edge follows it 1:1
+        # and the axis geometry shifting mid-drag cannot feed back into the delta.
+        if self._zone in (AXZONE_GRIP_TOP, AXZONE_GRIP_BOTTOM) and not ev.isStart():
+            self._update_axis_drag(ev.scenePos().y())
+        # Zoom / pan commit on release (range-select model, not live-preview).
+        if ev.isFinish() and self._zone in (AXZONE_ZOOM, AXZONE_PAN):
+            p = ev.pos()
+            self._finish_axis_drag(p.x(), p.y())
         ev.accept()
 
 
@@ -217,7 +601,6 @@ class GraphPanelView(QWidget):
         self._items: dict[str, pg.PlotDataItem] = {}
         self._y_axes: list[pg.AxisItem] = []
         self._view_boxes: list[pg.ViewBox] = []
-        self._dividers: list[RegionDividerItem] = []
         # One empty width-reserving container per occupied column (root col = the
         # column index); it pins the fixed gutter width and supplies that column's
         # X band. AxisItems are scene items positioned over it by
@@ -235,6 +618,13 @@ class GraphPanelView(QWidget):
         self._drag_start: QPointF | None = None
         self._drop_active = False
         self._removable = True
+        # Active/hover axis — transient UI state, not persisted to the VM.
+        # _active_axis_index: the axis the user last clicked (None = none selected).
+        # _hover_axis_index: the axis under the cursor (None = none hovered).
+        # Both drive frame/grip repaint in Task 5+; declared here so Task 4 can test
+        # them and later tasks wire visuals without touching __init__.
+        self._active_axis_index: int | None = None
+        self._hover_axis_index: int | None = None
         # Axis-move drag feedback: lazily created, reused per drag, nulled on rebuild.
         self._axis_move_line: QGraphicsLineItem | None = None
         self._axis_move_highlight: QGraphicsRectItem | None = None
@@ -279,7 +669,7 @@ class GraphPanelView(QWidget):
 
     def refresh(self) -> None:
         """Re-project vm.render_data() onto the plot, reconciling multiple axes."""
-        # 1. Reconcile Y-axes, ViewBoxes, and Dividers
+        # 1. Reconcile Y-axes and ViewBoxes
         self._reconcile_axes()
 
         # 2. Get render curves from VM
@@ -324,7 +714,7 @@ class GraphPanelView(QWidget):
 
         # 5. Update geometry and ranges
         # The overlaid secondary ViewBoxes must track the master's plot rect on
-        # every render (the layout reflows the master after axis/divider changes).
+        # every render (the layout reflows the master after axis changes).
         self._sync_overlay_geometry()
 
         # Shared X-range
@@ -368,27 +758,6 @@ class GraphPanelView(QWidget):
                 axis_vm.height_ratio * R.height(),
             )
             self._y_axes[i].setGeometry(strip)
-        self._position_dividers(R)
-
-    def _position_dividers(self, R: QRectF) -> None:
-        """Place each contiguous-pair divider on the shared boundary between its
-        column's upper/lower region (Y from the master rect R, X from the column
-        band). Dividers only exist for contiguous pairs (built in _reconcile_axes),
-        so none is ever drawn across a blank gap."""
-        for divider in self._dividers:
-            col = divider.column
-            if col is None or col not in self._column_containers:
-                continue
-            ordered = sorted(
-                (a for a in self.vm.axes if a.column == col),
-                key=lambda a: a.top_ratio,
-            )
-            if divider.axis_index >= len(ordered):
-                continue
-            upper = ordered[divider.axis_index]  # rank == upper region's vert index
-            band = self._column_containers[col].sceneBoundingRect()
-            y = R.y() + (upper.top_ratio + upper.height_ratio) * R.height()
-            divider.setGeometry(QRectF(band.x(), y, band.width(), 4.0))
 
     def _axis_placement(self) -> list[tuple[int, int, int]]:
         """Map each VM axis to ``(vm_index, column, rank*2)``.
@@ -409,13 +778,13 @@ class GraphPanelView(QWidget):
         return placement
 
     def _reconcile_axes(self) -> None:
-        """Reconcile AxisItems, ViewBoxes, and Dividers with the VM's axes/columns.
+        """Reconcile AxisItems and ViewBoxes with the VM's axes/columns.
 
         Each occupied column reserves a fixed-width container (root col = the
         axis's column); the plot ViewBox container occupies root col =
         ``column_count`` and every lower column reserves fixed Y-axis width, so
-        empty columns stay as drop-target gutters. AxisItems and dividers are
-        scene items (not grid-managed) positioned at absolute region strips by
+        empty columns stay as drop-target gutters. AxisItems are scene items
+        (not grid-managed) positioned at absolute region strips by
         ``_sync_overlay_geometry`` — this is what lets a region sum < 1.0 render a
         genuine blank band instead of being normalised to fill the column.
 
@@ -428,12 +797,11 @@ class GraphPanelView(QWidget):
         signature = (self.vm.column_count, tuple(sorted(placement)))
 
         # Fast path: column grouping and vertical order are identical, so only
-        # height_ratio/labels could have changed (e.g. a divider drag). Retune
-        # labels in place instead of rebuilding — this keeps the dragged divider
-        # object alive rather than recreating it under the cursor. The new
-        # height_ratio/top_ratio are applied by _sync_overlay_geometry(), which
-        # refresh() calls right after this returns: it repositions every spine,
-        # divider, and ViewBox to the live absolute strips (no grid row-stretch).
+        # height_ratio/labels could have changed (e.g. a resize gesture). Retune
+        # labels in place instead of rebuilding. The new height_ratio/top_ratio are
+        # applied by _sync_overlay_geometry(), which refresh() calls right after
+        # this returns: it repositions every spine and ViewBox to the live absolute
+        # strips (no grid row-stretch).
         if self._column_containers and signature == self._build_signature:
             for i, _col, _row in placement:
                 axis_vm = self.vm.axes[i]
@@ -456,11 +824,11 @@ class GraphPanelView(QWidget):
         self._axis_move_line = None
         self._axis_move_highlight = None
 
-        # Secondary ViewBoxes, AxisItems, and dividers all live straight in the
-        # scene (so waveforms draw unclipped and spines/dividers sit at absolute
-        # strips), so ci.clear() — which only drops layout-managed items — leaves
-        # them behind as orphans that keep drawing stale curves/ticks. Remove them
-        # explicitly first. (The master ViewBox, column containers, and X-axis are
+        # Secondary ViewBoxes and AxisItems live straight in the scene (so
+        # waveforms draw unclipped and spines sit at absolute strips), so
+        # ci.clear() — which only drops layout-managed items — leaves them behind
+        # as orphans that keep drawing stale curves/ticks. Remove them explicitly
+        # first. (The master ViewBox, column containers, and X-axis are
         # layout-managed, so ci.clear() drops those.)
         for vb in self._view_boxes[1:]:
             scene = vb.scene()
@@ -470,14 +838,9 @@ class GraphPanelView(QWidget):
             axis_scene = axis.scene()
             if axis_scene is not None:
                 axis_scene.removeItem(axis)
-        for divider in self._dividers:
-            divider_scene = divider.scene()
-            if divider_scene is not None:
-                divider_scene.removeItem(divider)
         self.plot_widget.ci.clear()
         self._y_axes.clear()
         self._view_boxes.clear()
-        self._dividers.clear()
         self._items.clear()  # Clear items to force re-adding to new ViewBoxes
         self._column_containers = {}
 
@@ -539,8 +902,10 @@ class GraphPanelView(QWidget):
             # exactly its region, and overlapping tick labels in short regions are
             # better hidden than allowed to bleed across the gap.
             axis.setStyle(hideOverlappingLabels=True)
-            # Tag the axis with its VM index so a drag from it carries that index.
+            # Tag the axis with its VM index so a drag from it carries that index,
+            # and wire the panel view reference so click events reach set_active_axis.
             axis.set_vm_axis_index(i)
+            axis.set_panel_view(self)
             if axis_vm.name or axis_vm.unit:
                 axis.setLabel(text=axis_vm.name or None, units=axis_vm.unit or None)
             self._y_axes.append(axis)
@@ -549,31 +914,6 @@ class GraphPanelView(QWidget):
             # _sync_overlay_geometry sets its absolute strip geometry. Adding it to
             # a grid sub-layout would normalise the column and erase blank gaps.
             self.plot_widget.scene().addItem(axis)
-
-        # Dividers sit on the shared boundary between vertically-CONTIGUOUS axes
-        # within a column (upper region's bottom == lower region's top). A divider
-        # is created only for contiguous pairs, so none is ever placed across a
-        # blank gap (e.g. A(0,0.5)/C(0.8,0.2) get no divider). The divider's
-        # axis_index is the upper axis's vertical RANK in its column (not a VM
-        # index) and it carries that column, so resize_axis stays column-scoped and
-        # follows vertical (top_ratio) order — correct even when VM-index order
-        # diverges after a move_axis_to_column. Dividers are scene items positioned
-        # by _position_dividers (via _sync_overlay_geometry).
-        by_col: dict[int, list[int]] = {}
-        for i, ax in enumerate(self.vm.axes):
-            by_col.setdefault(ax.column, []).append(i)
-        for col, idxs in sorted(by_col.items()):
-            ordered = sorted(idxs, key=lambda j: self.vm.axes[j].top_ratio)
-            for rank in range(len(ordered) - 1):
-                upper = self.vm.axes[ordered[rank]]
-                lower = self.vm.axes[ordered[rank + 1]]
-                contiguous = (
-                    abs((upper.top_ratio + upper.height_ratio) - lower.top_ratio) < 1e-6
-                )
-                if contiguous:
-                    divider = RegionDividerItem(self.vm, rank, column=col)
-                    self.plot_widget.scene().addItem(divider)
-                    self._dividers.append(divider)
 
         # The VM always holds at least one axis, so the master ViewBox is set.
         assert master_vb is not None
@@ -586,6 +926,35 @@ class GraphPanelView(QWidget):
         # Add legend to the master ViewBox
         self._legend.setParentItem(master_vb)
         self._build_signature = signature
+
+    # ─── Active-axis state (Task 4) ────────────────────────────────────────────
+
+    def set_active_axis(self, index: int | None) -> None:
+        """Set/clear the active axis (transient UI state) and repaint frames.
+
+        Transient: this state is never propagated to the VM.  It drives the
+        active-frame highlight (Task 5) and the gesture dispatcher's axis
+        selection (Task 6).  Calling with the already-active index is a no-op
+        so callers need not guard against repeated events.
+        """
+        if index == self._active_axis_index:
+            return
+        self._active_axis_index = index
+        for ax in self._y_axes:
+            ax.update()  # repaint frame/grips for each axis spine
+
+    def set_hover_axis(self, index: int | None) -> None:
+        """Set/clear the hovered axis (transient UI state) and repaint frames.
+
+        Mirrors ``set_active_axis``: transient, never propagated to the VM.
+        Called by ``_AlignedAxisItem.hoverMoveEvent``/``hoverLeaveEvent`` when
+        the cursor enters or leaves a spine.  No-op if already at the same index.
+        """
+        if index == self._hover_axis_index:
+            return
+        self._hover_axis_index = index
+        for ax in self._y_axes:
+            ax.update()  # repaint hover frame for each axis spine
 
     # ─── Test/introspection surface ────────────────────────────────────────────
 
@@ -624,33 +993,15 @@ class GraphPanelView(QWidget):
     # ─── Gesture application (data-coordinate; the zoom/pan contract) ───────────
 
     def apply_zone_drag(self, zone: str, start_value: float, end_value: float) -> None:
-        """Apply a drag in *zone*: inner = range-select zoom, outer = pan."""
+        """Apply a drag in *zone*: inner = range-select zoom, outer = pan.
+
+        Only X zones are handled here; Y zoom/pan is owned by _AlignedAxisItem (Task 8).
+        """
         if zone == ZONE_X_INNER:
             self.vm.set_x_range(*ordered_pair(start_value, end_value))
         elif zone == ZONE_X_OUTER and self.vm.x_range is not None:
             lo, hi = self.vm.x_range
             self.vm.set_x_range(*pan_range(lo, hi, start_value - end_value))
-        elif zone == ZONE_Y_INNER:
-            self.vm.set_y_range(*ordered_pair(start_value, end_value))
-        elif zone == ZONE_Y_OUTER and self.vm.y_range is not None:
-            lo, hi = self.vm.y_range
-            self.vm.set_y_range(*pan_range(lo, hi, start_value - end_value))
-
-    def apply_zone_wheel(self, zone: str, center_value: float, factor: float) -> None:
-        """Zoom the zone's axis about *center_value* by *factor*."""
-        if zone in (ZONE_X_INNER, ZONE_X_OUTER) and self.vm.x_range is not None:
-            lo, hi = self.vm.x_range
-            self.vm.set_x_range(*zoom_range(lo, hi, center_value, factor))
-        elif zone in (ZONE_Y_INNER, ZONE_Y_OUTER) and self.vm.y_range is not None:
-            lo, hi = self.vm.y_range
-            self.vm.set_y_range(*zoom_range(lo, hi, center_value, factor))
-
-    def reset_zone(self, zone: str) -> None:
-        """Reset the zone's axis to the full data extent (double-click, R9.6)."""
-        if zone in (ZONE_X_INNER, ZONE_X_OUTER):
-            self.vm.reset_x()
-        elif zone in (ZONE_Y_INNER, ZONE_Y_OUTER):
-            self.vm.reset_y()
 
     # ─── Pixel ↔ zone/data glue (best-effort; smoke-tested) ─────────────────────
 
@@ -824,14 +1175,15 @@ class GraphPanelView(QWidget):
         except Exception:
             return None
 
-    # ─── Mouse / wheel handlers (thin glue over the gesture methods) ────────────
+    # ─── Mouse handlers — X zoom/pan only (Y owned by _AlignedAxisItem) ──────────
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        # Only the left button drives zoom/pan; right-click opens the context
-        # menu and must not start a drag gesture.
+        # Only the left button drives X zoom/pan; right-click opens the context
+        # menu and must not start a drag gesture.  Y zoom/pan is owned by
+        # _AlignedAxisItem (Task 8) so only X zones start a widget-level drag.
         if event.button() == Qt.MouseButton.LeftButton:
             zone = self._zone_at(event.position())
-            if zone in (ZONE_X_INNER, ZONE_X_OUTER, ZONE_Y_INNER, ZONE_Y_OUTER):
+            if zone in (ZONE_X_INNER, ZONE_X_OUTER):
                 self._drag_zone = zone
                 self._drag_start = event.position()
         super().mousePressEvent(event)
@@ -843,7 +1195,8 @@ class GraphPanelView(QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if self._drag_zone is not None and self._drag_start is not None:
-            axis = "x" if self._drag_zone in (ZONE_X_INNER, ZONE_X_OUTER) else "y"
+            # _drag_zone can only be an X zone (Y zoom/pan moved to _AlignedAxisItem).
+            axis = "x"
             start = self._data_value(self._drag_start, axis)
             end = self._data_value(event.position(), axis)
             if start is not None and end is not None:
@@ -851,26 +1204,6 @@ class GraphPanelView(QWidget):
         self._drag_zone = None
         self._drag_start = None
         super().mouseReleaseEvent(event)
-
-    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
-        self.reset_zone(self._zone_at(event.position()))
-        super().mouseDoubleClickEvent(event)
-
-    def wheelEvent(self, event: QWheelEvent) -> None:
-        zone = self._zone_at(event.position())
-        axis = (
-            "x"
-            if zone in (ZONE_X_INNER, ZONE_X_OUTER)
-            else "y"
-            if zone in (ZONE_Y_INNER, ZONE_Y_OUTER)
-            else None
-        )
-        if axis is not None:
-            center = self._data_value(event.position(), axis)
-            if center is not None:
-                factor = _WHEEL_IN if event.angleDelta().y() > 0 else _WHEEL_OUT
-                self.apply_zone_wheel(zone, center, factor)
-        event.accept()
 
     # ─── Drag-and-drop sink (R12.4) ────────────────────────────────────────────
 
@@ -907,6 +1240,20 @@ class GraphPanelView(QWidget):
         self._clear_axis_move_feedback()
         super().dragLeaveEvent(event)
 
+    def _apply_deferred_axis_move(
+        self, axis_index: int, col: int, position: int | None
+    ) -> None:
+        """Apply a deferred axis-move and clear pyqtgraph's stale scene state.
+
+        Runs one event-loop turn after the drop (see ``dropEvent``), so the QDrag
+        and its queued mouse events have fully unwound before the rebuild destroys
+        the old axis items.  The rebuild then replaces every axis item, so we drop
+        the scene's press/drag/hover bookkeeping (which still points at the old,
+        now-deleted items) — otherwise the next gesture is misrouted to a dead item.
+        """
+        self.vm.move_axis_to_column(axis_index, col, position)
+        reset_scene_drag_state(self.plot_widget.scene())
+
     def dropEvent(self, event: QDropEvent) -> None:
         self._set_drop_highlight(False)
 
@@ -916,9 +1263,17 @@ class GraphPanelView(QWidget):
         axis_index = decode_axis_index(event.mimeData())
         if axis_index is not None:
             col, position = self._axis_drop_target(event.position())
-            self.vm.move_axis_to_column(axis_index, col, position)
             self._clear_axis_move_feedback()
             event.acceptProposedAction()
+            # Defer the relayout off the QDrag's modal call stack. Applying it here
+            # (inside drag.exec) rebuilds the axis items while pyqtgraph's scene
+            # still holds press/drag/hover references to the drag's source item, so
+            # the next gesture is delivered to that destroyed item — the first
+            # resize/move after a move broke (no-op, or a re-entrant QDrag hang).
+            # Running it on the next event-loop turn lets the drag fully unwind.
+            QTimer.singleShot(
+                0, lambda: self._apply_deferred_axis_move(axis_index, col, position)
+            )
             return
 
         keys = decode_signal_keys(event.mimeData())

@@ -21,7 +21,6 @@ import csv
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.session import Session
@@ -740,36 +739,6 @@ def test_multi_axis_independent_ranges(tmp_path: Path) -> None:
 
 
 # ─── Multi-axis resizing (Task 2) ────────────────────────────────────────────
-
-
-def test_resize_axis(tmp_path: Path) -> None:
-    """resize_axis correctly updates height_ratio and top_ratio of adjacent axes."""
-    session = Session()
-    vm = GraphPanelVM(session)
-    # Add a second axis
-    vm.axes.append(YAxisVM(top_ratio=0.5, height_ratio=0.5))
-    vm.axes[0].height_ratio = 0.5
-
-    vm.resize_axis(0, 0.1)  # Move divider down by 0.1
-
-    assert vm.axes[0].height_ratio == pytest.approx(0.6)
-    assert vm.axes[1].top_ratio == pytest.approx(0.6)
-    assert vm.axes[1].height_ratio == pytest.approx(0.4)
-
-
-def test_resize_axis_clamps_minimum_height(tmp_path: Path) -> None:
-    """resize_axis prevents axes from becoming too small."""
-    session = Session()
-    vm = GraphPanelVM(session)
-    vm.axes.append(YAxisVM(top_ratio=0.5, height_ratio=0.5))
-    vm.axes[0].height_ratio = 0.5
-
-    # Try to move divider way down (should clamp)
-    vm.resize_axis(0, 0.5)
-
-    # Assuming min_h = 0.05
-    assert vm.axes[1].height_ratio == pytest.approx(0.05)
-    assert vm.axes[0].height_ratio == pytest.approx(0.95)
 
 
 def test_render_data_includes_axis_index(tmp_path: Path) -> None:
