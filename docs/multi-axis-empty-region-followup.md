@@ -33,6 +33,11 @@ remove A → axis[0] h=0.500 (EMPTY) / axis[1] B h=0.500   ← B はハーフの
 - 高さ保持 (案B) を求める声が出たら拡張する。spec 化が必要なほどの規模ではない見込み。
 - 着手タイミング: 次に多軸レイアウト周りを触る際、または利用者から空白リージョンのフィードバックが届いた時。
 
+## 対応状況（2026-06-28 更新）
+
+- **案A（空軸刈り取り）**: PR #10（`49086f2`）で `remove_signal` に `_normalize_axes` 適用済み。回帰テスト `test_remove_signal_prunes_now_empty_axis`。
+- **案B（高さ保持）**: `feature/valisync-gui-axes-height-preserve` で実装。`_normalize_axes` を `_compact_axes` + `_relayout_columns(preserve_heights)` に分離（`_normalize_axes` は廃止）、`remove_signal`/`prune_missing_signals` を比例維持化。設計: [docs/superpowers/specs/2026-06-28-y-axis-height-preserve-design.md](superpowers/specs/2026-06-28-y-axis-height-preserve-design.md) / 計画: [docs/superpowers/plans/2026-06-28-y-axis-height-preserve.md](superpowers/plans/2026-06-28-y-axis-height-preserve.md)。
+
 ## 関連リンク
 
 - 改修対象: `src/valisync/gui/viewmodels/graph_panel_vm.py` — `remove_signal` / `_normalize_axes`
