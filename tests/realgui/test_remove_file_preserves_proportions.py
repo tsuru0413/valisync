@@ -7,9 +7,9 @@ Opt-in — run with ``--realgui`` on Windows + a real display::
 It (1) real-drags a region divider on a GraphPanelView to make the regions
 non-equal, then (2) issues a genuine right-click on a FileBrowserView row and
 triggers "Remove File", and asserts the surviving graph regions keep their
-relative heights. The divider drag is a plain pyqtgraph mouse drag (no QDrag/OLE
-modal loop), so it is driven inline with processEvents — no background drive
-thread is needed.
+ABSOLUTE heights (the removed band is left blank, no reflow). The divider drag is
+a plain pyqtgraph mouse drag (no QDrag/OLE modal loop), so it is driven inline
+with processEvents — no background drive thread is needed.
 
 Robustness for unattended runs: each window is forced to the foreground before
 real input is sent (so clicks land on the intended widget, not whatever is under
@@ -264,19 +264,26 @@ def test_remove_file_preserves_graph_panel_proportions(
         with contextlib.suppress(Exception):
             QApplication.primaryScreen().grabWindow(0).save(str(tmp_path / "after.png"))
 
-        # ─── Assert: middle region pruned, survivors keep relative heights ────
+        # ─── Assert: middle region pruned; survivors keep ABSOLUTE heights ────
+        # The two survivors must keep their exact pre-removal bands (top stays
+        # heights_before[0], bottom stays heights_before[2]); the removed middle
+        # band becomes blank, so the heights no longer fill the panel.
         assert len(panel.axes) == 2, (
             f"expected 2 regions after Remove File, got {len(panel.axes)}. "
             f"Screenshots: {tmp_path}"
         )
         cols = sorted(panel.axes, key=lambda a: a.top_ratio)
-        ratio_before = heights_before[0] / heights_before[2]
-        ratio_after = cols[0].height_ratio / cols[1].height_ratio
-        assert ratio_after == pytest.approx(ratio_before, rel=0.05), (
-            "surviving regions did not keep their relative heights after removal; "
-            f"before={heights_before}, after={[c.height_ratio for c in cols]}. "
-            f"Screenshots: {tmp_path}"
+        assert cols[0].height_ratio == pytest.approx(heights_before[0], rel=0.03), (
+            f"top survivor height changed: {cols[0].height_ratio} != "
+            f"{heights_before[0]}. Screenshots: {tmp_path}"
         )
+        assert cols[1].height_ratio == pytest.approx(heights_before[2], rel=0.03), (
+            f"bottom survivor height changed: {cols[1].height_ratio} != "
+            f"{heights_before[2]}. Screenshots: {tmp_path}"
+        )
+        assert sum(c.height_ratio for c in cols) == pytest.approx(
+            heights_before[0] + heights_before[2], rel=0.03
+        ), f"removed band not left blank (heights refilled). Screenshots: {tmp_path}"
         assert len(gpv._view_boxes) == 2  # type: ignore[attr-defined]
     finally:
         faulthandler.cancel_dump_traceback_later()

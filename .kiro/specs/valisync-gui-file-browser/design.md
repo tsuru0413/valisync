@@ -156,11 +156,11 @@ stale state.
   disappeared. `render_data()` already skips missing signals (`sig_map.get(...)`),
   so this method cleans the lingering bookkeeping and triggers a re-render.
 - **Axis reconciliation on removal**: `remove_signal()` and `prune_missing_signals()`
-  call `_compact_axes()` + `_relayout_columns(preserve_heights=True)` after removing,
-  so empty axes are pruned and the survivors keep their relative heights (proportional
-  renormalization, R7.4). This makes removal symmetric with `create_new_axis`
-  (which compacts + equal-splits) and **resolves the previously-deferred
-  empty-region-after-removal follow-up** — 案A 刈り取り + 案B 高さ保持
+  call `_compact_axes()` after removing (no relayout), so the emptied axis is pruned
+  while the survivors keep their absolute heights/positions and the removed band is
+  left blank (R7.4). `create_new_axis` instead compacts + equal-splits. This
+  **resolves the previously-deferred empty-region-after-removal follow-up** — 案A
+  刈り取り + 案B 絶対高さ保持（空白ギャップ）
   (`docs/multi-axis-empty-region-followup.md`).
 
 ### View — `FileBrowserView`
@@ -176,7 +176,7 @@ graph TD
     AppVM -. notify active_file .-> CBVM[ChannelBrowserVM → empty]
     AppVM -. notify unloaded .-> FBVM2[FileBrowserVM → refresh list]
     AppVM -. notify loaded/unloaded .-> GAVM["GraphAreaVM (subscribes)"]
-    GAVM -->|unloaded| GPVM["each GraphPanelVM: prune_missing_signals (_compact_axes + _relayout_columns)"]
+    GAVM -->|unloaded| GPVM["each GraphPanelVM: prune_missing_signals (_compact_axes のみ)"]
     GAVM -->|loaded| GPVM2["each GraphPanelVM: refresh"]
 ```
 

@@ -1,5 +1,7 @@
 # Y軸リージョン高さ保持（信号削除時）Implementation Plan
 
+> **改訂 (2026-06-28・最終仕様)**: 本計画は当初「比例維持（生存軸どうしの相対比を保って全体に広げる, 0.714/0.286）」で実装したが、ユーザー意図は「各軸の**全体に対する絶対比率**を保持し、削除分は空白」だった。最終仕様は **削除パス（`remove_signal`/`prune_missing_signals`）は `_compact_axes()` のみを呼び、再レイアウトしない**（生存軸は絶対比率のまま、削除軸の帯は空白）。`_relayout_columns` は等分専用に戻し `preserve_heights` は削除。以下 Task 2–5 の「比例維持/0.714/0.286」記述は**この改訂で置き換え**られている（最新は設計 doc を参照）。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 信号削除で軸が空になり刈り取られたとき、残った軸のユーザー調整高さ比を保持して再正規化する（等分リセットしない）。

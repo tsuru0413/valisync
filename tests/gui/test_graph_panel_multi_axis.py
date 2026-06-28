@@ -587,23 +587,27 @@ class TestMultiAxisLayout:
     def test_remove_signal_prunes_now_empty_axis(
         self, qtbot: QtBot, tmp_path: Path
     ) -> None:
-        """Removing the only signal on an axis drops that axis (no empty region)."""
+        """Removing a signal drops its axis from the layout; the survivor keeps
+        its absolute band and the freed region is left blank (no reflow)."""
         session, _ = _loaded_session(tmp_path, n_signals=2)
         keys = _keys(session)
         vm = GraphPanelVM(session)
         vm.create_new_axis(keys[0])
         vm.create_new_axis(keys[1])
-        assert len(vm.axes) == 2
+        assert len(vm.axes) == 2  # equal split: 0.0/0.5 (top) and 0.5/0.5 (bottom)
 
-        vm.remove_signal(keys[0])
+        vm.remove_signal(keys[0])  # drops the top axis
 
-        assert len(vm.axes) == 1  # empty axis pruned
-        assert vm.axes[0].height_ratio == 1.0
+        assert len(vm.axes) == 1  # empty axis removed from the layout
+        # The survivor keeps its absolute band (0.5..1.0); 0.0..0.5 is now blank.
+        assert vm.axes[0].top_ratio == pytest.approx(0.5)
+        assert vm.axes[0].height_ratio == pytest.approx(0.5)
         plotted = [p["signal_key"] for p in vm.inspect()["plotted_signals"]]
         assert plotted == [keys[1]]
 
-    def test_remove_signal_preserves_remaining_proportions(self) -> None:
-        """Removing the middle of 3 regions keeps survivors' relative heights."""
+    def test_remove_signal_keeps_absolute_heights_with_blank_gap(self) -> None:
+        """Removing the middle of 3 regions leaves the survivors at their absolute
+        heights/positions; the removed band becomes blank (heights sum < 1)."""
         from valisync.core.session import Session
 
         vm = GraphPanelVM(Session())
@@ -617,10 +621,12 @@ class TestMultiAxisLayout:
         vm.remove_signal("s::b")
 
         assert len(vm.axes) == 2
-        assert vm.axes[0].height_ratio == pytest.approx(0.5 / 0.7)
-        assert vm.axes[1].height_ratio == pytest.approx(0.2 / 0.7)
+        # Survivors unchanged; the 0.5..0.8 band (s::b) is now blank.
         assert vm.axes[0].top_ratio == pytest.approx(0.0)
-        assert vm.axes[1].top_ratio == pytest.approx(0.5 / 0.7)
+        assert vm.axes[0].height_ratio == pytest.approx(0.5)
+        assert vm.axes[1].top_ratio == pytest.approx(0.8)
+        assert vm.axes[1].height_ratio == pytest.approx(0.2)
+        assert sum(a.height_ratio for a in vm.axes) == pytest.approx(0.7)  # blank gap
 
     def test_remove_one_signal_from_multisignal_axis_keeps_heights(self) -> None:
         """Removing one of two signals on an axis leaves it (no prune); heights stay."""
@@ -728,41 +734,6 @@ def test_normalize_splits_height_per_column() -> None:
     vm.axes[1].column = 0
     vm._relayout_columns()
     assert all(a.height_ratio == 1.0 for a in vm.axes)
-
-
-def test_relayout_columns_preserves_proportions() -> None:
-    """preserve_heights=True renormalizes a sub-unity column to 1.0, keeping ratios."""
-    from valisync.core.session import Session
-
-    vm = GraphPanelVM(Session())
-    vm.add_signal_to_axis("s::a", 0)
-    vm.create_new_axis("s::c")  # 2 axes in inner column
-    # Heights summing to 0.7 simulate the post-prune state (a 0.3 axis removed).
-    vm.axes[0].top_ratio, vm.axes[0].height_ratio = 0.0, 0.5
-    vm.axes[1].top_ratio, vm.axes[1].height_ratio = 0.8, 0.2
-
-    vm._relayout_columns(preserve_heights=True)
-
-    assert vm.axes[0].height_ratio == pytest.approx(0.5 / 0.7)
-    assert vm.axes[1].height_ratio == pytest.approx(0.2 / 0.7)
-    assert vm.axes[0].top_ratio == pytest.approx(0.0)
-    assert vm.axes[1].top_ratio == pytest.approx(0.5 / 0.7)
-
-
-def test_relayout_total_zero_falls_back_to_equal() -> None:
-    """A degenerate zero-sum column falls back to an equal split (no ZeroDivision)."""
-    from valisync.core.session import Session
-
-    vm = GraphPanelVM(Session())
-    vm.add_signal_to_axis("s::a", 0)
-    vm.create_new_axis("s::b")
-    vm.axes[0].height_ratio = 0.0
-    vm.axes[1].height_ratio = 0.0
-
-    vm._relayout_columns(preserve_heights=True)
-
-    assert vm.axes[0].height_ratio == pytest.approx(0.5)
-    assert vm.axes[1].height_ratio == pytest.approx(0.5)
 
 
 # ─── Task 0.3: create_new_axis targets inner column (rule A) ─────────────────
@@ -1156,8 +1127,11 @@ def test_move_axis_to_column_out_of_range_index_is_noop() -> None:
 # ─── Task 4: prune_missing_signals proportional preservation + column scope ───
 
 
-def test_prune_missing_signals_preserves_remaining_proportions(tmp_path: Path) -> None:
-    """File-unload prune keeps survivors' relative heights."""
+def test_prune_missing_signals_keeps_absolute_heights_with_blank_gap(
+    tmp_path: Path,
+) -> None:
+    """File-unload prune leaves survivors at their absolute heights; the removed
+    band becomes blank (heights sum < 1)."""
     session, _ = _loaded_session(tmp_path, n_signals=3)
     keys = sorted(_keys(session))  # 3 namespaced signal names, deterministic order
     vm = GraphPanelVM(session)
@@ -1174,12 +1148,14 @@ def test_prune_missing_signals_preserves_remaining_proportions(tmp_path: Path) -
 
     assert len(vm.axes) == 2
     cols = sorted(vm.axes, key=lambda a: a.top_ratio)
-    assert cols[0].height_ratio == pytest.approx(0.5 / 0.7)
-    assert cols[1].height_ratio == pytest.approx(0.2 / 0.7)
+    assert (cols[0].top_ratio, cols[0].height_ratio) == pytest.approx((0.0, 0.5))
+    assert (cols[1].top_ratio, cols[1].height_ratio) == pytest.approx((0.8, 0.2))
+    assert sum(a.height_ratio for a in vm.axes) == pytest.approx(0.7)  # blank gap
 
 
-def test_remove_preserves_proportions_per_column() -> None:
-    """Renormalization is column-scoped: removing in one column leaves the other."""
+def test_remove_keeps_absolute_heights_per_column() -> None:
+    """Removal is column-local: survivors in the affected column keep their
+    absolute heights (removed band blank) and the other column is untouched."""
     from valisync.core.session import Session
 
     vm = GraphPanelVM(Session())  # column_count == 2
@@ -1202,14 +1178,19 @@ def test_remove_preserves_proportions_per_column() -> None:
 
     col1 = _col(vm, 1)
     col0 = _col(vm, 0)
-    assert [a.height_ratio for a in col1] == [
-        pytest.approx(0.5 / 0.7),
-        pytest.approx(0.2 / 0.7),
+    # Inner column: survivors keep absolute bands; the 0.5..0.8 band is blank.
+    assert [(a.top_ratio, a.height_ratio) for a in col1] == [
+        pytest.approx((0.0, 0.5)),
+        pytest.approx((0.8, 0.2)),
     ]
-    assert [a.height_ratio for a in col0] == [pytest.approx(0.5), pytest.approx(0.5)]
+    # Outer column untouched.
+    assert [(a.top_ratio, a.height_ratio) for a in col0] == [
+        pytest.approx((0.0, 0.5)),
+        pytest.approx((0.5, 0.5)),
+    ]
 
 
-# ─── Task 5: 結合 E2E — file-unload → prune → 高さ比保持 ────────────────────
+# ─── Task 5: 結合 E2E — file-unload → prune → 絶対高さ保持+空白 ─────────────
 
 
 def test_unload_preserves_panel_proportions(qtbot: QtBot, tmp_path: Path) -> None:
@@ -1246,6 +1227,8 @@ def test_unload_preserves_panel_proportions(qtbot: QtBot, tmp_path: Path) -> Non
 
     assert len(panel.axes) == 2
     cols = sorted(panel.axes, key=lambda a: a.top_ratio)
-    assert cols[0].height_ratio == pytest.approx(0.5 / 0.7)
-    assert cols[1].height_ratio == pytest.approx(0.2 / 0.7)
+    # Survivors keep their absolute bands; the middle (0.5..0.8) is now blank.
+    assert (cols[0].top_ratio, cols[0].height_ratio) == pytest.approx((0.0, 0.5))
+    assert (cols[1].top_ratio, cols[1].height_ratio) == pytest.approx((0.8, 0.2))
+    assert sum(a.height_ratio for a in panel.axes) == pytest.approx(0.7)
     assert len(view._view_boxes) == 2  # type: ignore[attr-defined]
