@@ -575,7 +575,7 @@ class GraphPanelView(QWidget):
 
     def refresh(self) -> None:
         """Re-project vm.render_data() onto the plot, reconciling multiple axes."""
-        # 1. Reconcile Y-axes, ViewBoxes, and Dividers
+        # 1. Reconcile Y-axes and ViewBoxes
         self._reconcile_axes()
 
         # 2. Get render curves from VM
@@ -620,7 +620,7 @@ class GraphPanelView(QWidget):
 
         # 5. Update geometry and ranges
         # The overlaid secondary ViewBoxes must track the master's plot rect on
-        # every render (the layout reflows the master after axis/divider changes).
+        # every render (the layout reflows the master after axis changes).
         self._sync_overlay_geometry()
 
         # Shared X-range
@@ -684,13 +684,13 @@ class GraphPanelView(QWidget):
         return placement
 
     def _reconcile_axes(self) -> None:
-        """Reconcile AxisItems, ViewBoxes, and Dividers with the VM's axes/columns.
+        """Reconcile AxisItems and ViewBoxes with the VM's axes/columns.
 
         Each occupied column reserves a fixed-width container (root col = the
         axis's column); the plot ViewBox container occupies root col =
         ``column_count`` and every lower column reserves fixed Y-axis width, so
-        empty columns stay as drop-target gutters. AxisItems and dividers are
-        scene items (not grid-managed) positioned at absolute region strips by
+        empty columns stay as drop-target gutters. AxisItems are scene items
+        (not grid-managed) positioned at absolute region strips by
         ``_sync_overlay_geometry`` — this is what lets a region sum < 1.0 render a
         genuine blank band instead of being normalised to fill the column.
 
@@ -703,12 +703,11 @@ class GraphPanelView(QWidget):
         signature = (self.vm.column_count, tuple(sorted(placement)))
 
         # Fast path: column grouping and vertical order are identical, so only
-        # height_ratio/labels could have changed (e.g. a divider drag). Retune
-        # labels in place instead of rebuilding — this keeps the dragged divider
-        # object alive rather than recreating it under the cursor. The new
-        # height_ratio/top_ratio are applied by _sync_overlay_geometry(), which
-        # refresh() calls right after this returns: it repositions every spine,
-        # divider, and ViewBox to the live absolute strips (no grid row-stretch).
+        # height_ratio/labels could have changed (e.g. a resize gesture). Retune
+        # labels in place instead of rebuilding. The new height_ratio/top_ratio are
+        # applied by _sync_overlay_geometry(), which refresh() calls right after
+        # this returns: it repositions every spine and ViewBox to the live absolute
+        # strips (no grid row-stretch).
         if self._column_containers and signature == self._build_signature:
             for i, _col, _row in placement:
                 axis_vm = self.vm.axes[i]
@@ -731,7 +730,6 @@ class GraphPanelView(QWidget):
         self._axis_move_line = None
         self._axis_move_highlight = None
 
-        # Secondary ViewBoxes, AxisItems, and dividers all live straight in the
         # Secondary ViewBoxes and AxisItems live straight in the scene (so
         # waveforms draw unclipped and spines sit at absolute strips), so
         # ci.clear() — which only drops layout-managed items — leaves them behind

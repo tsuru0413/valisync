@@ -767,9 +767,6 @@ def test_view_reserves_one_container_per_column(qtbot: QtBot) -> None:
     assert view.plot_grid_column() == 2
 
 
-# ─── Task 1.2: column-scoped, vertical-order resize_axis + within-column handles ─
-
-
 # ─── Task 1.4a: axis-move drag/drop → move_axis_to_column (testable core) ─────
 
 
