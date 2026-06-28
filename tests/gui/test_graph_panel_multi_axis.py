@@ -675,7 +675,7 @@ def test_normalize_splits_height_per_column() -> None:
 
     # Move both axes to column 1 (inner column)
     vm.axes[0].column, vm.axes[1].column = 1, 1
-    vm._normalize_axes()
+    vm._relayout_columns()
     assert [(a.top_ratio, a.height_ratio) for a in _col(vm, 1)] == [
         (0.0, 0.5),
         (0.5, 0.5),
@@ -683,7 +683,7 @@ def test_normalize_splits_height_per_column() -> None:
 
     # Move axis 1 to column 0 — each axis is now alone in its own column
     vm.axes[1].column = 0
-    vm._normalize_axes()
+    vm._relayout_columns()
     assert all(a.height_ratio == 1.0 for a in vm.axes)
 
 
