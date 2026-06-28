@@ -302,7 +302,7 @@ class GraphPanelVM(Observable):
             return
         self._plotted = kept
         self._compact_axes()
-        self._relayout_columns()
+        self._relayout_columns(preserve_heights=True)
         self._invalidate_cache()
         self._notify("signals")
 

@@ -1145,3 +1145,59 @@ def test_move_axis_to_column_out_of_range_index_is_noop() -> None:
     vm.move_axis_to_column(99, 0)  # stale drag index must not raise
     assert len(vm.axes) == 1
     assert vm.axes[0].column == vm.column_count - 1  # state unchanged
+
+
+# ─── Task 4: prune_missing_signals proportional preservation + column scope ───
+
+
+def test_prune_missing_signals_preserves_remaining_proportions(tmp_path: Path) -> None:
+    """File-unload prune keeps survivors' relative heights."""
+    session, _ = _loaded_session(tmp_path, n_signals=3)
+    keys = sorted(_keys(session))  # 3 namespaced signal names, deterministic order
+    vm = GraphPanelVM(session)
+    vm.create_new_axis(keys[0])
+    vm.create_new_axis(keys[1])
+    vm.create_new_axis(keys[2])
+    vm.axes[0].top_ratio, vm.axes[0].height_ratio = 0.0, 0.5
+    vm.axes[1].top_ratio, vm.axes[1].height_ratio = 0.5, 0.3
+    vm.axes[2].top_ratio, vm.axes[2].height_ratio = 0.8, 0.2
+
+    remaining = [s for s in session.signals() if s.name != keys[1]]
+    session.signals = lambda: remaining  # type: ignore[method-assign]
+    vm.prune_missing_signals()
+
+    assert len(vm.axes) == 2
+    cols = sorted(vm.axes, key=lambda a: a.top_ratio)
+    assert cols[0].height_ratio == pytest.approx(0.5 / 0.7)
+    assert cols[1].height_ratio == pytest.approx(0.2 / 0.7)
+
+
+def test_remove_preserves_proportions_per_column() -> None:
+    """Renormalization is column-scoped: removing in one column leaves the other."""
+    from valisync.core.session import Session
+
+    vm = GraphPanelVM(Session())  # column_count == 2
+    vm.add_signal_to_axis("c1::a", 0)
+    vm.create_new_axis("c1::b")
+    vm.create_new_axis("c1::c")
+    vm.create_new_axis("c0::d")
+    vm.create_new_axis("c0::e")
+    # Move d, e to the outer column 0.
+    vm.axes[3].column = 0
+    vm.axes[4].column = 0
+    # Inner column heights 0.5/0.3/0.2; outer column heights 0.5/0.5.
+    vm.axes[0].top_ratio, vm.axes[0].height_ratio = 0.0, 0.5
+    vm.axes[1].top_ratio, vm.axes[1].height_ratio = 0.5, 0.3
+    vm.axes[2].top_ratio, vm.axes[2].height_ratio = 0.8, 0.2
+    vm.axes[3].top_ratio, vm.axes[3].height_ratio = 0.0, 0.5
+    vm.axes[4].top_ratio, vm.axes[4].height_ratio = 0.5, 0.5
+
+    vm.remove_signal("c1::b")
+
+    col1 = _col(vm, 1)
+    col0 = _col(vm, 0)
+    assert [a.height_ratio for a in col1] == [
+        pytest.approx(0.5 / 0.7),
+        pytest.approx(0.2 / 0.7),
+    ]
+    assert [a.height_ratio for a in col0] == [pytest.approx(0.5), pytest.approx(0.5)]
