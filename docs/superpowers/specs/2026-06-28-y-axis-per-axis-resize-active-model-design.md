@@ -184,3 +184,15 @@
 - 本設計は `valisync-gui-axes` のリサイズ操作を刷新するもの。`.kiro/specs/valisync-gui-axes/{design,tasks}.md` への反映要否は実装計画時に確認（要件がずれる場合は `design.md` 更新をユーザー承認）。
 - 空白保持モデル（PR #14: 絶対比率保持＋空白）と整合（モデルBは空白を直下/直上に出し入れ）。
 - 連動ディバイダーに依存した既存テスト（`test_region_divider_item.py`、`test_dragging_divider_resizes_adjacent_regions` 等）は廃止/置換する。
+
+## 14. 実装メモ（実装時に確定した事項）
+
+実装（subagent-driven）と realgui 実機検証で確定/判明した、将来の保守に効く要点。
+
+- **`classify_zone` のYゾーンは保持（プラン逸脱・根拠あり）**: 計画では widget レベルの `classify_zone` を「X専用に縮退」とした。しかし `classify_zone` の `ZONE_Y_INNER/ZONE_Y_OUTER` は **`dropEvent` の R5 ドロップ判定**（信号をYストリップへ落とす＝該当軸へ追加/上書き、プロットへ落とす＝新規軸）でも消費される。X専用に縮退すると全ドロップが「新規軸作成」に落ち R5 上書き/Ctrl結合が壊れるため、**`classify_zone` はYゾーンを返したまま**とし、Yの**ズーム/パン/wheel/dblクリック/カーソル消費のみ**を撤去した。Y操作（リサイズ/ズーム/パン/移動）は `_AlignedAxisItem` 上のアクティブ軸ジェスチャへ移行済み。回帰ガード: ドロップ系テスト（`test_graph_panel_multi_axis`・`test_graph_panel_view`）が緑のまま。
+- **ホバーカーソルは `_AlignedAxisItem` 自身に設定**（`hoverMoveEvent`→`setCursor`）。観測は `axis.cursor().shape()`（`view.cursor()` ではない）。
+- **realgui 実機所見（Layer C 証拠ゲート）**:
+  - Model B は「隣接軸を押さない」ため、連続レイアウト（隙間なし）では下端グリップを**下げて拡大は不可**（正しい no-op）。拡大は隣を縮めて隙間を作ってから。テストは下端グリップを**上げて縮小**で検証。
+  - pyqtgraph のホバー配送は**漸進的な実移動**が必要（一発の `SetCursorPos` では `hoverMoveEvent` が出ない）。カーソル検証は小刻みスイープ＋配送リトライで駆動。
+  - フレーム=移動の QDrag は、閾値超えの最初の移動を**垂直**にして lx を frame 帯（3px）内に保つ必要がある（`mouseDragEvent` の isStart は閾値超え後の `ev.pos()` でゾーン分類するため、水平移動だと frame を外れ pan 誤判定）。
+  - グリップ矩形がスパイン上端を約3px はみ出す（左ガター列内で完結し非干渉＝案C維持・cosmetic、follow-up）。
