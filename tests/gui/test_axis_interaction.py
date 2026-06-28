@@ -353,16 +353,22 @@ _ITEM_GEOM = QRectF(0, 0, 72, 200)
 def test_begin_drag_grip_bottom_calls_resize_edge(
     panel: GraphPanelView, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Layer B: bottom-grip drag triggers resize_axis_edge(..., 'bottom', ...).
+    """Layer B: bottom-grip drag routes to resize_axis_edge(..., 'bottom', ...).
 
-    Drives _begin_axis_drag / _update_axis_drag directly — handler-path only.
-    Real drag delivery (OS → pyqtgraph scene → mouseDragEvent) is Layer C.
-    Honest layering: this test confirms the branching logic routes correctly to
-    the VM; it does NOT prove the real event chain fires these helpers.
+    Drives _begin_axis_drag / _update_axis_drag directly with a stubbed panel
+    region — handler-path only. Real drag delivery (OS → pyqtgraph scene →
+    mouseDragEvent) and the real panel geometry are Layer C. Honest layering: this
+    confirms the bottom-grip branch routes to the VM; it does NOT prove the real
+    event chain fires these helpers. The ratio math is covered by the Layer A
+    grip_resize_delta tests.
     """
+    from PySide6.QtCore import QRectF
+
     panel.set_active_axis(0)
     it = panel._y_axes[0]
     it.setGeometry(_ITEM_GEOM)  # give the item real dimensions (no show needed)
+    # The absolute-tracking update reads the full panel rect; stub it offscreen.
+    monkeypatch.setattr(it, "_panel_region", lambda: QRectF(0.0, 0.0, 72.0, 200.0))
     calls: list[tuple[int, str, float]] = []
     monkeypatch.setattr(
         panel.vm,
@@ -372,7 +378,7 @@ def test_begin_drag_grip_bottom_calls_resize_edge(
     h = it.boundingRect().height()  # 200 after setGeometry
     # lx=centre, ly=h-2 → classify_axis_zone → AXZONE_GRIP_BOTTOM
     it._begin_axis_drag(it.width() / 2, h - 2.0)
-    it._update_axis_drag(dy_pixels=10.0)
+    it._update_axis_drag(120.0)  # cursor scene-y inside the stubbed panel region
     assert calls, "resize_axis_edge should have been called"
     assert calls[0][0] == 0, f"expected axis index 0, got {calls[0][0]}"
     assert calls[0][1] == "bottom", f"expected edge 'bottom', got {calls[0][1]!r}"

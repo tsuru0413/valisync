@@ -93,3 +93,95 @@ def test_grip_drag_resizes_only_active_axis(qtbot: QtBot, tmp_path: Path) -> Non
     assert nh1 == pytest.approx(h1, abs=0.02), (
         "neighbour height changed (model B violated)"
     )
+
+
+def test_grips_track_cursor_to_target(qtbot: QtBot, tmp_path: Path) -> None:
+    """Layer C regression guard: each grip edge tracks the cursor to its TARGET panel
+    ratio (proportional, not inflated by the axis's own height) and does not collapse.
+
+    Catches the spine-height scaling bug (edge moved ~1/height_ratio too fast →
+    cursor/edge mismatch + runaway-to-minimum) and the top-grip coordinate-frame
+    feedback (flicker/collapse). The older 'shrank by > 0.03' assertion passed even
+    when the axis collapsed; these pin the edge to the cursor's absolute position.
+    """
+    if sys.platform != "win32":
+        pytest.skip("real OS input is Windows-only")
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtWidgets import QApplication
+
+    if QGuiApplication.platformName() == "offscreen":
+        pytest.skip(
+            "requires a real display — run: uv run pytest --realgui tests/realgui/"
+        )
+    from tests.gui._panel_factory import make_two_axis_panel
+
+    user32 = ctypes.windll.user32
+    view = make_two_axis_panel()
+    qtbot.addWidget(view)
+    view.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+    view.setGeometry(300, 300, 800, 600)
+    view.show()
+    qtbot.waitExposed(view)
+    for _ in range(3):
+        QApplication.processEvents()
+    qtbot.waitUntil(
+        lambda: view._view_boxes[0].sceneBoundingRect().height() > 100, timeout=3000
+    )
+    R = view._view_boxes[0].sceneBoundingRect()
+    dpr = view.devicePixelRatioF()
+
+    def to_phys(scene_x: float, scene_y: float) -> tuple[int, int]:
+        vp = view.plot_widget.mapFromScene(QPoint(int(scene_x), int(scene_y)))
+        g = view.plot_widget.viewport().mapToGlobal(vp)
+        return round(g.x() * dpr), round(g.y() * dpr)
+
+    def at(x: float, y: float, f: int) -> None:
+        user32.SetCursorPos(int(x), int(y))
+        user32.mouse_event(f, 0, 0, 0, 0)
+
+    def strip(i: int) -> tuple[float, float]:
+        r = view._y_axes[i].sceneBoundingRect()
+        return ((r.y() - R.y()) / R.height(), r.height() / R.height())
+
+    def drag_grip_to(axis_idx: int, edge: str, target_ratio: float) -> None:
+        view.set_active_axis(axis_idx)
+        QApplication.processEvents()
+        spine = view._y_axes[axis_idx].sceneBoundingRect()
+        grip_x = spine.center().x()
+        grip_y = spine.top() + 2 if edge == "top" else spine.bottom() - 2
+        gx, gy = to_phys(grip_x, grip_y)
+        tx, ty = to_phys(grip_x, R.y() + target_ratio * R.height())
+        at(gx, gy, _LDOWN)
+        time.sleep(0.05)
+        # Move to the target in small uniform steps (~8 phys px each). The zone is
+        # classified once, when pyqtgraph crosses its drag threshold; a single large
+        # first jump would cross it OUTSIDE the ~12px grip band and mis-route the
+        # gesture as zoom/pan. Small steps keep that first crossing inside the grip.
+        dy = ty - gy
+        n = max(2, (abs(dy) + 7) // 8)
+        for k in range(1, n + 1):
+            at(gx, gy + dy * k // n, _MOVE)
+            QApplication.processEvents()
+            time.sleep(0.02)
+        at(tx, ty, _LUP)
+        for _ in range(4):
+            QApplication.processEvents()
+
+    # Bottom grip of axis 0: drag its bottom edge UP to ratio 0.35 → height ~0.35.
+    drag_grip_to(0, "bottom", 0.35)
+    _, h0 = strip(0)
+    assert h0 == pytest.approx(0.35, abs=0.05), (
+        f"bottom grip did not track cursor to 0.35 (got {h0}). Screens: {tmp_path}"
+    )
+    assert h0 > 0.2, f"axis 0 collapsed instead of tracking the cursor (got {h0})"
+
+    # Top grip of axis 1: drag its top edge DOWN to ratio 0.65 → top ~0.65, height ~0.35.
+    drag_grip_to(1, "top", 0.65)
+    top1, h1 = strip(1)
+    with contextlib.suppress(Exception):
+        QApplication.primaryScreen().grabWindow(0).save(str(tmp_path / "grips.png"))
+    assert top1 == pytest.approx(0.65, abs=0.05), (
+        f"top grip did not track cursor to 0.65 (got top={top1}). Screens: {tmp_path}"
+    )
+    assert h1 == pytest.approx(0.35, abs=0.05), f"axis 1 height wrong (got {h1})"

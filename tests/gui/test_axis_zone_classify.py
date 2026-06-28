@@ -1,3 +1,5 @@
+import pytest
+
 from valisync.gui.views.graph_panel_view import (
     AXZONE_FRAME,
     AXZONE_GRIP_BOTTOM,
@@ -5,6 +7,7 @@ from valisync.gui.views.graph_panel_view import (
     AXZONE_PAN,
     AXZONE_ZOOM,
     classify_axis_zone,
+    grip_resize_delta,
 )
 
 W, H = 60.0, 120.0
@@ -33,3 +36,39 @@ def test_grip_takes_priority_over_frame_and_interior() -> None:
     # a point inside the grip rect (centre, near top) is GRIP even though it also
     # sits on the frame band / interior split.
     assert classify_axis_zone(W / 2, 5.0, W, H, **KW) == AXZONE_GRIP_TOP
+
+
+# ─── grip_resize_delta: absolute cursor-tracking edge delta (resize root-cause fix) ──
+# The grip edge must track the cursor as a fraction of the FULL PANEL height, NOT the
+# axis spine height. The old code divided the pixel delta by the spine height
+# (height_ratio * panel), inflating the move by 1/height_ratio → cursor/edge mismatch
+# and runaway-to-minimum. These pin the corrected, height-independent mapping.
+
+
+def test_grip_delta_is_panel_proportional() -> None:
+    # cursor at 40% of a 1000px panel; edge currently at 0.5 → must move to 0.4.
+    assert grip_resize_delta(400.0, 0.0, 1000.0, 0.0, 0.5) == pytest.approx(-0.1)
+
+
+def test_grip_delta_independent_of_axis_height() -> None:
+    # Same cursor/panel/edge inputs give the SAME delta regardless of how tall the
+    # dragged axis is — the function takes no axis-height input by design. This is
+    # the regression guard for the scaling bug.
+    d1 = grip_resize_delta(400.0, 0.0, 1000.0, 0.0, 0.5)
+    d2 = grip_resize_delta(400.0, 0.0, 1000.0, 0.0, 0.5)
+    assert d1 == d2 == pytest.approx(-0.1)
+
+
+def test_grip_delta_preserves_grab_offset() -> None:
+    # the offset between the grabbed edge and the cursor at drag-start is re-added so
+    # the edge does not jump to the cursor on the first move.
+    assert grip_resize_delta(400.0, 0.0, 1000.0, 0.02, 0.5) == pytest.approx(-0.08)
+
+
+def test_grip_delta_honours_panel_top() -> None:
+    # panel does not start at scene y=0: ratio is measured from panel_top.
+    assert grip_resize_delta(600.0, 100.0, 1000.0, 0.0, 0.5) == pytest.approx(0.0)
+
+
+def test_grip_delta_zero_panel_height_is_safe() -> None:
+    assert grip_resize_delta(400.0, 0.0, 0.0, 0.0, 0.5) == 0.0

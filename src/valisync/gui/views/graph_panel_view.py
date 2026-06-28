@@ -168,6 +168,29 @@ def classify_axis_zone(
     return AXZONE_ZOOM if lx >= w / 2.0 else AXZONE_PAN
 
 
+def grip_resize_delta(
+    cursor_scene_y: float,
+    panel_top: float,
+    panel_height: float,
+    grip_offset: float,
+    current_edge_ratio: float,
+) -> float:
+    """How far (in panel-height ratio) a grabbed axis edge must move to track the cursor.
+
+    The cursor's scene-Y is mapped to a fraction of the FULL panel height — the same
+    0..1 space as ``top_ratio``/``height_ratio`` — then the grab offset captured at
+    drag start is re-added and the current edge ratio subtracted. Absolute (not a
+    pixel delta) so it is immune to (a) the axis geometry shifting mid-drag, which a
+    top-edge resize causes, and (b) the per-axis-height scaling error of dividing a
+    pixel delta by the spine height (the cause of the cursor/edge mismatch and the
+    runaway-to-minimum).
+    """
+    if panel_height <= 0:
+        return 0.0
+    cursor_ratio = (cursor_scene_y - panel_top) / panel_height
+    return (cursor_ratio + grip_offset) - current_edge_ratio
+
+
 def cursor_for_zone(zone: str) -> Qt.CursorShape:
     """Map a zone to the hover cursor that hints its gesture (R9.7 / R10.7).
 
@@ -216,7 +239,9 @@ class _AlignedAxisItem(pg.AxisItem):
         self._zone: str = AXZONE_FRAME  # placeholder; overwritten by _begin_axis_drag
         self._drag_start_data: float = 0.0  # data-coordinate at drag-start cursor pos
         self._drag_h: float = 0.0  # bounding-rect height captured at drag start
-        self._last_y: float = 0.0  # previous ev.pos().y() for incremental grip updates
+        # (edge ratio - cursor ratio) captured when a grip is grabbed; re-added each
+        # update so the edge tracks the cursor without snapping to it on first move.
+        self._grip_offset: float = 0.0
 
     def set_vm_axis_index(self, index: int) -> None:
         """Tell this axis which VM axis index a drag from it should carry."""
@@ -367,9 +392,13 @@ class _AlignedAxisItem(pg.AxisItem):
 
     # ── Task 6: zone-routed drag helpers ──────────────────────────────────────
 
-    def _panel_height(self) -> float:
-        """Return the axis spine's current pixel height (at least 1 to avoid ÷0)."""
-        return max(self.boundingRect().height(), 1.0)
+    def _panel_region(self) -> QRectF:
+        """Full panel plot rect (scene coords) — the pixel extent of the 0..1
+        height-ratio space. Unit rect on bare/unlaid-out instances."""
+        view = self._panel_view
+        if view is None or not view._view_boxes:
+            return QRectF(0.0, 0.0, 1.0, 1.0)
+        return view._view_boxes[0].sceneBoundingRect()
 
     def _local_y_to_data(self, ly: float, h: float) -> float:
         """Convert item-local y pixel to data-coordinate using the current y_range.
@@ -414,25 +443,47 @@ class _AlignedAxisItem(pg.AxisItem):
         self._drag_h = h
         return True
 
-    def _update_axis_drag(self, dy_pixels: float) -> None:
-        """Apply an incremental grip drag to the VM.
+    def _grip_grab_offset(self, cursor_scene_y: float) -> float:
+        """Offset (edge ratio - cursor ratio) at grab time, so the edge tracks the
+        cursor without snapping to it on the first move. 0 if state is unavailable."""
+        view = self._panel_view
+        if view is None or self._vm_axis_index is None:
+            return 0.0
+        region = self._panel_region()
+        if region.height() <= 0:
+            return 0.0
+        cursor_ratio = (cursor_scene_y - region.y()) / region.height()
+        axis = view.vm.axes[self._vm_axis_index]
+        edge_ratio = (
+            axis.top_ratio
+            if self._zone == AXZONE_GRIP_TOP
+            else axis.top_ratio + axis.height_ratio
+        )
+        return edge_ratio - cursor_ratio
+
+    def _update_axis_drag(self, cursor_scene_y: float) -> None:
+        """Track the grabbed grip edge to the cursor (absolute, panel-proportional).
 
         Called on each intermediate drag event for AXZONE_GRIP_TOP/BOTTOM only.
-        ``dy_pixels`` is the pixel delta since the previous event (positive
-        downward), converted to a height ratio via the current spine height.
-        ZOOM and PAN zones are handled at finish, not incrementally.
+        ``cursor_scene_y`` is the cursor's scene Y; it maps to a panel-height ratio
+        and the dragged edge follows it via ``resize_axis_edge`` (model-B clamps
+        still apply). ZOOM/PAN commit at finish, not incrementally.
         """
         view = self._panel_view
         if view is None or self._vm_axis_index is None:
             return
+        if self._zone not in (AXZONE_GRIP_TOP, AXZONE_GRIP_BOTTOM):
+            return
+        region = self._panel_region()
+        axis = view.vm.axes[self._vm_axis_index]
         if self._zone == AXZONE_GRIP_TOP:
-            view.vm.resize_axis_edge(
-                self._vm_axis_index, "top", dy_pixels / self._panel_height()
-            )
-        elif self._zone == AXZONE_GRIP_BOTTOM:
-            view.vm.resize_axis_edge(
-                self._vm_axis_index, "bottom", dy_pixels / self._panel_height()
-            )
+            edge, current = "top", axis.top_ratio
+        else:
+            edge, current = "bottom", axis.top_ratio + axis.height_ratio
+        delta = grip_resize_delta(
+            cursor_scene_y, region.y(), region.height(), self._grip_offset, current
+        )
+        view.vm.resize_axis_edge(self._vm_axis_index, edge, delta)
 
     def _finish_axis_drag(self, lx: float, ly: float) -> None:
         """Commit a zoom or pan on drag finish.
@@ -482,12 +533,13 @@ class _AlignedAxisItem(pg.AxisItem):
                         drag.exec(Qt.DropAction.MoveAction)
                 ev.accept()
                 return
-            self._last_y = ev.pos().y()
-        # Grips update incrementally; accumulate pixel delta from the prior event.
+            if self._zone in (AXZONE_GRIP_TOP, AXZONE_GRIP_BOTTOM):
+                # Capture the grab offset so the edge tracks the cursor 1:1 from here.
+                self._grip_offset = self._grip_grab_offset(ev.scenePos().y())
+        # Grips track the cursor absolutely (scene coords) so the edge follows it 1:1
+        # and the axis geometry shifting mid-drag cannot feed back into the delta.
         if self._zone in (AXZONE_GRIP_TOP, AXZONE_GRIP_BOTTOM) and not ev.isStart():
-            dy = ev.pos().y() - self._last_y
-            self._last_y = ev.pos().y()
-            self._update_axis_drag(dy)
+            self._update_axis_drag(ev.scenePos().y())
         # Zoom / pan commit on release (range-select model, not live-preview).
         if ev.isFinish() and self._zone in (AXZONE_ZOOM, AXZONE_PAN):
             p = ev.pos()
