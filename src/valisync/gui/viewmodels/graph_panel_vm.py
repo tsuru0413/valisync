@@ -278,10 +278,14 @@ class GraphPanelVM(Observable):
                 cursor += h
 
     def remove_signal(self, signal_key: str) -> None:
-        """Remove *signal_key* from the plot and reconcile axes."""
+        """Remove *signal_key* from the plot and reconcile axes.
+
+        Survivors keep their relative heights (preserve_heights=True): removing a
+        region renormalizes the column instead of resetting it to an equal split.
+        """
         self._plotted = [e for e in self._plotted if e.signal_key != signal_key]
         self._compact_axes()
-        self._relayout_columns()
+        self._relayout_columns(preserve_heights=True)
         self._invalidate_cache()
         self._notify("signals")
 

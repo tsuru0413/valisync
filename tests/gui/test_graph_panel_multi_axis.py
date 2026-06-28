@@ -596,6 +596,43 @@ class TestMultiAxisLayout:
         plotted = [p["signal_key"] for p in vm.inspect()["plotted_signals"]]
         assert plotted == [keys[1]]
 
+    def test_remove_signal_preserves_remaining_proportions(self) -> None:
+        """Removing the middle of 3 regions keeps survivors' relative heights."""
+        from valisync.core.session import Session
+
+        vm = GraphPanelVM(Session())
+        vm.add_signal_to_axis("s::a", 0)
+        vm.create_new_axis("s::b")
+        vm.create_new_axis("s::c")
+        vm.axes[0].top_ratio, vm.axes[0].height_ratio = 0.0, 0.5
+        vm.axes[1].top_ratio, vm.axes[1].height_ratio = 0.5, 0.3
+        vm.axes[2].top_ratio, vm.axes[2].height_ratio = 0.8, 0.2
+
+        vm.remove_signal("s::b")
+
+        assert len(vm.axes) == 2
+        assert vm.axes[0].height_ratio == pytest.approx(0.5 / 0.7)
+        assert vm.axes[1].height_ratio == pytest.approx(0.2 / 0.7)
+        assert vm.axes[0].top_ratio == pytest.approx(0.0)
+        assert vm.axes[1].top_ratio == pytest.approx(0.5 / 0.7)
+
+    def test_remove_one_signal_from_multisignal_axis_keeps_heights(self) -> None:
+        """Removing one of two signals on an axis leaves it (no prune); heights stay."""
+        from valisync.core.session import Session
+
+        vm = GraphPanelVM(Session())
+        vm.add_signal_to_axis("s::a", 0)
+        vm.add_signal_to_axis("s::a2", 0)  # second signal on the same axis 0
+        vm.create_new_axis("s::b")
+        vm.axes[0].top_ratio, vm.axes[0].height_ratio = 0.0, 0.6
+        vm.axes[1].top_ratio, vm.axes[1].height_ratio = 0.6, 0.4
+
+        vm.remove_signal("s::a2")  # axis 0 still holds s::a → not pruned
+
+        assert len(vm.axes) == 2
+        assert vm.axes[0].height_ratio == pytest.approx(0.6)
+        assert vm.axes[1].height_ratio == pytest.approx(0.4)
+
     def test_prune_missing_signals_drops_signals_absent_from_session(
         self, qtbot: QtBot, tmp_path: Path
     ) -> None:
