@@ -224,8 +224,9 @@ class GraphPanelVM(Observable):
 
         Survivors keep their existing top_ratio/height_ratio, so a removed axis
         leaves a blank band with no reflow — this *is* the layout behavior for
-        removal. The add / move / column-count paths follow this with
-        :meth:`_relayout_columns` to re-split equally. When no signals remain,
+        removal. The add / column-count paths follow this with
+        :meth:`_relayout_columns` to re-split equally; the move path instead
+        uses :meth:`_layout_column_preserving`. When no signals remain,
         collapse to a single full-height placeholder in the inner (last) column.
         """
         used = sorted({e.axis_index for e in self._plotted})
@@ -243,7 +244,7 @@ class GraphPanelVM(Observable):
     def _relayout_columns(self) -> None:
         """Assign top_ratio/height_ratio per column, splitting height equally.
 
-        Used by the add / move / column-count paths, where a fresh equal split is
+        Used by the add / column-count paths, where a fresh equal split is
         the intended layout. Removal does NOT call this — survivors keep their
         existing ratios and the removed band stays blank (see
         :meth:`remove_signal`).

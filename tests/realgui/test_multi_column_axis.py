@@ -69,6 +69,8 @@ def test_axis_drag_from_inner_column_to_outer_column(
       * release over the outer-column band → ``dropEvent`` →
         ``vm.move_axis_to_column(0, 0)``
       * ViewModel reflects ``vm.axes[0].column == 0``
+      * heights are preserved: moved axis keeps ~0.5, inner remainder stays at
+        top 0.5 with a blank gap above (no equal-split on move)
     """
     if sys.platform != "win32":
         pytest.skip("real OS drag uses Win32 mouse_event (Windows-only)")
@@ -264,3 +266,17 @@ def test_axis_drag_from_inner_column_to_outer_column(
         f"got column={vm.axes[0].column!r}. Screenshots saved to {tmp_path}"
     )
     assert len(vm.axes) == 2, f"expected 2 axes after drag, got {len(vm.axes)}"
+    # Height preservation (root fix): the moved axis keeps its height (~0.5) —
+    # it must NOT be equal-split to full height — and the inner column's
+    # remaining axis keeps its absolute position with a blank gap at the top.
+    assert vm.axes[0].height_ratio == pytest.approx(0.5, abs=0.05), (
+        "moved axis should keep its height (~0.5), not grow to full height; "
+        f"got {vm.axes[0].height_ratio!r}. Screenshots saved to {tmp_path}"
+    )
+    inner_axes = [a for a in vm.axes if a.column == 1]
+    assert len(inner_axes) == 1
+    assert inner_axes[0].top_ratio == pytest.approx(0.5, abs=0.05), (
+        "inner remaining axis should keep its absolute top (blank gap above); "
+        f"got top_ratio={inner_axes[0].top_ratio!r}. Screenshots saved to {tmp_path}"
+    )
+    assert inner_axes[0].height_ratio == pytest.approx(0.5, abs=0.05)
