@@ -53,7 +53,6 @@ from valisync.gui.adapters.qt_signal_models import (
     encode_axis_index,
 )
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
-from valisync.gui.views.region_divider_item import RegionDividerItem
 
 # ─── Axis interaction zones (R9.1 / R10.1) ────────────────────────────────────
 
@@ -508,7 +507,6 @@ class GraphPanelView(QWidget):
         self._items: dict[str, pg.PlotDataItem] = {}
         self._y_axes: list[pg.AxisItem] = []
         self._view_boxes: list[pg.ViewBox] = []
-        self._dividers: list[RegionDividerItem] = []
         # One empty width-reserving container per occupied column (root col = the
         # column index); it pins the fixed gutter width and supplies that column's
         # X band. AxisItems are scene items positioned over it by
@@ -666,27 +664,6 @@ class GraphPanelView(QWidget):
                 axis_vm.height_ratio * R.height(),
             )
             self._y_axes[i].setGeometry(strip)
-        self._position_dividers(R)
-
-    def _position_dividers(self, R: QRectF) -> None:
-        """Place each contiguous-pair divider on the shared boundary between its
-        column's upper/lower region (Y from the master rect R, X from the column
-        band). Dividers only exist for contiguous pairs (built in _reconcile_axes),
-        so none is ever drawn across a blank gap."""
-        for divider in self._dividers:
-            col = divider.column
-            if col is None or col not in self._column_containers:
-                continue
-            ordered = sorted(
-                (a for a in self.vm.axes if a.column == col),
-                key=lambda a: a.top_ratio,
-            )
-            if divider.axis_index >= len(ordered):
-                continue
-            upper = ordered[divider.axis_index]  # rank == upper region's vert index
-            band = self._column_containers[col].sceneBoundingRect()
-            y = R.y() + (upper.top_ratio + upper.height_ratio) * R.height()
-            divider.setGeometry(QRectF(band.x(), y, band.width(), 4.0))
 
     def _axis_placement(self) -> list[tuple[int, int, int]]:
         """Map each VM axis to ``(vm_index, column, rank*2)``.
@@ -755,10 +732,11 @@ class GraphPanelView(QWidget):
         self._axis_move_highlight = None
 
         # Secondary ViewBoxes, AxisItems, and dividers all live straight in the
-        # scene (so waveforms draw unclipped and spines/dividers sit at absolute
-        # strips), so ci.clear() — which only drops layout-managed items — leaves
-        # them behind as orphans that keep drawing stale curves/ticks. Remove them
-        # explicitly first. (The master ViewBox, column containers, and X-axis are
+        # Secondary ViewBoxes and AxisItems live straight in the scene (so
+        # waveforms draw unclipped and spines sit at absolute strips), so
+        # ci.clear() — which only drops layout-managed items — leaves them behind
+        # as orphans that keep drawing stale curves/ticks. Remove them explicitly
+        # first. (The master ViewBox, column containers, and X-axis are
         # layout-managed, so ci.clear() drops those.)
         for vb in self._view_boxes[1:]:
             scene = vb.scene()
@@ -768,14 +746,9 @@ class GraphPanelView(QWidget):
             axis_scene = axis.scene()
             if axis_scene is not None:
                 axis_scene.removeItem(axis)
-        for divider in self._dividers:
-            divider_scene = divider.scene()
-            if divider_scene is not None:
-                divider_scene.removeItem(divider)
         self.plot_widget.ci.clear()
         self._y_axes.clear()
         self._view_boxes.clear()
-        self._dividers.clear()
         self._items.clear()  # Clear items to force re-adding to new ViewBoxes
         self._column_containers = {}
 
@@ -849,31 +822,6 @@ class GraphPanelView(QWidget):
             # _sync_overlay_geometry sets its absolute strip geometry. Adding it to
             # a grid sub-layout would normalise the column and erase blank gaps.
             self.plot_widget.scene().addItem(axis)
-
-        # Dividers sit on the shared boundary between vertically-CONTIGUOUS axes
-        # within a column (upper region's bottom == lower region's top). A divider
-        # is created only for contiguous pairs, so none is ever placed across a
-        # blank gap (e.g. A(0,0.5)/C(0.8,0.2) get no divider). The divider's
-        # axis_index is the upper axis's vertical RANK in its column (not a VM
-        # index) and it carries that column, so resize_axis stays column-scoped and
-        # follows vertical (top_ratio) order — correct even when VM-index order
-        # diverges after a move_axis_to_column. Dividers are scene items positioned
-        # by _position_dividers (via _sync_overlay_geometry).
-        by_col: dict[int, list[int]] = {}
-        for i, ax in enumerate(self.vm.axes):
-            by_col.setdefault(ax.column, []).append(i)
-        for col, idxs in sorted(by_col.items()):
-            ordered = sorted(idxs, key=lambda j: self.vm.axes[j].top_ratio)
-            for rank in range(len(ordered) - 1):
-                upper = self.vm.axes[ordered[rank]]
-                lower = self.vm.axes[ordered[rank + 1]]
-                contiguous = (
-                    abs((upper.top_ratio + upper.height_ratio) - lower.top_ratio) < 1e-6
-                )
-                if contiguous:
-                    divider = RegionDividerItem(self.vm, rank, column=col)
-                    self.plot_widget.scene().addItem(divider)
-                    self._dividers.append(divider)
 
         # The VM always holds at least one axis, so the master ViewBox is set.
         assert master_vb is not None

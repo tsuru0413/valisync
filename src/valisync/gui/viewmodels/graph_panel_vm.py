@@ -524,49 +524,6 @@ class GraphPanelVM(Observable):
         self._cache[cache_key] = curves
         return curves
 
-    def resize_axis(
-        self, divider_index: int, delta_ratio: float, column: int | None = None
-    ) -> None:
-        """Resize two vertically-adjacent axes by moving the divider between them.
-
-        delta_ratio is positive for moving the divider down.
-
-        When *column* is given, the divider is scoped to that column and the two
-        affected axes are the vertically-adjacent pair (ordered by ``top_ratio``)
-        at ranks ``divider_index`` / ``divider_index + 1`` — correct even when
-        VM-index order diverges from vertical order (after ``move_axis_to_column``).
-        When *column* is None (legacy callers), ``divider_index`` indexes the
-        VM-index-adjacent pair instead.
-        """
-        if column is None:
-            # Legacy: VM-index-adjacent pair (kept for existing callers/tests).
-            if divider_index < 0 or divider_index >= len(self._axes) - 1:
-                return
-            above = self._axes[divider_index]
-            below = self._axes[divider_index + 1]
-        else:
-            col_axes = sorted(
-                [a for a in self._axes if a.column == column],
-                key=lambda a: a.top_ratio,
-            )
-            if divider_index < 0 or divider_index >= len(col_axes) - 1:
-                return
-            above = col_axes[divider_index]
-            below = col_axes[divider_index + 1]
-
-        # Ensure minimum height (e.g., 5%)
-        min_h = 0.05
-        if above.height_ratio + delta_ratio < min_h:
-            delta_ratio = min_h - above.height_ratio
-        if below.height_ratio - delta_ratio < min_h:
-            delta_ratio = below.height_ratio - min_h
-
-        above.height_ratio += delta_ratio
-        below.top_ratio += delta_ratio
-        below.height_ratio -= delta_ratio
-
-        self._notify("axes")
-
     def resize_axis_edge(self, axis_index: int, edge: str, delta_ratio: float) -> None:
         """Resize a single axis by dragging one edge (model B).
 
