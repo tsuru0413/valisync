@@ -193,12 +193,19 @@ class _AlignedAxisItem(pg.AxisItem):
     bare instance (e.g. unit-tested in isolation), making the drag a no-op there.
     """
 
-    # Set per-build by the view (_reconcile_axes); None => not draggable.
+    # Set per-build by the view (_reconcile_axes); None => not draggable/activatable.
     _vm_axis_index: int | None = None
+    # Back-reference to the parent GraphPanelView set by _reconcile_axes; None on
+    # bare instances (e.g. unit-tested in isolation) so click events are no-ops.
+    _panel_view: GraphPanelView | None = None
 
     def set_vm_axis_index(self, index: int) -> None:
         """Tell this axis which VM axis index a drag from it should carry."""
         self._vm_axis_index = index
+
+    def set_panel_view(self, panel: GraphPanelView) -> None:
+        """Wire this axis back to the containing GraphPanelView for click activation."""
+        self._panel_view = panel
 
     def tickStrings(
         self, values: list[float], scale: float, spacing: float
@@ -218,6 +225,24 @@ class _AlignedAxisItem(pg.AxisItem):
             mantissa = mantissa.rstrip("0").rstrip(".")
             out.append(f"{mantissa}e{exp}")
         return out
+
+    def mouseClickEvent(self, ev: Any) -> None:
+        """Activate this axis on a left click (pyqtgraph scene event, not Qt press).
+
+        pyqtgraph's GraphicsScene fires ``mouseClickEvent`` after a press+release
+        without a drag gesture — the same routing path that delivers
+        ``mouseDragEvent``.  The parent AxisItem.mouseClickEvent merely forwards
+        to the linked ViewBox; since these axes are *unlinked*, the parent is a
+        no-op and our override is the sole handler.  The click sets the panel's
+        active axis so Task 6's gesture dispatcher can route subsequent events to
+        the correct Y-axis.
+        """
+        if ev.button() != Qt.MouseButton.LeftButton:
+            ev.ignore()
+            return
+        if self._panel_view is not None and self._vm_axis_index is not None:
+            self._panel_view.set_active_axis(self._vm_axis_index)
+        ev.accept()
 
     def mouseDragEvent(self, ev: Any) -> None:
         """Start an axis-move QDrag on left-drag (real delivery is Layer-C/manual).
@@ -271,6 +296,13 @@ class GraphPanelView(QWidget):
         self._drag_start: QPointF | None = None
         self._drop_active = False
         self._removable = True
+        # Active/hover axis — transient UI state, not persisted to the VM.
+        # _active_axis_index: the axis the user last clicked (None = none selected).
+        # _hover_axis_index: the axis under the cursor (None = none hovered).
+        # Both drive frame/grip repaint in Task 5+; declared here so Task 4 can test
+        # them and later tasks wire visuals without touching __init__.
+        self._active_axis_index: int | None = None
+        self._hover_axis_index: int | None = None
         # Axis-move drag feedback: lazily created, reused per drag, nulled on rebuild.
         self._axis_move_line: QGraphicsLineItem | None = None
         self._axis_move_highlight: QGraphicsRectItem | None = None
@@ -575,8 +607,10 @@ class GraphPanelView(QWidget):
             # exactly its region, and overlapping tick labels in short regions are
             # better hidden than allowed to bleed across the gap.
             axis.setStyle(hideOverlappingLabels=True)
-            # Tag the axis with its VM index so a drag from it carries that index.
+            # Tag the axis with its VM index so a drag from it carries that index,
+            # and wire the panel view reference so click events reach set_active_axis.
             axis.set_vm_axis_index(i)
+            axis.set_panel_view(self)
             if axis_vm.name or axis_vm.unit:
                 axis.setLabel(text=axis_vm.name or None, units=axis_vm.unit or None)
             self._y_axes.append(axis)
@@ -622,6 +656,22 @@ class GraphPanelView(QWidget):
         # Add legend to the master ViewBox
         self._legend.setParentItem(master_vb)
         self._build_signature = signature
+
+    # ─── Active-axis state (Task 4) ────────────────────────────────────────────
+
+    def set_active_axis(self, index: int | None) -> None:
+        """Set/clear the active axis (transient UI state) and repaint frames.
+
+        Transient: this state is never propagated to the VM.  It drives the
+        active-frame highlight (Task 5) and the gesture dispatcher's axis
+        selection (Task 6).  Calling with the already-active index is a no-op
+        so callers need not guard against repeated events.
+        """
+        if index == self._active_axis_index:
+            return
+        self._active_axis_index = index
+        for ax in self._y_axes:
+            ax.update()  # repaint frame/grips for each axis spine
 
     # ─── Test/introspection surface ────────────────────────────────────────────
 
