@@ -351,6 +351,13 @@ class GraphPanelVM(Observable):
         self._invalidate_cache()
         self._notify("range")
 
+    def set_axis_range(self, axis_index: int, lo: float, hi: float) -> None:
+        """Set the Y data range of one axis (active-axis zoom/pan target)."""
+        if not (0 <= axis_index < len(self._axes)):
+            return
+        self._axes[axis_index].set_range(min(lo, hi), max(lo, hi))
+        self._notify("axes")
+
     def reset_x(self) -> None:
         """Fit x_range to the union of all plotted signals' time extents."""
         lo: float | None = None

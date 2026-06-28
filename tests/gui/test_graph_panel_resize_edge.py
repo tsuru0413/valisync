@@ -65,3 +65,13 @@ def test_resize_top_does_not_push_neighbour_above() -> None:
     assert (b.top_ratio, b.height_ratio) == (0.5, 0.5)
     assert (a.top_ratio, a.height_ratio) == (0.0, 0.5)
     assert vm._notified == ["axes"]
+
+
+def test_set_axis_range_targets_that_axis_only() -> None:
+    a = YAxisVM(top_ratio=0.0, height_ratio=0.5, y_range=(0.0, 10.0))
+    b = YAxisVM(top_ratio=0.5, height_ratio=0.5, y_range=(0.0, 10.0))
+    vm = _panel_with([a, b])
+    vm.set_axis_range(1, 2.0, 4.0)  # zoom-in on axis b
+    assert b.y_range == (2.0, 4.0)
+    assert a.y_range == (0.0, 10.0)  # untouched (NOT the first-axis-fixed path)
+    assert vm._notified == ["axes"]
