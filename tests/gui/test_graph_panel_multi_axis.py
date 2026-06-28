@@ -16,7 +16,13 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QDropEvent
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
-from tests.gui.test_graph_panel_view import _keys, _loaded_session, _make_view
+from tests.gui.test_graph_panel_view import (
+    _csv_format,
+    _keys,
+    _loaded_session,
+    _make_view,
+    _write_csv,
+)
 from valisync.gui.adapters.qt_signal_models import encode_axis_index, encode_signal_keys
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 from valisync.gui.viewmodels.y_axis_vm import YAxisVM
@@ -1201,3 +1207,45 @@ def test_remove_preserves_proportions_per_column() -> None:
         pytest.approx(0.2 / 0.7),
     ]
     assert [a.height_ratio for a in col0] == [pytest.approx(0.5), pytest.approx(0.5)]
+
+
+# ─── Task 5: 結合 E2E — file-unload → prune → 高さ比保持 ────────────────────
+
+
+def test_unload_preserves_panel_proportions(qtbot: QtBot, tmp_path: Path) -> None:
+    """Wired path: app file-unload → '"unloaded"' → panel prune keeps proportions."""
+    from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+    from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
+
+    app = AppViewModel()
+    seen: set[str] = set()
+
+    def _load_one(name: str) -> tuple[str, str]:
+        path = _write_csv(tmp_path / name, 50, 1)
+        file_key = app.request_load(path, _csv_format(1))
+        sig_key = (set(s.name for s in app.signals()) - seen).pop()
+        seen.add(sig_key)
+        return file_key, sig_key
+
+    _, sig_a = _load_one("a.csv")
+    file_b, sig_b = _load_one("b.csv")
+    _, sig_c = _load_one("c.csv")
+
+    area = GraphAreaVM(app)
+    panel = area.panels(0)[0]
+    panel.create_new_axis(sig_a)  # axis 0
+    panel.create_new_axis(sig_b)  # axis 1 (middle)
+    panel.create_new_axis(sig_c)  # axis 2
+    panel.axes[0].top_ratio, panel.axes[0].height_ratio = 0.0, 0.5
+    panel.axes[1].top_ratio, panel.axes[1].height_ratio = 0.5, 0.3
+    panel.axes[2].top_ratio, panel.axes[2].height_ratio = 0.8, 0.2
+
+    view = _make_view(qtbot, panel)  # confirm the view follows the prune
+
+    app.unload_file(file_b)  # real wired removal → "unloaded" → prune
+
+    assert len(panel.axes) == 2
+    cols = sorted(panel.axes, key=lambda a: a.top_ratio)
+    assert cols[0].height_ratio == pytest.approx(0.5 / 0.7)
+    assert cols[1].height_ratio == pytest.approx(0.2 / 0.7)
+    assert len(view._view_boxes) == 2  # type: ignore[attr-defined]
