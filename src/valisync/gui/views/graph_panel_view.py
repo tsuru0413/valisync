@@ -64,6 +64,13 @@ ZONE_Y_INNER = "y_inner"
 ZONE_Y_OUTER = "y_outer"
 ZONE_NONE = "none"
 
+# Active Y-axis grip/frame/interior zones for resize gestures (Task 3).
+AXZONE_GRIP_TOP = "ax_grip_top"
+AXZONE_GRIP_BOTTOM = "ax_grip_bottom"
+AXZONE_FRAME = "ax_frame"
+AXZONE_ZOOM = "ax_zoom"
+AXZONE_PAN = "ax_pan"
+
 # Fixed pixel width shared by every stacked Y-axis so their tick spines (and
 # right-aligned tick numbers) line up into one vertical edge. Sized for ~6-digit
 # / scientific labels (e.g. "-1.2e+06" ≈ 48px) plus tick marks and the unit
@@ -131,6 +138,35 @@ def classify_zone(
         return ZONE_Y_INNER if px >= left - inner_frac * left else ZONE_Y_OUTER
 
     return ZONE_NONE
+
+
+def classify_axis_zone(
+    lx: float,
+    ly: float,
+    w: float,
+    h: float,
+    *,
+    grip_w: float,
+    grip_h: float,
+    frame: float,
+    tol: float,
+) -> str:
+    """Classify an item-local point on an active axis spine into a gesture zone.
+
+    Priority: grip (resize) > frame border (move) > interior (inner=zoom / outer=pan).
+    Inner = right (plot-side); outer = left (window-edge side). The grip hit-area is
+    the centred grip rect expanded by *tol* for grabbability (NOT a full-width band).
+    """
+    half = grip_w / 2.0
+    in_grip_x = abs(lx - w / 2.0) <= half + tol
+    if in_grip_x and ly <= grip_h + tol:
+        return AXZONE_GRIP_TOP
+    if in_grip_x and ly >= h - grip_h - tol:
+        return AXZONE_GRIP_BOTTOM
+    on_border = lx <= frame or lx >= w - frame or ly <= frame or ly >= h - frame
+    if on_border:
+        return AXZONE_FRAME
+    return AXZONE_ZOOM if lx >= w / 2.0 else AXZONE_PAN
 
 
 def cursor_for_zone(zone: str) -> Qt.CursorShape:
