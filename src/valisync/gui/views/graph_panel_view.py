@@ -193,11 +193,22 @@ class _AlignedAxisItem(pg.AxisItem):
     bare instance (e.g. unit-tested in isolation), making the drag a no-op there.
     """
 
+    # Grip/frame/interior zone constants (Task 5 — matched by cursor_for_local).
+    GRIP_W: float = 40.0  # centred grip rect width (pixels)
+    GRIP_H: float = 8.0  # grip rect height (pixels)
+    FRAME: float = 3.0  # frame border thickness (pixels)
+    TOL: float = 4.0  # grip hit-area expansion for grabbability (pixels)
+
     # Set per-build by the view (_reconcile_axes); None => not draggable/activatable.
     _vm_axis_index: int | None = None
     # Back-reference to the parent GraphPanelView set by _reconcile_axes; None on
-    # bare instances (e.g. unit-tested in isolation) so click events are no-ops.
+    # bare instances (e.g. unit-tested in isolation) so click/hover events are no-ops.
     _panel_view: GraphPanelView | None = None
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # Required so Qt delivers hoverMoveEvent / hoverLeaveEvent to this item.
+        self.setAcceptHoverEvents(True)
 
     def set_vm_axis_index(self, index: int) -> None:
         """Tell this axis which VM axis index a drag from it should carry."""
@@ -206,6 +217,108 @@ class _AlignedAxisItem(pg.AxisItem):
     def set_panel_view(self, panel: GraphPanelView) -> None:
         """Wire this axis back to the containing GraphPanelView for click activation."""
         self._panel_view = panel
+
+    # ── Task 5: cursor mapping + active/hover frame ────────────────────────────
+
+    def cursor_for_local(self, lx: float, ly: float, h: float) -> Qt.CursorShape:
+        """Return the hover cursor for item-local point (lx, ly) on a spine of height h.
+
+        Pure (h is passed explicitly, not read from geometry) so it is headless-
+        testable without a scene.  Delegates zone classification to the module-
+        level ``classify_axis_zone`` and maps each zone to a cursor shape.
+        """
+        z = classify_axis_zone(
+            lx,
+            ly,
+            self.width(),
+            h,
+            grip_w=self.GRIP_W,
+            grip_h=self.GRIP_H,
+            frame=self.FRAME,
+            tol=self.TOL,
+        )
+        return {
+            AXZONE_GRIP_TOP: Qt.CursorShape.SizeVerCursor,
+            AXZONE_GRIP_BOTTOM: Qt.CursorShape.SizeVerCursor,
+            AXZONE_FRAME: Qt.CursorShape.SizeAllCursor,
+            AXZONE_ZOOM: Qt.CursorShape.CrossCursor,
+            AXZONE_PAN: Qt.CursorShape.OpenHandCursor,
+        }[z]
+
+    def _is_active_or_hover(self) -> bool:
+        """Return True if this axis is currently the active or hovered axis.
+
+        Reads transient UI state from ``_panel_view``; always False on bare
+        instances (``_panel_view`` is None) so painting stays a no-op there.
+        """
+        view = self._panel_view
+        if view is None or self._vm_axis_index is None:
+            return False
+        return self._vm_axis_index in (view._active_axis_index, view._hover_axis_index)
+
+    def hoverMoveEvent(self, ev: Any) -> None:
+        """Update hover state and cursor on mouse-over.
+
+        Called by Qt when the cursor enters or moves within this item's
+        bounding rect (requires ``setAcceptHoverEvents(True)`` in __init__).
+        Delegates state bookkeeping to ``GraphPanelView.set_hover_axis`` and
+        applies a zone-sensitive cursor only when this axis is also active.
+        """
+        view = self._panel_view
+        if view is None or self._vm_axis_index is None:
+            return
+        view.set_hover_axis(self._vm_axis_index)
+        if self._vm_axis_index == view._active_axis_index:
+            p = ev.pos()
+            self.setCursor(
+                self.cursor_for_local(p.x(), p.y(), self.boundingRect().height())
+            )
+        else:
+            self.unsetCursor()
+
+    def hoverLeaveEvent(self, ev: Any) -> None:
+        """Clear hover state and reset cursor when the mouse leaves the spine."""
+        view = self._panel_view
+        if view is not None:
+            view.set_hover_axis(None)
+        self.unsetCursor()
+
+    def paint(self, p: Any, *args: Any) -> None:
+        """Paint the spine, then overlay an active/hover frame and grip handles.
+
+        The overlay is Case C (spine outline only): an amber border when
+        hovered, plus two centred rounded grip rects when the axis is also
+        active (task 5).  Non-active/non-hover → base paint only, no cost.
+        """
+        super().paint(p, *args)
+        if not self._is_active_or_hover():
+            return
+        r = self.boundingRect()
+        p.save()
+        # Amber frame border — always shown while active OR hovered.
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QColor("#f59e0b"), 2))
+        p.drawRect(r.adjusted(1, 1, -1, -1))
+        # Grip handles — only shown when this axis is the ACTIVE axis.
+        if (
+            self._panel_view is not None
+            and self._vm_axis_index == self._panel_view._active_axis_index
+        ):
+            p.setBrush(QColor("#ffffff"))
+            p.setPen(QPen(QColor("#b45309"), 1))
+            cx = r.center().x()
+            for cy in (r.top() + 1.0, r.bottom() - 1.0):
+                p.drawRoundedRect(
+                    QRectF(
+                        cx - self.GRIP_W / 2,
+                        cy - self.GRIP_H / 2,
+                        self.GRIP_W,
+                        self.GRIP_H,
+                    ),
+                    3,
+                    3,
+                )
+        p.restore()
 
     def tickStrings(
         self, values: list[float], scale: float, spacing: float
@@ -672,6 +785,19 @@ class GraphPanelView(QWidget):
         self._active_axis_index = index
         for ax in self._y_axes:
             ax.update()  # repaint frame/grips for each axis spine
+
+    def set_hover_axis(self, index: int | None) -> None:
+        """Set/clear the hovered axis (transient UI state) and repaint frames.
+
+        Mirrors ``set_active_axis``: transient, never propagated to the VM.
+        Called by ``_AlignedAxisItem.hoverMoveEvent``/``hoverLeaveEvent`` when
+        the cursor enters or leaves a spine.  No-op if already at the same index.
+        """
+        if index == self._hover_axis_index:
+            return
+        self._hover_axis_index = index
+        for ax in self._y_axes:
+            ax.update()  # repaint hover frame for each axis spine
 
     # ─── Test/introspection surface ────────────────────────────────────────────
 

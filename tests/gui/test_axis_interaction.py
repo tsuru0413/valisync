@@ -22,11 +22,11 @@ Why mouseClickEvent (not mousePressEvent):
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, QPointF, Qt
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from tests.gui._panel_factory import make_two_axis_panel
-from valisync.gui.views.graph_panel_view import GraphPanelView
+from valisync.gui.views.graph_panel_view import GraphPanelView, _AlignedAxisItem
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -212,3 +212,117 @@ def test_real_scene_routing_left_click_activates_axis(qtbot: QtBot) -> None:
         "If the offscreen platform cannot route clicks to scene items, move this "
         "test to tests/realgui/ with @pytest.mark.realgui."
     )
+
+
+# ─── Task 5 helpers ───────────────────────────────────────────────────────────
+
+
+def _bare_axis(w: float = 60.0) -> _AlignedAxisItem:
+    """Return a bare _AlignedAxisItem for pure headless tests (no scene/view)."""
+    it = _AlignedAxisItem(orientation="left")
+    it.setWidth(w)
+    return it
+
+
+class _HoverEvent:
+    """Duck-typed QGraphicsSceneHoverEvent for hoverMoveEvent / hoverLeaveEvent tests.
+
+    The handler only calls ``ev.pos()`` so a minimal stub is sufficient.
+    """
+
+    def __init__(self, x: float = 0.0, y: float = 0.0) -> None:
+        self._pos = QPointF(x, y)
+
+    def pos(self) -> QPointF:
+        return self._pos
+
+
+# ─── Layer A: cursor_for_local mapping (Task 5) ───────────────────────────────
+
+
+def test_cursor_resize_move_zoom_pan() -> None:
+    """Layer A: cursor_for_local maps each AXZONE_* to the correct Qt cursor shape.
+
+    Uses a bare axis (w=60, h=120 explicit) so no scene geometry is needed.
+    Coordinates chosen so each zone is hit according to classify_axis_zone:
+      - (30, 2)   → GRIP_TOP  (centred-x ≤ half+tol, y ≤ grip_h+tol) → SizeVer
+      - (2, 60)   → FRAME     (lx ≤ frame)                            → SizeAll
+      - (45, 60)  → ZOOM      (lx ≥ w/2, not border/grip)            → Cross
+      - (15, 60)  → PAN       (lx < w/2, not border/grip)            → OpenHand
+    """
+    it = _bare_axis()
+    h = 120.0
+    assert it.cursor_for_local(30.0, 2.0, h) == Qt.CursorShape.SizeVerCursor
+    assert it.cursor_for_local(2.0, 60.0, h) == Qt.CursorShape.SizeAllCursor
+    assert it.cursor_for_local(45.0, 60.0, h) == Qt.CursorShape.CrossCursor
+    assert it.cursor_for_local(15.0, 60.0, h) == Qt.CursorShape.OpenHandCursor
+
+
+# ─── Layer A: hover axis state (Task 5) ───────────────────────────────────────
+
+
+def test_initial_hover_axis_is_none(panel: GraphPanelView) -> None:
+    """_hover_axis_index starts as None (no hover on init)."""
+    assert panel._hover_axis_index is None
+
+
+def test_set_hover_axis_sets_index(panel: GraphPanelView) -> None:
+    """set_hover_axis(0) stores 0 in _hover_axis_index."""
+    panel.set_hover_axis(0)
+    assert panel._hover_axis_index == 0
+
+
+def test_set_hover_axis_clears_to_none(panel: GraphPanelView) -> None:
+    """set_hover_axis(None) clears the hover selection."""
+    panel.set_hover_axis(1)
+    panel.set_hover_axis(None)
+    assert panel._hover_axis_index is None
+
+
+def test_set_hover_axis_idempotent(panel: GraphPanelView) -> None:
+    """Calling set_hover_axis with the same index twice is a no-op (no error)."""
+    panel.set_hover_axis(1)
+    panel.set_hover_axis(1)
+    assert panel._hover_axis_index == 1
+
+
+# ─── Layer B: _is_active_or_hover + hover handlers (Task 5) ──────────────────
+
+
+def test_is_active_or_hover_false_without_panel() -> None:
+    """Layer B: bare axis (_panel_view=None) is never active-or-hover."""
+    ax = _bare_axis()
+    assert not ax._is_active_or_hover()
+
+
+def test_is_active_or_hover_true_when_active(panel: GraphPanelView) -> None:
+    """Layer B: axis returns True from _is_active_or_hover when it is the active axis."""
+    panel.set_active_axis(0)
+    assert panel._y_axes[0]._is_active_or_hover()
+    assert not panel._y_axes[1]._is_active_or_hover()
+
+
+def test_is_active_or_hover_true_when_hovered(panel: GraphPanelView) -> None:
+    """Layer B: axis returns True from _is_active_or_hover when it is the hovered axis."""
+    panel.set_hover_axis(1)
+    assert panel._y_axes[1]._is_active_or_hover()
+    assert not panel._y_axes[0]._is_active_or_hover()
+
+
+def test_hoverMoveEvent_sets_hover_index(panel: GraphPanelView) -> None:
+    """Layer B: hoverMoveEvent on axis 0 sets _hover_axis_index to 0.
+
+    Driven directly (handler-path), not via scene routing — the offscreen
+    platform does not deliver real hover events through pyqtgraph's scene.
+    Verifies that the handler logic reaches set_hover_axis correctly.
+    """
+    ax = panel._y_axes[0]
+    ax.hoverMoveEvent(_HoverEvent(30.0, 60.0))
+    assert panel._hover_axis_index == 0
+
+
+def test_hoverLeaveEvent_clears_hover_index(panel: GraphPanelView) -> None:
+    """Layer B: hoverLeaveEvent on axis 0 clears _hover_axis_index to None."""
+    panel.set_hover_axis(0)
+    panel._y_axes[0].hoverLeaveEvent(_HoverEvent())
+    assert panel._hover_axis_index is None
