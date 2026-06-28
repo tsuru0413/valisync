@@ -209,6 +209,13 @@ class _AlignedAxisItem(pg.AxisItem):
         super().__init__(*args, **kwargs)
         # Required so Qt delivers hoverMoveEvent / hoverLeaveEvent to this item.
         self.setAcceptHoverEvents(True)
+        # Drag state (Task 6): reset on each drag start via _begin_axis_drag.
+        # _zone is the AXZONE_* constant set during isStart; the subsequent
+        # update/finish helpers read it to route to the correct VM method.
+        self._zone: str = AXZONE_FRAME  # placeholder; overwritten by _begin_axis_drag
+        self._drag_start_data: float = 0.0  # data-coordinate at drag-start cursor pos
+        self._drag_h: float = 0.0  # bounding-rect height captured at drag start
+        self._last_y: float = 0.0  # previous ev.pos().y() for incremental grip updates
 
     def set_vm_axis_index(self, index: int) -> None:
         """Tell this axis which VM axis index a drag from it should carry."""
@@ -357,23 +364,133 @@ class _AlignedAxisItem(pg.AxisItem):
             self._panel_view.set_active_axis(self._vm_axis_index)
         ev.accept()
 
-    def mouseDragEvent(self, ev: Any) -> None:
-        """Start an axis-move QDrag on left-drag (real delivery is Layer-C/manual).
+    # ── Task 6: zone-routed drag helpers ──────────────────────────────────────
 
-        The base ``AxisItem.mouseDragEvent`` only pans a *linked* ViewBox; these
-        axes are unlinked, so it no-ops and is safe to override. Offscreen Qt
-        cannot run the blocking drag loop, so this path is verified by Layer C /
-        manual, not the headless Layer B suite.
+    def _panel_height(self) -> float:
+        """Return the axis spine's current pixel height (at least 1 to avoid ÷0)."""
+        return max(self.boundingRect().height(), 1.0)
+
+    def _local_y_to_data(self, ly: float, h: float) -> float:
+        """Convert item-local y pixel to data-coordinate using the current y_range.
+
+        The spine maps linearly: top (ly=0) → y_hi, bottom (ly=h) → y_lo.
+        ``h`` is passed explicitly so callers can use the height captured at
+        drag-start even when the geometry changes mid-drag.
         """
-        if self._vm_axis_index is None or ev.button() != Qt.MouseButton.LeftButton:
+        view = self._panel_view
+        if view is None or self._vm_axis_index is None:
+            return 0.0
+        rng = view.vm.axes[self._vm_axis_index].y_range or (0.0, 1.0)
+        lo, hi = rng
+        frac = min(max(ly / max(h, 1.0), 0.0), 1.0)  # 0=top → 1=bottom
+        return hi - frac * (hi - lo)  # top=hi, bottom=lo
+
+    def _begin_axis_drag(self, lx: float, ly: float) -> bool:
+        """Classify the drag start zone; return True if this axis should handle it.
+
+        Only the active axis accepts drag gestures. Stores ``_zone``,
+        ``_drag_start_data``, and ``_drag_h`` for use by the update/finish
+        helpers called during the same drag sequence.
+
+        Layer B direct-call surface: callers pass item-local (lx, ly) and
+        inspect _zone / VM side-effects; no real pyqtgraph event needed.
+        """
+        view = self._panel_view
+        if view is None or self._vm_axis_index != view._active_axis_index:
+            return False
+        h = self.boundingRect().height()
+        self._zone = classify_axis_zone(
+            lx,
+            ly,
+            self.width(),
+            h,
+            grip_w=self.GRIP_W,
+            grip_h=self.GRIP_H,
+            frame=self.FRAME,
+            tol=self.TOL,
+        )
+        self._drag_start_data = self._local_y_to_data(ly, h)
+        self._drag_h = h
+        return True
+
+    def _update_axis_drag(self, dy_pixels: float) -> None:
+        """Apply an incremental grip drag to the VM.
+
+        Called on each intermediate drag event for AXZONE_GRIP_TOP/BOTTOM only.
+        ``dy_pixels`` is the pixel delta since the previous event (positive
+        downward), converted to a height ratio via the current spine height.
+        ZOOM and PAN zones are handled at finish, not incrementally.
+        """
+        view = self._panel_view
+        if view is None or self._vm_axis_index is None:
+            return
+        if self._zone == AXZONE_GRIP_TOP:
+            view.vm.resize_axis_edge(
+                self._vm_axis_index, "top", dy_pixels / self._panel_height()
+            )
+        elif self._zone == AXZONE_GRIP_BOTTOM:
+            view.vm.resize_axis_edge(
+                self._vm_axis_index, "bottom", dy_pixels / self._panel_height()
+            )
+
+    def _finish_axis_drag(self, lx: float, ly: float) -> None:
+        """Commit a zoom or pan on drag finish.
+
+        ZOOM: range-select — the two endpoints become the new y_range (VM
+        normalises lo/hi order). PAN: the data value that was at the cursor's
+        start position is shifted to the end position.
+        """
+        view = self._panel_view
+        if view is None or self._vm_axis_index is None:
+            return
+        end = self._local_y_to_data(ly, self._drag_h)
+        if self._zone == AXZONE_ZOOM:
+            view.vm.set_axis_range(self._vm_axis_index, self._drag_start_data, end)
+        elif self._zone == AXZONE_PAN:
+            rng = view.vm.axes[self._vm_axis_index].y_range or (0.0, 1.0)
+            lo, hi = rng
+            shift = self._drag_start_data - end
+            view.vm.set_axis_range(self._vm_axis_index, lo + shift, hi + shift)
+
+    def mouseDragEvent(self, ev: Any) -> None:
+        """Route left-drag by zone: grips → resize, frame → move QDrag,
+        inner → zoom, outer → pan.  Only the active axis accepts drag events.
+
+        The base AxisItem.mouseDragEvent only pans a *linked* ViewBox; these
+        axes are unlinked so the parent is a safe no-op. Real drag delivery
+        (OS → pyqtgraph scene → here) is Layer C; the helper logic (_begin /
+        _update / _finish) is verified by the Layer B tests directly.
+        """
+        if ev.button() != Qt.MouseButton.LeftButton:
             ev.ignore()
             return
         if ev.isStart():
-            view = self.getViewWidget()
-            if view is not None:
-                drag = QDrag(view)
-                drag.setMimeData(encode_axis_index(self._vm_axis_index))
-                drag.exec(Qt.DropAction.MoveAction)
+            p = ev.pos()
+            if not self._begin_axis_drag(p.x(), p.y()):
+                ev.ignore()
+                return
+            if self._zone == AXZONE_FRAME:
+                # Axis-move: launch a QDrag carrying the VM index so the panel's
+                # drop sink can relocate the axis. Verified Layer C only (the
+                # blocking drag.exec loop cannot run under the offscreen platform).
+                if self._vm_axis_index is not None:
+                    view = self._panel_view
+                    if view is not None:
+                        drag = QDrag(view)
+                        drag.setMimeData(encode_axis_index(self._vm_axis_index))
+                        drag.exec(Qt.DropAction.MoveAction)
+                ev.accept()
+                return
+            self._last_y = ev.pos().y()
+        # Grips update incrementally; accumulate pixel delta from the prior event.
+        if self._zone in (AXZONE_GRIP_TOP, AXZONE_GRIP_BOTTOM) and not ev.isStart():
+            dy = ev.pos().y() - self._last_y
+            self._last_y = ev.pos().y()
+            self._update_axis_drag(dy)
+        # Zoom / pan commit on release (range-select model, not live-preview).
+        if ev.isFinish() and self._zone in (AXZONE_ZOOM, AXZONE_PAN):
+            p = ev.pos()
+            self._finish_axis_drag(p.x(), p.y())
         ev.accept()
 
 

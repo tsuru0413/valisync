@@ -22,7 +22,7 @@ Why mouseClickEvent (not mousePressEvent):
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from tests.gui._panel_factory import make_two_axis_panel
@@ -326,3 +326,82 @@ def test_hoverLeaveEvent_clears_hover_index(panel: GraphPanelView) -> None:
     panel.set_hover_axis(0)
     panel._y_axes[0].hoverLeaveEvent(_HoverEvent())
     assert panel._hover_axis_index is None
+
+
+# ─── Task 6: zone-routed drag helpers (Layer B direct-call) ──────────────────
+
+# Geometry constant used to give axis items a non-zero bounding rect without
+# needing a shown/laid-out window (pg.AxisItem.width()/.boundingRect() return
+# geometry().width/height(), which is 0 until the layout runs after show()).
+_ITEM_GEOM = QRectF(0, 0, 72, 200)
+
+
+def test_begin_drag_grip_bottom_calls_resize_edge(
+    panel: GraphPanelView, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Layer B: bottom-grip drag triggers resize_axis_edge(..., 'bottom', ...).
+
+    Drives _begin_axis_drag / _update_axis_drag directly — handler-path only.
+    Real drag delivery (OS → pyqtgraph scene → mouseDragEvent) is Layer C.
+    Honest layering: this test confirms the branching logic routes correctly to
+    the VM; it does NOT prove the real event chain fires these helpers.
+    """
+    panel.set_active_axis(0)
+    it = panel._y_axes[0]
+    it.setGeometry(_ITEM_GEOM)  # give the item real dimensions (no show needed)
+    calls: list[tuple[int, str, float]] = []
+    monkeypatch.setattr(
+        panel.vm,
+        "resize_axis_edge",
+        lambda i, e, d: calls.append((i, e, round(d, 4))),
+    )
+    h = it.boundingRect().height()  # 200 after setGeometry
+    # lx=centre, ly=h-2 → classify_axis_zone → AXZONE_GRIP_BOTTOM
+    it._begin_axis_drag(it.width() / 2, h - 2.0)
+    it._update_axis_drag(dy_pixels=10.0)
+    assert calls, "resize_axis_edge should have been called"
+    assert calls[0][0] == 0, f"expected axis index 0, got {calls[0][0]}"
+    assert calls[0][1] == "bottom", f"expected edge 'bottom', got {calls[0][1]!r}"
+
+
+def test_begin_drag_inner_is_zoom(
+    panel: GraphPanelView, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Layer B: right-half (inner) drag triggers set_axis_range on finish.
+
+    Verifies the AXZONE_ZOOM branch: _begin_axis_drag captures the start data
+    value; _finish_axis_drag calls set_axis_range(idx, y0, y1).
+    """
+    panel.set_active_axis(0)
+    it = panel._y_axes[0]
+    it.setGeometry(_ITEM_GEOM)
+    got: list[tuple[int, float, float]] = []
+    monkeypatch.setattr(
+        panel.vm,
+        "set_axis_range",
+        lambda i, lo, hi: got.append((i, lo, hi)),
+    )
+    h = it.boundingRect().height()
+    # lx=0.75w → right half = AXZONE_ZOOM; ly well inside (not grip/border)
+    it._begin_axis_drag(it.width() * 0.75, h * 0.2)
+    it._finish_axis_drag(it.width() * 0.75, h * 0.8)
+    assert got, "set_axis_range should have been called (zoom)"
+    assert got[0][0] == 0, f"expected axis index 0, got {got[0][0]}"
+
+
+def test_drag_ignored_when_not_active(
+    panel: GraphPanelView, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Layer B: _begin_axis_drag returns False (no VM call) when axis is inactive.
+
+    When _active_axis_index is None (or mismatches this axis's index), the
+    drag helpers are a no-op.  No geometry setup needed: the guard fires before
+    boundingRect() is ever queried.
+    """
+    panel.set_active_axis(None)
+    it = panel._y_axes[0]
+    fired: list[object] = []
+    monkeypatch.setattr(panel.vm, "resize_axis_edge", lambda *a: fired.append(a))
+    started = it._begin_axis_drag(it.width() / 2, 2.0)
+    assert started is False, "_begin_axis_drag must return False for inactive axis"
+    assert not fired, "resize_axis_edge must not be called for an inactive axis"
