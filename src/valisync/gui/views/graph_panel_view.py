@@ -4,16 +4,17 @@ Task 8.2: project ``vm.render_data()`` (LOD-reduced by the VM) onto one
 ``PlotDataItem`` per curve, with colours and a legend; accept signal drops;
 report pixel width on resize.
 
-Task 8.3: custom X/Y zoom/pan built on inner/outer axis zones.  The interaction
-logic is split into pure, headless-testable pieces (zone classification, range
-math) and thin Qt event handlers.  The VM is the single source of truth for the
-visible range; every gesture calls ``set_x_range``/``set_y_range``/``reset_*``
-and the resulting notify re-projects the plot.  pyqtgraph's own mouse handling
-is disabled so the zone model fully owns interaction.
+Interaction model: the time (X) axis has always-on widget-level zoom/pan via
+inner/outer zones; each Y axis owns its resize/zoom/pan/move on its
+``_AlignedAxisItem``, accepted only while that axis is active.  The logic is
+split into pure, headless-testable pieces (zone classification, range math) and
+thin Qt event handlers.  The VM is the single source of truth for the visible
+range; gestures update it and the resulting notify re-projects the plot.
+pyqtgraph's own mouse handling is disabled so this model fully owns interaction.
 
-Zoom/pan are applied once per gesture (range-select/pan on release, wheel per
-notch), so the 16 ms budget is met by the VM's render cache + bounded point
-count.  Live drag-preview with a debounce timer is a noted refinement (R9.5).
+Zoom/pan are applied once per gesture (range-select / pan on release), so the
+16 ms budget is met by the VM's render cache + bounded point count.  Live
+drag-preview with a debounce timer is a noted refinement (R9.5).
 """
 
 from __future__ import annotations
@@ -1082,7 +1083,7 @@ class GraphPanelView(QWidget):
         except Exception:
             return None
 
-    # ─── Mouse / wheel handlers (thin glue over the gesture methods) ────────────
+    # ─── Mouse handlers — X zoom/pan only (Y owned by _AlignedAxisItem) ──────────
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         # Only the left button drives X zoom/pan; right-click opens the context
