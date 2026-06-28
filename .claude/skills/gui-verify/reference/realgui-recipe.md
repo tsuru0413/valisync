@@ -13,6 +13,21 @@
 - drop 完了検知は `dropEvent` をフックして flag を立てる。
 - 実例: `tests/realgui/test_multi_column_axis.py`。
 
+## ハングは2種類ある — in-test watchdog では止められない方に注意
+
+上の watchdog（ワーカーが ESC を注入）は「テストのドライバが release を撒けず固まる」**ドライバ起因**ハングを解く。だが**プロダクトコード側が `QDrag.exec` に再入して固まる**別種のハングはこれで止まらない（メインスレッドが OLE モーダルに wedge し、ワーカーの ESC も効かないことがある）。この場合:
+
+- **外部プロセスの watchdog で殺す**。pytest をバックグラウンド起動し、別プロセス（PowerShell 等）で CPU/生存/ログ成長をポーリングし、絶対デッドライン超過 or ログ停滞で `taskkill /PID <pid> /T /F`。バックグラウンド化された pytest はツールの timeout が効かないため外部 kill が必須。
+- 停止箇所の特定は **`faulthandler.dump_traceback_later(N, exit=True)`** を仕込む（N 秒後に全スレッドのスタックをダンプして強制 exit → メインスレッドが `mouseDragEvent`→`drag.exec` のどこで固まったか一発で判る）。zone 分類の `(lx,ly,w,h,zone)` ＋ `scene.dragButtons/dragItem` を print すれば「どのアイテムへ・どの座標で」誤配送されたかも観測できる。
+
+## 再入 QDrag ハング: drop 中の rebuild が scene 参照を腐らせる
+
+`mouseDragEvent` から `QDrag.exec()`（軸移動）を起動し、その drop（`dropEvent`）が **exec のモーダルスタック内で** scene アイテムを rebuild すると、pyqtgraph の `GraphicsScene` が press/drag/hover 参照（`dragItem`/`lastHoverEvent`/`clickEvents`/`dragButtons`）をドラッグ元アイテムに残したままそれを破棄する。pyqtgraph は次ドラッグの配送先を `lastHoverEvent.dragItems()`／`dragItem` から選ぶため、**移動後の最初のジェスチャが破棄済みアイテムへ誤配送**される（no-op、さらに stale 座標系で枠外と誤分類 → 再び `QDrag.exec` 再入 → **無限ハング**）。
+
+- **修正**: drop の relayout を即時実行せず `QTimer.singleShot(0, ...)` で**次イベントループターンへ遅延**（QDrag が完全に巻き戻ってから rebuild）。rebuild 後に scene の `dragButtons/dragItem/clickEvents/lastDrag/lastHoverEvent` をクリアし、次ジェスチャを `itemsNearEvent` で実アイテムに再発見させる。
+- **回帰ガード**: 「移動 → 直後に別ジェスチャ」を1テストに含める（実例: `tests/realgui/test_move_then_resize.py`）。移動単体・リサイズ単体では出ない。
+- 詳細は memory `gui_realgui_qdrag_rebuild_stale_scene`。
+
 ## スクショは GUI スレッドで撮る
 
 ワーカースレッドからの Qt `grabWindow` は不可。drag 中の絵は `dragMoveEvent` 内（＝GUI スレッド・drag 中）で撮る。
