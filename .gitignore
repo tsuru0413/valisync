@@ -60,3 +60,7 @@ tests/fixtures/*.csv
 
 # superpowers brainstorm mockups (local visual companion)
 .superpowers/
+
+# Claude Code worktree scratch（隔離チェックアウト。commit しない）。
+# .claude/skills/ と .claude/agents/ は追跡する。
+.claude/worktrees/
