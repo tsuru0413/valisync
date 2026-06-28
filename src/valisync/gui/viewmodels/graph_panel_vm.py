@@ -119,7 +119,8 @@ class GraphPanelVM(Observable):
         # (column == column_count) and overlap the layout.
         for a in self._axes:
             a.column = min(a.column, self._column_count - 1)
-        self._normalize_axes()
+        self._compact_axes()
+        self._relayout_columns()
         self._notify("axes")
 
     # ─── Signal list management ──────────────────────────────────────────────
@@ -172,7 +173,7 @@ class GraphPanelVM(Observable):
     def create_new_axis(self, signal_key: str) -> None:
         """Add *signal_key* as a new vertical region.
 
-        A fresh axis is appended for the signal, then :meth:`_normalize_axes`
+        A fresh axis is appended for the signal, then :meth:`_compact_axes`
         prunes any empty axis (e.g. the initial placeholder) so the first signal
         fills the whole panel and subsequent signals split it into equal regions.
         """
@@ -180,12 +181,13 @@ class GraphPanelVM(Observable):
         same_col = [a.top_ratio for a in self._axes if a.column == new_col]
         new_axis = YAxisVM(column=new_col)
         # Give the new axis a transient top_ratio that sorts it after all
-        # existing axes in the same column so _normalize_axes places it at the
+        # existing axes in the same column so _relayout_columns places it at the
         # bottom (rule A: new axis appends below existing ones).
         new_axis.top_ratio = (max(same_col) + 1.0) if same_col else 0.0
         self._axes.append(new_axis)
         self.add_signal_to_axis(signal_key, len(self._axes) - 1)
-        self._normalize_axes()
+        self._compact_axes()
+        self._relayout_columns()
         self._notify("axes")
 
     def move_axis_to_column(
@@ -193,9 +195,10 @@ class GraphPanelVM(Observable):
     ) -> None:
         """Move an axis to *column*, inserting at vertical *position* (0=top, None=bottom).
 
-        The source slot is vacated and re-split by _normalize_axes (rule 1: equal
-        re-split per column). `position` is the insertion index among the destination
-        column's other members. Existing 2-arg callers append at the bottom.
+        The source slot is vacated and re-split by _relayout_columns (rule 1:
+        equal re-split per column). `position` is the insertion index among the
+        destination column's other members. Existing 2-arg callers append at the
+        bottom.
         """
         # A stale drag index (e.g. axes re-split mid-drag) must be a no-op, not
         # an IndexError.
@@ -218,25 +221,21 @@ class GraphPanelVM(Observable):
             moved.top_ratio = (
                 others[position - 1].top_ratio + others[position].top_ratio
             ) / 2.0
-        self._normalize_axes()
+        self._compact_axes()
+        self._relayout_columns()
         self._notify("axes")
 
-    def _normalize_axes(self) -> None:
-        """Keep one region per signal-bearing axis (min 1) and split equally per column.
+    def _compact_axes(self) -> None:
+        """Prune signal-less axes and remap plotted entries to compacted indices.
 
-        Empty axes (the initial placeholder, or an axis whose signals were all
-        moved away) must not occupy panel space — otherwise a real signal would
-        render at a fraction of the panel height with blank regions beside it.
-        Re-indexes plotted entries to the compacted axis positions.
-
-        Within each column, axes split the full column height equally.  Relative
-        top-to-bottom order within a column is preserved by sorting on the
-        pre-existing top_ratio before reassigning layout fractions.
+        Survivors keep their existing top_ratio/height_ratio, so a removed axis
+        leaves a blank band with no reflow — this *is* the layout behavior for
+        removal. The add / move / column-count paths follow this with
+        :meth:`_relayout_columns` to re-split equally. When no signals remain,
+        collapse to a single full-height placeholder in the inner (last) column.
         """
         used = sorted({e.axis_index for e in self._plotted})
         if not used:
-            # No signals plotted: collapse to a single full-height placeholder
-            # in the inner (last) column.
             keep = self._axes[0] if self._axes else YAxisVM()
             keep.top_ratio, keep.height_ratio = 0.0, 1.0
             keep.column = self._column_count - 1
@@ -247,23 +246,40 @@ class GraphPanelVM(Observable):
         for entry in self._plotted:
             entry.axis_index = remap[entry.axis_index]
 
-        # Group axes by column, then split height equally within each group.
-        # Relative top-to-bottom order is preserved by sorting on top_ratio.
+    def _relayout_columns(self) -> None:
+        """Assign top_ratio/height_ratio per column, splitting height equally.
+
+        Used by the add / move / column-count paths, where a fresh equal split is
+        the intended layout. Removal does NOT call this — survivors keep their
+        existing ratios and the removed band stays blank (see
+        :meth:`remove_signal`).
+
+        Axes are grouped by column; within each column the vertical order is taken
+        from the pre-existing top_ratio, then each column's axes split the full
+        column height equally.
+        """
         col_groups: dict[int, list[YAxisVM]] = {}
         for axis in self._axes:
             col_groups.setdefault(axis.column, []).append(axis)
-
         for axes_in_col in col_groups.values():
-            axes_in_col_sorted = sorted(axes_in_col, key=lambda a: a.top_ratio)
-            h = 1.0 / len(axes_in_col_sorted)
-            for i, axis in enumerate(axes_in_col_sorted):
-                axis.top_ratio = i * h
+            ordered = sorted(axes_in_col, key=lambda a: a.top_ratio)
+            h = 1.0 / len(ordered)
+            cursor = 0.0
+            for axis in ordered:
+                axis.top_ratio = cursor
                 axis.height_ratio = h
+                cursor += h
 
     def remove_signal(self, signal_key: str) -> None:
-        """Remove *signal_key* from the plot and reconcile axes."""
+        """Remove *signal_key* from the plot and reconcile axes.
+
+        Survivors keep their absolute heights and positions: the removed axis is
+        pruned from the layout and its band is left blank (no reflow). Only when
+        the last signal is removed does the panel collapse to a full-height
+        placeholder (handled by :meth:`_compact_axes`).
+        """
         self._plotted = [e for e in self._plotted if e.signal_key != signal_key]
-        self._normalize_axes()
+        self._compact_axes()
         self._invalidate_cache()
         self._notify("signals")
 
@@ -272,14 +288,15 @@ class GraphPanelVM(Observable):
 
         Keyed on the Session (not on any specific unloaded key), so it is correct
         regardless of why a signal disappeared.  ``render_data`` already skips
-        absent signals; this clears the lingering bookkeeping and re-splits axes.
+        absent signals; this clears the lingering bookkeeping and prunes empty
+        axes. Survivors keep their heights/positions; removed bands stay blank.
         """
         present = {s.name for s in self._session.signals()}
         kept = [e for e in self._plotted if e.signal_key in present]
         if len(kept) == len(self._plotted):
             return
         self._plotted = kept
-        self._normalize_axes()
+        self._compact_axes()
         self._invalidate_cache()
         self._notify("signals")
 
