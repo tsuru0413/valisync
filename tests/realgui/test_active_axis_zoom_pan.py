@@ -114,7 +114,10 @@ def test_outer_drag_pans_on_active_axis(qtbot: QtBot, tmp_path) -> None:
     before_center = (hi0 + lo0) / 2.0
 
     spine = view._y_axes[0].sceneBoundingRect()
-    outer_x = spine.x() + spine.width() * 0.10  # left = window-edge side = pan zone
+    # Pan zone = left interior, now lx∈[FRAME, w/2]. Grab at 0.25 (well clear of the
+    # widened 8 px move-frame on the left edge, which would otherwise launch a move
+    # QDrag); the cursor test pins this same fraction as OpenHand/pan.
+    outer_x = spine.x() + spine.width() * 0.25  # left = window-edge side = pan zone
     x0, ya = _to_phys(view, outer_x, spine.y() + spine.height() * 0.40)
     _, yb = _to_phys(view, outer_x, spine.y() + spine.height() * 0.75)
 

@@ -38,6 +38,26 @@ def test_grip_takes_priority_over_frame_and_interior() -> None:
     assert classify_axis_zone(W / 2, 5.0, W, H, **KW) == AXZONE_GRIP_TOP
 
 
+# ─── Symptom 2: wider, grabbable move-frame (FRAME 3 → 8) + short-axis h/4 cap ──
+_KW8 = dict(grip_w=40.0, grip_h=8.0, frame=8.0, tol=4.0)
+
+
+def test_left_right_move_frame_is_wider_at_frame_8() -> None:
+    # 6 px in from the left edge at mid-height: the widened move-frame now claims it
+    # (FRAME=move), where the old 3 px border left it as interior pan. This is the
+    # core grabbability fix — a hairline 3 px move-edge was the reported instability.
+    assert classify_axis_zone(6.0, H / 2, W, H, **_KW8) == AXZONE_FRAME
+    assert classify_axis_zone(6.0, H / 2, W, H, **KW) == AXZONE_PAN  # old 3 px: pan
+
+
+def test_vertical_move_frame_capped_to_keep_interior_on_short_axis() -> None:
+    # On a 20 px-tall axis the 8 px top/bottom bands would otherwise swallow most of
+    # the height; the h/4 cap (=5 px) keeps a zoom/pan interior in the middle. At
+    # (lx=10, ly=6) — outside the grip, 6 px down a 20 px axis — the cap yields PAN;
+    # without the cap the 8 px band would mis-claim it as FRAME.
+    assert classify_axis_zone(10.0, 6.0, 72.0, 20.0, **_KW8) == AXZONE_PAN
+
+
 # ─── grip_resize_delta: absolute cursor-tracking edge delta (resize root-cause fix) ──
 # The grip edge must track the cursor as a fraction of the FULL PANEL height, NOT the
 # axis spine height. The old code divided the pixel delta by the spine height

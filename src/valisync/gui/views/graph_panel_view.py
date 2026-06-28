@@ -155,6 +155,11 @@ def classify_axis_zone(
     Priority: grip (resize) > frame border (move) > interior (inner=zoom / outer=pan).
     Inner = right (plot-side); outer = left (window-edge side). The grip hit-area is
     the centred grip rect expanded by *tol* for grabbability (NOT a full-width band).
+
+    The move-frame border is *frame* px on the left/right (the natural grab edge,
+    where width is fixed and ample). The top/bottom band is capped at h/4 so a short
+    (resized-down) axis always keeps a zoom/pan interior in its middle half instead
+    of collapsing entirely into the move-frame.
     """
     half = grip_w / 2.0
     in_grip_x = abs(lx - w / 2.0) <= half + tol
@@ -162,7 +167,8 @@ def classify_axis_zone(
         return AXZONE_GRIP_TOP
     if in_grip_x and ly >= h - grip_h - tol:
         return AXZONE_GRIP_BOTTOM
-    on_border = lx <= frame or lx >= w - frame or ly <= frame or ly >= h - frame
+    v_frame = min(frame, h / 4.0)
+    on_border = lx <= frame or lx >= w - frame or ly <= v_frame or ly >= h - v_frame
     if on_border:
         return AXZONE_FRAME
     return AXZONE_ZOOM if lx >= w / 2.0 else AXZONE_PAN
@@ -248,7 +254,10 @@ class _AlignedAxisItem(pg.AxisItem):
     # Grip/frame/interior zone constants (Task 5 — matched by cursor_for_local).
     GRIP_W: float = 40.0  # centred grip rect width (pixels)
     GRIP_H: float = 8.0  # grip rect height (pixels)
-    FRAME: float = 3.0  # frame border thickness (pixels)
+    # Move-frame border thickness. Wide enough to grab reliably and to keep the
+    # SizeAll move-cursor from flickering in a hairline band; the top/bottom band is
+    # capped at h/4 in classify_axis_zone so a short axis keeps a zoom/pan interior.
+    FRAME: float = 8.0
     TOL: float = 4.0  # grip hit-area expansion for grabbability (pixels)
 
     # Set per-build by the view (_reconcile_axes); None => not draggable/activatable.
