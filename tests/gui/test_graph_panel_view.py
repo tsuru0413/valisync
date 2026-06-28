@@ -346,7 +346,9 @@ class TestSmokeAndLifecycle:
         from valisync.gui.views.graph_panel_view import GraphPanelView
 
         view = GraphPanelView(vm)
-        qtbot.addWidget(view)
+        # 破棄時 unsubscribe の検証で view を意図的に deleteLater する。qtbot.addWidget で
+        # 管理下に置くと teardown が破棄済みオブジェクトを二重削除して RuntimeError になり、
+        # その teardown 破綻が次テストの isolation を壊す連鎖エラーを生む。だから登録しない。
         assert len(vm._callbacks) == 1
 
         view.deleteLater()
