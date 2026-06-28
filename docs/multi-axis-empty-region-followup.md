@@ -38,6 +38,7 @@ remove A → axis[0] h=0.500 (EMPTY) / axis[1] B h=0.500   ← B はハーフの
 - **案A（空軸刈り取り）**: PR #10（`49086f2`）で対処されたが、その「等分再分配（生存軸を全高化）」は案Bで置き換え。
 - **案B（高さ保持＝最終仕様）**: `feature/valisync-gui-axes-height-preserve`（PR #14 merged）で実装。`_normalize_axes` を `_compact_axes`（構造整合）+ `_relayout_columns`（等分・add/列数変更専用）に分離し `_normalize_axes` は廃止。`remove_signal`/`prune_missing_signals` は **`_compact_axes()` のみ**を呼び、**生存軸の絶対比率（全体に対する高さ・位置）を保持し、削除軸の帯は空白**にする（再レイアウトしない。当初の「比例維持 0.714/0.286」案から改訂）。設計: [docs/superpowers/specs/2026-06-28-y-axis-height-preserve-design.md](superpowers/specs/2026-06-28-y-axis-height-preserve-design.md) / 計画: [docs/superpowers/plans/2026-06-28-y-axis-height-preserve.md](superpowers/plans/2026-06-28-y-axis-height-preserve.md)。
 - **移動・並べ替えの高さ保持（2026-06-28）**: 削除（案B）と同原理を移動へ拡張。`move_axis_to_column` を `_relayout_columns`（等分）から `_layout_column_preserving`（高さ保持・超過時のみ合計で割る）へ切替。同列並べ替え＝高さ保持、列またぎ移動元＝空白、移動先＝収まれば割らない/超過時のみ割る。設計: [docs/superpowers/specs/2026-06-28-y-axis-move-height-preserve-design.md](superpowers/specs/2026-06-28-y-axis-move-height-preserve-design.md)。
+- **空白ギャップの忠実描画（2026-06-28）**: 高さ保持（PR #14/#16）は VM では空白を計算していたが、View が列内を grid 行ストレッチ（正規化）で積むため**描画されていなかった**。View をリージョン絶対ジオメトリ描画（Y軸スパイン・波形・ディバイダを絶対ストリップへ統一同期）へ修正し、空白が実際に描画されるようにした。検証は VM 値ではなく描画ジオメトリ（Layer B 必須・CI／Layer C realgui を geometry assert へ）。設計: [docs/superpowers/specs/2026-06-28-y-axis-region-absolute-render-design.md](superpowers/specs/2026-06-28-y-axis-region-absolute-render-design.md)。
 
 ## 関連リンク
 

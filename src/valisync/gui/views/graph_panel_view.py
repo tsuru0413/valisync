@@ -39,6 +39,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QGraphicsLineItem,
     QGraphicsRectItem,
+    QGraphicsWidget,
     QMenu,
     QVBoxLayout,
     QWidget,
@@ -217,9 +218,12 @@ class GraphPanelView(QWidget):
         self._y_axes: list[pg.AxisItem] = []
         self._view_boxes: list[pg.ViewBox] = []
         self._dividers: list[RegionDividerItem] = []
-        # One axis sub-layout per occupied column (root col = the column index).
-        # Empty until the first _reconcile_axes build.
-        self._axis_layouts: dict[int, pg.GraphicsLayout] = {}
+        # One empty width-reserving container per occupied column (root col = the
+        # column index); it pins the fixed gutter width and supplies that column's
+        # X band. AxisItems are scene items positioned over it by
+        # _sync_overlay_geometry (no grid row-stretch — that would normalise away
+        # blank gaps). Empty until the first _reconcile_axes build.
+        self._column_containers: dict[int, QGraphicsWidget] = {}
         # Snapshot of the last-built grid structure (column_count + per-axis
         # column/row placement); lets _reconcile_axes take a fast path that only
         # retunes row stretch + labels when nothing structural changed.
@@ -237,8 +241,10 @@ class GraphPanelView(QWidget):
         self._axis_move_dimmed_index: int | None = None
 
         self.plot_widget = pg.GraphicsLayoutWidget()
-        # The central layout stacks Y-axis sub-layouts in columns 0..N-1 and the
-        # plot area in column N (= vm.column_count); _reconcile_axes owns it.
+        # The central layout reserves a fixed-width gutter container in columns
+        # 0..N-1 and the plot area in column N (= vm.column_count); the stacked
+        # Y-axis spines are scene items drawn over the gutters at absolute strips.
+        # _reconcile_axes owns it.
         self._layout = self.plot_widget.ci.layout
 
         # Shared X-axis at the bottom (linked to the first ViewBox).
@@ -337,25 +343,61 @@ class GraphPanelView(QWidget):
                 self._y_axes[i].setRange(y_lo, y_hi)
 
     def _sync_overlay_geometry(self) -> None:
-        """Align every overlaid ViewBox to the master's plot rect.
+        """Align secondary ViewBoxes AND axis spines to absolute region strips.
 
-        Secondary ViewBoxes live directly in the scene (so waveforms draw
-        unclipped across the whole panel); their geometry must follow the
-        master's, otherwise they keep a stale rect and render their waveforms
-        outside their home region.
+        Region i (column c, top t, height h) occupies the strip
+        [R.y()+t*R.height(), h*R.height()] of the master plot rect R (so a region
+        sum < 1.0 leaves a genuine blank band — no normalization). X comes from the
+        column container so spines sit in their gutter. Called on refresh and on the
+        master's sigResized, so geometry follows window resizes.
         """
         if not self._view_boxes:
             return
-        rect = self._view_boxes[0].sceneBoundingRect()
+        R = self._view_boxes[0].sceneBoundingRect()
         for vb in self._view_boxes[1:]:
-            vb.setGeometry(rect)
+            vb.setGeometry(R)
+        for i, axis_vm in enumerate(self.vm.axes):
+            container = self._column_containers.get(axis_vm.column)
+            if container is None:
+                continue
+            band = container.sceneBoundingRect()
+            strip = QRectF(
+                band.x(),
+                R.y() + axis_vm.top_ratio * R.height(),
+                band.width(),
+                axis_vm.height_ratio * R.height(),
+            )
+            self._y_axes[i].setGeometry(strip)
+        self._position_dividers(R)
+
+    def _position_dividers(self, R: QRectF) -> None:
+        """Place each contiguous-pair divider on the shared boundary between its
+        column's upper/lower region (Y from the master rect R, X from the column
+        band). Dividers only exist for contiguous pairs (built in _reconcile_axes),
+        so none is ever drawn across a blank gap."""
+        for divider in self._dividers:
+            col = divider.column
+            if col is None or col not in self._column_containers:
+                continue
+            ordered = sorted(
+                (a for a in self.vm.axes if a.column == col),
+                key=lambda a: a.top_ratio,
+            )
+            if divider.axis_index >= len(ordered):
+                continue
+            upper = ordered[divider.axis_index]  # rank == upper region's vert index
+            band = self._column_containers[col].sceneBoundingRect()
+            y = R.y() + (upper.top_ratio + upper.height_ratio) * R.height()
+            divider.setGeometry(QRectF(band.x(), y, band.width(), 4.0))
 
     def _axis_placement(self) -> list[tuple[int, int, int]]:
-        """Map each VM axis to its grid slot as ``(vm_index, column, row)``.
+        """Map each VM axis to ``(vm_index, column, rank*2)``.
 
-        Within a column, axes stack top→bottom by ``top_ratio`` (mirroring the
-        VM's ``_col`` helper); ``row = rank * 2`` so the odd rows in between stay
-        free for the dividers that separate consecutive axes.
+        Within a column, axes are ranked top→bottom by ``top_ratio`` (mirroring
+        the VM's ``_col`` helper). The third element encodes the vertical rank
+        (``rank * 2``, kept for signature stability); it feeds the rebuild
+        signature and the occupied-column set — axes are no longer placed into
+        grid rows, but positioned at absolute strips by ``_sync_overlay_geometry``.
         """
         by_col: dict[int, list[tuple[float, int]]] = {}
         for i, ax in enumerate(self.vm.axes):
@@ -369,10 +411,13 @@ class GraphPanelView(QWidget):
     def _reconcile_axes(self) -> None:
         """Reconcile AxisItems, ViewBoxes, and Dividers with the VM's axes/columns.
 
-        AxisItems are grouped into one sub-layout per occupied column (root
-        col = the axis's column); the plot ViewBox container occupies root
-        col = ``column_count`` and every lower column reserves fixed Y-axis
-        width, so empty columns stay as drop-target gutters for a later task.
+        Each occupied column reserves a fixed-width container (root col = the
+        axis's column); the plot ViewBox container occupies root col =
+        ``column_count`` and every lower column reserves fixed Y-axis width, so
+        empty columns stay as drop-target gutters. AxisItems and dividers are
+        scene items (not grid-managed) positioned at absolute region strips by
+        ``_sync_overlay_geometry`` — this is what lets a region sum < 1.0 render a
+        genuine blank band instead of being normalised to fill the column.
 
         The ViewBox overlay model is unchanged: ``_view_boxes[0]`` is the
         layout-managed master and the rest are scene items kept aligned to it by
@@ -384,14 +429,14 @@ class GraphPanelView(QWidget):
 
         # Fast path: column grouping and vertical order are identical, so only
         # height_ratio/labels could have changed (e.g. a divider drag). Retune
-        # row stretch + labels in place instead of rebuilding — this keeps the
-        # dragged divider object alive rather than recreating it under the cursor.
-        if self._axis_layouts and signature == self._build_signature:
-            for i, col, row in placement:
+        # labels in place instead of rebuilding — this keeps the dragged divider
+        # object alive rather than recreating it under the cursor. The new
+        # height_ratio/top_ratio are applied by _sync_overlay_geometry(), which
+        # refresh() calls right after this returns: it repositions every spine,
+        # divider, and ViewBox to the live absolute strips (no grid row-stretch).
+        if self._column_containers and signature == self._build_signature:
+            for i, _col, _row in placement:
                 axis_vm = self.vm.axes[i]
-                self._axis_layouts[col].layout.setRowStretchFactor(
-                    row, int(axis_vm.height_ratio * 1000)
-                )
                 if axis_vm.name or axis_vm.unit:
                     self._y_axes[i].setLabel(
                         text=axis_vm.name or None, units=axis_vm.unit or None
@@ -411,20 +456,30 @@ class GraphPanelView(QWidget):
         self._axis_move_line = None
         self._axis_move_highlight = None
 
-        # Secondary ViewBoxes live straight in the scene (so waveforms draw
-        # unclipped), so ci.clear() — which only drops layout-managed items —
-        # leaves them behind as orphans that keep drawing their stale curve.
-        # Remove them explicitly first.
+        # Secondary ViewBoxes, AxisItems, and dividers all live straight in the
+        # scene (so waveforms draw unclipped and spines/dividers sit at absolute
+        # strips), so ci.clear() — which only drops layout-managed items — leaves
+        # them behind as orphans that keep drawing stale curves/ticks. Remove them
+        # explicitly first. (The master ViewBox, column containers, and X-axis are
+        # layout-managed, so ci.clear() drops those.)
         for vb in self._view_boxes[1:]:
             scene = vb.scene()
             if scene is not None:
                 scene.removeItem(vb)
+        for axis in self._y_axes:
+            axis_scene = axis.scene()
+            if axis_scene is not None:
+                axis_scene.removeItem(axis)
+        for divider in self._dividers:
+            divider_scene = divider.scene()
+            if divider_scene is not None:
+                divider_scene.removeItem(divider)
         self.plot_widget.ci.clear()
         self._y_axes.clear()
         self._view_boxes.clear()
         self._dividers.clear()
         self._items.clear()  # Clear items to force re-adding to new ViewBoxes
-        self._axis_layouts = {}
+        self._column_containers = {}
 
         # We'll use a single legend for the whole panel
         self._legend = pg.LegendItem()
@@ -440,15 +495,19 @@ class GraphPanelView(QWidget):
         root.setRowStretchFactor(0, 1)
         root.setRowStretchFactor(1, 0)  # Fixed height for X-axis
 
-        # One axis sub-layout per occupied column, in its matching root column.
+        # One empty width-reserving container per occupied column, in its matching
+        # root column. It pins the fixed gutter width (so removing the axes from
+        # the grid doesn't collapse the column and let the plot slide left) and
+        # supplies that column's X band for _sync_overlay_geometry.
         for col in sorted({c for _, c, _ in placement}):
-            self._axis_layouts[col] = self.plot_widget.addLayout(row=0, col=col)
-
-        row_of = {i: row for i, _c, row in placement}
-        col_of = {i: c for i, c, _row in placement}
+            container = QGraphicsWidget()
+            container.setMaximumWidth(_Y_AXIS_FIXED_WIDTH)
+            self.plot_widget.addItem(container, row=0, col=col)
+            self._column_containers[col] = container
 
         # Create ViewBoxes + AxisItems in VM order so _view_boxes[i]/_y_axes[i]
-        # stay paired with vm.axes[i]; AxisItems are PLACED by column/row.
+        # stay paired with vm.axes[i]; AxisItems are scene items positioned at
+        # absolute strips by _sync_overlay_geometry (NOT grid-managed).
         master_vb: pg.ViewBox | None = None
         for i, axis_vm in enumerate(self.vm.axes):
             vb = pg.ViewBox()
@@ -473,36 +532,48 @@ class GraphPanelView(QWidget):
             # Fixed width shared by all stacked axes so their spines/tick numbers
             # align; overrides pyqtgraph's per-axis auto-width (which is ragged).
             axis.setWidth(_Y_AXIS_FIXED_WIDTH)
+            # Tighten the bounding rect to the spine strip: by default pyqtgraph
+            # pads it 15px above/below to reserve room for labels that overflow the
+            # ends, which would make a region's painted rect overlap its neighbour
+            # (and the blank gap). With absolute strips we want the spine to occupy
+            # exactly its region, and overlapping tick labels in short regions are
+            # better hidden than allowed to bleed across the gap.
+            axis.setStyle(hideOverlappingLabels=True)
             # Tag the axis with its VM index so a drag from it carries that index.
             axis.set_vm_axis_index(i)
             if axis_vm.name or axis_vm.unit:
                 axis.setLabel(text=axis_vm.name or None, units=axis_vm.unit or None)
             self._y_axes.append(axis)
 
-            sub = self._axis_layouts[col_of[i]]
-            sub.addItem(axis, row=row_of[i], col=0)
-            sub.layout.setRowStretchFactor(row_of[i], int(axis_vm.height_ratio * 1000))
+            # Add the axis straight to the scene (like the secondary ViewBoxes);
+            # _sync_overlay_geometry sets its absolute strip geometry. Adding it to
+            # a grid sub-layout would normalise the column and erase blank gaps.
+            self.plot_widget.scene().addItem(axis)
 
-        # Dividers sit between vertically-consecutive axes WITHIN a column, just
-        # below the upper axis. The divider's axis_index is the upper axis's
-        # vertical RANK in its column (not a VM index) and it carries that
-        # column, so resize_axis stays column-scoped and follows vertical
-        # (top_ratio) order — correct even when VM-index order diverges from
-        # vertical order after a move_axis_to_column. ``placement`` is grouped by
-        # column then ranked top→bottom, so counting per column gives each
-        # column's vertical axis count; a divider at vertical rank k sits at
-        # sub-layout row ``k*2 + 1`` (between axis rows ``k*2`` and ``(k+1)*2``).
-        axes_per_col: dict[int, int] = {}
-        for _vm_index, col, _row in placement:
-            axes_per_col[col] = axes_per_col.get(col, 0) + 1
-        for col, n_axes in axes_per_col.items():
-            sub = self._axis_layouts[col]
-            for rank in range(n_axes - 1):
-                divider = RegionDividerItem(self.vm, rank, column=col)
-                self._dividers.append(divider)
-                drow = rank * 2 + 1
-                sub.addItem(divider, row=drow, col=0)
-                sub.layout.setRowFixedHeight(drow, 1)
+        # Dividers sit on the shared boundary between vertically-CONTIGUOUS axes
+        # within a column (upper region's bottom == lower region's top). A divider
+        # is created only for contiguous pairs, so none is ever placed across a
+        # blank gap (e.g. A(0,0.5)/C(0.8,0.2) get no divider). The divider's
+        # axis_index is the upper axis's vertical RANK in its column (not a VM
+        # index) and it carries that column, so resize_axis stays column-scoped and
+        # follows vertical (top_ratio) order — correct even when VM-index order
+        # diverges after a move_axis_to_column. Dividers are scene items positioned
+        # by _position_dividers (via _sync_overlay_geometry).
+        by_col: dict[int, list[int]] = {}
+        for i, ax in enumerate(self.vm.axes):
+            by_col.setdefault(ax.column, []).append(i)
+        for col, idxs in sorted(by_col.items()):
+            ordered = sorted(idxs, key=lambda j: self.vm.axes[j].top_ratio)
+            for rank in range(len(ordered) - 1):
+                upper = self.vm.axes[ordered[rank]]
+                lower = self.vm.axes[ordered[rank + 1]]
+                contiguous = (
+                    abs((upper.top_ratio + upper.height_ratio) - lower.top_ratio) < 1e-6
+                )
+                if contiguous:
+                    divider = RegionDividerItem(self.vm, rank, column=col)
+                    self.plot_widget.scene().addItem(divider)
+                    self._dividers.append(divider)
 
         # The VM always holds at least one axis, so the master ViewBox is set.
         assert master_vb is not None
@@ -519,8 +590,12 @@ class GraphPanelView(QWidget):
     # ─── Test/introspection surface ────────────────────────────────────────────
 
     def axis_columns(self) -> list[int]:
-        """Return the sorted root grid columns that currently hold an AxisItem."""
-        return sorted(self._axis_layouts)
+        """Return the sorted root grid columns that are currently occupied.
+
+        Same public semantics as before (occupied gutter columns); the backing
+        store is now the per-column width-reserving containers.
+        """
+        return sorted(self._column_containers)
 
     def plot_grid_column(self) -> int:
         """Return the root grid column reserved for the plot ViewBox container."""

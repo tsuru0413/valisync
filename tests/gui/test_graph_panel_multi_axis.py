@@ -867,12 +867,14 @@ def _mounted_panel(
     return view, vm
 
 
-def test_view_builds_one_sublayout_per_column(qtbot: QtBot) -> None:
-    """Each occupied column gets its own axis sub-layout; the plot sits last.
+def test_view_reserves_one_container_per_column(qtbot: QtBot) -> None:
+    """Each occupied column reserves one width container; the plot sits last.
 
     With two axes split across columns 0 (outer) and 1 (inner) of a 2-column
-    layout, the view exposes one axis sub-layout per occupied column and the
-    plot ViewBox container occupies root column ``column_count``.
+    layout, the view exposes one width-reserving container per occupied column
+    (``axis_columns()``) and the plot ViewBox container occupies root column
+    ``column_count``. (Axis spines themselves are scene items at absolute strips,
+    not grid sub-layouts.)
     """
     view, vm = _mounted_panel(qtbot, columns=2)
     _inject_signal(vm, "sig::a")

@@ -68,9 +68,9 @@ def test_axis_drag_from_inner_column_to_outer_column(
       * moves drive ``dragMoveEvent`` (column-highlight / insertion-line feedback)
       * release over the outer-column band → ``dropEvent`` →
         ``vm.move_axis_to_column(0, 0)``
-      * ViewModel reflects ``vm.axes[0].column == 0``
-      * heights are preserved: moved axis keeps ~0.5, inner remainder stays at
-        top 0.5 with a blank gap above (no equal-split on move)
+      * rendered geometry (spine strips + column band), not VM values: moved
+        axis spine paints in the outer-column 0 band at top ~0.0 with height ~0.5;
+        inner remainder spine paints in column 1 at top ~0.5 (blank gap above)
     """
     if sys.platform != "win32":
         pytest.skip("real OS drag uses Win32 mouse_event (Windows-only)")
@@ -257,29 +257,55 @@ def test_axis_drag_from_inner_column_to_outer_column(
     # ─── Assertions ───────────────────────────────────────────────────────────
     # After the drag: axis 0 (k0) must have relocated to outer column 0, and the
     # panel must still hold exactly 2 axes (axis 1 stays in column 1).
+    # Real-input completion proof (KEEP): the drag actually reached dropEvent.
     assert view.drop_seen, (
         "no dropEvent fired — the real-OS drag never completed (watchdog "
         f"cancelled it). Screenshots saved to {tmp_path}"
     )
-    assert vm.axes[0].column == 0, (
-        "axis did not relocate to outer column 0 after real-OS drag; "
-        f"got column={vm.axes[0].column!r}. Screenshots saved to {tmp_path}"
-    )
     assert len(vm.axes) == 2, f"expected 2 axes after drag, got {len(vm.axes)}"
-    # Height preservation (root fix): the moved axis keeps its height (~0.5) —
-    # it must NOT be equal-split to full height — and the inner column's
-    # remaining axis keeps its absolute position with a blank gap at the top.
-    assert vm.axes[0].height_ratio == pytest.approx(0.5, abs=0.05), (
-        "moved axis should keep its height (~0.5), not grow to full height; "
-        f"got {vm.axes[0].height_ratio!r}. Screenshots saved to {tmp_path}"
+    # Let the post-drop rebuild settle, then assert RENDERED geometry — NOT VM
+    # ratios. The prior column/height_ratio/top_ratio asserts were the
+    # false-green: the VM moved the axis but the View never painted the gap.
+    for _ in range(3):
+        QApplication.processEvents()
+    qtbot.waitUntil(
+        lambda: (
+            len(view._y_axes) == 2  # type: ignore[attr-defined]
+            and view._view_boxes[0].sceneBoundingRect().height() > 100
+        ),  # type: ignore[attr-defined]
+        timeout=3000,
     )
-    inner_axes = [a for a in vm.axes if a.column == 1]
-    assert len(inner_axes) == 1, (
-        f"expected 1 axis in inner column, got {len(inner_axes)}. "
-        f"Screenshots saved to {tmp_path}"
+    R = view._view_boxes[0].sceneBoundingRect()  # type: ignore[attr-defined]
+
+    def _strip(i: int) -> tuple[float, float]:
+        r = view._y_axes[i].sceneBoundingRect()  # type: ignore[attr-defined]
+        return ((r.y() - R.y()) / R.height(), r.height() / R.height())
+
+    def _center_x(i: int) -> float:
+        return view._y_axes[i].sceneBoundingRect().center().x()  # type: ignore[attr-defined]
+
+    # axis 0 = the moved axis; its spine must paint in the OUTER column 0 band,
+    # ~0.5 tall at top 0.0 (NOT grown to full height).
+    band0 = view._column_containers[0].sceneBoundingRect()  # type: ignore[attr-defined]
+    moved_top, moved_h = _strip(0)
+    assert band0.x() <= _center_x(0) <= band0.x() + band0.width(), (
+        f"moved spine not rendered in outer column 0 band. Screenshots: {tmp_path}"
     )
-    assert inner_axes[0].top_ratio == pytest.approx(0.5, abs=0.05), (
-        "inner remaining axis should keep its absolute top (blank gap above); "
-        f"got top_ratio={inner_axes[0].top_ratio!r}. Screenshots saved to {tmp_path}"
+    assert moved_top == pytest.approx(0.0, abs=0.06), (
+        f"moved spine not at top of col0 (got {moved_top}). Screenshots: {tmp_path}"
     )
-    assert inner_axes[0].height_ratio == pytest.approx(0.5, abs=0.05)
+    assert moved_h == pytest.approx(0.5, abs=0.06), (
+        f"moved spine not ~0.5 tall — gap not rendered (got {moved_h}). "
+        f"Screenshots: {tmp_path}"
+    )
+    # axis 1 = inner remainder; its spine must paint in column 1 at top ~0.5
+    # (the vacated top half [0.0,0.5] is a genuine blank band).
+    band1 = view._column_containers[1].sceneBoundingRect()  # type: ignore[attr-defined]
+    rem_top, _rem_h = _strip(1)
+    assert band1.x() <= _center_x(1) <= band1.x() + band1.width(), (
+        f"inner remainder spine not in column 1 band. Screenshots: {tmp_path}"
+    )
+    assert rem_top == pytest.approx(0.5, abs=0.06), (
+        f"inner remainder spine not at top 0.5 (blank above) — got {rem_top}. "
+        f"Screenshots: {tmp_path}"
+    )
