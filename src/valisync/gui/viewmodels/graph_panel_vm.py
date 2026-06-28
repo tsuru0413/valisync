@@ -195,13 +195,13 @@ class GraphPanelVM(Observable):
     ) -> None:
         """Move an axis to *column*, inserting at vertical *position* (0=top, None=bottom).
 
-        The source slot is vacated and re-split by _relayout_columns (rule 1:
-        equal re-split per column). `position` is the insertion index among the
-        destination column's other members. Existing 2-arg callers append at the
-        bottom.
+        Heights are **preserved, not equal-split**.  The destination column is
+        re-stacked keeping each axis's height (scaled down only if the column
+        would overflow — see :meth:`_layout_column_preserving`); the source
+        column is left untouched, so the vacated band stays blank (mirroring
+        removal).  A same-column move is therefore a pure reorder.  A stale drag
+        index (e.g. axes changed mid-drag) is a no-op, not an ``IndexError``.
         """
-        # A stale drag index (e.g. axes re-split mid-drag) must be a no-op, not
-        # an IndexError.
         if not (0 <= axis_index < len(self._axes)):
             return
         column = max(0, min(column, self._column_count - 1))
@@ -211,18 +211,12 @@ class GraphPanelVM(Observable):
             [a for a in self._axes if a.column == column and a is not moved],
             key=lambda a: a.top_ratio,
         )
-        if not others:
-            moved.top_ratio = 0.0
-        elif position is None or position >= len(others):
-            moved.top_ratio = others[-1].top_ratio + 1.0  # bottom
-        elif position <= 0:
-            moved.top_ratio = others[0].top_ratio - 1.0  # top
+        if position is None or position >= len(others):
+            insert_at = len(others)
         else:
-            moved.top_ratio = (
-                others[position - 1].top_ratio + others[position].top_ratio
-            ) / 2.0
-        self._compact_axes()
-        self._relayout_columns()
+            insert_at = max(0, position)
+        ordered = [*others[:insert_at], moved, *others[insert_at:]]
+        self._layout_column_preserving(ordered)
         self._notify("axes")
 
     def _compact_axes(self) -> None:
@@ -230,8 +224,9 @@ class GraphPanelVM(Observable):
 
         Survivors keep their existing top_ratio/height_ratio, so a removed axis
         leaves a blank band with no reflow — this *is* the layout behavior for
-        removal. The add / move / column-count paths follow this with
-        :meth:`_relayout_columns` to re-split equally. When no signals remain,
+        removal. The add / column-count paths follow this with
+        :meth:`_relayout_columns` to re-split equally; the move path instead
+        uses :meth:`_layout_column_preserving`. When no signals remain,
         collapse to a single full-height placeholder in the inner (last) column.
         """
         used = sorted({e.axis_index for e in self._plotted})
@@ -249,7 +244,7 @@ class GraphPanelVM(Observable):
     def _relayout_columns(self) -> None:
         """Assign top_ratio/height_ratio per column, splitting height equally.
 
-        Used by the add / move / column-count paths, where a fresh equal split is
+        Used by the add / column-count paths, where a fresh equal split is
         the intended layout. Removal does NOT call this — survivors keep their
         existing ratios and the removed band stays blank (see
         :meth:`remove_signal`).
@@ -269,6 +264,27 @@ class GraphPanelVM(Observable):
                 axis.top_ratio = cursor
                 axis.height_ratio = h
                 cursor += h
+
+    def _layout_column_preserving(self, axes_in_order: list[YAxisVM]) -> None:
+        """Lay out one column's axes top-to-bottom, preserving their heights.
+
+        Stacks ``axes_in_order`` from the top using each axis's current
+        ``height_ratio``.  Only when the heights sum to more than 1.0 (an axis
+        was added to an already-full column) are they scaled down uniformly to
+        fit — relative proportions are kept.  When they sum to less than 1.0 the
+        remainder stays a blank band at the bottom.  Used by
+        :meth:`move_axis_to_column`; the add / column-count paths use
+        :meth:`_relayout_columns` (equal split).
+        """
+        total = sum(a.height_ratio for a in axes_in_order)
+        if total > 1.0 + 1e-9:
+            scale = 1.0 / total
+            for axis in axes_in_order:
+                axis.height_ratio *= scale
+        cursor = 0.0
+        for axis in axes_in_order:
+            axis.top_ratio = cursor
+            cursor += axis.height_ratio
 
     def remove_signal(self, signal_key: str) -> None:
         """Remove *signal_key* from the plot and reconcile axes.
