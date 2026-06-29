@@ -615,8 +615,7 @@ class GraphPanelView(QWidget):
         self._drag_start: QPointF | None = None
         self._drop_active = False
         self._removable = True
-        # Global cursor state (R15)
-        self._cursor_press_pos: QPointF | None = None
+        # Global cursor state (R15/R16)
         self._suppress_cursor_signal = False
         # Active/hover axis — transient UI state, not persisted to the VM.
         # _active_axis_index: the axis the user last clicked (None = none selected).
@@ -673,6 +672,17 @@ class GraphPanelView(QWidget):
         if self._view_boxes:
             self._view_boxes[0].addItem(self._cursor_line, ignoreBounds=True)
         self._cursor_line.sigPositionChanged.connect(self._on_cursor_line_dragged)
+        # Delta (B) cursor line — blue dashed, added to master ViewBox
+        self._cursor_line_b = pg.InfiniteLine(
+            angle=90,
+            movable=True,
+            pen=pg.mkPen("#89b4fa", width=2, style=Qt.PenStyle.DashLine),
+        )
+        self._cursor_line_b.setVisible(False)
+        self._cursor_line_b.setZValue(10)
+        if self._view_boxes:
+            self._view_boxes[0].addItem(self._cursor_line_b, ignoreBounds=True)
+        self._cursor_line_b.sigPositionChanged.connect(self._on_cursor_line_b_dragged)
         self._readout = CursorReadout(self)
         self._readout.setVisible(False)
         # Track whether the readout has been placed at (8,8) for the current cursor
@@ -683,8 +693,8 @@ class GraphPanelView(QWidget):
     # ─── Rendering ─────────────────────────────────────────────────────────────
 
     def _on_vm_change(self, change: str) -> None:
-        if change == "cursor":
-            self._on_vm_cursor_change()
+        if change in ("cursor", "delta"):
+            self._sync_cursor_from_vm()
             return
         self.refresh()
 
@@ -759,6 +769,12 @@ class GraphPanelView(QWidget):
                 self._sync_cursor_from_vm()
             except RuntimeError:
                 pass  # cursor line C++ object deleted; will be rebuilt by next init
+        if hasattr(self, "_cursor_line_b") and self._view_boxes:
+            try:
+                if self._cursor_line_b.scene() is None:
+                    self._view_boxes[0].addItem(self._cursor_line_b, ignoreBounds=True)
+            except RuntimeError:
+                pass  # C++ object deleted; rebuilt by next init
 
     def _sync_overlay_geometry(self) -> None:
         """Align secondary ViewBoxes AND axis spines to absolute region strips.
@@ -874,6 +890,12 @@ class GraphPanelView(QWidget):
             try:
                 if self._cursor_line in self._view_boxes[0].addedItems:
                     self._view_boxes[0].removeItem(self._cursor_line)
+            except RuntimeError:
+                pass  # C++ object already deleted; refresh() will skip re-attach
+        if hasattr(self, "_cursor_line_b") and self._view_boxes:
+            try:
+                if self._cursor_line_b in self._view_boxes[0].addedItems:
+                    self._view_boxes[0].removeItem(self._cursor_line_b)
             except RuntimeError:
                 pass  # C++ object already deleted; refresh() will skip re-attach
         self.plot_widget.ci.clear()
@@ -1019,24 +1041,29 @@ class GraphPanelView(QWidget):
         """Return whether *key*'s curve is clipped to its ViewBox."""
         return bool(self._items[key].opts.get("clipToView", False))
 
-    # ─── Global cursor (R15) ─────────────────────────────────────────────────────
-
-    def _on_vm_cursor_change(self) -> None:
-        self._sync_cursor_from_vm()
+    # ─── Global cursor (R15) + Delta cursor (R16) ────────────────────────────────
 
     def _sync_cursor_from_vm(self) -> None:
-        """Reflect vm.cursor_t onto the line + readout (visibility, position, values)."""
+        """Reflect A/B cursor + readout from full VM state."""
         t = self.vm.cursor_t
         if t is None:
             self._cursor_line.setVisible(False)
+            self._cursor_line_b.setVisible(False)
             self._readout.setVisible(False)
-            self._readout_placed = False  # next show must re-place at (8,8)
+            self._readout_placed = False
             return
         self._suppress_cursor_signal = True
         self._cursor_line.setValue(t)
+        if self.vm.cursor_t_b is not None:
+            self._cursor_line_b.setValue(self.vm.cursor_t_b)
         self._suppress_cursor_signal = False
         self._cursor_line.setVisible(True)
-        self._readout.set_readings(self.vm.cursor_readings())
+        if self.vm.delta_enabled and self.vm.cursor_t_b is not None:
+            self._cursor_line_b.setVisible(True)
+            self._readout.set_delta(t, self.vm.cursor_t_b, self.vm.delta_readings())
+        else:
+            self._cursor_line_b.setVisible(False)
+            self._readout.set_global(t, self.vm.cursor_readings())
         if not self._readout_placed:
             # Only on the first show (hidden→visible transition) snap to corner.
             # Subsequent syncs while the readout stays visible must not disturb
@@ -1051,10 +1078,10 @@ class GraphPanelView(QWidget):
             return
         self.vm.set_cursor(float(self._cursor_line.value()))
 
-    def _place_cursor_at(self, pos: QPointF) -> None:
-        t = self._data_value(pos, "x")
-        if t is not None:
-            self.vm.set_cursor(t)
+    def _on_cursor_line_b_dragged(self) -> None:
+        if self._suppress_cursor_signal:
+            return
+        self.vm.set_cursor_b(float(self._cursor_line_b.value()))
 
     # Test introspection
     def cursor_line_visible(self) -> bool:
@@ -1062,6 +1089,12 @@ class GraphPanelView(QWidget):
 
     def cursor_line_value(self) -> float:
         return float(self._cursor_line.value())
+
+    def delta_line_visible(self) -> bool:
+        return bool(self._cursor_line_b.isVisible())
+
+    def delta_line_value(self) -> float:
+        return float(self._cursor_line_b.value())
 
     def readout_visible(self) -> bool:
         # isVisible() depends on ancestors being shown; isHidden() checks only
@@ -1264,9 +1297,6 @@ class GraphPanelView(QWidget):
             if zone in (ZONE_X_INNER, ZONE_X_OUTER):
                 self._drag_zone = zone
                 self._drag_start = event.position()
-            elif zone == ZONE_PLOT:
-                # Track press position; if release is nearby, place the cursor.
-                self._cursor_press_pos = event.position()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -1275,14 +1305,6 @@ class GraphPanelView(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        # Cursor placement: a short click in ZONE_PLOT sets the cursor.
-        if self._cursor_press_pos is not None:
-            moved = (event.position() - self._cursor_press_pos).manhattanLength()
-            press_pos = self._cursor_press_pos
-            self._cursor_press_pos = None
-            if moved < 4 and self._zone_at(event.position()) == ZONE_PLOT:
-                self._place_cursor_at(press_pos)
-
         if self._drag_zone is not None and self._drag_start is not None:
             # _drag_zone can only be an X zone (Y zoom/pan moved to _AlignedAxisItem).
             axis = "x"
@@ -1423,6 +1445,18 @@ class GraphPanelView(QWidget):
         menu.addAction("Reset All Axes").triggered.connect(
             lambda *_: self._reset_all_axes()
         )
+        menu.addSeparator()
+        main_act = menu.addAction("メインカーソル")
+        main_act.setCheckable(True)
+        main_act.setChecked(self.vm.cursor_t is not None)
+        # setChecked BEFORE toggled.connect so the initial state-set does not fire the handler
+        main_act.toggled.connect(lambda checked: self.vm.toggle_main_cursor(checked))
+        sub_act = menu.addAction("サブカーソル（Δ）")  # noqa: RUF001
+        sub_act.setCheckable(True)
+        sub_act.setChecked(self.vm.delta_enabled)
+        sub_act.setEnabled(self.vm.cursor_t is not None)  # greyed out until main ON
+        # setChecked BEFORE toggled.connect so the initial state-set does not fire the handler
+        sub_act.toggled.connect(lambda checked: self.vm.toggle_delta(checked))
         interp = menu.addMenu("補間方式")
         for label, method in (
             ("線形", InterpolationMethod.LINEAR),
