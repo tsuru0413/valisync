@@ -178,7 +178,10 @@ class TestLifecycle:
         from valisync.gui.views.graph_area_view import GraphAreaView
 
         view = GraphAreaView(vm)
-        qtbot.addWidget(view)
+        # 破棄時 unsubscribe の検証で view を意図的に deleteLater する。qtbot.addWidget で
+        # 管理下に置くと teardown が破棄済みオブジェクトを二重削除して RuntimeError になり、
+        # その teardown 破綻が次テストの isolation を壊す連鎖エラーを生む。だから登録しない。
+        # 姉妹 test_graph_panel_view も同方針。memory: gui_qtbot_addwidget_vs_manual_delete_cascade。
         assert len(vm._callbacks) == 1
 
         view.deleteLater()
