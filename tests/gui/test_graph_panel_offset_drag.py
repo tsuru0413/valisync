@@ -117,3 +117,38 @@ def test_escape_cancels_drag_and_restores(qtbot: QtBot) -> None:
     QApplication.sendEvent(view, esc)
     np.testing.assert_allclose(np.asarray(view.curve_xy(key)[0]), x_before)
     assert view._offset_drag_key is None
+
+
+def test_refresh_cancels_drag_when_curve_removed(qtbot: QtBot) -> None:
+    """Guard (§9): drag is cancelled when the active curve disappears during refresh.
+
+    The production guard in refresh() calls _cancel_offset_drag() when
+    _offset_drag_key is no longer in _items.  Removing the signal via the VM
+    triggers a synchronous refresh() via the subscription; this test verifies
+    that path without touching the production guard code.
+    """
+    captured: list[tuple] = []
+    view = _shown(qtbot)
+    view.offset_apply_requested.connect(lambda k, dt, sc: captured.append((k, dt, sc)))
+    key = sorted(view._items.keys())[0]
+    _press_drag(view, dx_px=30.0)
+    assert view._offset_drag_key is not None  # drag is active before removal
+    # remove_signal notifies the VM subscriber synchronously → refresh() fires,
+    # the guard sees _offset_drag_key absent from _items, and cancels the drag.
+    view.vm.remove_signal(key)
+    assert view._offset_drag_key is None
+    assert captured == []  # cancel must NOT emit offset_apply_requested
+
+
+def test_press_zone_plot_no_nearby_curve_no_drag(qtbot: QtBot) -> None:
+    """Negative path: ZONE_PLOT press with no nearby curve must not start offset drag.
+
+    The linear signal (v=t) passes through the geometric centre of the plot but
+    is far from the top-left corner.  _curve_at returns None there, so the
+    ``if key is not None`` guard in mousePressEvent prevents activation.
+    """
+    view = _shown(qtbot)
+    rect = view._plot_rect_in_widget()
+    corner = QPointF(rect.left() + 3.0, rect.top() + 3.0)
+    _send(view, QEvent.Type.MouseButtonPress, corner)
+    assert view._offset_drag_key is None

@@ -1494,6 +1494,9 @@ class GraphPanelView(QWidget):
         self._offset_orig_xy = None
         self._offset_orig_pen = None
         self._offset_last_delta = 0.0
+        # Restore the default cursor so the SizeHorCursor set by _begin_offset_drag
+        # does not linger through the apply dialog or into the next mouse move.
+        self.unsetCursor()
 
     def _default_apply_dialog(self, signal_key: str, delta_t: float) -> str | None:
         """Modal apply dialog: 'signal' / 'group' / None (cancel). Enter → signal."""
