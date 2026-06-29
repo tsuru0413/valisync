@@ -75,12 +75,16 @@ class AppViewModel(Observable):
             # Group apply discards sibling per-signal adjustments so the whole
             # group lands on one uniform offset (user decision): drop every
             # signal_offset under this group's "<group>::" prefix.
-            prefix = f"{group_key}::"
-            for sk in [k for k in self._signal_offsets if k.startswith(prefix)]:
-                del self._signal_offsets[sk]
+            self._purge_signal_offsets_under(group_key)
         else:
             raise ValueError(f"scope must be 'signal' or 'group', got {scope!r}")
         self._notify("offsets")
+
+    def _purge_signal_offsets_under(self, group_key: str) -> None:
+        """Drop every per-signal offset whose key is under *group_key* (``"<group>::"`` prefix)."""
+        prefix = f"{group_key}::"
+        for sk in [k for k in self._signal_offsets if k.startswith(prefix)]:
+            del self._signal_offsets[sk]
 
     @property
     def active_file_key(self) -> str | None:
@@ -114,9 +118,7 @@ class AppViewModel(Observable):
             self._notify("active_file")
         # Drop any offsets tied to the removed group so stale dicts don't linger.
         self._file_offsets.pop(key, None)
-        prefix = f"{key}::"
-        for sk in [k for k in self._signal_offsets if k.startswith(prefix)]:
-            del self._signal_offsets[sk]
+        self._purge_signal_offsets_under(key)
         self._notify("unloaded")
 
     # ─── Load ────────────────────────────────────────────────────────────────

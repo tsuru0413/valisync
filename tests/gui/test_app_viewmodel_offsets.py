@@ -90,6 +90,28 @@ def test_unload_purges_offsets_for_group() -> None:
     assert app.file_offsets == {}
 
 
+def test_apply_offset_group_scope_accumulates() -> None:
+    app = AppViewModel()
+    app.apply_offset("csv_1::speed", 0.10, "group")
+    app.apply_offset("csv_1::rpm", 0.20, "group")
+    assert app.file_offsets == {"csv_1": pytest.approx(0.30)}
+    assert app.signal_offsets == {}
+
+
+def test_file_offsets_property_returns_copy() -> None:
+    app = AppViewModel()
+    app.apply_offset("csv_1::speed", 0.5, "group")
+    snapshot = app.file_offsets
+    snapshot["csv_1"] = 999.0
+    assert app.file_offsets == {"csv_1": pytest.approx(0.5)}
+
+
+def test_apply_offset_invalid_scope_raises() -> None:
+    app = AppViewModel()
+    with pytest.raises(ValueError):
+        app.apply_offset("csv_1::speed", 0.1, "bogus")
+
+
 def test_inspect_includes_offsets() -> None:
     app = AppViewModel()
     app.apply_offset("csv_1::speed", 0.1, "signal")
