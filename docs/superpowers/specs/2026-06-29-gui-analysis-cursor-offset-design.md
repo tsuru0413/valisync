@@ -3,7 +3,7 @@
 - 日付: 2026-06-29
 - 対象 spec: `valisync-gui-analysis`（親 `valisync-gui` の R14–R17）
 - 関連: [アクティブ軸統一操作モデル](2026-06-28-y-axis-per-axis-resize-active-model-design.md)（プロット操作モデルの先行設計）/ `docs/roadmap.md` / `docs/gui-testing-layers.md`
-- ステータス: brainstorming 合意済み（実装プランは writing-plans で別途作成）
+- ステータス: brainstorming 合意済み。**増分A=R15 実装完了（2026-06-29・PR #21 merged）／増分B(R16+R17)・増分C(R14) 未着手。** R15 実装プラン: [r15-global-cursor](../plans/2026-06-29-gui-analysis-r15-global-cursor.md)（B/C は未作成）
 
 ## 1. 背景・目的
 
