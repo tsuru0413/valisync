@@ -675,6 +675,10 @@ class GraphPanelView(QWidget):
         self._cursor_line.sigPositionChanged.connect(self._on_cursor_line_dragged)
         self._readout = CursorReadout(self)
         self._readout.setVisible(False)
+        # Track whether the readout has been placed at (8,8) for the current cursor
+        # session, so subsequent syncs don't snap a user-dragged readout back to
+        # the corner.  Reset to False whenever the readout is hidden (cursor cleared).
+        self._readout_placed: bool = False
 
     # ─── Rendering ─────────────────────────────────────────────────────────────
 
@@ -1026,13 +1030,19 @@ class GraphPanelView(QWidget):
         if t is None:
             self._cursor_line.setVisible(False)
             self._readout.setVisible(False)
+            self._readout_placed = False  # next show must re-place at (8,8)
             return
         self._suppress_cursor_signal = True
         self._cursor_line.setValue(t)
         self._suppress_cursor_signal = False
         self._cursor_line.setVisible(True)
         self._readout.set_readings(self.vm.cursor_readings())
-        self._readout.move(8, 8)  # default initial position (draggable)
+        if not self._readout_placed:
+            # Only on the first show (hidden→visible transition) snap to corner.
+            # Subsequent syncs while the readout stays visible must not disturb
+            # a user-dragged position.
+            self._readout.move(8, 8)
+            self._readout_placed = True
         self._readout.setVisible(True)
         self._readout.raise_()
 

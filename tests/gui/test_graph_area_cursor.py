@@ -53,3 +53,21 @@ def test_cursor_propagation_is_not_infinite(tmp_path):
     panels[0].set_cursor(0.1)  # 無限再帰なら RecursionError
     assert panels[0].cursor_t == 0.1
     assert panels[1].cursor_t == 0.1
+
+
+def test_cursor_propagates_when_x_sync_disabled(tmp_path):
+    """Cursor broadcast is independent of the X-sync toggle (R15.1).
+
+    Even when x_sync is off (ranges don't link), a cursor placement on one panel
+    must still propagate to all sibling panels so the time marker stays aligned.
+    """
+    session, _ = _loaded_session(tmp_path)
+    area = GraphAreaVM(AppViewModel(session))
+    area.add_panel()  # tab 0 に 2 枚目のパネル
+    panels = area.panels(0)
+    assert len(panels) == 2
+
+    area.set_x_sync(0, False)
+    panels[0].set_cursor(0.55)
+
+    assert panels[1].cursor_t == 0.55

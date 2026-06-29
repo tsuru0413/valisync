@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from valisync.core.interpolation import InterpolationMethod  # noqa: F401
+from valisync.core.interpolation import InterpolationMethod
 from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.session import Session
 from valisync.gui.viewmodels.graph_panel_vm import (
@@ -803,3 +803,47 @@ def test_set_cursor_notifies_cursor_change(tmp_path):
     vm.subscribe(changes.append)
     vm.set_cursor(0.1)
     assert "cursor" in changes
+
+
+def test_set_interp_method_changes_reading_and_notifies(tmp_path: Path) -> None:
+    """Switching interp method changes the cursor reading and fires 'cursor' notify.
+
+    CSV helper: t=i*0.01, value=i  → at t=0.005, LINEAR gives ~0.5, ZOH gives 0.0.
+    """
+    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=1)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.set_cursor(0.005)
+
+    # LINEAR (default): interpolated value ≈ 0.5
+    readings_linear = vm.cursor_readings()
+    assert len(readings_linear) == 1
+    assert readings_linear[0].value == pytest.approx(0.5)
+
+    # Subscribe to capture notifications from set_interp_method.
+    notified: list[str] = []
+    vm.subscribe(notified.append)
+
+    vm.set_interp_method(InterpolationMethod.ZERO_ORDER_HOLD)
+
+    # ZOH: held value of the preceding sample at t=0.00 → value=0.0
+    readings_zoh = vm.cursor_readings()
+    assert len(readings_zoh) == 1
+    assert readings_zoh[0].value == pytest.approx(0.0)
+
+    # set_interp_method must fire a "cursor" notification so views re-render.
+    assert "cursor" in notified
+
+
+def test_cursor_readings_skips_invisible_signal(tmp_path: Path) -> None:
+    """cursor_readings() excludes signals whose visible flag is False."""
+    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=1)
+    vm = GraphPanelVM(session)
+    key = _first_signal_key(session)
+    vm.add_signal(key)
+    vm.toggle_visibility(key)  # hide the signal
+    vm.set_cursor(0.005)
+
+    readings = vm.cursor_readings()
+
+    assert readings == []

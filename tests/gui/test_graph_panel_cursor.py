@@ -7,10 +7,10 @@
 from __future__ import annotations
 
 import csv
-import types
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QContextMenuEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication
@@ -72,6 +72,43 @@ def test_clearing_cursor_hides_line_and_readout(qtbot: QtBot, tmp_path: Path) ->
     assert not view.readout_visible()
 
 
+def test_readout_position_preserved_on_cursor_update(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """Readout snaps to (8,8) only on first show; subsequent cursor syncs must not
+    reset a user-dragged position.  Clearing and re-setting the cursor resets to (8,8).
+    """
+    vm = _vm_with_signal(tmp_path)
+    view = GraphPanelView(vm)
+    qtbot.addWidget(view)
+    view.resize(400, 300)
+    view.show()
+    qtbot.waitExposed(view)
+
+    # First cursor placement — readout should appear at (8,8).
+    vm.set_cursor(0.5)
+    assert view.readout_visible()
+    assert view._readout.pos().x() == 8
+    assert view._readout.pos().y() == 8
+
+    # Simulate a user drag by moving the readout to a different position.
+    view._readout.move(100, 50)
+    assert view._readout.pos().x() == 100
+
+    # Update cursor to a new value (readout stays visible) — position must NOT snap back.
+    vm.set_cursor(0.7)
+    assert view._readout.pos().x() == 100
+    assert view._readout.pos().y() == 50
+
+    # Clear cursor and set again — readout must return to (8,8) on re-appearance.
+    vm.set_cursor(None)
+    assert not view.readout_visible()
+    vm.set_cursor(0.3)
+    assert view.readout_visible()
+    assert view._readout.pos().x() == 8
+    assert view._readout.pos().y() == 8
+
+
 def test_legend_item_removed(qtbot: QtBot, tmp_path: Path) -> None:
     # Legend was removed in R15; GraphPanelView must not have _legend attribute.
     vm = _vm_with_signal(tmp_path)
@@ -93,7 +130,7 @@ def test_context_menu_has_interp_methods(qtbot: QtBot, tmp_path: Path) -> None:
 
 
 def test_context_menu_event_real_path_interp_triggers_vm(
-    qtbot: QtBot, tmp_path: Path, monkeypatch: object
+    qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """QContextMenuEvent -> contextMenuEvent -> build_context_menu real path.
 
@@ -119,10 +156,8 @@ def test_context_menu_event_real_path_interp_triggers_vm(
         m.exec = Mock(return_value=None)
         return m
 
-    assert isinstance(monkeypatch, object)
-    view.build_context_menu = types.MethodType(  # type: ignore[method-assign]
-        lambda self: spy_build(), view
-    )
+    # Use monkeypatch so the spy is auto-reverted after the test.
+    monkeypatch.setattr(view, "build_context_menu", spy_build)
 
     pos = QPoint(view.width() // 2, view.height() // 2)
     global_pos = view.mapToGlobal(pos)
@@ -145,7 +180,11 @@ def test_context_menu_event_real_path_interp_triggers_vm(
     # Trigger "前値保持" and verify vm.set_interp_method is called.
     called_with: list[InterpolationMethod] = []
     real_set_interp = vm.set_interp_method
-    vm.set_interp_method = lambda m: called_with.append(m) or real_set_interp(m)  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        vm,
+        "set_interp_method",
+        lambda m: called_with.append(m) or real_set_interp(m),  # type: ignore[return-value]
+    )
 
     submenu = interp_action.menu()
     assert submenu is not None
@@ -156,18 +195,17 @@ def test_context_menu_event_real_path_interp_triggers_vm(
     assert called_with == [InterpolationMethod.ZERO_ORDER_HOLD]
 
 
-# --- INVESTIGATION: synthetic click delivery to mousePressEvent ---
+# --- Layer B: synthetic click delivery to mousePressEvent ---
 
 
-def test_synthetic_click_cursor_placement_investigation(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
-    """INVESTIGATION: does a synthetic QMouseEvent reach GraphPanelView.mousePressEvent?
+def test_synthetic_plot_click_places_cursor(qtbot: QtBot, tmp_path: Path) -> None:
+    """A synthetic left-click at a ZONE_PLOT position must set vm.cursor_t (Layer B).
 
-    Tests whether a synthetic press+release at a ZONE_PLOT position sets vm.cursor_t.
-    pyqtgraph's ViewBox/scene may consume the event before it reaches this widget.
-
-    Real-path proof is Layer C (realgui) in Task 5 -- tests/realgui/test_global_cursor.py.
+    _zone_at is patched to return ZONE_PLOT so zone classification is deterministic
+    without relying on fragile offscreen geometry.  The click handler path
+    (mousePressEvent + mouseReleaseEvent → _place_cursor_at → vm.set_cursor) is
+    confirmed working; real OS routing is additionally proven by Layer C realgui
+    (tests/realgui/test_global_cursor.py).
     """
     vm = _vm_with_signal(tmp_path)
     view = GraphPanelView(vm)
@@ -204,19 +242,8 @@ def test_synthetic_click_cursor_placement_investigation(
     )
     QApplication.sendEvent(view, release)
 
-    # INVESTIGATION RESULT:
-    # Check whether cursor_t was set. This test always passes -- it documents the finding.
-    # If the child pyqtgraph widget captured the event, cursor_t stays None.
-    cursor_reached = vm.cursor_t is not None
-
-    if cursor_reached:
-        # Event reached mousePressEvent/mouseReleaseEvent successfully.
-        assert vm.cursor_t is not None
-    else:
-        # Event was consumed by pyqtgraph's child widget before reaching this view.
-        # Expected in headless hierarchy; real-path proof is Layer C realgui (Task 5).
-        assert vm.cursor_t is None, (
-            "Headless synthetic click did NOT reach GraphPanelView.mousePressEvent -- "
-            "pyqtgraph's child ViewBox/scene consumed the event. "
-            "Real-path proof: Layer C realgui (Task 5 / tests/realgui/test_global_cursor.py)."
-        )
+    assert vm.cursor_t is not None, (
+        "Synthetic click did NOT reach GraphPanelView.mousePressEvent — "
+        "pyqtgraph's child ViewBox/scene may have consumed the event. "
+        "Check that mousePressEvent override is correct."
+    )
