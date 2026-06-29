@@ -61,8 +61,14 @@ def _key(vk: int) -> None:
 
 
 def _dialog_dismisser(stop: threading.Event) -> None:
-    """別スレッド: 実 modal を Enter で確定（既定=この信号のみ）。3s で Escape ウォッチドッグ。"""
-    time.sleep(0.6)
+    """別スレッド: 実 modal を Enter で確定（既定=この信号のみ）。3s で Escape ウォッチドッグ。
+
+    このスレッドはマウスリリース後に開始する（呼び出し側参照）。ダイアログは
+    QTimer.singleShot(0,...) で遅延開口するため、ドラッグ中に開始すると
+    DPR 依存のドラッグ所要時間と競合して Enter が空振りする。
+    リリース後に開始すれば 0.5s のスリープで singleShot 処理が確実に完了する。
+    """
+    time.sleep(0.5)
     if not stop.is_set():
         _key(_VK_RETURN)
     deadline = time.time() + 3.0
@@ -153,7 +159,6 @@ def test_real_offset_drag_shifts_both_panels(qtbot: QtBot, tmp_path) -> None:
 
     stop = threading.Event()
     dismisser = threading.Thread(target=_dialog_dismisser, args=(stop,), daemon=True)
-    dismisser.start()
 
     _at(gx, gy, _LDOWN)
     time.sleep(0.05)
@@ -163,6 +168,9 @@ def test_real_offset_drag_shifts_both_panels(qtbot: QtBot, tmp_path) -> None:
         QApplication.processEvents()
         time.sleep(0.02)
     _at(tx, gy, _LUP)
+    # ダイアログは QTimer.singleShot(0,...) でリリース後に開口するため、
+    # dismisser はリリース後に開始する (HiDPI でドラッグ所要時間が伸びても競合しない)。
+    dismisser.start()
     # Pump the event loop so the deferred dialog opens and the thread confirms it.
     for _ in range(40):
         QApplication.processEvents()
