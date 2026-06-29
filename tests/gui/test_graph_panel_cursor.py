@@ -282,6 +282,40 @@ def test_toggling_main_then_delta_shows_both_lines(
     assert view.delta_line_value() == pytest.approx(0.75)
 
 
+def test_delta_line_survives_axis_rebuild(qtbot: QtBot, tmp_path: Path) -> None:
+    """Layer B: 実際の軸構造リビルドを跨いで A/B カーソル線が生存する回帰防止。
+
+    set_column_count は signature を変え _reconcile_axes のスローパス (master
+    ViewBox を作り直し、カーソル線を detach -> 再アタッチ) を強制する。delta 表示中
+    の rebuild で B 線が消える/未同期になる回帰を捕捉する。
+    """
+    vm = _vm_with_signal(tmp_path)
+    vm.x_range = (0.0, 1.0)
+    view = GraphPanelView(vm)
+    qtbot.addWidget(view)
+    vm.toggle_main_cursor(True)
+    vm.toggle_delta(True)
+    assert view.delta_line_visible()
+    a_before = view.cursor_line_value()
+    b_before = view.delta_line_value()
+    vb_before = id(view._view_boxes[0])
+
+    # signature を変えてスローパス (実リビルド) を強制。set_column_count は "axes"
+    # を notify し _on_vm_change -> refresh() を通る。
+    vm.set_column_count(vm.column_count + 1)
+
+    # master ViewBox が実際に作り直された (ファストパス早期 return ではない) こと。
+    # これが無いと scene assertion は detach されず自明に通り、false-green になる。
+    assert id(view._view_boxes[0]) != vb_before
+    assert view.cursor_line_visible()
+    assert view.delta_line_visible()  # B 線は rebuild を生き延びる
+    assert view.cursor_line_value() == pytest.approx(a_before)
+    assert view.delta_line_value() == pytest.approx(b_before)
+    # detach 後、新しい master ViewBox に再アタッチ済み (scene が None でない)。
+    assert view._cursor_line.scene() is not None
+    assert view._cursor_line_b.scene() is not None
+
+
 def test_plot_click_no_longer_places_cursor(qtbot: QtBot, tmp_path: Path) -> None:
     """R15 改訂: 空クリック設置は撤去。属性も挙動も無い。"""
     vm = _vm_with_signal(tmp_path)

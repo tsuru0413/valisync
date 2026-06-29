@@ -19,6 +19,7 @@ drag-preview with a debounce timer is a noted refinement (R9.5).
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 import pyqtgraph as pg
@@ -664,25 +665,17 @@ class GraphPanelView(QWidget):
         # ── Global cursor (R15) ──────────────────────────────────────────────
         from valisync.gui.views.cursor_readout import CursorReadout
 
-        self._cursor_line = pg.InfiniteLine(
-            angle=90, movable=True, pen=pg.mkPen("#f9e2af", width=2)
+        # A (global) amber solid + B (delta) blue dashed.  Both are created,
+        # z-ordered, attached and drag-wired identically (only pen + handler
+        # differ) via _make_cursor_line, and re-attached together on every axis
+        # rebuild via _cursor_lines.
+        self._cursor_line = self._make_cursor_line(
+            pg.mkPen("#f9e2af", width=2), self._on_cursor_line_dragged
         )
-        self._cursor_line.setVisible(False)
-        self._cursor_line.setZValue(10)
-        if self._view_boxes:
-            self._view_boxes[0].addItem(self._cursor_line, ignoreBounds=True)
-        self._cursor_line.sigPositionChanged.connect(self._on_cursor_line_dragged)
-        # Delta (B) cursor line — blue dashed, added to master ViewBox
-        self._cursor_line_b = pg.InfiniteLine(
-            angle=90,
-            movable=True,
-            pen=pg.mkPen("#89b4fa", width=2, style=Qt.PenStyle.DashLine),
+        self._cursor_line_b = self._make_cursor_line(
+            pg.mkPen("#89b4fa", width=2, style=Qt.PenStyle.DashLine),
+            self._on_cursor_line_b_dragged,
         )
-        self._cursor_line_b.setVisible(False)
-        self._cursor_line_b.setZValue(10)
-        if self._view_boxes:
-            self._view_boxes[0].addItem(self._cursor_line_b, ignoreBounds=True)
-        self._cursor_line_b.sigPositionChanged.connect(self._on_cursor_line_b_dragged)
         self._readout = CursorReadout(self)
         self._readout.setVisible(False)
         # Wire stat-column toggle to VM so VM is the source of truth (spec §7).
@@ -772,22 +765,22 @@ class GraphPanelView(QWidget):
                 self._view_boxes[i].setYRange(full_lo, full_hi, padding=0)
                 self._y_axes[i].setRange(y_lo, y_hi)
 
-        # Re-attach the cursor line to the (possibly rebuilt) master ViewBox.
-        # Guard against a deleted C++ object (can happen if _reconcile_axes rebuild
-        # fails to detach the line before ci.clear() destroys its parent ViewBox).
-        if hasattr(self, "_cursor_line") and self._view_boxes:
-            try:
-                if self._cursor_line.scene() is None:
-                    self._view_boxes[0].addItem(self._cursor_line, ignoreBounds=True)
-                self._sync_cursor_from_vm()
-            except RuntimeError:
-                pass  # cursor line C++ object deleted; will be rebuilt by next init
-        if hasattr(self, "_cursor_line_b") and self._view_boxes:
-            try:
-                if self._cursor_line_b.scene() is None:
-                    self._view_boxes[0].addItem(self._cursor_line_b, ignoreBounds=True)
-            except RuntimeError:
-                pass  # C++ object deleted; rebuilt by next init
+        # Re-attach BOTH cursor lines to the (possibly rebuilt) master ViewBox
+        # BEFORE syncing, so _sync_cursor_from_vm() (which sets A/B value+visibility)
+        # runs against attached lines — A and B symmetric.  Guard against a deleted
+        # C++ object (can happen if _reconcile_axes failed to detach a line before
+        # ci.clear() destroyed its parent ViewBox).
+        if self._view_boxes:
+            for line in self._cursor_lines():
+                with contextlib.suppress(RuntimeError):
+                    # Defensive: scene() raises on an already-dead C++ line; skip it
+                    # (lines are normally kept alive by the scene-detach above).
+                    if line.scene() is None:
+                        self._view_boxes[0].addItem(line, ignoreBounds=True)
+            if hasattr(self, "_cursor_line"):
+                with contextlib.suppress(RuntimeError):
+                    # Defensive: skip sync if a cursor line's C++ object is dead.
+                    self._sync_cursor_from_vm()
 
     def _sync_overlay_geometry(self) -> None:
         """Align secondary ViewBoxes AND axis spines to absolute region strips.
@@ -899,18 +892,21 @@ class GraphPanelView(QWidget):
         # it from the ViewBox before ci.clear() prevents the C++ object from being
         # destroyed by the layout teardown. The line is re-attached to the new
         # master ViewBox at the end of refresh().
-        if hasattr(self, "_cursor_line") and self._view_boxes:
-            try:
-                if self._cursor_line in self._view_boxes[0].addedItems:
-                    self._view_boxes[0].removeItem(self._cursor_line)
-            except RuntimeError:
-                pass  # C++ object already deleted; refresh() will skip re-attach
-        if hasattr(self, "_cursor_line_b") and self._view_boxes:
-            try:
-                if self._cursor_line_b in self._view_boxes[0].addedItems:
-                    self._view_boxes[0].removeItem(self._cursor_line_b)
-            except RuntimeError:
-                pass  # C++ object already deleted; refresh() will skip re-attach
+        if self._view_boxes:
+            for line in self._cursor_lines():
+                with contextlib.suppress(RuntimeError):
+                    # Detach the line from the dying ViewBox/scene BEFORE ci.clear()
+                    # destroys it; otherwise the line is a child of the destroyed
+                    # ViewBox and its C++ object dies with it (cursor vanishes on an
+                    # axis-structure rebuild).  These lines are added with
+                    # ignoreBounds and are not reliably tracked in addedItems, so
+                    # fall back to scene-level removal — refresh() re-attaches them.
+                    if line in self._view_boxes[0].addedItems:
+                        self._view_boxes[0].removeItem(line)
+                    else:
+                        scene = line.scene()
+                        if scene is not None:
+                            scene.removeItem(line)
         self.plot_widget.ci.clear()
         self._y_axes.clear()
         self._view_boxes.clear()
@@ -1056,6 +1052,28 @@ class GraphPanelView(QWidget):
 
     # ─── Global cursor (R15) + Delta cursor (R16) ────────────────────────────────
 
+    def _make_cursor_line(self, pen: Any, on_dragged: Any) -> Any:
+        """Create a hidden, draggable vertical cursor line on the master ViewBox.
+
+        Shared by the A (global) and B (delta) lines so their creation, z-order,
+        attach and drag-wiring stay identical — only pen and handler differ.
+        """
+        line = pg.InfiniteLine(angle=90, movable=True, pen=pen)
+        line.setVisible(False)
+        line.setZValue(10)
+        if self._view_boxes:
+            self._view_boxes[0].addItem(line, ignoreBounds=True)
+        line.sigPositionChanged.connect(on_dragged)
+        return line
+
+    def _cursor_lines(self) -> list[Any]:
+        """Existing A/B cursor InfiniteLines, in creation order (attach/detach)."""
+        return [
+            getattr(self, name)
+            for name in ("_cursor_line", "_cursor_line_b")
+            if hasattr(self, name)
+        ]
+
     def _sync_cursor_from_vm(self) -> None:
         """Reflect A/B cursor + readout from full VM state."""
         t = self.vm.cursor_t
@@ -1066,10 +1084,14 @@ class GraphPanelView(QWidget):
             self._readout_placed = False
             return
         self._suppress_cursor_signal = True
-        self._cursor_line.setValue(t)
-        if self.vm.cursor_t_b is not None:
-            self._cursor_line_b.setValue(self.vm.cursor_t_b)
-        self._suppress_cursor_signal = False
+        try:
+            self._cursor_line.setValue(t)
+            if self.vm.cursor_t_b is not None:
+                self._cursor_line_b.setValue(self.vm.cursor_t_b)
+        finally:
+            # Always clear the echo-guard, even if setValue raises on a deleted
+            # C++ object during a rebuild, so it can never stick True.
+            self._suppress_cursor_signal = False
         self._cursor_line.setVisible(True)
         if self.vm.delta_enabled and self.vm.cursor_t_b is not None:
             self._cursor_line_b.setVisible(True)
