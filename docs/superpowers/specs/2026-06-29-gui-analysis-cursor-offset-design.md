@@ -3,7 +3,7 @@
 - 日付: 2026-06-29
 - 対象 spec: `valisync-gui-analysis`（親 `valisync-gui` の R14–R17）
 - 関連: [アクティブ軸統一操作モデル](2026-06-28-y-axis-per-axis-resize-active-model-design.md)（プロット操作モデルの先行設計）/ `docs/roadmap.md` / `docs/gui-testing-layers.md`
-- ステータス: brainstorming 合意済み。**増分A=R15 実装完了（2026-06-29・PR #21 merged）。増分B(R16 Delta+R17 範囲統計) は操作モデル/読み取り面デザインを 2026-06-29 に改訂合意（§4/§5/§6/§12 — トグル式表示・D&D 移動のみ・空クリック設置廃止・時刻ヘッダ常時表示）→ 実装着手。増分C(R14) 未着手。** R15 実装プラン: [r15-global-cursor](../plans/2026-06-29-gui-analysis-r15-global-cursor.md)
+- ステータス: brainstorming 合意済み。**増分A=R15 実装完了（2026-06-29・PR #21 merged）。増分B(R16 Delta+R17 範囲統計) は操作モデル/読み取り面デザインを 2026-06-29 に改訂合意（§4/§5/§6/§12 — トグル式表示・D&D 移動のみ・空クリック設置廃止・時刻ヘッダ常時表示）→ 実装完了（Task1-4 実装・task-review 済、merge ゲートは full pytest + realgui /gui-verify + CI 待ち）。増分C(R14) 未着手。** R15 実装プラン: [r15-global-cursor](../plans/2026-06-29-gui-analysis-r15-global-cursor.md)
 
 ## 1. 背景・目的
 
