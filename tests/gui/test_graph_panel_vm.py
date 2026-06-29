@@ -21,10 +21,16 @@ import csv
 from pathlib import Path
 
 import numpy as np
+import pytest
 
+from valisync.core.interpolation import InterpolationMethod  # noqa: F401
 from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.session import Session
-from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM, RenderCurve
+from valisync.gui.viewmodels.graph_panel_vm import (
+    CursorReading,  # noqa: F401
+    GraphPanelVM,
+    RenderCurve,
+)
 from valisync.gui.viewmodels.y_axis_vm import YAxisVM
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -754,3 +760,46 @@ def test_render_data_includes_axis_index(tmp_path: Path) -> None:
 
     assert curves[0].axis_index == 0
     assert curves[1].axis_index == 1
+
+
+# ─── Global cursor (R15) ─────────────────────────────────────────────────────
+
+
+def test_cursor_readings_linear_interpolation(tmp_path):
+    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=1)
+    vm = GraphPanelVM(session)
+    key = _first_signal_key(session)
+    vm.add_signal(key)
+    # CSV helper: t=i*0.01, value=i  → between (0.00,0) and (0.01,1), linear@0.005 = 0.5
+    vm.set_cursor(0.005)
+    readings = vm.cursor_readings()
+    assert len(readings) == 1
+    assert readings[0].name == key
+    assert readings[0].in_range is True
+    assert readings[0].value == pytest.approx(0.5)
+
+
+def test_cursor_readings_out_of_range_yields_none(tmp_path):
+    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=1)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.set_cursor(5.0)  # 最終 timestamp 0.99 を超える
+    reading = vm.cursor_readings()[0]
+    assert reading.in_range is False
+    assert reading.value is None
+
+
+def test_cursor_readings_empty_when_no_cursor(tmp_path):
+    session, _ = _loaded_session(tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    assert vm.cursor_readings() == []
+
+
+def test_set_cursor_notifies_cursor_change(tmp_path):
+    session, _ = _loaded_session(tmp_path)
+    vm = GraphPanelVM(session)
+    changes: list[str] = []
+    vm.subscribe(changes.append)
+    vm.set_cursor(0.1)
+    assert "cursor" in changes
