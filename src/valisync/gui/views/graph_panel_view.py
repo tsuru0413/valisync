@@ -22,6 +22,7 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
+import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
@@ -63,6 +64,11 @@ ZONE_X_OUTER = "x_outer"
 ZONE_Y_INNER = "y_inner"
 ZONE_Y_OUTER = "y_outer"
 ZONE_NONE = "none"
+
+# R14 time-offset gesture tolerances (scene pixels). Cursor-line proximity is
+# wider than the curve tolerance so the cursor line wins on overlap (§4).
+CURVE_HIT_TOL_PX = 8.0
+CURSOR_LINE_HIT_PX = 10.0
 
 # Active Y-axis grip/frame/interior zones for resize gestures (Task 3).
 AXZONE_GRIP_TOP = "ax_grip_top"
@@ -600,6 +606,9 @@ class GraphPanelView(QWidget):
         super().__init__(parent)
         self.vm = vm
         self._items: dict[str, pg.PlotDataItem] = {}
+        # Which ViewBox each curve currently lives in (kept in sync by refresh).
+        # Used by the R14 curve hit-test to map candidate data points to scene px.
+        self._item_vb: dict[str, Any] = {}
         self._y_axes: list[pg.AxisItem] = []
         self._view_boxes: list[pg.ViewBox] = []
         # One empty width-reserving container per occupied column (root col = the
@@ -717,6 +726,7 @@ class GraphPanelView(QWidget):
         for key in list(self._items):
             if key not in desired:
                 item = self._items.pop(key)
+                self._item_vb.pop(key, None)
                 # Find which ViewBox it was in and remove it
                 for vb in self._view_boxes:
                     if item in vb.addedItems:
@@ -741,6 +751,7 @@ class GraphPanelView(QWidget):
                     if vb != target_vb and item in vb.addedItems:
                         vb.removeItem(item)
                 target_vb.addItem(item)
+            self._item_vb[curve.name] = target_vb
 
             item.setData(curve.timestamps, curve.values)
             item.setPen(pg.mkPen(curve.color))
@@ -1323,6 +1334,58 @@ class GraphPanelView(QWidget):
             return float(point.x() if axis == "x" else point.y())
         except Exception:
             return None
+
+    def _curve_at(self, pos: QPointF) -> str | None:
+        """Return the signal key of the nearest curve within CURVE_HIT_TOL_PX of *pos*.
+
+        Returns None when *pos* is within CURSOR_LINE_HIT_PX of a visible cursor
+        line (priority: cursor line > curve, §4) or when no curve is close enough.
+        Distance is measured in scene pixels via each item's own ViewBox, so the
+        check is correct under multi-axis layouts and any LOD level.
+        """
+        if not self._view_boxes or not self._items:
+            return None
+        try:
+            scene_pos = self.plot_widget.mapToScene(pos.toPoint())
+        except Exception:
+            return None
+
+        # Cursor-line guard: yield to a nearby visible cursor line.
+        vb0 = self._view_boxes[0]
+        for line in self._cursor_lines():
+            try:
+                if not line.isVisible():
+                    continue
+                line_scene_x = vb0.mapViewToScene(QPointF(float(line.value()), 0.0)).x()
+            except Exception:
+                continue
+            if abs(scene_pos.x() - line_scene_x) <= CURSOR_LINE_HIT_PX:
+                return None
+
+        best_key: str | None = None
+        best_dist = CURVE_HIT_TOL_PX
+        for key, item in self._items.items():
+            vb = self._item_vb.get(key)
+            if vb is None:
+                continue
+            xs, ys = item.getData()
+            if xs is None or len(xs) == 0:
+                continue
+            data_x = vb.mapSceneToView(scene_pos).x()
+            idx = int(np.searchsorted(xs, data_x))
+            for cand in (idx - 1, idx):
+                if cand < 0 or cand >= len(xs):
+                    continue
+                cand_scene = vb.mapViewToScene(
+                    QPointF(float(xs[cand]), float(ys[cand]))
+                )
+                dx = scene_pos.x() - cand_scene.x()
+                dy = scene_pos.y() - cand_scene.y()
+                dist = (dx * dx + dy * dy) ** 0.5
+                if dist <= best_dist:
+                    best_dist = dist
+                    best_key = key
+        return best_key
 
     # ─── Mouse handlers — X zoom/pan only (Y owned by _AlignedAxisItem) ──────────
 
