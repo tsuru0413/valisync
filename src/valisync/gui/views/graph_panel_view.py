@@ -608,7 +608,7 @@ class GraphPanelView(QWidget):
         self._items: dict[str, pg.PlotDataItem] = {}
         # Which ViewBox each curve currently lives in (kept in sync by refresh).
         # Used by the R14 curve hit-test to map candidate data points to scene px.
-        self._item_vb: dict[str, Any] = {}
+        self._item_vb: dict[str, pg.ViewBox] = {}
         self._y_axes: list[pg.AxisItem] = []
         self._view_boxes: list[pg.ViewBox] = []
         # One empty width-reserving container per occupied column (root col = the
@@ -922,6 +922,7 @@ class GraphPanelView(QWidget):
         self._y_axes.clear()
         self._view_boxes.clear()
         self._items.clear()  # Clear items to force re-adding to new ViewBoxes
+        self._item_vb.clear()  # No stale ViewBox refs after rebuild (spec §R14)
         self._column_containers = {}
 
         # Root layout: columns 0..N-1 each reserve fixed Y-axis width (so empty

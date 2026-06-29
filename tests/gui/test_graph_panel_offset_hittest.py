@@ -51,4 +51,12 @@ def test_curve_at_yields_to_visible_cursor_line(qtbot: QtBot) -> None:
     for _ in range(3):
         QApplication.processEvents()
     assert view.cursor_line_visible()
+    # Geometric sanity: cursor A must sit at the plot-centre data-x so the
+    # hit-test overlap tested above is not vacuous.  Data is v=t over [0, 1)
+    # (50 pts, max=0.98) → x_range=[0, 0.98] → 50% midpoint ≈ 0.49.
+    cursor_val = view.cursor_line_value()
+    assert abs(cursor_val - 0.49) < 0.1, (
+        f"Cursor expected near 0.49 but got {cursor_val!r}; "
+        "factory data-range may have changed — update tolerance or factory."
+    )
     assert view._curve_at(_plot_center_widget_pos(view)) is None
