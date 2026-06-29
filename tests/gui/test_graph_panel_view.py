@@ -2,9 +2,11 @@
 
 The view is a thin pyqtgraph.PlotWidget wrapper bound to a GraphPanelVM.  It
 projects vm.render_data() onto PlotDataItems (one per curve, coloured per the
-VM), maintains a legend, accepts signal drops (SIGNAL_KEYS_MIME → add_signal),
+VM), accepts signal drops (SIGNAL_KEYS_MIME → add_signal),
 and reports its pixel width to the VM on resize.  All assertions read the
 view's projected state, plus one QWidget.grab() smoke test.
+
+Legend was removed in R15 (Task 4); cursor+readout replace it.
 
 TDD: written before the view exists; all must FAIL first.
 """
@@ -144,26 +146,11 @@ class TestDrawing:
         assert view.is_clipped(key) is False  # type: ignore[attr-defined]
 
 
-# ─── Legend ────────────────────────────────────────────────────────────────--
-
-
-class TestLegend:
-    def test_legend_lists_signal_name(self, qtbot: QtBot, tmp_path: Path) -> None:
-        session, _ = _loaded_session(tmp_path)
-        key = _keys(session)[0]
-        vm = GraphPanelVM(session)
-        view = _make_view(qtbot, vm)
-
-        vm.add_signal(key)
-
-        assert key in view.legend_labels()  # type: ignore[attr-defined]
-
-
 # ─── Empty signal (R8.5) ──────────────────────────────────────────────────────
 
 
 class TestEmptySignal:
-    def test_empty_window_keeps_legend_without_points(
+    def test_empty_window_keeps_curve_without_points(
         self, qtbot: QtBot, tmp_path: Path
     ) -> None:
         session, _ = _loaded_session(tmp_path)
@@ -174,7 +161,7 @@ class TestEmptySignal:
         vm.add_signal(key)
         vm.set_x_range(1.0e9, 1.0e9 + 1.0)  # window with no samples
 
-        assert key in view.curve_keys()  # type: ignore[attr-defined]  # legend entry persists
+        assert key in view.curve_keys()  # type: ignore[attr-defined]  # curve still registered
         x, _y = view.curve_xy(key)  # type: ignore[attr-defined]
         # pyqtgraph represents an empty curve as None (no points drawn).
         assert x is None or len(x) == 0

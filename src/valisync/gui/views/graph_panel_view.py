@@ -611,13 +611,13 @@ class GraphPanelView(QWidget):
         # column/row placement); lets _reconcile_axes take a fast path that only
         # retunes row stretch + labels when nothing structural changed.
         self._build_signature: tuple[object, ...] = ()
-        # Assigned in _reconcile_axes' rebuild path; declared here (no runtime
-        # binding) so mypy resolves its type at the use sites in refresh().
-        self._legend: pg.LegendItem
         self._drag_zone: str | None = None
         self._drag_start: QPointF | None = None
         self._drop_active = False
         self._removable = True
+        # Global cursor state (R15)
+        self._cursor_press_pos: QPointF | None = None
+        self._suppress_cursor_signal = False
         # Active/hover axis — transient UI state, not persisted to the VM.
         # _active_axis_index: the axis the user last clicked (None = none selected).
         # _hover_axis_index: the axis under the cursor (None = none hovered).
@@ -662,9 +662,26 @@ class GraphPanelView(QWidget):
 
         self.refresh()
 
+        # ── Global cursor (R15) ──────────────────────────────────────────────
+        from valisync.gui.views.cursor_readout import CursorReadout
+
+        self._cursor_line = pg.InfiniteLine(
+            angle=90, movable=True, pen=pg.mkPen("#f9e2af", width=2)
+        )
+        self._cursor_line.setVisible(False)
+        self._cursor_line.setZValue(10)
+        if self._view_boxes:
+            self._view_boxes[0].addItem(self._cursor_line, ignoreBounds=True)
+        self._cursor_line.sigPositionChanged.connect(self._on_cursor_line_dragged)
+        self._readout = CursorReadout(self)
+        self._readout.setVisible(False)
+
     # ─── Rendering ─────────────────────────────────────────────────────────────
 
-    def _on_vm_change(self, _change: str) -> None:
+    def _on_vm_change(self, change: str) -> None:
+        if change == "cursor":
+            self._on_vm_cursor_change()
+            return
         self.refresh()
 
     def refresh(self) -> None:
@@ -685,8 +702,6 @@ class GraphPanelView(QWidget):
                     if item in vb.addedItems:
                         vb.removeItem(item)
                         break
-                if self._legend:
-                    self._legend.removeItem(item)
 
         # 4. Add or update remaining curves
         for curve in curves:
@@ -694,8 +709,6 @@ class GraphPanelView(QWidget):
             if item is None:
                 item = pg.PlotDataItem(name=curve.name)
                 self._items[curve.name] = item
-                if self._legend:
-                    self._legend.addItem(item, curve.name)
 
             item.setClipToView(False)
             # Add to correct ViewBox based on axis_index
@@ -731,6 +744,17 @@ class GraphPanelView(QWidget):
                 full_lo, full_hi = axis_vm.calculate_virtual_range()
                 self._view_boxes[i].setYRange(full_lo, full_hi, padding=0)
                 self._y_axes[i].setRange(y_lo, y_hi)
+
+        # Re-attach the cursor line to the (possibly rebuilt) master ViewBox.
+        # Guard against a deleted C++ object (can happen if _reconcile_axes rebuild
+        # fails to detach the line before ci.clear() destroys its parent ViewBox).
+        if hasattr(self, "_cursor_line") and self._view_boxes:
+            try:
+                if self._cursor_line.scene() is None:
+                    self._view_boxes[0].addItem(self._cursor_line, ignoreBounds=True)
+                self._sync_cursor_from_vm()
+            except RuntimeError:
+                pass  # cursor line C++ object deleted; will be rebuilt by next init
 
     def _sync_overlay_geometry(self) -> None:
         """Align secondary ViewBoxes AND axis spines to absolute region strips.
@@ -838,14 +862,21 @@ class GraphPanelView(QWidget):
             axis_scene = axis.scene()
             if axis_scene is not None:
                 axis_scene.removeItem(axis)
+        # The cursor line is added to the master ViewBox (layout-managed); removing
+        # it from the ViewBox before ci.clear() prevents the C++ object from being
+        # destroyed by the layout teardown. The line is re-attached to the new
+        # master ViewBox at the end of refresh().
+        if hasattr(self, "_cursor_line") and self._view_boxes:
+            try:
+                if self._cursor_line in self._view_boxes[0].addedItems:
+                    self._view_boxes[0].removeItem(self._cursor_line)
+            except RuntimeError:
+                pass  # C++ object already deleted; refresh() will skip re-attach
         self.plot_widget.ci.clear()
         self._y_axes.clear()
         self._view_boxes.clear()
         self._items.clear()  # Clear items to force re-adding to new ViewBoxes
         self._column_containers = {}
-
-        # We'll use a single legend for the whole panel
-        self._legend = pg.LegendItem()
 
         # Root layout: columns 0..N-1 each reserve fixed Y-axis width (so empty
         # columns stay as fixed-width drop-target gutters); the plot column N
@@ -923,8 +954,6 @@ class GraphPanelView(QWidget):
         # Keep overlays aligned when the window (and thus the master) resizes
         # without a VM change, since refresh() is not called in that case.
         master_vb.sigResized.connect(self._sync_overlay_geometry)
-        # Add legend to the master ViewBox
-        self._legend.setParentItem(master_vb)
         self._build_signature = signature
 
     # ─── Active-axis state (Task 4) ────────────────────────────────────────────
@@ -986,9 +1015,48 @@ class GraphPanelView(QWidget):
         """Return whether *key*'s curve is clipped to its ViewBox."""
         return bool(self._items[key].opts.get("clipToView", False))
 
-    def legend_labels(self) -> list[str]:
-        """Return the signal names currently shown in the legend."""
-        return [label.text for _sample, label in self._legend.items]
+    # ─── Global cursor (R15) ─────────────────────────────────────────────────────
+
+    def _on_vm_cursor_change(self) -> None:
+        self._sync_cursor_from_vm()
+
+    def _sync_cursor_from_vm(self) -> None:
+        """Reflect vm.cursor_t onto the line + readout (visibility, position, values)."""
+        t = self.vm.cursor_t
+        if t is None:
+            self._cursor_line.setVisible(False)
+            self._readout.setVisible(False)
+            return
+        self._suppress_cursor_signal = True
+        self._cursor_line.setValue(t)
+        self._suppress_cursor_signal = False
+        self._cursor_line.setVisible(True)
+        self._readout.set_readings(self.vm.cursor_readings())
+        self._readout.move(8, 8)  # default initial position (draggable)
+        self._readout.setVisible(True)
+        self._readout.raise_()
+
+    def _on_cursor_line_dragged(self) -> None:
+        if self._suppress_cursor_signal:
+            return
+        self.vm.set_cursor(float(self._cursor_line.value()))
+
+    def _place_cursor_at(self, pos: QPointF) -> None:
+        t = self._data_value(pos, "x")
+        if t is not None:
+            self.vm.set_cursor(t)
+
+    # Test introspection
+    def cursor_line_visible(self) -> bool:
+        return bool(self._cursor_line.isVisible())
+
+    def cursor_line_value(self) -> float:
+        return float(self._cursor_line.value())
+
+    def readout_visible(self) -> bool:
+        # isVisible() depends on ancestors being shown; isHidden() checks only
+        # this widget's own flag, so the test can work without show().
+        return not self._readout.isHidden()
 
     # ─── Gesture application (data-coordinate; the zoom/pan contract) ───────────
 
@@ -1186,6 +1254,9 @@ class GraphPanelView(QWidget):
             if zone in (ZONE_X_INNER, ZONE_X_OUTER):
                 self._drag_zone = zone
                 self._drag_start = event.position()
+            elif zone == ZONE_PLOT:
+                # Track press position; if release is nearby, place the cursor.
+                self._cursor_press_pos = event.position()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -1194,6 +1265,14 @@ class GraphPanelView(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        # Cursor placement: a short click in ZONE_PLOT sets the cursor.
+        if self._cursor_press_pos is not None:
+            moved = (event.position() - self._cursor_press_pos).manhattanLength()
+            press_pos = self._cursor_press_pos
+            self._cursor_press_pos = None
+            if moved < 4 and self._zone_at(event.position()) == ZONE_PLOT:
+                self._place_cursor_at(press_pos)
+
         if self._drag_zone is not None and self._drag_start is not None:
             # _drag_zone can only be an X zone (Y zoom/pan moved to _AlignedAxisItem).
             axis = "x"
@@ -1321,7 +1400,9 @@ class GraphPanelView(QWidget):
         self.vm.reset_y()
 
     def build_context_menu(self) -> QMenu:
-        """Build the blank-area panel menu (add/remove panel, reset axes)."""
+        """Build the blank-area panel menu (add/remove panel, reset axes, interp)."""
+        from valisync.core.interpolation import InterpolationMethod
+
         menu = QMenu(self)
         menu.addAction("Add Panel").triggered.connect(
             lambda *_: self.add_panel_requested.emit()
@@ -1332,6 +1413,15 @@ class GraphPanelView(QWidget):
         menu.addAction("Reset All Axes").triggered.connect(
             lambda *_: self._reset_all_axes()
         )
+        interp = menu.addMenu("補間方式")
+        for label, method in (
+            ("線形", InterpolationMethod.LINEAR),
+            ("前値保持", InterpolationMethod.ZERO_ORDER_HOLD),
+            ("最近傍", InterpolationMethod.NEAREST),
+        ):
+            interp.addAction(label).triggered.connect(
+                lambda *_, m=method: self.vm.set_interp_method(m)
+            )
         return menu
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
