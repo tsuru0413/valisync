@@ -73,14 +73,6 @@ class GraphAreaVM(Observable):
 
             def _apply(p: GraphPanelVM) -> None:
                 p.set_offsets(sig_off, file_off)
-                # GraphPanelVM.set_offsets intentionally does not touch x_range
-                # so that this broadcast does not discard per-panel zoom/pan
-                # state. However, on an initial offset apply the old x_range
-                # would hide the newly-shifted data entirely.  Resetting to None
-                # lets render_data auto-range to the current (offset-adjusted)
-                # timestamps while still honouring future manual viewport
-                # changes (R14.5 / set_offsets docstring delegates this here).
-                p.x_range = None
                 p.refresh()
 
             self._for_each_panel(_apply)

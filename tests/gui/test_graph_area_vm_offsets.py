@@ -52,6 +52,11 @@ def test_offsets_event_rerenders_all_panels_across_tabs() -> None:
     _plot_signal_on(p1, signal_key)
     base0 = _curve_x(p0, signal_key).copy()
     base1 = _curve_x(p1, signal_key).copy()
+    # Wide viewport covers both original (0-0.29) and shifted (0.4-0.69) data.
+    # Without this, auto-fit window 0-0.29 would exclude the shifted data and
+    # mask a missing broadcast to either panel (false-green).
+    p0.x_range = (0.0, 1.0)
+    p1.x_range = (0.0, 1.0)
 
     app.apply_offset(signal_key, 0.4, "signal")
 
