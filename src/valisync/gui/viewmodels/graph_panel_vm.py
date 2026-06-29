@@ -21,6 +21,7 @@ import numpy as np
 from valisync.core.interpolation import InterpolationMethod
 from valisync.core.models import Signal
 from valisync.core.session import Session
+from valisync.core.statistics.range_stats import StatisticsResult
 from valisync.gui.viewmodels.observable import Observable
 from valisync.gui.viewmodels.y_axis_vm import YAxisVM
 
@@ -71,6 +72,18 @@ class CursorReading:
 
 
 @dataclass
+class DeltaReading:
+    """1 信号の Delta 読み取り(R16/R17)。value_a=None は A 範囲外、dy=None は A/B どちらか範囲外。"""
+
+    name: str
+    color: str
+    value_a: float | None
+    dy: float | None
+    stats: StatisticsResult  # count==0 はデータなし
+    in_range: bool
+
+
+@dataclass
 class _PlottedEntry:
     """Internal record for one plotted signal."""
 
@@ -105,6 +118,14 @@ class GraphPanelVM(Observable):
         # Global cursor (R15) — transient, never persisted.
         self.cursor_t: float | None = None
         self.interp_method: InterpolationMethod = InterpolationMethod.LINEAR
+
+        # Delta cursor + range stats (R16/R17) — transient, never persisted.
+        self.cursor_t_b: float | None = None
+        self.delta_enabled: bool = False
+        # Stat column visibility (spec §7) — which of the 5 stat columns to show
+        # in Delta readout. GraphPanelView syncs this into CursorReadout on each
+        # render so the VM is the single source of truth.
+        self.visible_stat_cols: set[str] = {"mean", "max", "min", "std", "count"}
 
     @property
     def y_range(self) -> tuple[float, float] | None:
@@ -585,8 +606,15 @@ class GraphPanelVM(Observable):
     # ─── Global cursor (R15) ─────────────────────────────────────────────────
 
     def set_cursor(self, t: float | None) -> None:
-        """Set the global cursor time (None clears it) and notify."""
+        """Set the global (A) cursor time and notify.
+
+        Clearing A (t=None) also clears the Delta cursor: B is meaningless
+        without A (the invariant also fires when a sibling broadcast clears A).
+        """
         self.cursor_t = t
+        if t is None:
+            self.delta_enabled = False
+            self.cursor_t_b = None
         self._notify("cursor")
 
     def set_interp_method(self, method: InterpolationMethod) -> None:
@@ -614,6 +642,97 @@ class GraphPanelVM(Observable):
             val = self._session.interpolate(sig, self.cursor_t, self.interp_method)
             out.append(
                 CursorReading(entry.signal_key, entry.color, val, val is not None)
+            )
+        return out
+
+    # ─── Delta cursor + range stats (R16/R17) ────────────────────────────────
+
+    def _default_cursor_x(self, frac: float) -> float:
+        """Data-x at *frac* of the visible x-range (0.5=centre, 0.75=right-ish)."""
+        if self.x_range is None:
+            return 0.0
+        lo, hi = self.x_range
+        return lo + frac * (hi - lo)
+
+    def toggle_main_cursor(self, on: bool) -> None:
+        """Show A at the visible-width 50% (on) or clear A and Delta (off)."""
+        self.set_cursor(self._default_cursor_x(0.5) if on else None)
+
+    def toggle_delta(self, on: bool) -> None:
+        """Show B at 75% (on) or remove it (off).  No-op when A is not set."""
+        if on:
+            if self.cursor_t is None:
+                return  # B requires A (View greys this out; VM guards too)
+            self.delta_enabled = True
+            self.cursor_t_b = self._default_cursor_x(0.75)
+        else:
+            self.delta_enabled = False
+            self.cursor_t_b = None
+        self._notify("delta")
+
+    def set_cursor_b(self, t: float) -> None:
+        """Move the Delta (B) cursor and notify (local — not broadcast)."""
+        self.cursor_t_b = t
+        self._notify("delta")
+
+    def set_visible_stats(self, cols: set[str]) -> None:
+        """Update visible stat columns and notify 'delta' so the view re-renders.
+
+        Implements the spec §7 requirement: stat column selection is VM state,
+        not view state — CursorReadout reads this via GraphPanelView on each sync.
+        """
+        self.visible_stat_cols = set(cols)
+        self._notify("delta")
+
+    @property
+    def delta_t(self) -> float | None:
+        """Signed Δt = tB - tA (None unless both cursors are set)."""
+        if self.cursor_t is None or self.cursor_t_b is None:
+            return None
+        return self.cursor_t_b - self.cursor_t
+
+    def delta_readings(self) -> list[DeltaReading]:
+        """Per-signal A値・Δy・range stats over [A,B] (Session-delegated).
+
+        Returns [] unless Delta is enabled.  Stats use min/max(A,B) so a B<A
+        drag never raises (compute_statistics rejects t_start>t_end).
+        """
+        if not self.delta_enabled or self.cursor_t is None or self.cursor_t_b is None:
+            return []
+        a, b = self.cursor_t, self.cursor_t_b
+        lo, hi = (a, b) if a <= b else (b, a)
+        sig_map = self._signal_map()
+        out: list[DeltaReading] = []
+        for entry in self._plotted:
+            if not entry.visible:
+                continue
+            sig = sig_map.get(entry.signal_key)
+            if sig is None:
+                out.append(
+                    DeltaReading(
+                        entry.signal_key,
+                        entry.color,
+                        None,
+                        None,
+                        StatisticsResult(
+                            mean=float("nan"),
+                            max=float("nan"),
+                            min=float("nan"),
+                            std=float("nan"),
+                            count=0,
+                        ),
+                        False,
+                    )
+                )
+                continue
+            va = self._session.interpolate(sig, a, self.interp_method)
+            vb = self._session.interpolate(sig, b, self.interp_method)
+            dy = (vb - va) if (va is not None and vb is not None) else None
+            stats = self._session.compute_statistics(sig, lo, hi)
+            out.append(
+                DeltaReading(
+                    entry.signal_key, entry.color, va, dy, stats, va is not None
+                )
             )
         return out
 

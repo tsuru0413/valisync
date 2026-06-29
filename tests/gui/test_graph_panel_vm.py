@@ -26,8 +26,10 @@ import pytest
 from valisync.core.interpolation import InterpolationMethod
 from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.session import Session
+from valisync.core.statistics.range_stats import StatisticsResult  # noqa: F401
 from valisync.gui.viewmodels.graph_panel_vm import (
     CursorReading,  # noqa: F401
+    DeltaReading,  # noqa: F401
     GraphPanelVM,
     RenderCurve,
 )
@@ -847,3 +849,180 @@ def test_cursor_readings_skips_invisible_signal(tmp_path: Path) -> None:
     readings = vm.cursor_readings()
 
     assert readings == []
+
+
+# ─── Delta cursor + range stats (R16/R17) ───────────────────────────────────
+
+
+def test_toggle_main_cursor_places_at_50_percent(tmp_path):
+    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=1)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.x_range = (0.0, 1.0)
+    vm.toggle_main_cursor(True)
+    assert vm.cursor_t == pytest.approx(0.5)
+    vm.toggle_main_cursor(False)
+    assert vm.cursor_t is None
+
+
+def test_toggle_delta_requires_main(tmp_path):
+    session, _ = _loaded_session(tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.x_range = (0.0, 1.0)
+    # main OFF のとき delta は有効化されない
+    vm.toggle_delta(True)
+    assert vm.delta_enabled is False
+    assert vm.cursor_t_b is None
+    # main ON 後は B=75% に出る
+    vm.toggle_main_cursor(True)
+    vm.toggle_delta(True)
+    assert vm.delta_enabled is True
+    assert vm.cursor_t_b == pytest.approx(0.75)
+
+
+def test_clearing_main_clears_delta(tmp_path):
+    session, _ = _loaded_session(tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.x_range = (0.0, 1.0)
+    vm.toggle_main_cursor(True)
+    vm.toggle_delta(True)
+    vm.set_cursor(None)  # メインを消すとサブも消える(不変条件)
+    assert vm.delta_enabled is False
+    assert vm.cursor_t_b is None
+
+
+def test_delta_t_signed(tmp_path):
+    session, _ = _loaded_session(tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.x_range = (0.0, 1.0)
+    vm.toggle_main_cursor(True)  # A=0.5
+    vm.toggle_delta(True)  # B=0.75
+    assert vm.delta_t == pytest.approx(0.25)
+
+
+def test_delta_readings_dy_and_stats(tmp_path):
+    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=1)
+    vm = GraphPanelVM(session)
+    key = _first_signal_key(session)
+    vm.add_signal(key)
+    vm.x_range = (0.0, 1.0)
+    vm.toggle_main_cursor(True)  # A=0.5 → value≈50 (value=i, t=i/100)
+    vm.set_cursor(0.2)  # A を 0.2 に(value≈20)
+    vm.toggle_delta(True)  # B=0.75 (value≈75)
+    vm.set_cursor_b(0.6)  # B=0.6 (value≈60)
+    r = vm.delta_readings()[0]
+    assert r.name == key
+    assert r.value_a == pytest.approx(20.0)
+    assert r.dy == pytest.approx(40.0)  # y(0.6)-y(0.2) = 60-20
+    # 範囲 [0.2,0.6] の統計: 値 20..60
+    assert r.stats.count > 0
+    assert r.stats.min == pytest.approx(20.0)
+    assert r.stats.max == pytest.approx(60.0)
+
+
+def test_delta_readings_normalizes_when_b_before_a(tmp_path):
+    # B<A でも compute_statistics は min/max 正規化で ValueError を出さない
+    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=1)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.x_range = (0.0, 1.0)
+    vm.toggle_main_cursor(True)
+    vm.set_cursor(0.6)  # A=0.6
+    vm.toggle_delta(True)
+    vm.set_cursor_b(0.2)  # B=0.2 < A
+    r = vm.delta_readings()[0]  # 例外なく計算できる
+    assert r.stats.count > 0
+    assert vm.delta_t == pytest.approx(-0.4)  # Δt は符号付き
+
+
+def test_delta_readings_empty_when_delta_off(tmp_path):
+    session, _ = _loaded_session(tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.x_range = (0.0, 1.0)
+    vm.toggle_main_cursor(True)
+    assert vm.delta_readings() == []  # delta 未有効
+
+
+def test_set_cursor_b_notifies_delta(tmp_path):
+    session, _ = _loaded_session(tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.x_range = (0.0, 1.0)
+    vm.toggle_main_cursor(True)
+    vm.toggle_delta(True)
+    changes: list[str] = []
+    vm.subscribe(changes.append)
+    vm.set_cursor_b(0.3)
+    assert "delta" in changes
+    assert "cursor" not in changes  # must NOT cross-broadcast (local-only)
+
+
+def test_toggle_delta_notifies_only_delta(tmp_path):
+    session, _ = _loaded_session(tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.x_range = (0.0, 1.0)
+    vm.toggle_main_cursor(True)  # this notifies "cursor"
+    changes: list[str] = []
+    vm.subscribe(changes.append)  # subscribe AFTER main is on
+    vm.toggle_delta(True)
+    assert "delta" in changes
+    assert "cursor" not in changes  # delta toggle must not cross-broadcast
+
+
+def test_toggle_delta_off_clears_b(tmp_path):
+    session, _ = _loaded_session(tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.x_range = (0.0, 1.0)
+    vm.toggle_main_cursor(True)
+    vm.toggle_delta(True)
+    vm.toggle_delta(False)
+    assert vm.delta_enabled is False
+    assert vm.cursor_t_b is None
+
+
+def test_delta_readings_dy_none_when_out_of_range(tmp_path):
+    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=1)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.x_range = (0.0, 1.0)
+    vm.toggle_main_cursor(True)
+    vm.set_cursor(0.2)  # A in range (value≈20)
+    vm.toggle_delta(True)
+    vm.set_cursor_b(5.0)  # B beyond last timestamp 0.99 → interpolate None
+    r = vm.delta_readings()[0]
+    assert r.dy is None
+    assert r.value_a == pytest.approx(20.0)  # A still in range
+
+
+# ─── visible_stat_cols (spec §7) ─────────────────────────────────────────────
+
+
+def test_visible_stat_cols_default_all_five() -> None:
+    """visible_stat_cols defaults to all 5 stat columns (spec §7)."""
+    session = Session()
+    vm = GraphPanelVM(session)
+    assert vm.visible_stat_cols == {"mean", "max", "min", "std", "count"}
+
+
+def test_set_visible_stats_updates_field() -> None:
+    """set_visible_stats stores the reduced set on the VM."""
+    session = Session()
+    vm = GraphPanelVM(session)
+    vm.set_visible_stats({"mean", "count"})
+    assert vm.visible_stat_cols == {"mean", "count"}
+
+
+def test_set_visible_stats_notifies_delta() -> None:
+    """set_visible_stats fires a 'delta' notification so the view re-renders."""
+    session = Session()
+    vm = GraphPanelVM(session)
+    events: list[str] = []
+    vm.subscribe(events.append)
+    vm.set_visible_stats({"mean"})
+    assert "delta" in events

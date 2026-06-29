@@ -20,7 +20,7 @@ from valisync.core.interpolation import InterpolationMethod
 from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.session import Session
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
-from valisync.gui.views.graph_panel_view import ZONE_PLOT, GraphPanelView
+from valisync.gui.views.graph_panel_view import GraphPanelView
 
 
 def _vm_with_signal(tmp_path: Path) -> GraphPanelVM:
@@ -195,17 +195,47 @@ def test_context_menu_event_real_path_interp_triggers_vm(
     assert called_with == [InterpolationMethod.ZERO_ORDER_HOLD]
 
 
-# --- Layer B: synthetic click delivery to mousePressEvent ---
+# --- R16/R17: context menu cursor toggles, B line, click-place removal ---
 
 
-def test_synthetic_plot_click_places_cursor(qtbot: QtBot, tmp_path: Path) -> None:
-    """A synthetic left-click at a ZONE_PLOT position must set vm.cursor_t (Layer B).
+def test_context_menu_has_cursor_toggles(qtbot: QtBot, tmp_path: Path) -> None:
+    vm = _vm_with_signal(tmp_path)
+    view = GraphPanelView(vm)
+    qtbot.addWidget(view)
+    menu = view.build_context_menu()
+    labels = [a.text() for a in menu.actions()]
+    assert "メインカーソル" in labels
+    assert "サブカーソル（Δ）" in labels  # noqa: RUF001
 
-    _zone_at is patched to return ZONE_PLOT so zone classification is deterministic
-    without relying on fragile offscreen geometry.  The click handler path
-    (mousePressEvent + mouseReleaseEvent → _place_cursor_at → vm.set_cursor) is
-    confirmed working; real OS routing is additionally proven by Layer C realgui
-    (tests/realgui/test_global_cursor.py).
+
+def test_sub_toggle_disabled_until_main_on(qtbot: QtBot, tmp_path: Path) -> None:
+    vm = _vm_with_signal(tmp_path)
+    vm.x_range = (0.0, 1.0)
+    view = GraphPanelView(vm)
+    qtbot.addWidget(view)
+    sub = next(
+        a
+        for a in view.build_context_menu().actions()
+        if a.text() == "サブカーソル（Δ）"  # noqa: RUF001
+    )
+    assert sub.isEnabled() is False  # main OFF → sub disabled
+    vm.toggle_main_cursor(True)
+    sub2 = next(
+        a
+        for a in view.build_context_menu().actions()
+        if a.text() == "サブカーソル（Δ）"  # noqa: RUF001
+    )
+    assert sub2.isEnabled() is True
+
+
+def test_context_menu_real_path_builds_menu(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real contextMenuEvent path builds menu containing cursor toggles (Layer B).
+
+    Mirrors test_context_menu_event_real_path_interp_triggers_vm: spy on
+    build_context_menu to capture the live menu object while returning a Mock
+    so contextMenuEvent's .exec() call is a no-op (avoids modal hang in headless).
     """
     vm = _vm_with_signal(tmp_path)
     view = GraphPanelView(vm)
@@ -214,36 +244,127 @@ def test_synthetic_plot_click_places_cursor(qtbot: QtBot, tmp_path: Path) -> Non
     view.show()
     qtbot.waitExposed(view)
 
-    # Force _zone_at to return ZONE_PLOT so zone classification is deterministic.
-    view._zone_at = lambda pos: ZONE_PLOT  # type: ignore[method-assign]
+    captured: dict = {}
+    real_build = view.build_context_menu
 
+    def spy_build() -> object:
+        menu = real_build()
+        captured["menu"] = menu
+        m = Mock()
+        m.exec = Mock(return_value=None)
+        return m
+
+    monkeypatch.setattr(view, "build_context_menu", spy_build)
+
+    pos = QPoint(view.width() // 2, view.height() // 2)
+    QApplication.sendEvent(
+        view,
+        QContextMenuEvent(QContextMenuEvent.Reason.Mouse, pos, view.mapToGlobal(pos)),
+    )
+
+    assert "menu" in captured, "build_context_menu must be called via contextMenuEvent"
+    labels = [a.text() for a in captured["menu"].actions()]
+    assert "メインカーソル" in labels
+
+
+def test_toggling_main_then_delta_shows_both_lines(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    vm = _vm_with_signal(tmp_path)
+    vm.x_range = (0.0, 1.0)
+    view = GraphPanelView(vm)
+    qtbot.addWidget(view)
+    vm.toggle_main_cursor(True)
+    assert view.cursor_line_visible()
+    assert not view.delta_line_visible()
+    vm.toggle_delta(True)
+    assert view.delta_line_visible()
+    assert view.delta_line_value() == pytest.approx(0.75)
+
+
+def test_delta_line_survives_axis_rebuild(qtbot: QtBot, tmp_path: Path) -> None:
+    """Layer B: 実際の軸構造リビルドを跨いで A/B カーソル線が生存する回帰防止。
+
+    set_column_count は signature を変え _reconcile_axes のスローパス (master
+    ViewBox を作り直し、カーソル線を detach -> 再アタッチ) を強制する。delta 表示中
+    の rebuild で B 線が消える/未同期になる回帰を捕捉する。
+    """
+    vm = _vm_with_signal(tmp_path)
+    vm.x_range = (0.0, 1.0)
+    view = GraphPanelView(vm)
+    qtbot.addWidget(view)
+    vm.toggle_main_cursor(True)
+    vm.toggle_delta(True)
+    assert view.delta_line_visible()
+    a_before = view.cursor_line_value()
+    b_before = view.delta_line_value()
+    vb_before = id(view._view_boxes[0])
+
+    # signature を変えてスローパス (実リビルド) を強制。set_column_count は "axes"
+    # を notify し _on_vm_change -> refresh() を通る。
+    vm.set_column_count(vm.column_count + 1)
+
+    # master ViewBox が実際に作り直された (ファストパス早期 return ではない) こと。
+    # これが無いと scene assertion は detach されず自明に通り、false-green になる。
+    assert id(view._view_boxes[0]) != vb_before
+    assert view.cursor_line_visible()
+    assert view.delta_line_visible()  # B 線は rebuild を生き延びる
+    assert view.cursor_line_value() == pytest.approx(a_before)
+    assert view.delta_line_value() == pytest.approx(b_before)
+    # detach 後、新しい master ViewBox に再アタッチ済み (scene が None でない)。
+    assert view._cursor_line.scene() is not None
+    assert view._cursor_line_b.scene() is not None
+
+
+def test_plot_click_no_longer_places_cursor(qtbot: QtBot, tmp_path: Path) -> None:
+    """R15 改訂: 空クリック設置は撤去。属性も挙動も無い。"""
+    vm = _vm_with_signal(tmp_path)
+    vm.x_range = (0.0, 1.0)
+    view = GraphPanelView(vm)
+    qtbot.addWidget(view)
+    assert not hasattr(view, "_place_cursor_at")
+    assert not hasattr(view, "_cursor_press_pos")
+    # ZONE_PLOT での press+release でも cursor_t は None のまま
+    center = QPointF(view.width() / 2, view.height() / 2)
+
+    def _btn(kind: QMouseEvent.Type) -> QMouseEvent:
+        return QMouseEvent(
+            kind,
+            center,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+
+    view.mousePressEvent(_btn(QMouseEvent.Type.MouseButtonPress))
+    view.mouseReleaseEvent(_btn(QMouseEvent.Type.MouseButtonRelease))
     assert vm.cursor_t is None
 
-    # Synthesize a left-button press + release at the widget center.
-    center = QPointF(float(view.width() // 2), float(view.height() // 2))
 
-    press = QMouseEvent(
-        QMouseEvent.Type.MouseButtonPress,
-        center,
-        center,
-        Qt.MouseButton.LeftButton,
-        Qt.MouseButton.LeftButton,
-        Qt.KeyboardModifier.NoModifier,
+# Layer B wiring tests: guard that toggled(bool) actually reaches vm methods
+def test_main_toggle_action_drives_vm(qtbot: QtBot, tmp_path: Path) -> None:
+    vm = _vm_with_signal(tmp_path)
+    vm.x_range = (0.0, 1.0)
+    view = GraphPanelView(vm)
+    qtbot.addWidget(view)
+    main = next(
+        a for a in view.build_context_menu().actions() if a.text() == "メインカーソル"
     )
-    QApplication.sendEvent(view, press)
+    main.setChecked(True)  # fires toggled(True) → vm.toggle_main_cursor(True)
+    assert vm.cursor_t == pytest.approx(0.5)
 
-    release = QMouseEvent(
-        QMouseEvent.Type.MouseButtonRelease,
-        center,
-        center,
-        Qt.MouseButton.LeftButton,
-        Qt.MouseButton.NoButton,
-        Qt.KeyboardModifier.NoModifier,
-    )
-    QApplication.sendEvent(view, release)
 
-    assert vm.cursor_t is not None, (
-        "Synthetic click did NOT reach GraphPanelView.mousePressEvent — "
-        "pyqtgraph's child ViewBox/scene may have consumed the event. "
-        "Check that mousePressEvent override is correct."
+def test_sub_toggle_action_drives_vm(qtbot: QtBot, tmp_path: Path) -> None:
+    vm = _vm_with_signal(tmp_path)
+    vm.x_range = (0.0, 1.0)
+    view = GraphPanelView(vm)
+    qtbot.addWidget(view)
+    vm.toggle_main_cursor(True)  # main on → sub enabled
+    sub = next(
+        a
+        for a in view.build_context_menu().actions()
+        if a.text() == "サブカーソル（Δ）"  # noqa: RUF001
     )
+    sub.setChecked(True)  # fires toggled(True) → vm.toggle_delta(True)
+    assert vm.delta_enabled is True
+    assert vm.cursor_t_b == pytest.approx(0.75)
