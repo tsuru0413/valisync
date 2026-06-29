@@ -20,8 +20,10 @@ drag-preview with a debounce timer is a noted refinement (R9.5).
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Callable
 from typing import Any
 
+import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
@@ -33,6 +35,7 @@ from PySide6.QtGui import (
     QDragLeaveEvent,
     QDragMoveEvent,
     QDropEvent,
+    QKeyEvent,
     QMouseEvent,
     QPen,
     QResizeEvent,
@@ -42,6 +45,7 @@ from PySide6.QtWidgets import (
     QGraphicsRectItem,
     QGraphicsWidget,
     QMenu,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -63,6 +67,11 @@ ZONE_X_OUTER = "x_outer"
 ZONE_Y_INNER = "y_inner"
 ZONE_Y_OUTER = "y_outer"
 ZONE_NONE = "none"
+
+# R14 time-offset gesture tolerances (scene pixels). Cursor-line proximity is
+# wider than the curve tolerance so the cursor line wins on overlap (§4).
+CURVE_HIT_TOL_PX = 8.0
+CURSOR_LINE_HIT_PX = 10.0
 
 # Active Y-axis grip/frame/interior zones for resize gestures (Task 3).
 AXZONE_GRIP_TOP = "ax_grip_top"
@@ -595,11 +604,23 @@ class GraphPanelView(QWidget):
     # to GraphAreaVM (R14.3).
     add_panel_requested = Signal()
     remove_panel_requested = Signal()
+    # Emitted on offset-drag release when the user confirms a scope in the apply
+    # dialog. The GraphAreaView wires this to GraphAreaVM.apply_offset (R14).
+    offset_apply_requested = Signal(str, float, str)
 
-    def __init__(self, vm: GraphPanelVM, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        vm: GraphPanelVM,
+        parent: QWidget | None = None,
+        apply_dialog_fn: Callable[[str, float], str | None] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.vm = vm
+        self._apply_dialog_fn = apply_dialog_fn
         self._items: dict[str, pg.PlotDataItem] = {}
+        # Which ViewBox each curve currently lives in (kept in sync by refresh).
+        # Used by the R14 curve hit-test to map candidate data points to scene px.
+        self._item_vb: dict[str, pg.ViewBox] = {}
         self._y_axes: list[pg.AxisItem] = []
         self._view_boxes: list[pg.ViewBox] = []
         # One empty width-reserving container per occupied column (root col = the
@@ -618,6 +639,12 @@ class GraphPanelView(QWidget):
         self._removable = True
         # Global cursor state (R15/R16)
         self._suppress_cursor_signal = False
+        # R14 offset-drag transient state (None when no drag is active).
+        self._offset_drag_key: str | None = None
+        self._offset_drag_start_x: float | None = None
+        self._offset_orig_xy: tuple[Any, Any] | None = None
+        self._offset_orig_pen: Any = None
+        self._offset_last_delta: float = 0.0
         # Active/hover axis — transient UI state, not persisted to the VM.
         # _active_axis_index: the axis the user last clicked (None = none selected).
         # _hover_axis_index: the axis under the cursor (None = none hovered).
@@ -695,6 +722,9 @@ class GraphPanelView(QWidget):
         # session, so subsequent syncs don't snap a user-dragged readout back to
         # the corner.  Reset to False whenever the readout is hidden (cursor cleared).
         self._readout_placed: bool = False
+        # ClickFocus so keyPressEvent (Escape during offset drag) reaches us; the
+        # offset drag always begins with a click, so focus is guaranteed then.
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
 
     # ─── Rendering ─────────────────────────────────────────────────────────────
 
@@ -717,6 +747,7 @@ class GraphPanelView(QWidget):
         for key in list(self._items):
             if key not in desired:
                 item = self._items.pop(key)
+                self._item_vb.pop(key, None)
                 # Find which ViewBox it was in and remove it
                 for vb in self._view_boxes:
                     if item in vb.addedItems:
@@ -741,9 +772,20 @@ class GraphPanelView(QWidget):
                     if vb != target_vb and item in vb.addedItems:
                         vb.removeItem(item)
                 target_vb.addItem(item)
+            self._item_vb[curve.name] = target_vb
 
             item.setData(curve.timestamps, curve.values)
             item.setPen(pg.mkPen(curve.color))
+
+        # R14: if a curve was rebuilt mid-offset-drag, keep the preview consistent.
+        if self._offset_drag_key is not None:
+            if self._offset_drag_key not in self._items:
+                self._cancel_offset_drag()  # active waveform removed (§9)
+            elif self._offset_orig_xy is not None:
+                orig_xs, orig_ys = self._offset_orig_xy
+                self._items[self._offset_drag_key].setData(
+                    orig_xs + self._offset_last_delta, orig_ys
+                )
 
         # 5. Update geometry and ranges
         # The overlaid secondary ViewBoxes must track the master's plot rect on
@@ -911,6 +953,7 @@ class GraphPanelView(QWidget):
         self._y_axes.clear()
         self._view_boxes.clear()
         self._items.clear()  # Clear items to force re-adding to new ViewBoxes
+        self._item_vb.clear()  # No stale ViewBox refs after rebuild (spec §R14)
         self._column_containers = {}
 
         # Root layout: columns 0..N-1 each reserve fixed Y-axis width (so empty
@@ -1324,7 +1367,189 @@ class GraphPanelView(QWidget):
         except Exception:
             return None
 
-    # ─── Mouse handlers — X zoom/pan only (Y owned by _AlignedAxisItem) ──────────
+    def _curve_at(self, pos: QPointF) -> str | None:
+        """Return the signal key of the nearest curve within CURVE_HIT_TOL_PX of *pos*.
+
+        Returns None when *pos* is within CURSOR_LINE_HIT_PX of a visible cursor
+        line (priority: cursor line > curve, §4) or when no curve is close enough.
+        Distance is measured in scene pixels via each item's own ViewBox, so the
+        check is correct under multi-axis layouts and any LOD level.
+        """
+        if not self._view_boxes or not self._items:
+            return None
+        try:
+            scene_pos = self.plot_widget.mapToScene(pos.toPoint())
+        except Exception:
+            return None
+
+        # Cursor-line guard: yield to a nearby visible cursor line.
+        vb0 = self._view_boxes[0]
+        for line in self._cursor_lines():
+            try:
+                if not line.isVisible():
+                    continue
+                line_scene_x = vb0.mapViewToScene(QPointF(float(line.value()), 0.0)).x()
+            except Exception:
+                continue
+            if abs(scene_pos.x() - line_scene_x) <= CURSOR_LINE_HIT_PX:
+                return None
+
+        best_key: str | None = None
+        best_dist = CURVE_HIT_TOL_PX
+        for key, item in self._items.items():
+            vb = self._item_vb.get(key)
+            if vb is None:
+                continue
+            xs, ys = item.getData()
+            if xs is None or len(xs) == 0:
+                continue
+            data_x = vb.mapSceneToView(scene_pos).x()
+            idx = int(np.searchsorted(xs, data_x))
+            for cand in (idx - 1, idx):
+                if cand < 0 or cand >= len(xs):
+                    continue
+                cand_scene = vb.mapViewToScene(
+                    QPointF(float(xs[cand]), float(ys[cand]))
+                )
+                dx = scene_pos.x() - cand_scene.x()
+                dy = scene_pos.y() - cand_scene.y()
+                dist = (dx * dx + dy * dy) ** 0.5
+                if dist <= best_dist:
+                    best_dist = dist
+                    best_key = key
+        return best_key
+
+    # ─── R14 offset drag ────────────────────────────────────────────────────────
+
+    def _begin_offset_drag(self, key: str, pos: QPointF) -> None:
+        """Activate offset drag on *key*: capture origin, highlight, set cursor."""
+        start_x = self._data_value(pos, "x")
+        if start_x is None:
+            return
+        item = self._items[key]
+        xs, ys = item.getData()
+        self._offset_drag_key = key
+        self._offset_drag_start_x = start_x
+        self._offset_orig_xy = (np.asarray(xs).copy(), np.asarray(ys).copy())
+        self._offset_orig_pen = item.opts.get("pen")
+        self._offset_last_delta = 0.0
+        # Highlight the active waveform (wider pen, same colour) per §12.
+        item.setPen(pg.mkPen(self.pen_color(key), width=3))
+        self.setCursor(Qt.CursorShape.SizeHorCursor)
+        # A real OS drag delivers MOVE events to the child GraphicsLayoutWidget
+        # (a QGraphicsView), not to this parent QWidget — only the press/release
+        # propagate up.  Without an explicit grab the move-driven preview never
+        # runs and the gesture commits Δt=0.  Grab so move/release route here;
+        # _end_offset_drag / _reset_offset_state release it on every exit.
+        self.grabMouse()
+
+    def _update_offset_preview(self, pos: QPointF, global_pos: QPointF) -> None:
+        """Shift the active curve by Δt = current_x - start_x and show the tooltip."""
+        key = self._offset_drag_key
+        if key is None or key not in self._items or self._offset_orig_xy is None:
+            self._cancel_offset_drag()
+            return
+        cur_x = self._data_value(pos, "x")
+        if cur_x is None or self._offset_drag_start_x is None:
+            return
+        delta_t = cur_x - self._offset_drag_start_x
+        self._offset_last_delta = delta_t
+        orig_xs, orig_ys = self._offset_orig_xy
+        self._items[key].setData(orig_xs + delta_t, orig_ys)
+        QToolTip.showText(global_pos.toPoint(), f"Δt = {delta_t:+.3g} s")
+
+    def _end_offset_drag(self) -> None:
+        """On release: stop tracking and defer the apply dialog (avoid exec in handler)."""
+        key = self._offset_drag_key
+        delta_t = self._offset_last_delta
+        if key is None:
+            return
+        # Release the grab before the (deferred) modal so the dialog can take mouse
+        # input; the drag itself is over.  _reset_offset_state also releases for the
+        # Escape / curve-removed paths that never reach here.
+        self.releaseMouse()
+        # Defer so QDialog.exec() does not run inside the mouse-event handler
+        # (mirrors the axis-move deferred-drop pattern; avoids stale-scene hangs).
+        QTimer.singleShot(0, lambda: self._finish_offset(key, delta_t))
+
+    def _finish_offset(self, key: str, delta_t: float) -> None:
+        """Show the apply dialog and emit / cancel based on the chosen scope."""
+        if key not in self._items:
+            self._reset_offset_state()
+            return
+        fn = self._apply_dialog_fn or self._default_apply_dialog
+        scope = fn(key, delta_t)
+        if scope in ("signal", "group"):
+            # Clear the drag state BEFORE emitting.  The emit synchronously drives
+            # the offsets broadcast → this panel's refresh(); if _offset_drag_key
+            # were still set, the mid-drag guard there would re-apply the full
+            # (unclipped) preview data over the VM's authoritative clipped render,
+            # desyncing the dragged panel from broadcast-only panels.  restore_data
+            # is False: the broadcast refresh repaints from the committed offset.
+            self._reset_offset_state(restore_data=False)
+            self.offset_apply_requested.emit(key, delta_t, scope)
+        else:
+            self._cancel_offset_drag()
+
+    def _cancel_offset_drag(self) -> None:
+        """Discard the preview, restore original data + pen, clear state (R14.7/8)."""
+        self._reset_offset_state(restore_data=True)
+
+    def _reset_offset_state(self, restore_data: bool = True) -> None:
+        key = self._offset_drag_key
+        if key is not None and key in self._items:
+            if restore_data and self._offset_orig_xy is not None:
+                self._items[key].setData(*self._offset_orig_xy)
+            if self._offset_orig_pen is not None:
+                self._items[key].setPen(self._offset_orig_pen)
+        QToolTip.hideText()
+        self._offset_drag_key = None
+        self._offset_drag_start_x = None
+        self._offset_orig_xy = None
+        self._offset_orig_pen = None
+        self._offset_last_delta = 0.0
+        # Restore the default cursor so the SizeHorCursor set by _begin_offset_drag
+        # does not linger through the apply dialog or into the next mouse move.
+        self.unsetCursor()
+        # Release the mouse grab taken in _begin_offset_drag.  Safe to call when not
+        # holding it (Qt no-ops); covers the Escape / curve-removed cancel paths
+        # that bypass _end_offset_drag.
+        self.releaseMouse()
+
+    def _default_apply_dialog(self, signal_key: str, delta_t: float) -> str | None:
+        """Modal apply dialog: 'signal' / 'group' / None (cancel). Enter → signal."""
+        from PySide6.QtWidgets import (
+            QDialog,
+            QDialogButtonBox,
+            QLabel,
+            QRadioButton,
+            QVBoxLayout,
+        )
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("時間オフセットの適用")
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(
+            QLabel(f"Δt = {delta_t:+.3g} s を適用します。対象を選択してください。")
+        )
+        sig_radio = QRadioButton("この信号のみ")
+        grp_radio = QRadioButton("同じファイルグループ全体")
+        sig_radio.setChecked(True)  # default → Enter applies signal scope
+        lay.addWidget(sig_radio)
+        lay.addWidget(grp_radio)
+        box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        box.accepted.connect(dlg.accept)
+        box.rejected.connect(dlg.reject)
+        lay.addWidget(box)
+        ok_btn = box.button(QDialogButtonBox.StandardButton.Ok)
+        ok_btn.setDefault(True)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return "signal" if sig_radio.isChecked() else "group"
+
+    # ─── Mouse handlers — X zoom/pan + R14 offset drag ──────────────────────────
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         # Only the left button drives X zoom/pan; right-click opens the context
@@ -1335,14 +1560,26 @@ class GraphPanelView(QWidget):
             if zone in (ZONE_X_INNER, ZONE_X_OUTER):
                 self._drag_zone = zone
                 self._drag_start = event.position()
+            elif zone == ZONE_PLOT:
+                key = self._curve_at(event.position())
+                if key is not None:
+                    self._begin_offset_drag(key, event.position())
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._offset_drag_key is not None:
+            self._update_offset_preview(event.position(), event.globalPosition())
+            super().mouseMoveEvent(event)
+            return
         if self._drag_zone is None:
             self.setCursor(cursor_for_zone(self._zone_at(event.position())))
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._offset_drag_key is not None:
+            self._end_offset_drag()
+            super().mouseReleaseEvent(event)
+            return
         if self._drag_zone is not None and self._drag_start is not None:
             # _drag_zone can only be an X zone (Y zoom/pan moved to _AlignedAxisItem).
             axis = "x"
@@ -1353,6 +1590,13 @@ class GraphPanelView(QWidget):
         self._drag_zone = None
         self._drag_start = None
         super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Escape and self._offset_drag_key is not None:
+            self._cancel_offset_drag()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     # ─── Drag-and-drop sink (R12.4) ────────────────────────────────────────────
 

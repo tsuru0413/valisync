@@ -127,6 +127,13 @@ class GraphPanelVM(Observable):
         # render so the VM is the single source of truth.
         self.visible_stat_cols: set[str] = {"mean", "max", "min", "std", "count"}
 
+        # Time offsets (R14) — applied at render time to the ORIGINAL session
+        # signal. signal_offsets keyed by namespaced name, file_offsets by group
+        # key. Pushed in by GraphAreaVM on 'offsets' events; the authoritative
+        # source is AppViewModel.
+        self._signal_offsets: dict[str, float] = {}
+        self._file_offsets: dict[str, float] = {}
+
     @property
     def y_range(self) -> tuple[float, float] | None:
         """Primary Y-axis range (for backward compatibility)."""
@@ -363,6 +370,25 @@ class GraphPanelVM(Observable):
         """
         self._invalidate_cache()
         self._notify("signals")
+
+    def set_offsets(
+        self, signal_offsets: dict[str, float], file_offsets: dict[str, float]
+    ) -> None:
+        """Store the current time offsets and invalidate the render cache (R14.5).
+
+        Called by GraphAreaVM on every 'offsets' broadcast. The next render_data()
+        applies them via Session.apply_offset. Cache invalidation (not a cache-key
+        change) is what makes a new offset bust the stale curve — render_data's key
+        intentionally omits offsets because they only change through this method.
+
+        x_range is intentionally NOT touched: this method is broadcast to every
+        panel on every apply (R14.5), so resetting the viewport here would discard
+        each panel's zoom/pan state. The wiring layer (Task 3/GraphAreaVM) is
+        responsible for any viewport adjustment after applying offsets.
+        """
+        self._signal_offsets = dict(signal_offsets)
+        self._file_offsets = dict(file_offsets)
+        self._invalidate_cache()
 
     def toggle_visibility(self, signal_key: str) -> None:
         """Flip the visibility of *signal_key*."""
@@ -774,8 +800,24 @@ class GraphPanelVM(Observable):
     # ─── Private helpers ──────────────────────────────────────────────────────
 
     def _signal_map(self) -> dict[str, Signal]:
-        """Return {signal.name: signal} for every signal in the Session."""
-        return {s.name: s for s in self._session.signals()}
+        """Return {signal.name: signal} with stored time offsets applied (R14).
+
+        Offsets are applied to the ORIGINAL session signal via the pure
+        Session.apply_offset; a zero total returns the original object unchanged.
+        Group key is the prefix before '::' (same convention as Session).
+        """
+        result: dict[str, Signal] = {}
+        for sig in self._session.signals():
+            group_key = sig.name.split("::", 1)[0]
+            file_off = self._file_offsets.get(group_key, 0.0)
+            sig_off = self._signal_offsets.get(sig.name, 0.0)
+            if file_off or sig_off:
+                result[sig.name] = self._session.apply_offset(
+                    sig, file_offset=file_off, signal_offset=sig_off
+                )
+            else:
+                result[sig.name] = sig
+        return result
 
     def _auto_fit_ranges(self) -> None:
         """Fit x_range and y_range to all plotted signals if not yet set.

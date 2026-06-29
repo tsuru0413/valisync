@@ -134,6 +134,9 @@ class GraphAreaView(QWidget):
         widget.remove_panel_requested.connect(
             lambda *_: self.remove_panel(panel_index, tab_index)
         )
+        widget.offset_apply_requested.connect(
+            lambda k, dt, sc: self.vm.apply_offset(k, dt, sc)
+        )
 
     def _sync_current(self) -> None:
         self._syncing = True

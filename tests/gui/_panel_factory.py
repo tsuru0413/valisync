@@ -17,6 +17,38 @@ from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 from valisync.gui.views.graph_panel_view import GraphPanelView
 
 
+def make_single_signal_panel() -> GraphPanelView:
+    """Build a GraphPanelView with ONE linear signal on a single axis.
+
+    The signal is ``v = t`` over ``t in [0, 1)`` so the curve passes through the
+    plot's geometric centre (x=0.5 → y=0.5 = mid of the auto-fit y-range). That
+    makes a click at the plot-rect centre land on the curve — ideal for hit-test
+    and offset-drag tests (Layer B/C). Runs on the offscreen platform.
+    """
+    d = Path(tempfile.mkdtemp())
+    csv = d / "lin.csv"
+    rows = ["t,lin"] + [f"{i / 50.0:.4f},{i / 50.0:.4f}" for i in range(50)]
+    csv.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    session = Session()
+    session.load(
+        csv,
+        FormatDefinition(
+            name="fmt",
+            delimiter=Delimiter.COMMA,
+            timestamp_column=0,
+            timestamp_unit="sec",
+            signal_start_column=1,
+            signal_end_column=1,
+            has_header=True,
+        ),
+    )
+    keys = sorted(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal_to_axis(keys[0], 0)
+    return GraphPanelView(vm)
+
+
 def make_two_axis_panel() -> GraphPanelView:
     """Build a GraphPanelView with two axes, each holding one real signal.
 

@@ -33,11 +33,58 @@ class AppViewModel(Observable):
         self._active_tab: int = 0
         self._data_sources: list[str] = []
         self._active_file_key: str | None = None
+        # Time-offset state (R14) — transient, never persisted (Phase 3).
+        # signal_offsets: keyed by namespaced signal name (e.g. "csv_1::speed").
+        # file_offsets: keyed by group key (e.g. "csv_1"). Both are additive
+        # deltas applied to the ORIGINAL session signal at render time.
+        self._signal_offsets: dict[str, float] = {}
+        self._file_offsets: dict[str, float] = {}
 
     @property
     def session(self) -> Session:
         """The shared Session (so sibling ViewModels read the same data)."""
         return self._session
+
+    @property
+    def signal_offsets(self) -> dict[str, float]:
+        """Per-signal time offsets (copy), keyed by namespaced signal name."""
+        return dict(self._signal_offsets)
+
+    @property
+    def file_offsets(self) -> dict[str, float]:
+        """Per-group time offsets (copy), keyed by group key."""
+        return dict(self._file_offsets)
+
+    def apply_offset(self, signal_key: str, delta_t: float, scope: str) -> None:
+        """Accumulate a time offset for *signal_key* and notify ('offsets').
+
+        ``scope="signal"`` adds ``delta_t`` to the per-signal offset; ``scope="group"``
+        adds it to the per-group (file) offset keyed by the group prefix. Offsets are
+        additive on the original session signal (R14.3); the render path applies them
+        via Session.apply_offset (a pure function).
+        """
+        if scope == "signal":
+            self._signal_offsets[signal_key] = (
+                self._signal_offsets.get(signal_key, 0.0) + delta_t
+            )
+        elif scope == "group":
+            group_key = signal_key.split("::", 1)[0]
+            self._file_offsets[group_key] = (
+                self._file_offsets.get(group_key, 0.0) + delta_t
+            )
+            # Group apply discards sibling per-signal adjustments so the whole
+            # group lands on one uniform offset (user decision): drop every
+            # signal_offset under this group's "<group>::" prefix.
+            self._purge_signal_offsets_under(group_key)
+        else:
+            raise ValueError(f"scope must be 'signal' or 'group', got {scope!r}")
+        self._notify("offsets")
+
+    def _purge_signal_offsets_under(self, group_key: str) -> None:
+        """Drop every per-signal offset whose key is under *group_key* (``"<group>::"`` prefix)."""
+        prefix = f"{group_key}::"
+        for sk in [k for k in self._signal_offsets if k.startswith(prefix)]:
+            del self._signal_offsets[sk]
 
     @property
     def active_file_key(self) -> str | None:
@@ -69,6 +116,9 @@ class AppViewModel(Observable):
         if self._active_file_key == key:
             self._active_file_key = None
             self._notify("active_file")
+        # Drop any offsets tied to the removed group so stale dicts don't linger.
+        self._file_offsets.pop(key, None)
+        self._purge_signal_offsets_under(key)
         self._notify("unloaded")
 
     # ─── Load ────────────────────────────────────────────────────────────────
@@ -136,4 +186,6 @@ class AppViewModel(Observable):
             "active_tab": self._active_tab,
             "data_sources": list(self._data_sources),
             "active_file": self._active_file_key,
+            "signal_offsets": dict(self._signal_offsets),
+            "file_offsets": dict(self._file_offsets),
         }
