@@ -140,6 +140,60 @@ def test_refresh_cancels_drag_when_curve_removed(qtbot: QtBot) -> None:
     assert captured == []  # cancel must NOT emit offset_apply_requested
 
 
+def _spy_grab(view) -> tuple[list, list]:
+    """Shadow grabMouse/releaseMouse with counters (instance-attr shadowing).
+
+    Bug A is fundamentally a Layer C concern: real OS drags deliver MOVE events to
+    the child QGraphicsView, not the parent GraphPanelView, so without an explicit
+    mouse grab the offset commits Δt=0.  sendEvent bypasses the grab entirely, so a
+    Layer B test cannot prove the behaviour — only that begin grabs and every
+    terminal path releases (a grab leak would freeze the real app).  realgui
+    (test_offset_drag.py) is the behavioural gate.
+    """
+    grabs: list[int] = []
+    releases: list[int] = []
+    view.grabMouse = lambda: grabs.append(1)  # type: ignore[method-assign]
+    view.releaseMouse = lambda: releases.append(1)  # type: ignore[method-assign]
+    return grabs, releases
+
+
+def test_offset_drag_grabs_on_begin_releases_on_apply(qtbot: QtBot) -> None:
+    view = _shown(qtbot, apply_dialog_fn=lambda key, dt: "signal")
+    grabs, releases = _spy_grab(view)
+    _start, target = _press_drag(view, dx_px=120.0)
+    assert view._offset_drag_key is not None
+    assert len(grabs) == 1  # begin grabbed the mouse
+    _send(view, QEvent.Type.MouseButtonRelease, target)
+    for _ in range(3):
+        QApplication.processEvents()
+    assert view._offset_drag_key is None
+    assert len(releases) >= 1  # released so the deferred dialog / next gesture is free
+
+
+def test_offset_drag_releases_on_escape(qtbot: QtBot) -> None:
+    view = _shown(qtbot)
+    grabs, releases = _spy_grab(view)
+    _press_drag(view, dx_px=120.0)
+    assert len(grabs) == 1
+    esc = QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier
+    )
+    QApplication.sendEvent(view, esc)
+    assert view._offset_drag_key is None
+    assert len(releases) >= 1  # Escape must not leak the grab
+
+
+def test_offset_drag_releases_when_curve_removed(qtbot: QtBot) -> None:
+    view = _shown(qtbot)
+    grabs, releases = _spy_grab(view)
+    key = sorted(view._items.keys())[0]
+    _press_drag(view, dx_px=30.0)
+    assert len(grabs) == 1
+    view.vm.remove_signal(key)  # synchronous refresh → guard cancels the drag
+    assert view._offset_drag_key is None
+    assert len(releases) >= 1  # the cancel path must release the grab
+
+
 def test_press_zone_plot_no_nearby_curve_no_drag(qtbot: QtBot) -> None:
     """Negative path: ZONE_PLOT press with no nearby curve must not start offset drag.
 

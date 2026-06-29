@@ -1436,6 +1436,12 @@ class GraphPanelView(QWidget):
         # Highlight the active waveform (wider pen, same colour) per §12.
         item.setPen(pg.mkPen(self.pen_color(key), width=3))
         self.setCursor(Qt.CursorShape.SizeHorCursor)
+        # A real OS drag delivers MOVE events to the child GraphicsLayoutWidget
+        # (a QGraphicsView), not to this parent QWidget — only the press/release
+        # propagate up.  Without an explicit grab the move-driven preview never
+        # runs and the gesture commits Δt=0.  Grab so move/release route here;
+        # _end_offset_drag / _reset_offset_state release it on every exit.
+        self.grabMouse()
 
     def _update_offset_preview(self, pos: QPointF, global_pos: QPointF) -> None:
         """Shift the active curve by Δt = current_x - start_x and show the tooltip."""
@@ -1458,6 +1464,10 @@ class GraphPanelView(QWidget):
         delta_t = self._offset_last_delta
         if key is None:
             return
+        # Release the grab before the (deferred) modal so the dialog can take mouse
+        # input; the drag itself is over.  _reset_offset_state also releases for the
+        # Escape / curve-removed paths that never reach here.
+        self.releaseMouse()
         # Defer so QDialog.exec() does not run inside the mouse-event handler
         # (mirrors the axis-move deferred-drop pattern; avoids stale-scene hangs).
         QTimer.singleShot(0, lambda: self._finish_offset(key, delta_t))
@@ -1470,10 +1480,14 @@ class GraphPanelView(QWidget):
         fn = self._apply_dialog_fn or self._default_apply_dialog
         scope = fn(key, delta_t)
         if scope in ("signal", "group"):
-            # The broadcast refresh re-renders at the committed offset; emit the
-            # signal and clear the state without restoring the preview data.
-            self.offset_apply_requested.emit(key, delta_t, scope)
+            # Clear the drag state BEFORE emitting.  The emit synchronously drives
+            # the offsets broadcast → this panel's refresh(); if _offset_drag_key
+            # were still set, the mid-drag guard there would re-apply the full
+            # (unclipped) preview data over the VM's authoritative clipped render,
+            # desyncing the dragged panel from broadcast-only panels.  restore_data
+            # is False: the broadcast refresh repaints from the committed offset.
             self._reset_offset_state(restore_data=False)
+            self.offset_apply_requested.emit(key, delta_t, scope)
         else:
             self._cancel_offset_drag()
 
@@ -1497,6 +1511,10 @@ class GraphPanelView(QWidget):
         # Restore the default cursor so the SizeHorCursor set by _begin_offset_drag
         # does not linger through the apply dialog or into the next mouse move.
         self.unsetCursor()
+        # Release the mouse grab taken in _begin_offset_drag.  Safe to call when not
+        # holding it (Qt no-ops); covers the Escape / curve-removed cancel paths
+        # that bypass _end_offset_drag.
+        self.releaseMouse()
 
     def _default_apply_dialog(self, signal_key: str, delta_t: float) -> str | None:
         """Modal apply dialog: 'signal' / 'group' / None (cancel). Enter → signal."""
