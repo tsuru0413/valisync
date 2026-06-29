@@ -702,7 +702,11 @@ class GraphPanelVM(Observable):
                         None,
                         None,
                         StatisticsResult(
-                            float("nan"), float("nan"), float("nan"), float("nan"), 0
+                            mean=float("nan"),
+                            max=float("nan"),
+                            min=float("nan"),
+                            std=float("nan"),
+                            count=0,
                         ),
                         False,
                     )

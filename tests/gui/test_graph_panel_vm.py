@@ -958,3 +958,43 @@ def test_set_cursor_b_notifies_delta(tmp_path):
     vm.subscribe(changes.append)
     vm.set_cursor_b(0.3)
     assert "delta" in changes
+    assert "cursor" not in changes  # must NOT cross-broadcast (local-only)
+
+
+def test_toggle_delta_notifies_only_delta(tmp_path):
+    session, _ = _loaded_session(tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.x_range = (0.0, 1.0)
+    vm.toggle_main_cursor(True)  # this notifies "cursor"
+    changes: list[str] = []
+    vm.subscribe(changes.append)  # subscribe AFTER main is on
+    vm.toggle_delta(True)
+    assert "delta" in changes
+    assert "cursor" not in changes  # delta toggle must not cross-broadcast
+
+
+def test_toggle_delta_off_clears_b(tmp_path):
+    session, _ = _loaded_session(tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.x_range = (0.0, 1.0)
+    vm.toggle_main_cursor(True)
+    vm.toggle_delta(True)
+    vm.toggle_delta(False)
+    assert vm.delta_enabled is False
+    assert vm.cursor_t_b is None
+
+
+def test_delta_readings_dy_none_when_out_of_range(tmp_path):
+    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=1)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.x_range = (0.0, 1.0)
+    vm.toggle_main_cursor(True)
+    vm.set_cursor(0.2)  # A in range (value≈20)
+    vm.toggle_delta(True)
+    vm.set_cursor_b(5.0)  # B beyond last timestamp 0.99 → interpolate None
+    r = vm.delta_readings()[0]
+    assert r.dy is None
+    assert r.value_a == pytest.approx(20.0)  # A still in range
