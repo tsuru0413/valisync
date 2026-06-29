@@ -3,7 +3,7 @@
 - 日付: 2026-06-29
 - 対象 spec: `valisync-gui-analysis`（親 `valisync-gui` の R14–R17）
 - 関連: [アクティブ軸統一操作モデル](2026-06-28-y-axis-per-axis-resize-active-model-design.md)（プロット操作モデルの先行設計）/ `docs/roadmap.md` / `docs/gui-testing-layers.md`
-- ステータス: brainstorming 合意済み。**増分A=R15 実装完了（2026-06-29・PR #21 merged）。増分B(R16 Delta+R17 範囲統計) は操作モデル/読み取り面デザインを 2026-06-29 に改訂合意（§4/§5/§6/§12 — トグル式表示・D&D 移動のみ・空クリック設置廃止・時刻ヘッダ常時表示）→ 実装完了（Task1-4 実装・task-review 済、merge ゲートは full pytest + realgui /gui-verify + CI 待ち）。増分C(R14) 未着手。** R15 実装プラン: [r15-global-cursor](../plans/2026-06-29-gui-analysis-r15-global-cursor.md)
+- ステータス: brainstorming 合意済み。**増分A=R15 実装完了（2026-06-29・PR #21 merged）。増分B(R16 Delta+R17 範囲統計) は操作モデル/読み取り面デザインを 2026-06-29 に改訂合意（§4/§5/§6/§12 — トグル式表示・D&D 移動のみ・空クリック設置廃止・時刻ヘッダ常時表示）→ 実装完了（Task1-4 実装・task-review 済、merge ゲートは full pytest + realgui /gui-verify + CI 待ち）。増分C=R14 実装完了（2026-06-30・realgui 証拠ゲートは /gui-verify 実行待ち）。** R15 実装プラン: [r15-global-cursor](../plans/2026-06-29-gui-analysis-r15-global-cursor.md)
 
 ## 1. 背景・目的
 
@@ -153,5 +153,10 @@
 - フロート表の正確なレイアウト・初期表示位置・列の桁数/数値フォーマット・ドラッグ移動の実装詳細。
 - 統計再計算のデバウンス間隔（LOD 予算と整合）。
 
-**増分C（R14）で確定:**
-- アクティブ波形のハイライト表現（線幅増/輝度）と曲線ヒットテストの許容ピクセル。
+**増分C（R14）で確定（2026-06-30）:**
+- `CURVE_HIT_TOL_PX = 8`（scene px）、`CURSOR_LINE_HIT_PX = 10`（scene px）; カーソル線優先（§4 — `CURSOR_LINE_HIT_PX > CURVE_HIT_TOL_PX` でカーソル線 D&D が常に優先）。
+- アクティブ波形ハイライト: ドラッグ開始時に当該 `PlotDataItem` のペン幅を `width=3` に増やし、リリース／キャンセルで元ペンに戻す（色は不変）。
+- Δt ツールチップ: `f"{delta_t:+.3g} s"`（有効数字 3 桁・符号付き、R14.6）。
+- **グループ適用は同グループの per-signal `signal_offsets`（`f"{group_key}::"` prefix で始まる全エントリ）をリセット**（ユーザー決定 — グループ一律オフセットに揃えることで個別調整を破棄する）。
+- **オフセット適用はビューポートを保持**（`set_offsets` / `GraphAreaVM` ブロードキャストは `x_range` を触らない — 全パネルへの broadcast でズーム/パン状態を維持）。
+- realgui 検証: **2パネルのクロス再描画**（ユーザー決定）— `tests/realgui/test_offset_drag.py::test_real_offset_drag_shifts_both_panels`。
