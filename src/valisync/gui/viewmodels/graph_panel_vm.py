@@ -18,6 +18,7 @@ from typing import Any
 
 import numpy as np
 
+from valisync.core.interpolation import InterpolationMethod
 from valisync.core.models import Signal
 from valisync.core.session import Session
 from valisync.gui.viewmodels.observable import Observable
@@ -60,6 +61,16 @@ class RenderCurve:
 
 
 @dataclass
+class CursorReading:
+    """1 信号のカーソル位置読み取り(Global_Cursor 用)。value=None は範囲外。"""
+
+    name: str
+    color: str
+    value: float | None
+    in_range: bool
+
+
+@dataclass
 class _PlottedEntry:
     """Internal record for one plotted signal."""
 
@@ -90,6 +101,10 @@ class GraphPanelVM(Observable):
         self.last_rendered_points: int = 0
         # Cache: maps cache-key → list[RenderCurve]
         self._cache: dict[tuple[Any, ...], list[RenderCurve]] = {}
+
+        # Global cursor (R15) — transient, never persisted.
+        self.cursor_t: float | None = None
+        self.interp_method: InterpolationMethod = InterpolationMethod.LINEAR
 
     @property
     def y_range(self) -> tuple[float, float] | None:
@@ -566,6 +581,41 @@ class GraphPanelVM(Observable):
             return
 
         self._notify("axes")
+
+    # ─── Global cursor (R15) ─────────────────────────────────────────────────
+
+    def set_cursor(self, t: float | None) -> None:
+        """Set the global cursor time (None clears it) and notify."""
+        self.cursor_t = t
+        self._notify("cursor")
+
+    def set_interp_method(self, method: InterpolationMethod) -> None:
+        """Set the interpolation method used for cursor readings and notify."""
+        self.interp_method = method
+        self._notify("cursor")
+
+    def cursor_readings(self) -> list[CursorReading]:
+        """Interpolated value of each visible signal at cursor_t (Session-delegated).
+
+        Returns [] when no cursor is set.  value=None / in_range=False when the
+        cursor falls outside a signal's timestamp range (R15.5).
+        """
+        if self.cursor_t is None:
+            return []
+        sig_map = self._signal_map()
+        out: list[CursorReading] = []
+        for entry in self._plotted:
+            if not entry.visible:
+                continue
+            sig = sig_map.get(entry.signal_key)
+            if sig is None:
+                out.append(CursorReading(entry.signal_key, entry.color, None, False))
+                continue
+            val = self._session.interpolate(sig, self.cursor_t, self.interp_method)
+            out.append(
+                CursorReading(entry.signal_key, entry.color, val, val is not None)
+            )
+        return out
 
     # ─── Introspection ────────────────────────────────────────────────────────
 

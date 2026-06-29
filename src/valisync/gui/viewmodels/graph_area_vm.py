@@ -87,15 +87,20 @@ class GraphAreaVM(Observable):
             unsub()
 
     def _on_panel_change(self, panel: GraphPanelVM, change: str) -> None:
-        """Propagate a panel's new X-range to its tab's siblings when synced."""
-        if change != "range" or self._propagating:
+        """Propagate a panel's X-range (when synced) or cursor (always) to siblings."""
+        if self._propagating:
             return
         for tab_index, tab in enumerate(self._tabs):
-            if panel in tab.panels:
-                if tab.x_sync_enabled and panel.x_range is not None:
-                    lo, hi = panel.x_range
-                    self.propagate_x_range(tab_index, lo, hi)
-                return
+            if panel not in tab.panels:
+                continue
+            if change == "range" and tab.x_sync_enabled and panel.x_range is not None:
+                lo, hi = panel.x_range
+                self.propagate_x_range(tab_index, lo, hi)
+            elif change == "cursor":
+                # Cursor is a time value broadcast to all sibling panels regardless
+                # of the X-sync toggle; each panel renders it within its own range.
+                self.propagate_cursor(tab_index, panel.cursor_t)
+            return
 
     # ─── Tab management ───────────────────────────────────────────────────────
 
@@ -151,12 +156,15 @@ class GraphAreaVM(Observable):
 
     # ─── Panel management ────────────────────────────────────────────────────
 
-    def add_panel(self, tab_index: int) -> int:
+    def add_panel(self, tab_index: int | None = None) -> int:
         """Append a new GraphPanelVM to the tab at *tab_index*.
 
+        Defaults to the active tab if *tab_index* is None.
         Raises ValueError when the tab already has 8 panels (R6.5).
         Returns the index of the new panel.
         """
+        if tab_index is None:
+            tab_index = self.active_tab_index
         tab = self._tabs[tab_index]
         if len(tab.panels) >= 8:
             raise ValueError("Tab already has 8 panels — the maximum allowed (R6.5)")
@@ -199,6 +207,15 @@ class GraphAreaVM(Observable):
         try:
             for panel in tab.panels:
                 panel.set_x_range(lo, hi)
+        finally:
+            self._propagating = False
+
+    def propagate_cursor(self, tab_index: int, t: float | None) -> None:
+        """Push cursor time *t* to every panel in the tab (R15.1), guarded against re-entry."""
+        self._propagating = True
+        try:
+            for panel in self._tabs[tab_index].panels:
+                panel.set_cursor(t)
         finally:
             self._propagating = False
 
