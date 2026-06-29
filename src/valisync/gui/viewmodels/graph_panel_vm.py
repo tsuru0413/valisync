@@ -381,14 +381,13 @@ class GraphPanelVM(Observable):
         change) is what makes a new offset bust the stale curve — render_data's key
         intentionally omits offsets because they only change through this method.
 
-        x_range is reset to None so the viewport re-fits to the shifted signal
-        extents on the next render (render_data falls back to each signal's own
-        ts bounds when x_range is None). The wiring layer (Task 3) may set an
-        explicit x_range after this call to preserve a user's viewport.
+        x_range is intentionally NOT touched: this method is broadcast to every
+        panel on every apply (R14.5), so resetting the viewport here would discard
+        each panel's zoom/pan state. The wiring layer (Task 3/GraphAreaVM) is
+        responsible for any viewport adjustment after applying offsets.
         """
         self._signal_offsets = dict(signal_offsets)
         self._file_offsets = dict(file_offsets)
-        self.x_range = None
         self._invalidate_cache()
 
     def toggle_visibility(self, signal_key: str) -> None:

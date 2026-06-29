@@ -35,6 +35,11 @@ def _vm_two_signals() -> tuple[GraphPanelVM, list[str], str]:
     vm = GraphPanelVM(session)
     vm.add_signal_to_axis(keys[0], 0)
     vm.add_signal_to_axis(keys[1], 0)
+    # Wide enough to contain original data (~0-0.29) and the largest shifted
+    # data (+1.0 -> ~1.29). Keeps x_range STABLE across set_offsets calls so
+    # test_set_offsets_invalidates_cache isolates _invalidate_cache() as the
+    # sole cause of the cache miss (the cache key itself does not change).
+    vm.x_range = (0.0, 1.5)
     group_key = keys[0].split("::", 1)[0]
     return vm, keys, group_key
 
