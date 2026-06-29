@@ -1,5 +1,7 @@
 # R15 Global Cursor 実装プラン
 
+> **実装状況: ✅ 完了（2026-06-29・PR #21 merged → main `04e3ca5`）。** 全タスク(1〜5)を subagent-driven-development で消化。証拠ゲート充足: realgui `tests/realgui/test_global_cursor.py` 2/2 PASS ＋ 既存軸操作 8/8 無回帰、headless 552 passed / 0 errors、CI 緑。以降のチェックボックスは計画当時の TDD ステップ記録（進捗台帳は scratch のためマージ時に破棄）。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** プロット領域のクリックで全パネル同期の Global_Cursor を表示し、各信号の補間値をプロット内フロート表（読み取り面）に出す。
