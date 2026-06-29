@@ -289,6 +289,7 @@ def test_plot_click_no_longer_places_cursor(qtbot: QtBot, tmp_path: Path) -> Non
     view = GraphPanelView(vm)
     qtbot.addWidget(view)
     assert not hasattr(view, "_place_cursor_at")
+    assert not hasattr(view, "_cursor_press_pos")
     # ZONE_PLOT での press+release でも cursor_t は None のまま
     center = QPointF(view.width() / 2, view.height() / 2)
 

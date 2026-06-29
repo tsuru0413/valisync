@@ -998,3 +998,31 @@ def test_delta_readings_dy_none_when_out_of_range(tmp_path):
     r = vm.delta_readings()[0]
     assert r.dy is None
     assert r.value_a == pytest.approx(20.0)  # A still in range
+
+
+# ─── visible_stat_cols (spec §7) ─────────────────────────────────────────────
+
+
+def test_visible_stat_cols_default_all_five() -> None:
+    """visible_stat_cols defaults to all 5 stat columns (spec §7)."""
+    session = Session()
+    vm = GraphPanelVM(session)
+    assert vm.visible_stat_cols == {"mean", "max", "min", "std", "count"}
+
+
+def test_set_visible_stats_updates_field() -> None:
+    """set_visible_stats stores the reduced set on the VM."""
+    session = Session()
+    vm = GraphPanelVM(session)
+    vm.set_visible_stats({"mean", "count"})
+    assert vm.visible_stat_cols == {"mean", "count"}
+
+
+def test_set_visible_stats_notifies_delta() -> None:
+    """set_visible_stats fires a 'delta' notification so the view re-renders."""
+    session = Session()
+    vm = GraphPanelVM(session)
+    events: list[str] = []
+    vm.subscribe(events.append)
+    vm.set_visible_stats({"mean"})
+    assert "delta" in events

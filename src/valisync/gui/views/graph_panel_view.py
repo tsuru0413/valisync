@@ -685,6 +685,19 @@ class GraphPanelView(QWidget):
         self._cursor_line_b.sigPositionChanged.connect(self._on_cursor_line_b_dragged)
         self._readout = CursorReadout(self)
         self._readout.setVisible(False)
+        # Wire stat-column toggle to VM so VM is the source of truth (spec §7).
+        # The lambda captures vm_ref to avoid a strong __self__ cycle through self.
+        vm_ref = self.vm
+
+        def _on_stat_toggled(col: str, on: bool) -> None:
+            cols = set(vm_ref.visible_stat_cols)
+            if on:
+                cols.add(col)
+            else:
+                cols.discard(col)
+            vm_ref.set_visible_stats(cols)
+
+        self._readout._on_stat_toggled = _on_stat_toggled
         # Track whether the readout has been placed at (8,8) for the current cursor
         # session, so subsequent syncs don't snap a user-dragged readout back to
         # the corner.  Reset to False whenever the readout is hidden (cursor cleared).
@@ -1060,6 +1073,9 @@ class GraphPanelView(QWidget):
         self._cursor_line.setVisible(True)
         if self.vm.delta_enabled and self.vm.cursor_t_b is not None:
             self._cursor_line_b.setVisible(True)
+            # Push VM's visible_stat_cols into the readout before rendering so
+            # the VM is the single source of truth (spec §7).
+            self._readout.sync_visible_stats(self.vm.visible_stat_cols)
             self._readout.set_delta(t, self.vm.cursor_t_b, self.vm.delta_readings())
         else:
             self._cursor_line_b.setVisible(False)

@@ -7,6 +7,8 @@ R16/R17: 時刻ヘッダ・Delta モード (A値/Δy/統計列)・列選択メ�
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QColor, QMouseEvent, QPixmap
 from PySide6.QtWidgets import QGridLayout, QLabel, QMenu, QVBoxLayout, QWidget
@@ -76,11 +78,18 @@ class CursorReadout(QWidget):
         self._col_headers: list[str] = []
         self._header_text: str = ""
         self._last_delta: tuple[float, float, list[DeltaReading]] | None = None
+        # Optional callback wired by GraphPanelView so stat-column toggles update
+        # the VM (spec §7: VM is the source of truth for visible_stat_cols).
+        # When None, _toggle_stat updates _visible_stats directly (test/legacy path).
+        self._on_stat_toggled: Callable[[str, bool], None] | None = None
 
     # ── R15 backward-compatible API ────────────────────────────────────────────
 
     def set_readings(self, readings: list[CursorReading]) -> None:
         """Backward-compatible global readout (no header time)."""
+        # Reset _last_delta so a subsequent _toggle_stat does not wrongly
+        # re-render in delta mode (mirrors the pattern already in set_global).
+        self._last_delta = None
         self._header.hide()
         self._header_text = ""
         self._col_headers = []
@@ -187,12 +196,26 @@ class CursorReadout(QWidget):
         return menu
 
     def _toggle_stat(self, col: str, on: bool) -> None:
+        if self._on_stat_toggled is not None:
+            # VM-wired path: delegate to VM so it notifies 'delta' and the view
+            # re-renders via _sync_cursor_from_vm (VM is source of truth).
+            self._on_stat_toggled(col, on)
+            return
+        # Legacy / test path: update local state and re-render directly.
         if on:
             self._visible_stats.add(col)
         else:
             self._visible_stats.discard(col)
         if self._last_delta is not None:
             self.set_delta(*self._last_delta)  # 再描画
+
+    def sync_visible_stats(self, cols: set[str]) -> None:
+        """Overwrite local visible-stats from VM state without triggering a re-render.
+
+        Called by GraphPanelView._sync_cursor_from_vm() before set_delta() so that
+        the VM's visible_stat_cols (spec §7) governs which stat columns appear.
+        """
+        self._visible_stats = set(cols)
 
     # ── Internal grid builder ──────────────────────────────────────────────────
 

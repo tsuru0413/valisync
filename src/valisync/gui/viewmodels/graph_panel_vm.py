@@ -122,6 +122,10 @@ class GraphPanelVM(Observable):
         # Delta cursor + range stats (R16/R17) — transient, never persisted.
         self.cursor_t_b: float | None = None
         self.delta_enabled: bool = False
+        # Stat column visibility (spec §7) — which of the 5 stat columns to show
+        # in Delta readout. GraphPanelView syncs this into CursorReadout on each
+        # render so the VM is the single source of truth.
+        self.visible_stat_cols: set[str] = {"mean", "max", "min", "std", "count"}
 
     @property
     def y_range(self) -> tuple[float, float] | None:
@@ -669,6 +673,15 @@ class GraphPanelVM(Observable):
     def set_cursor_b(self, t: float) -> None:
         """Move the Delta (B) cursor and notify (local — not broadcast)."""
         self.cursor_t_b = t
+        self._notify("delta")
+
+    def set_visible_stats(self, cols: set[str]) -> None:
+        """Update visible stat columns and notify 'delta' so the view re-renders.
+
+        Implements the spec §7 requirement: stat column selection is VM state,
+        not view state — CursorReadout reads this via GraphPanelView on each sync.
+        """
+        self.visible_stat_cols = set(cols)
         self._notify("delta")
 
     @property
