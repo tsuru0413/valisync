@@ -81,6 +81,8 @@ class CursorReadout(QWidget):
 
     def set_readings(self, readings: list[CursorReading]) -> None:
         """Backward-compatible global readout (no header time)."""
+        self._header.hide()
+        self._header_text = ""
         self._col_headers = []
         self._rebuild(
             col_headers=[],
@@ -159,7 +161,11 @@ class CursorReadout(QWidget):
         return set(self._visible_stats)
 
     def row_texts(self) -> list[tuple[str, str]]:
-        """Test introspection: [(name, value_text), ...] in row order."""
+        """Test introspection: [(name, value_text), ...] in row order.
+
+        In delta mode the second element is all data cells joined by spaces
+        (A値, Δy, and any visible stat columns), not just the first value.
+        """
         return list(self._rows)
 
     # ── Column-selection menu ──────────────────────────────────────────────────
@@ -205,8 +211,8 @@ class CursorReadout(QWidget):
         self._rows = []
         r0 = 0
         if col_headers:
-            # 列見出し — swatch 列の上は空白、以降は col_headers を順に配置
-            for c, head in enumerate(["", *col_headers]):
+            # 列見出し — swatch(col0)・name(col1) の上は空白、データ列(col2+) に col_headers を配置
+            for c, head in enumerate(["", "", *col_headers]):
                 lbl = QLabel(head)
                 lbl.setStyleSheet("color:#7f849c; font-size:9px;")
                 lbl.setAlignment(
