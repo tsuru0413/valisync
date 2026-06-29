@@ -64,6 +64,26 @@ class GraphAreaVM(Observable):
             self._for_each_panel(lambda p: p.refresh())
         elif change == "unloaded":
             self._for_each_panel(lambda p: p.prune_missing_signals())
+        elif change == "offsets":
+            # R14.5: push the latest offsets to EVERY panel (all tabs) and
+            # re-render. _for_each_panel spans all tabs (propagate_cursor is
+            # tab-local and must NOT be reused here).
+            sig_off = self._app_vm.signal_offsets
+            file_off = self._app_vm.file_offsets
+
+            def _apply(p: GraphPanelVM) -> None:
+                p.set_offsets(sig_off, file_off)
+                # GraphPanelVM.set_offsets intentionally does not touch x_range
+                # so that this broadcast does not discard per-panel zoom/pan
+                # state. However, on an initial offset apply the old x_range
+                # would hide the newly-shifted data entirely.  Resetting to None
+                # lets render_data auto-range to the current (offset-adjusted)
+                # timestamps while still honouring future manual viewport
+                # changes (R14.5 / set_offsets docstring delegates this here).
+                p.x_range = None
+                p.refresh()
+
+            self._for_each_panel(_apply)
 
     def _for_each_panel(self, fn: Callable[[GraphPanelVM], None]) -> None:
         """Apply *fn* to every panel across all tabs."""
@@ -218,6 +238,14 @@ class GraphAreaVM(Observable):
                 panel.set_cursor(t)
         finally:
             self._propagating = False
+
+    def apply_offset(self, signal_key: str, delta_t: float, scope: str) -> None:
+        """Forward an offset request to the AppViewModel (View-layer wiring target).
+
+        The resulting 'offsets' notification is handled by _on_app_change, which
+        broadcasts to all panels. Keeps GraphPanelView decoupled from AppViewModel.
+        """
+        self._app_vm.apply_offset(signal_key, delta_t, scope)
 
     # ─── Accessors ───────────────────────────────────────────────────────────
 
