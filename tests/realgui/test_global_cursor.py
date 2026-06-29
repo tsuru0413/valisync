@@ -1,6 +1,6 @@
-"""Layer C: Global_Cursor を実 OS 入力で検証(R15)。--realgui で実行。
+"""Layer C: Global_Cursor を実 OS 入力で検証(R15/R16)。--realgui で実行。
 
-新規経路(前例なし): プロット内クリック設置 / InfiniteLine 実ドラッグ。
+新規経路(前例なし): InfiniteLine 実ドラッグ(A 線単独・B 線2線ヒット分離)。
 再利用: tests/gui/_panel_factory.make_two_axis_panel、test_active_axis_zoom_pan.py 同形の _to_phys/_at。
 """
 
@@ -80,43 +80,21 @@ def _x_span(view) -> float:
     return abs(rng[1] - rng[0]) if rng else 1.0
 
 
-def test_real_click_places_cursor_at_clicked_x(qtbot: QtBot, tmp_path) -> None:
-    """実クリック → InfiniteLine がクリックのデータ x 近傍に描画される(②: 実経路の描画位置)。"""
-    _skip_unless_real_display()
-    from PySide6.QtWidgets import QApplication
-
-    view = _shown_panel(qtbot)
-    sx, sy, expected_x = _scene_center(view)
-    px, py = _to_phys(view, sx, sy)
-    _at(px, py, _LDOWN)
-    time.sleep(0.03)
-    _at(px, py, _LUP)
-    for _ in range(5):
-        QApplication.processEvents()
-    with contextlib.suppress(Exception):
-        QApplication.primaryScreen().grabWindow(0).save(
-            str(tmp_path / "cursor_placed.png")
-        )
-    assert view.cursor_line_visible()
-    assert abs(view.cursor_line_value() - expected_x) <= _x_span(view) * 0.05
-    assert view.readout_visible()
-
-
 def test_real_drag_cursor_line_moves_it(qtbot: QtBot, tmp_path) -> None:
-    """中央に設置→線を右へ実ドラッグ → 描画 x(line.value)が増加(②: 実ドラッグ結果)。"""
+    """A 線をトグルで設置→線を右へ実ドラッグ → 描画 x(line.value)が増加(②: 実ドラッグ結果)。"""
     _skip_unless_real_display()
     from PySide6.QtWidgets import QApplication
 
     view = _shown_panel(qtbot)
-    sx, sy, _ = _scene_center(view)
-    px, py = _to_phys(view, sx, sy)
-    _at(px, py, _LDOWN)
-    time.sleep(0.03)
-    _at(px, py, _LUP)
-    for _ in range(5):
+    # 設置はトグル経由(空クリック設置は撤去済み)
+    view.vm.x_range = view.vm.x_range or (0.0, 1.0)
+    view.vm.toggle_main_cursor(True)
+    for _ in range(3):
         QApplication.processEvents()
     assert view.cursor_line_visible()
     x_before = view.cursor_line_value()
+    # A 線の現在位置を起点に右へ実ドラッグ(線上を掴む)
+    sx, sy, _ = _scene_center(view)
 
     rect = view._view_boxes[0].sceneBoundingRect()
     target_sx = rect.x() + rect.width() * 0.75
@@ -137,3 +115,44 @@ def test_real_drag_cursor_line_moves_it(qtbot: QtBot, tmp_path) -> None:
             str(tmp_path / "cursor_dragged.png")
         )
     assert view.cursor_line_value() > x_before
+
+
+def test_real_drag_sub_cursor_moves_only_b(qtbot: QtBot, tmp_path) -> None:
+    """main+delta 表示 → B 線(75%)を実ドラッグ → B が動き A は不変(②: 実ヒットテスト)。"""
+    _skip_unless_real_display()
+    from PySide6.QtWidgets import QApplication
+
+    view = _shown_panel(qtbot)
+    view.vm.x_range = view.vm.x_range or (0.0, 1.0)
+    view.vm.toggle_main_cursor(True)  # A=50%
+    view.vm.toggle_delta(True)  # B=75%
+    for _ in range(3):
+        QApplication.processEvents()
+    assert view.cursor_line_visible() and view.delta_line_visible()
+    a_before = view.cursor_line_value()
+    b_before = view.delta_line_value()
+
+    vb = view._view_boxes[0]
+    rect = vb.sceneBoundingRect()
+    # B(75%)の画面位置を起点に、さらに右(85%)へ実ドラッグ
+    b_scene_x = rect.x() + rect.width() * 0.75
+    sy = rect.y() + rect.height() * 0.5
+    tgt_scene_x = rect.x() + rect.width() * 0.85
+    gx, gy = _to_phys(view, b_scene_x, sy)
+    tx, _ = _to_phys(view, tgt_scene_x, sy)
+    _at(gx, gy, _LDOWN)
+    time.sleep(0.05)
+    steps = max(2, (abs(tx - gx) + 7) // 8)
+    for k in range(1, steps + 1):
+        _at(gx + (tx - gx) * k // steps, gy, _MOVE)
+        QApplication.processEvents()
+        time.sleep(0.02)
+    _at(tx, gy, _LUP)
+    for _ in range(5):
+        QApplication.processEvents()
+    with contextlib.suppress(Exception):
+        QApplication.primaryScreen().grabWindow(0).save(
+            str(tmp_path / "sub_cursor_dragged.png")
+        )
+    assert view.delta_line_value() > b_before  # B は右へ動いた
+    assert view.cursor_line_value() == pytest.approx(a_before)  # A は不変
