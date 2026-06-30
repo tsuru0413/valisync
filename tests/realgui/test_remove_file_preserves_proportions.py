@@ -29,7 +29,6 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import faulthandler
-import sys
 import threading
 import time
 from pathlib import Path
@@ -37,32 +36,28 @@ from pathlib import Path
 import pytest
 from pytestqt.qtbot import QtBot
 
+from tests.realgui._realgui_input import (
+    KEYUP,
+    LUP,
+    RDOWN,
+    RUP,
+    VK_ESCAPE,
+    at,
+    skip_unless_real_display,
+)
+
 pytestmark = pytest.mark.realgui
 
-_MOUSEEVENTF_MOVE = 0x0001
-_MOUSEEVENTF_LEFTDOWN = 0x0002
-_MOUSEEVENTF_LEFTUP = 0x0004
-_MOUSEEVENTF_RIGHTDOWN = 0x0008
-_MOUSEEVENTF_RIGHTUP = 0x0010
-_KEYEVENTF_KEYUP = 0x0002
-_VK_ESCAPE = 0x1B
 _ASFW_ANY = -1
 
 
 def test_remove_file_preserves_graph_panel_proportions(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
-    if sys.platform != "win32":
-        pytest.skip("real OS input uses Win32 mouse_event (Windows-only)")
+    skip_unless_real_display()
 
     from PySide6.QtCore import QEventLoop, Qt, QTimer
-    from PySide6.QtGui import QGuiApplication
     from PySide6.QtWidgets import QApplication, QMenu
-
-    if QGuiApplication.platformName() == "offscreen":
-        pytest.skip(
-            "requires a real display — run: uv run pytest --realgui tests/realgui/"
-        )
 
     from valisync.core.models import Delimiter, FormatDefinition
     from valisync.gui.viewmodels.app_viewmodel import AppViewModel
@@ -81,10 +76,10 @@ def test_remove_file_preserves_graph_panel_proportions(
 
     def _watchdog() -> None:
         if not abort.wait(timeout=30.0):
-            user32.keybd_event(_VK_ESCAPE, 0, 0, 0)
-            user32.keybd_event(_VK_ESCAPE, 0, _KEYEVENTF_KEYUP, 0)
-            user32.mouse_event(_MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-            user32.mouse_event(_MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+            user32.keybd_event(VK_ESCAPE, 0, 0, 0)
+            user32.keybd_event(VK_ESCAPE, 0, KEYUP, 0)
+            user32.mouse_event(LUP, 0, 0, 0, 0)
+            user32.mouse_event(RUP, 0, 0, 0, 0)
 
     wd = threading.Thread(target=_watchdog, daemon=True)
     wd.start()
@@ -166,10 +161,6 @@ def test_remove_file_preserves_graph_panel_proportions(
         def _phys(global_pt: object) -> tuple[int, int]:
             return round(global_pt.x() * dpr), round(global_pt.y() * dpr)  # type: ignore[attr-defined]
 
-        def _at(x: int, y: int, flag: int) -> None:
-            user32.SetCursorPos(int(x), int(y))
-            user32.mouse_event(flag, 0, 0, 0, 0)
-
         # Make the regions non-equal: shrink the top region via per-axis resize
         # (model B) so its bottom edge moves up, opening a gap below it. The coupled
         # divider this test used to drag was removed with the active-axis model; the
@@ -217,8 +208,8 @@ def test_remove_file_preserves_graph_panel_proportions(
         loop = QEventLoop()
 
         def _do_right_click() -> None:
-            _at(rx, ry, _MOUSEEVENTF_RIGHTDOWN)
-            user32.mouse_event(_MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+            at(rx, ry, RDOWN)
+            at(rx, ry, RUP)
             # The modal menu opens here; _capture() (a later singleShot) runs
             # inside that loop.
 

@@ -7,41 +7,21 @@
 from __future__ import annotations
 
 import contextlib
-import ctypes
-import sys
 import time
 
 import pytest
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
+from tests.realgui._realgui_input import (
+    LDOWN,
+    LUP,
+    MOVE,
+    at,
+    skip_unless_real_display,
+    to_phys,
+)
+
 pytestmark = pytest.mark.realgui
-_MOVE, _LDOWN, _LUP = 0x0001, 0x0002, 0x0004
-
-
-def _skip_unless_real_display() -> None:
-    if sys.platform != "win32":
-        pytest.skip("real OS input is Windows-only")
-    from PySide6.QtGui import QGuiApplication
-
-    if QGuiApplication.platformName() == "offscreen":
-        pytest.skip(
-            "requires a real display — run: uv run pytest --realgui tests/realgui/"
-        )
-
-
-def _to_phys(view, sx: float, sy: float) -> tuple[int, int]:
-    from PySide6.QtCore import QPoint
-
-    vp = view.plot_widget.mapFromScene(QPoint(int(sx), int(sy)))
-    g = view.plot_widget.viewport().mapToGlobal(vp)
-    dpr = view.devicePixelRatioF()
-    return round(g.x() * dpr), round(g.y() * dpr)
-
-
-def _at(x: float, y: float, flag: int) -> None:
-    user32 = ctypes.windll.user32
-    user32.SetCursorPos(int(x), int(y))
-    user32.mouse_event(flag, 0, 0, 0, 0)
 
 
 def _shown_panel(qtbot: QtBot):
@@ -82,7 +62,7 @@ def _x_span(view) -> float:
 
 def test_real_drag_cursor_line_moves_it(qtbot: QtBot, tmp_path) -> None:
     """A 線をトグルで設置→線を右へ実ドラッグ → 描画 x(line.value)が増加(②: 実ドラッグ結果)。"""
-    _skip_unless_real_display()
+    skip_unless_real_display()
     from PySide6.QtWidgets import QApplication
 
     view = _shown_panel(qtbot)
@@ -98,16 +78,16 @@ def test_real_drag_cursor_line_moves_it(qtbot: QtBot, tmp_path) -> None:
 
     rect = view._view_boxes[0].sceneBoundingRect()
     target_sx = rect.x() + rect.width() * 0.75
-    gx, gy = _to_phys(view, sx, sy)
-    tx, _ = _to_phys(view, target_sx, sy)
-    _at(gx, gy, _LDOWN)
+    gx, gy = to_phys(view, sx, sy)
+    tx, _ = to_phys(view, target_sx, sy)
+    at(gx, gy, LDOWN)
     time.sleep(0.05)
     steps = max(2, (abs(tx - gx) + 7) // 8)
     for k in range(1, steps + 1):
-        _at(gx + (tx - gx) * k // steps, gy, _MOVE)
+        at(gx + (tx - gx) * k // steps, gy, MOVE)
         QApplication.processEvents()
         time.sleep(0.02)
-    _at(tx, gy, _LUP)
+    at(tx, gy, LUP)
     for _ in range(5):
         QApplication.processEvents()
     with contextlib.suppress(Exception):
@@ -119,7 +99,7 @@ def test_real_drag_cursor_line_moves_it(qtbot: QtBot, tmp_path) -> None:
 
 def test_real_drag_sub_cursor_moves_only_b(qtbot: QtBot, tmp_path) -> None:
     """main+delta 表示 → B 線(75%)を実ドラッグ → B が動き A は不変(②: 実ヒットテスト)。"""
-    _skip_unless_real_display()
+    skip_unless_real_display()
     from PySide6.QtWidgets import QApplication
 
     view = _shown_panel(qtbot)
@@ -138,16 +118,16 @@ def test_real_drag_sub_cursor_moves_only_b(qtbot: QtBot, tmp_path) -> None:
     b_scene_x = rect.x() + rect.width() * 0.75
     sy = rect.y() + rect.height() * 0.5
     tgt_scene_x = rect.x() + rect.width() * 0.85
-    gx, gy = _to_phys(view, b_scene_x, sy)
-    tx, _ = _to_phys(view, tgt_scene_x, sy)
-    _at(gx, gy, _LDOWN)
+    gx, gy = to_phys(view, b_scene_x, sy)
+    tx, _ = to_phys(view, tgt_scene_x, sy)
+    at(gx, gy, LDOWN)
     time.sleep(0.05)
     steps = max(2, (abs(tx - gx) + 7) // 8)
     for k in range(1, steps + 1):
-        _at(gx + (tx - gx) * k // steps, gy, _MOVE)
+        at(gx + (tx - gx) * k // steps, gy, MOVE)
         QApplication.processEvents()
         time.sleep(0.02)
-    _at(tx, gy, _LUP)
+    at(tx, gy, LUP)
     for _ in range(5):
         QApplication.processEvents()
     with contextlib.suppress(Exception):
