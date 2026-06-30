@@ -174,16 +174,21 @@ def _prepare_one_axis(panel, keys: list[str], qtbot: QtBot) -> None:
 
 
 def _y_band_phys(panel, axis_index: int) -> tuple[int, int]:
-    """Physical pixel inside the Y gutter INNER band of axis_index (ZONE_Y_INNER:
-    right half of the per-column gutter, closer to the plot).
+    """Physical pixel inside the Y gutter band of axis_index (a Y zone —
+    ZONE_Y_INNER or ZONE_Y_OUTER; dropEvent routes BOTH identically to the
+    overwrite/join branch, so either is correct for H2/H3).
 
-    YAxisVM attrs confirmed (y_axis_vm.py:17-19): top_ratio, height_ratio, column.
+    The point sits inside the per-column gutter (x < plot_rect.left()); the exact
+    inner/outer split (classify_zone, graph_panel_view.py:143-147) does not change
+    the routing, and _axis_index_at recovers the column via the same //72 math.
+
+    YAxisVM attrs confirmed (y_axis_vm.py): top_ratio, height_ratio, column.
     _Y_AXIS_FIXED_WIDTH=72 confirmed (graph_panel_view.py:89).
     """
     from valisync.gui.views.graph_panel_view import _Y_AXIS_FIXED_WIDTH
 
     ax = panel.vm.axes[axis_index]
-    # Inner half of the gutter (closer to the plot) → ZONE_Y_INNER.
+    # Inside the column's gutter (closer to the plot half) → a Y zone.
     lx = int(_Y_AXIS_FIXED_WIDTH * (ax.column + 0.75))
     ly = int((ax.top_ratio + ax.height_ratio / 2) * panel.height())
     return _panel_point_phys(panel, lx, ly)
