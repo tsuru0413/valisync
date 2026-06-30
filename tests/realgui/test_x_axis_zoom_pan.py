@@ -235,6 +235,147 @@ def test_x_outer_drag_pans(qtbot: QtBot, tmp_path) -> None:
     )
 
 
+# ─── M13: X-axis strip hover cursor (RED-first) ──────────────────────────────
+
+
+def test_x_strip_hover_shows_sizehor_cursor(qtbot: QtBot, tmp_path) -> None:
+    """M13 (RED-first): hovering the X-axis strip sets SizeHorCursor on the parent.
+
+    API verification (confirmed via graph_panel_view.py):
+      cursor_for_zone(ZONE_X_INNER | ZONE_X_OUTER) → Qt.CursorShape.SizeHorCursor
+        (graph_panel_view.py:244-245).
+      GraphPanelView.mouseMoveEvent calls self.setCursor(cursor_for_zone(...))
+        at line 1588 when _drag_zone is None (no button pressed).
+      Accessor: view.cursor().shape() — the GraphPanelView WIDGET cursor (QWidget),
+        NOT axis.cursor() (which is the AxisItem scene cursor used by Y hover tests).
+
+    RED-first rationale:
+      plot_widget (pg.GraphicsLayoutWidget / QGraphicsView) fills the entire panel via
+      QVBoxLayout with zero margins (graph_panel_view.py:688-690).  The X-axis strip
+      lives inside the pyqtgraph scene rendered by plot_widget.  OS hover MOVE events
+      over the strip are delivered to plot_widget.mouseMoveEvent(), NOT to
+      GraphPanelView.mouseMoveEvent() (see memory: gui_realgui_move_not_reaching_parent_qwidget).
+      Therefore self.setCursor(SizeHorCursor) at line 1588 is never called and
+      view.cursor() stays at the default ArrowCursor → this test goes RED at the
+      real-win32 gate.
+
+    Production fix (gate-conditional, NOT applied here):
+      Install a viewport eventFilter on plot_widget that forwards no-button-pressed
+      QMouseEvent(Move) to GraphPanelView.mouseMoveEvent().  Candidate insertion near
+      graph_panel_view.py line 687 (after setMouseTracking):
+        self.plot_widget.viewport().installEventFilter(self)
+      In eventFilter: if obj is self.plot_widget.viewport() and
+        e.type() == QEvent.Type.MouseMove and e.buttons() == Qt.MouseButton.NoButton:
+          forward a re-mapped QMouseEvent to self.mouseMoveEvent(...)
+
+    honest RED (if gate is unexpectedly GREEN — hover reaches parent):
+      Comment out ``self.setCursor(cursor_for_zone(self._zone_at(event.position())))``
+      at graph_panel_view.py:1588 → cursor stays Arrow → assertion flips RED.
+    """
+    skip_unless_real_display()
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
+    view = _single_panel(qtbot)
+
+    # X-axis strip bounding rect in scene coordinates.
+    strip = view._x_axis.sceneBoundingRect()
+    # Inner zone (ZONE_X_INNER) = top half of the strip, closest to the plot.
+    sx = strip.x() + strip.width() * 0.5
+    sy = strip.y() + strip.height() * 0.25
+    gx, gy = to_phys(view, sx, sy)
+
+    # Incremental MOVE sweep downward onto the X strip from above (mirrors the Y
+    # hover_shape sweep in test_active_axis_zoom_pan.py:145-162).  A single
+    # SetCursorPos jump does not trigger hover delivery; small steps ensure a
+    # hoverMove (or mouseMoveEvent) lands on the target.  Retry the sweep until
+    # the cursor changes or all attempts are exhausted.
+    for _attempt in range(6):
+        for off in range(30, -1, -3):
+            at(gx, gy - off, MOVE)
+            QApplication.processEvents()
+            time.sleep(0.012)
+        time.sleep(0.04)
+        QApplication.processEvents()
+        if view.cursor().shape() != Qt.CursorShape.ArrowCursor:
+            break
+
+    with contextlib.suppress(Exception):
+        QApplication.primaryScreen().grabWindow(0).save(
+            str(tmp_path / "x_strip_hover.png")
+        )
+
+    assert view.cursor().shape() == Qt.CursorShape.SizeHorCursor, (
+        f"Hovering X strip (ZONE_X_INNER) did not set SizeHorCursor: "
+        f"got {view.cursor().shape()}. "
+        "RED-first expected: GraphPanelView.mouseMoveEvent not reached when "
+        "hovering over child plot_widget (QGraphicsView fills entire panel). "
+        "Production fix: viewport eventFilter forwarding no-button MouseMove to "
+        "GraphPanelView.mouseMoveEvent (~graph_panel_view.py line 687)."
+    )
+
+
+def test_plot_zone_hover_shows_arrow_cursor(qtbot: QtBot, tmp_path) -> None:
+    """M13-companion: hovering the plot zone shows ArrowCursor.
+
+    cursor_for_zone(ZONE_PLOT) returns ArrowCursor (graph_panel_view.py:246).
+
+    In RED-first state (no viewport-eventFilter fix), setCursor is never called for
+    either zone and view.cursor() stays at the default ArrowCursor — this assertion
+    passes trivially.  After the production fix, this test validates the RESET path:
+    moving from the X strip (SizeHorCursor) back into the plot area (ArrowCursor)
+    correctly calls setCursor(ArrowCursor) when ZONE_PLOT is reached.
+
+    Hover approach: sweep onto the X strip first (to exercise SizeHor if fixed),
+    then sweep into the plot center; assert ArrowCursor on view.cursor().
+    """
+    skip_unless_real_display()
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
+    view = _single_panel(qtbot)
+
+    # Step 1: sweep onto X strip (SizeHor if fix is active; no-op in RED state).
+    strip = view._x_axis.sceneBoundingRect()
+    sx = strip.x() + strip.width() * 0.5
+    sy_x = strip.y() + strip.height() * 0.25
+    gx, gy_x = to_phys(view, sx, sy_x)
+    for off in range(30, -1, -3):
+        at(gx, gy_x - off, MOVE)
+        QApplication.processEvents()
+        time.sleep(0.012)
+    QApplication.processEvents()
+
+    # Step 2: sweep into the plot center from below (from X strip up into the plot).
+    vb = view._view_boxes[0]
+    plot_rect = vb.sceneBoundingRect()
+    sx_p = plot_rect.x() + plot_rect.width() * 0.5
+    sy_p = plot_rect.y() + plot_rect.height() * 0.5
+    gx_p, gy_p = to_phys(view, sx_p, sy_p)
+    for _attempt in range(3):
+        for off in range(-30, 1, 3):  # sweep upward: from gy_p+30 to gy_p
+            at(gx_p, gy_p - off, MOVE)
+            QApplication.processEvents()
+            time.sleep(0.012)
+        time.sleep(0.04)
+        QApplication.processEvents()
+        if view.cursor().shape() == Qt.CursorShape.ArrowCursor:
+            break
+
+    with contextlib.suppress(Exception):
+        QApplication.primaryScreen().grabWindow(0).save(
+            str(tmp_path / "plot_zone_hover.png")
+        )
+
+    assert view.cursor().shape() == Qt.CursorShape.ArrowCursor, (
+        f"Hovering plot zone did not show ArrowCursor: got {view.cursor().shape()}. "
+        "After viewport-eventFilter fix, cursor_for_zone(ZONE_PLOT)=ArrowCursor "
+        "should be applied on entering the plot area."
+    )
+
+
 # ─── M12: X-axis cross-panel sync ────────────────────────────────────────────
 
 
