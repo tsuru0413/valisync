@@ -280,6 +280,16 @@ class GraphPanelVM(Observable):
         entries = [e for e in self._plotted if e.axis_index == axis_index]
         self._plotted = [e for e in self._plotted if e.axis_index != axis_index]
         self._compact_axes()  # prune the now-signal-less moved axis, remap survivors
+        # Break the alias: if _compact_axes kept the extracted axis as the empty-
+        # panel placeholder, swap it for a fresh one so source and target own
+        # distinct YAxisVM objects (else the target's relayout mutates the source
+        # placeholder, and a later remove_signal on the empty source corrupts the
+        # moved axis in the target).
+        if self._axes and self._axes[0] is axis:
+            placeholder = YAxisVM()
+            placeholder.top_ratio, placeholder.height_ratio = 0.0, 1.0
+            placeholder.column = self._column_count - 1
+            self._axes = [placeholder]
         self._invalidate_cache()
         self._notify("axes")
         return axis, entries
