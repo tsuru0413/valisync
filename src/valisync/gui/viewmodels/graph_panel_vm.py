@@ -313,6 +313,12 @@ class GraphPanelVM(Observable):
         for e in entries:
             e.axis_index = new_index
             self._plotted.append(e)
+        # Drop the target's initial empty placeholder (mirrors create_new_axis), so
+        # dropping onto a blank panel does not leave a phantom empty axis band.
+        # _compact_axes is an identity remap when the target already has
+        # signal-bearing axes, so this is safe for the non-empty-target case too.
+        self._compact_axes()
+        new_index = self._axes.index(axis)
         self.move_axis_to_column(
             new_index, axis.column, position
         )  # re-stack + notify "axes"

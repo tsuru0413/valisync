@@ -164,6 +164,16 @@ def test_extract_single_axis_placeholder_is_distinct(tmp_path: Path) -> None:
     assert p0._axes[0] is not extracted_axis, (
         "insert_axis corrupted the source placeholder identity"
     )
+    # The source must still have exactly 1 axis (the fresh placeholder).
+    assert len(p0._axes) == 1, (
+        f"source has {len(p0._axes)} axes after insert_axis — expected 1"
+    )
+    # The target must have exactly 1 axis (the moved one, no phantom placeholder).
+    assert len(p1._axes) == 1, (
+        f"target has {len(p1._axes)} axes after insert_axis into blank panel — "
+        "expected 1 (phantom placeholder was not pruned)"
+    )
+    assert p1._axes[0] is extracted_axis, "target's only axis is not the moved one"
     src_top_before = p0._axes[0].top_ratio
     src_h_before = p0._axes[0].height_ratio
     # Mutating the target axis layout should not change the source placeholder.
@@ -174,6 +184,42 @@ def test_extract_single_axis_placeholder_is_distinct(tmp_path: Path) -> None:
     extracted_axis.height_ratio = 0.5
     assert p0._axes[0].height_ratio == src_h_before, (
         "source placeholder height_ratio changed when extracted axis was mutated"
+    )
+
+
+def test_move_to_blank_panel_leaves_no_phantom_axis(tmp_path: Path) -> None:
+    """Moving an axis to a BLANK target panel must leave exactly ONE axis in the target.
+
+    Before the fix, insert_axis appended the moved axis without pruning the
+    target's initial empty placeholder, leaving self._axes = [placeholder, moved],
+    which caused _reconcile_axes to render a spurious empty Y-axis band.
+
+    This test FAILS before the _compact_axes() fix (target has 2 axes) and
+    PASSES after (target has exactly 1 axis, the moved one).
+    """
+    area, p0, p1, keys = _area_two_panels(tmp_path)
+    # p1 starts blank (0 signals, 1 placeholder axis).
+    assert len(p1._axes) == 1, "pre-condition: target is blank with 1 placeholder"
+    assert [e.signal_key for e in p1._plotted] == [], "pre-condition: target empty"
+
+    # Move p0's axis0 (carrying keys[0]) to blank p1.
+    area.move_axis_across_panels(0, 0, 0, 1, column=0, position=None)
+
+    # Source must still carry keys[1] and have no phantom.
+    p0_keys = [e.signal_key for e in p0._plotted]
+    assert keys[0] not in p0_keys, "moved signal still in source"
+    assert keys[1] in p0_keys, "non-moved signal was incorrectly dropped from source"
+
+    # Target must have EXACTLY 1 axis (the moved one) — no phantom placeholder.
+    assert len(p1._axes) == 1, (
+        f"target has {len(p1._axes)} axes after move to blank panel — "
+        "expected 1 (phantom placeholder was not pruned by insert_axis)"
+    )
+    p1_keys = [e.signal_key for e in p1._plotted]
+    assert keys[0] in p1_keys, "moved signal absent from target"
+    # The target's only axis must be the moved one (carries the signal).
+    assert p1._axes[0].name or p1._plotted[0].axis_index == 0, (
+        "target axis index mapping is broken"
     )
 
 
