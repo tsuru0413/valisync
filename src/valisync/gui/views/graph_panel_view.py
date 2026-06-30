@@ -985,6 +985,11 @@ class GraphPanelView(QWidget):
             vb = pg.ViewBox()
             vb.setMouseEnabled(x=False, y=False)
             vb.disableAutoRange()
+            # Suppress pyqtgraph's default right-click "Plot Options" menu so the
+            # panel's own contextMenuEvent wins on a real OS right-click. Applied
+            # to every ViewBox (master + secondary overlays) so a right-click on
+            # any axis region raises the panel menu, not pyqtgraph's.
+            vb.setMenuEnabled(False)
             self._view_boxes.append(vb)
 
             if master_vb is None:

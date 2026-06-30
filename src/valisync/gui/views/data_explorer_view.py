@@ -14,9 +14,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QModelIndex
+from PySide6.QtCore import QModelIndex, QPoint, Qt
 from PySide6.QtGui import (
-    QContextMenuEvent,
     QDragEnterEvent,
     QDragMoveEvent,
     QDropEvent,
@@ -72,9 +71,11 @@ class DataExplorerView(QMainWindow):
         self.fs_model = QFileSystemModel(self)
         self.fs_model.setRootPath("")
         self.tree = QTreeView(self)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.setModel(self.fs_model)
         self.tree.setSelectionMode(QTreeView.SelectionMode.ExtendedSelection)
         self.tree.activated.connect(self._on_activated)
+        self.tree.customContextMenuRequested.connect(self._show_context_menu)
         self.setCentralWidget(self.tree)
         self.setAcceptDrops(True)  # OS file-manager drops (R12.1)
 
@@ -187,9 +188,15 @@ class DataExplorerView(QMainWindow):
         remove.triggered.connect(lambda *_: self.remove_source(path))
         return menu
 
-    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
-        index = self.tree.indexAt(self.tree.viewport().mapFromGlobal(event.globalPos()))
-        if index.isValid():
-            self.build_context_menu(self.fs_model.filePath(index)).exec(
-                event.globalPos()
-            )
+    def _show_context_menu(self, pos: QPoint) -> None:
+        """Show the file menu on a real right-click (CustomContextMenu).
+
+        Driven by ``QTreeView.customContextMenuRequested`` so the menu fires on
+        the real OS path (mirrors FileBrowser PR#11); overriding contextMenuEvent
+        on this container does not fire reliably from the child item view.
+        """
+        index = self.tree.indexAt(pos)
+        if not index.isValid():
+            return
+        global_pos = self.tree.viewport().mapToGlobal(pos)
+        self.build_context_menu(self.fs_model.filePath(index)).exec(global_pos)

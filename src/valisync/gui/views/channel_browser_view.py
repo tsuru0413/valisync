@@ -6,8 +6,7 @@ Displays signals for the currently active file in AppViewModel.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QItemSelection, QMimeData, Signal
-from PySide6.QtGui import QContextMenuEvent
+from PySide6.QtCore import QItemSelection, QMimeData, QPoint, Qt, Signal
 from PySide6.QtWidgets import (
     QLineEdit,
     QMenu,
@@ -49,6 +48,12 @@ class ChannelBrowserView(QWidget):
         self.tree.setRootIsDecorated(False)
         self.tree.setItemsExpandable(False)
 
+        # CustomContextMenu so a real right-click on the child tree emits
+        # customContextMenuRequested. Overriding contextMenuEvent on this
+        # container does not fire reliably from the child item view, so the
+        # menu would not appear in the real GUI (mirrors FileBrowser PR#11).
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.search_box)
@@ -57,6 +62,7 @@ class ChannelBrowserView(QWidget):
         # ── Wiring ───────────────────────────────────────────────────────────
         self.search_box.textChanged.connect(self._vm.set_filter)
         self.tree.selectionModel().selectionChanged.connect(self._on_selection_changed)
+        self.tree.customContextMenuRequested.connect(self._show_context_menu)
 
         # The VM outlives this widget; drop the subscription when the C++ object
         # is destroyed so a later notify never calls into a deleted view.
@@ -110,5 +116,15 @@ class ChannelBrowserView(QWidget):
         )
         return menu
 
-    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
-        self.build_context_menu().exec(event.globalPos())
+    def _show_context_menu(self, pos: QPoint) -> None:
+        """Show the signal menu on a real right-click (CustomContextMenu).
+
+        Driven by ``QTreeView.customContextMenuRequested`` so the menu appears on
+        the real OS path (overriding contextMenuEvent on this container does not
+        fire from the child item view). The menu operates on the current
+        multi-selection (R14.1 / H4), so this deliberately does NOT change the
+        selection — right-clicking with several rows selected keeps them all for
+        a bulk "Add to Active Panel".
+        """
+        global_pos = self.tree.viewport().mapToGlobal(pos)
+        self.build_context_menu().exec(global_pos)
