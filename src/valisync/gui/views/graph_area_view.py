@@ -130,6 +130,7 @@ class GraphAreaView(QWidget):
         if not isinstance(widget, GraphPanelView):
             return
         widget.set_removable(removable)
+        widget.set_panel_index(panel_index)
         widget.add_panel_requested.connect(lambda *_: self.add_panel(tab_index))
         widget.remove_panel_requested.connect(
             lambda *_: self.remove_panel(panel_index, tab_index)
