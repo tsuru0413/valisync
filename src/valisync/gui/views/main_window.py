@@ -67,6 +67,7 @@ class MainWindow(QMainWindow):
 
         # ── File Browser dock (right top) ────────────────────────────────────
         self.file_dock = QDockWidget("File Browser", self)
+        self.file_dock.setObjectName("file_dock")  # required for saveState/restoreState
         self.file_dock.setWidget(self.file_browser_view)
         self.file_dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetFloatable
@@ -77,6 +78,9 @@ class MainWindow(QMainWindow):
 
         # ── Channel Browser dock (right bottom) ──────────────────────────────
         self.channel_dock = QDockWidget("Channel Browser", self)
+        self.channel_dock.setObjectName(
+            "channel_dock"
+        )  # required for saveState/restoreState
         self.channel_dock.setWidget(self.channel_browser_view)
         self.channel_dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetFloatable
@@ -98,6 +102,7 @@ class MainWindow(QMainWindow):
 
         # ── Toolbar (R1.5) ───────────────────────────────────────────────────
         toolbar: QToolBar = self.addToolBar("Main")
+        toolbar.setObjectName("main_toolbar")  # required for saveState/restoreState
         self.action_data_explorer: QAction = QAction("Data Explorer", self)
         self.action_data_explorer.triggered.connect(self.open_data_explorer)
         toolbar.addAction(self.action_data_explorer)
@@ -160,7 +165,11 @@ class MainWindow(QMainWindow):
 
     def save_state(self) -> None:
         """Persist window geometry and dock arrangement to QSettings."""
-        settings = QSettings(_ORG, _APP)
+        # IniFormat: file-based, cross-platform, redirectable in tests.
+        # NativeFormat (registry on Windows) cannot be redirected via setPath.
+        settings = QSettings(
+            QSettings.Format.IniFormat, QSettings.Scope.UserScope, _ORG, _APP
+        )
         settings.setValue("geometry", self.saveGeometry())
         settings.setValue("windowState", self.saveState())
 
@@ -175,7 +184,9 @@ class MainWindow(QMainWindow):
         Guarded against missing/corrupt values: absent keys return None and
         both restoreGeometry/restoreState silently ignore falsy byte-arrays.
         """
-        settings = QSettings(_ORG, _APP)
+        settings = QSettings(
+            QSettings.Format.IniFormat, QSettings.Scope.UserScope, _ORG, _APP
+        )
         geometry = settings.value("geometry")
         state = settings.value("windowState")
         if geometry:
