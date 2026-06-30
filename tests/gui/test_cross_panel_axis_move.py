@@ -175,3 +175,25 @@ def test_extract_single_axis_placeholder_is_distinct(tmp_path: Path) -> None:
     assert p0._axes[0].height_ratio == src_h_before, (
         "source placeholder height_ratio changed when extracted axis was mutated"
     )
+
+
+# ─── Layer B: View→VM wiring test (Task 3) ───────────────────────────────────
+
+
+def test_cross_panel_signal_routes_to_vm(qtbot: QtBot, tmp_path: Path) -> None:
+    """Emitting cross_panel_axis_move_requested on the target panel's widget
+    routes through GraphAreaView._wire_panel → GraphAreaVM.move_axis_across_panels.
+    Uses a synthetic signal emit (Layer B); real QDrag delivery is Layer C / Task 4.
+    """
+    from valisync.gui.views.graph_area_view import GraphAreaView
+
+    area, p0, p1, keys = _area_two_panels(tmp_path)
+    view = GraphAreaView(area)
+    qtbot.addWidget(view)
+    # target = panel1 (index 1 in the splitter); emit its cross-panel signal
+    # asking to pull p0.axis0 (source_panel=0, axis=0) into col=0, pos=None.
+    splitter = view.tabs.widget(0)
+    panel1_widget = splitter.widget(1)
+    panel1_widget.cross_panel_axis_move_requested.emit(0, 0, 0, None)
+    assert keys[0] not in [e.signal_key for e in p0._plotted]
+    assert keys[0] in [e.signal_key for e in p1._plotted]

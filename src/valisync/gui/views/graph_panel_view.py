@@ -610,8 +610,9 @@ class GraphPanelView(QWidget):
     # dialog. The GraphAreaView wires this to GraphAreaVM.apply_offset (R14).
     offset_apply_requested = Signal(str, float, str)
     # Emitted when an axis-move drop targets a different panel (Task 3).
-    # Args: source_panel_index, axis_index, col, position.
-    cross_panel_axis_move_requested = Signal(int, int, int, int)
+    # Args: source_panel_index, axis_index, col, position (int | None).
+    # Uses object so None ("append at end") survives the signal boundary.
+    cross_panel_axis_move_requested = Signal(int, int, int, object)
 
     def __init__(
         self,
@@ -1668,7 +1669,7 @@ class GraphPanelView(QWidget):
         # only fires when the drag actually carried an axis index.
         decoded = decode_axis_move(event.mimeData())
         if decoded is not None:
-            _source_panel_index, axis_index = decoded
+            source_panel_index, axis_index = decoded
             col, position = self._axis_drop_target(event.position())
             self._clear_axis_move_feedback()
             event.acceptProposedAction()
@@ -1678,9 +1679,20 @@ class GraphPanelView(QWidget):
             # the next gesture is delivered to that destroyed item — the first
             # resize/move after a move broke (no-op, or a re-entrant QDrag hang).
             # Running it on the next event-loop turn lets the drag fully unwind.
-            QTimer.singleShot(
-                0, lambda: self._apply_deferred_axis_move(axis_index, col, position)
-            )
+            if source_panel_index == self._panel_index:
+                # Same panel → existing within-panel reorder (unchanged).
+                QTimer.singleShot(
+                    0, lambda: self._apply_deferred_axis_move(axis_index, col, position)
+                )
+            else:
+                # Cross-panel → ask GraphArea to relocate (deferred off the QDrag
+                # modal stack, same C2 reason as the within-panel path).
+                QTimer.singleShot(
+                    0,
+                    lambda: self.cross_panel_axis_move_requested.emit(
+                        source_panel_index, axis_index, col, position
+                    ),
+                )
             return
 
         keys = decode_signal_keys(event.mimeData())
