@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from tests.gui._panel_factory import make_single_signal_panel
 from tests.realgui import _realgui_input as ri
 from valisync.gui.views.graph_panel_view import GraphPanelView
@@ -19,6 +21,12 @@ def test_flag_and_vk_constants() -> None:
 def test_real_display_skip_reason_is_set_under_offscreen() -> None:
     # CI / local headless は QT_QPA_PLATFORM=offscreen or 非 win32 → 必ず理由が返る。
     assert ri.real_display_skip_reason() is not None
+
+
+def test_drive_qdrag_rejects_empty_waypoints() -> None:
+    # 空 waypoints は契約違反 → スレッド生成や実 OS 入力に到達する前に明示エラー。
+    with pytest.raises(ValueError, match="at least one waypoint"):
+        ri.drive_qdrag((0, 0), [], done=lambda: True)
 
 
 def test_to_phys_returns_int_pair(qtbot) -> None:

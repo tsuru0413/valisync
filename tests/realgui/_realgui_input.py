@@ -1,4 +1,4 @@
-# ruff: noqa: RUF002
+# ruff: noqa: RUF002, RUF003
 """Layer C 共有: 実 OS 入力プリミティブ＋背景スレッド QDrag ドライバ。
 
 QDrag.exec は Windows の OLE DoDragDrop モーダルループに入り Qt タイマを汲まない
@@ -93,6 +93,10 @@ def drive_qdrag(
     modifier_vk: ジェスチャ全体で保持する修飾キー VK（例 VK_CONTROL で Ctrl 結合）。
     threshold_dy: 最初の move を press_y+threshold_dy（垂直）にしてドラッグ閾値を超える。
     """
+    # 末尾要素をドロップ点に使うため空列は契約違反。曖昧な IndexError ではなく
+    # 明示エラーで弾く（後続フェーズで新規 call site が増えても安全側に倒す）。
+    if not waypoints_phys:
+        raise ValueError("drive_qdrag requires at least one waypoint")
     finished = threading.Event()
     sx, sy = press_phys
     dx, dy = waypoints_phys[-1]
