@@ -1,5 +1,7 @@
 # realgui カバレッジ監査（gap 分析）
 
+> **進捗（拡充実施・2026-06-30）**: 本監査を基に realgui を 6→22 件へ拡充中。Phase 1 共有ヘルパ抽出（PR #27）／Phase 2 コンテナメニュー3経路 H5-H7（PR #28）／Phase 3 信号 D&D 実配送 H1-H4（PR #29）／Phase 4 click_to_activate_axis H8（PR #30、付随フレーク修正 #31）完了＝**high クラスタ H1-H8 充足**。残: 新機能クロスパネル軸移動（Phase 5）・medium M1-M13／low（Phase 6-7）・非 realgui dock 復元 C1。各 honest RED→GREEN は実 win32 ①ゲートで実証済み。設計: `docs/superpowers/specs/2026-06-30-realgui-coverage-expansion-design.md`、プラン: `docs/superpowers/plans/2026-06-30-realgui-plan{1-4}-*.md`。
+>
 > 生成: 2026-06-30 / workflow `realgui-coverage-audit`（11 エージェント・並列マッピング→棚卸し→突合→完全性クリティック）＋ 1 ドメインをインライン補完。
 > 基準: `docs/gui-testing-layers.md` の ②実質性ルール（realgui は「実経路でしか証明できない結果」= OS→Qt 配送・ヒットテスト・描画/視覚結果・押下中 move 駆動ジェスチャ・QDrag D&D 配送 を検証）。
 
