@@ -198,6 +198,33 @@ class GraphAreaVM(Observable):
         self._unsubscribe_panel(panel)
         self._notify("panels")
 
+    def move_axis_across_panels(
+        self,
+        tab_index: int,
+        src_panel_index: int,
+        axis_index: int,
+        dst_panel_index: int,
+        column: int,
+        position: int | None = None,
+    ) -> None:
+        """Move an axis (with its signals + settings) from one panel to another in
+        the same tab. Same-panel (src==dst) is a no-op (the View routes same-panel
+        drags to the panel's own move_axis_to_column). Stale indices are no-ops.
+        """
+        panels = self.panels(tab_index)
+        if not (
+            0 <= src_panel_index < len(panels) and 0 <= dst_panel_index < len(panels)
+        ):
+            return
+        if src_panel_index == dst_panel_index:
+            return
+        src, dst = panels[src_panel_index], panels[dst_panel_index]
+        moved = src.extract_axis(axis_index)
+        if moved is None:
+            return
+        axis, entries = moved
+        dst.insert_axis(axis, entries, column, position)
+
     # ─── X-axis sync ─────────────────────────────────────────────────────────
 
     def set_x_sync(self, tab_index: int, enabled: bool) -> None:

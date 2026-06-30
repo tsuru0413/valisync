@@ -264,6 +264,51 @@ class GraphPanelVM(Observable):
         self._layout_column_preserving(ordered)
         self._notify("axes")
 
+    def extract_axis(
+        self, axis_index: int
+    ) -> tuple[YAxisVM, list[_PlottedEntry]] | None:
+        """Remove the axis at *axis_index* and its plotted signals from this panel.
+
+        Returns the YAxisVM (carrying unit/name/y_range/height_ratio) and its
+        _PlottedEntry list (signal_key/color/visible) so a sibling panel can
+        re-create the axis verbatim. The vacated band stays blank (_compact_axes,
+        mirroring removal). Stale index → None (no-op).
+        """
+        if not (0 <= axis_index < len(self._axes)):
+            return None
+        axis = self._axes[axis_index]
+        entries = [e for e in self._plotted if e.axis_index == axis_index]
+        self._plotted = [e for e in self._plotted if e.axis_index != axis_index]
+        self._compact_axes()  # prune the now-signal-less moved axis, remap survivors
+        self._invalidate_cache()
+        self._notify("axes")
+        return axis, entries
+
+    def insert_axis(
+        self,
+        axis: YAxisVM,
+        entries: list[_PlottedEntry],
+        column: int,
+        position: int | None,
+    ) -> None:
+        """Insert a previously-extracted *axis* (with its *entries*) at *column*/*position*.
+
+        The axis keeps its carried settings; signals keep their colors. The target
+        column is re-stacked preserving heights (move_axis_to_column), so the moved
+        axis lands at the requested vertical position.
+        """
+        new_index = len(self._axes)
+        axis.column = max(0, min(column, self._column_count - 1))
+        self._axes.append(axis)
+        for e in entries:
+            e.axis_index = new_index
+            self._plotted.append(e)
+        self.move_axis_to_column(
+            new_index, axis.column, position
+        )  # re-stack + notify "axes"
+        self._invalidate_cache()
+        self._notify("signals")
+
     def _compact_axes(self) -> None:
         """Prune signal-less axes and remap plotted entries to compacted indices.
 
