@@ -257,3 +257,96 @@ def test_ctrl_drop_on_y_band_joins_axis(qtbot: QtBot, tmp_path: Path) -> None:
         lambda: keys[0] in panel.curve_keys() and keys[1] in panel.curve_keys(),
         timeout=2000,
     )
+
+
+# ---------------------------------------------------------------------------
+# H4: multi-select → bulk add
+# ---------------------------------------------------------------------------
+
+
+def test_multiselect_drop_on_plot_adds_all(qtbot: QtBot, tmp_path: Path) -> None:
+    """H4: Ctrl/Shift multi-select two rows → one drag → both signals added.
+
+    _select_rows sets QItemSelectionModel selection for both rows before the drag.
+    Qt's built-in QAbstractItemView.startDrag() builds the mimeData from
+    selectedIndexes(), so both keys are encoded in the mime payload and a single
+    QDrag carries them both to the dropEvent.
+    """
+    skip_unless_real_display()
+    from PySide6.QtWidgets import QApplication
+
+    browser, panel, keys = _make_browser_and_panel(qtbot, tmp_path)
+
+    _select_rows(browser, [0, 1])  # both rows selected → mime carries both keys
+    QApplication.processEvents()
+    press = _row_phys(browser, 0)  # press on a selected row
+    target = _panel_point_phys(panel, panel.width() // 2, panel.height() // 2)
+    mid = ((press[0] + target[0]) // 2, (press[1] + target[1]) // 2)
+
+    drive_qdrag(press, [mid, target], done=lambda: panel.drop_seen)
+
+    for _ in range(3):
+        QApplication.processEvents()
+    with contextlib.suppress(Exception):
+        QApplication.primaryScreen().grabWindow(0).save(str(tmp_path / "h4.png"))
+
+    assert panel.drop_seen, f"no dropEvent. screenshot: {tmp_path / 'h4.png'}"
+    # Both keys must appear because the mime payload carried both selected rows.
+    qtbot.waitUntil(
+        lambda: keys[0] in panel.curve_keys() and keys[1] in panel.curve_keys(),
+        timeout=2000,
+    )
+
+
+# ---------------------------------------------------------------------------
+# C2 guard: drop → immediate plain gesture (re-entrancy / stale scene)
+# ---------------------------------------------------------------------------
+
+
+def test_drop_then_immediate_gesture_does_not_hang(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """C2 guard: a signal drop immediately followed by another gesture must not hang.
+
+    A synchronous dropEvent rebuild (graph_panel_view.py:1686-1701) destroys and
+    recreates scene items inside the QDrag.exec OLE modal loop.  The next gesture
+    can be mis-routed to the destroyed scene item and either hang or recurse into
+    another QDrag (memory gui_realgui_qdrag_rebuild_stale_scene).  This test
+    exercises that re-entrancy path on real win32 — if it hangs the controller
+    applies a QTimer.singleShot(0, ...) deferral to the rebuild (same pattern as
+    the axis-move at line 1672).  Reaching the end assertion is the pass criterion.
+    """
+    skip_unless_real_display()
+    from PySide6.QtWidgets import QApplication
+
+    from tests.realgui._realgui_input import LDOWN, LUP, MOVE, at
+
+    browser, panel, keys = _make_browser_and_panel(qtbot, tmp_path)
+
+    _select_rows(browser, [0])
+    QApplication.processEvents()
+    press = _row_phys(browser, 0)
+    target = _panel_point_phys(panel, panel.width() // 2, panel.height() // 2)
+    mid = ((press[0] + target[0]) // 2, (press[1] + target[1]) // 2)
+    drive_qdrag(press, [mid, target], done=lambda: panel.drop_seen)
+    for _ in range(3):
+        QApplication.processEvents()
+    assert panel.drop_seen, f"no dropEvent. screenshot: {tmp_path / 'c2.png'}"
+
+    # Wait for the drop to fully materialise before exercising the gesture.
+    qtbot.waitUntil(lambda: keys[0] in panel.curve_keys(), timeout=2000)
+
+    # Immediately drive a plain left-drag inside the plot (pan/zoom zone — not a
+    # QDrag).  Manual at() loop (NOT drive_qdrag) because this is an ordinary
+    # mouse gesture, not a DnD gesture.  Keep total move small and bounded.
+    cx, cy = _panel_point_phys(panel, panel.width() // 2, panel.height() // 2)
+    at(cx, cy, LDOWN)
+    for dx in (8, 16, 24, 32):
+        at(cx + dx, cy, MOVE)
+        QApplication.processEvents()
+    at(cx + 32, cy, LUP)
+    QApplication.processEvents()
+    with contextlib.suppress(Exception):
+        QApplication.primaryScreen().grabWindow(0).save(str(tmp_path / "c2.png"))
+    # Reaching here without a hang is the primary assertion.
+    assert panel.vm.axes, "panel lost its axes after drop+gesture"
