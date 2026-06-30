@@ -25,7 +25,7 @@ from typing import Any
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -684,6 +684,11 @@ class GraphPanelView(QWidget):
         self.plot_widget.setAcceptDrops(False)
         self.setAcceptDrops(True)
         self.setMouseTracking(True)
+        # Forward viewport hover moves to this widget so mouseMoveEvent is reached
+        # for zone-cursor updates.  QGraphicsView (plot_widget) fills the panel and
+        # its viewport consumes OS mouse-move events; without this filter,
+        # GraphPanelView.mouseMoveEvent is never called on no-button moves.
+        self.plot_widget.viewport().installEventFilter(self)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1578,6 +1583,31 @@ class GraphPanelView(QWidget):
                 if key is not None:
                     self._begin_offset_drag(key, event.position())
         super().mousePressEvent(event)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Forward no-button viewport moves to this widget's zone-cursor logic.
+
+        plot_widget (QGraphicsView) fills the entire panel; its viewport receives
+        OS hover moves and does NOT propagate them to GraphPanelView.mouseMoveEvent.
+        This filter intercepts those moves and updates the panel cursor so the
+        SizeHorCursor appears when the user hovers the X-axis strip.
+
+        Only the no-button hover path is handled here; press/drag events continue
+        to reach mousePressEvent / mouseReleaseEvent normally (Qt delivers press
+        and release to the parent when no grabMouse is active).
+        """
+        if (
+            watched is self.plot_widget.viewport()
+            and isinstance(event, QMouseEvent)
+            and event.type() == QEvent.Type.MouseMove
+            and event.buttons() == Qt.MouseButton.NoButton
+            and self._drag_zone is None
+        ):
+            pos_in_panel = self.plot_widget.viewport().mapTo(
+                self, event.position().toPoint()
+            )
+            self.setCursor(cursor_for_zone(self._zone_at(QPointF(pos_in_panel))))
+        return super().eventFilter(watched, event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._offset_drag_key is not None:
