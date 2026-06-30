@@ -221,6 +221,16 @@ class TestGraphPanelMenu:
         _action(panel.build_context_menu(), "Add Panel").trigger()  # type: ignore[attr-defined]
         assert fired == [1]
 
+    def test_viewbox_default_menu_disabled(self, qtbot: QtBot) -> None:
+        # setMenuEnabled(False) on every ViewBox suppresses pyqtgraph's default
+        # "Plot Options" menu so a real right-click only raises the panel's own
+        # contextMenuEvent menu. Asserted headlessly because the realgui test
+        # cannot isolate it: the own modal menu wins activePopupWidget regardless
+        # (see tests/realgui/test_graph_panel_menu_realclick.py scope note).
+        panel = self._panel(qtbot)
+        assert panel._view_boxes, "panel should build at least one ViewBox"  # type: ignore[attr-defined]
+        assert all(not vb.menuEnabled() for vb in panel._view_boxes)  # type: ignore[attr-defined]
+
 
 # ─── Graph_Area wires panel add/remove requests (R14.3) ─────────────────────────
 

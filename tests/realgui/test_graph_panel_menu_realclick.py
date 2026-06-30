@@ -1,9 +1,16 @@
 """Layer C: real-OS-input test for the GraphPanel context menu.
 
 Opt-in — run with ``--realgui`` on Windows + a real display. A genuine
-right-click on the plot must raise the panel's OWN menu ("Add Panel" …), NOT
-pyqtgraph's default "Plot Options" ViewBox menu. This is the conflict that
-``ViewBox.setMenuEnabled(False)`` resolves; a synthesized event cannot prove it.
+right-click on the plot must raise the panel's OWN menu ("Add Panel" …) via the
+container's ``contextMenuEvent`` — the OS → Qt path a synthesized event cannot
+exercise. Goes RED if that override stops firing on the real right-click.
+
+Scope note: this does NOT isolate ``ViewBox.setMenuEnabled(False)``. The panel's
+own menu is shown with ``exec()`` (modal) and always wins ``activePopupWidget``
+over pyqtgraph's transient press-time menu, so removing the fix does not make
+this RED. The honest RED→GREEN guard for ``setMenuEnabled(False)`` is the
+headless ``TestGraphPanelMenu::test_viewbox_default_menu_disabled`` (asserts
+``menuEnabled()`` is False on every ViewBox).
 """
 
 from __future__ import annotations
