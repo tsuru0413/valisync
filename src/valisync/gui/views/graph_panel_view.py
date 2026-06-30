@@ -53,9 +53,9 @@ from PySide6.QtWidgets import (
 from valisync.gui.adapters.qt_signal_models import (
     AXIS_INDEX_MIME,
     SIGNAL_KEYS_MIME,
-    decode_axis_index,
+    decode_axis_move,
     decode_signal_keys,
-    encode_axis_index,
+    encode_axis_move,
 )
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 
@@ -579,7 +579,9 @@ class _AlignedAxisItem(pg.AxisItem):
                     view = self._panel_view
                     if view is not None:
                         drag = QDrag(view)
-                        drag.setMimeData(encode_axis_index(self._vm_axis_index))
+                        drag.setMimeData(
+                            encode_axis_move(view._panel_index, self._vm_axis_index)
+                        )
                         drag.exec(Qt.DropAction.MoveAction)
                 ev.accept()
                 return
@@ -607,6 +609,10 @@ class GraphPanelView(QWidget):
     # Emitted on offset-drag release when the user confirms a scope in the apply
     # dialog. The GraphAreaView wires this to GraphAreaVM.apply_offset (R14).
     offset_apply_requested = Signal(str, float, str)
+    # Emitted when an axis-move drop targets a different panel (Task 3).
+    # Args: source_panel_index, axis_index, col, position (int | None).
+    # Uses object so None ("append at end") survives the signal boundary.
+    cross_panel_axis_move_requested = Signal(int, int, int, object)
 
     def __init__(
         self,
@@ -652,6 +658,8 @@ class GraphPanelView(QWidget):
         # them and later tasks wire visuals without touching __init__.
         self._active_axis_index: int | None = None
         self._hover_axis_index: int | None = None
+        # Panel index within the GraphAreaView (set by _wire_panel via set_panel_index).
+        self._panel_index: int = 0
         # Axis-move drag feedback: lazily created, reused per drag, nulled on rebuild.
         self._axis_move_line: QGraphicsLineItem | None = None
         self._axis_move_highlight: QGraphicsRectItem | None = None
@@ -1627,8 +1635,9 @@ class GraphPanelView(QWidget):
         md = event.mimeData()
         if md.hasFormat(SIGNAL_KEYS_MIME) or md.hasFormat(AXIS_INDEX_MIME):
             event.acceptProposedAction()
-            axis_index = decode_axis_index(md)
-            if axis_index is not None:
+            decoded_move = decode_axis_move(md)
+            if decoded_move is not None:
+                _, axis_index = decoded_move
                 self._update_axis_move_feedback(axis_index, event.position())
         else:
             event.ignore()
@@ -1658,8 +1667,9 @@ class GraphPanelView(QWidget):
         # Axis-move drop: relocate an existing axis to the target column/position.
         # Checked BEFORE signal-key handling so the two gestures never overlap;
         # only fires when the drag actually carried an axis index.
-        axis_index = decode_axis_index(event.mimeData())
-        if axis_index is not None:
+        decoded = decode_axis_move(event.mimeData())
+        if decoded is not None:
+            source_panel_index, axis_index = decoded
             col, position = self._axis_drop_target(event.position())
             self._clear_axis_move_feedback()
             event.acceptProposedAction()
@@ -1669,9 +1679,20 @@ class GraphPanelView(QWidget):
             # the next gesture is delivered to that destroyed item — the first
             # resize/move after a move broke (no-op, or a re-entrant QDrag hang).
             # Running it on the next event-loop turn lets the drag fully unwind.
-            QTimer.singleShot(
-                0, lambda: self._apply_deferred_axis_move(axis_index, col, position)
-            )
+            if source_panel_index == self._panel_index:
+                # Same panel → existing within-panel reorder (unchanged).
+                QTimer.singleShot(
+                    0, lambda: self._apply_deferred_axis_move(axis_index, col, position)
+                )
+            else:
+                # Cross-panel → ask GraphArea to relocate (deferred off the QDrag
+                # modal stack, same C2 reason as the within-panel path).
+                QTimer.singleShot(
+                    0,
+                    lambda: self.cross_panel_axis_move_requested.emit(
+                        source_panel_index, axis_index, col, position
+                    ),
+                )
             return
 
         keys = decode_signal_keys(event.mimeData())
@@ -1713,6 +1734,10 @@ class GraphPanelView(QWidget):
     def set_removable(self, removable: bool) -> None:
         """Set whether the 'Remove Panel' action is enabled (R6.6 grey-out)."""
         self._removable = removable
+
+    def set_panel_index(self, panel_index: int) -> None:
+        """Record this panel's index within the GraphAreaView (called by _wire_panel)."""
+        self._panel_index = panel_index
 
     def _reset_all_axes(self) -> None:
         self.vm.reset_x()

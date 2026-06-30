@@ -130,12 +130,18 @@ class GraphAreaView(QWidget):
         if not isinstance(widget, GraphPanelView):
             return
         widget.set_removable(removable)
+        widget.set_panel_index(panel_index)
         widget.add_panel_requested.connect(lambda *_: self.add_panel(tab_index))
         widget.remove_panel_requested.connect(
             lambda *_: self.remove_panel(panel_index, tab_index)
         )
         widget.offset_apply_requested.connect(
             lambda k, dt, sc: self.vm.apply_offset(k, dt, sc)
+        )
+        widget.cross_panel_axis_move_requested.connect(
+            lambda src, ax, col, pos: self.vm.move_axis_across_panels(
+                tab_index, src, ax, panel_index, col, pos
+            )
         )
 
     def _sync_current(self) -> None:

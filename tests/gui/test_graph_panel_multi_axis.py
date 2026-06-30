@@ -24,7 +24,7 @@ from tests.gui.test_graph_panel_view import (
     _make_view,
     _write_csv,
 )
-from valisync.gui.adapters.qt_signal_models import encode_axis_index, encode_signal_keys
+from valisync.gui.adapters.qt_signal_models import encode_axis_move, encode_signal_keys
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 from valisync.gui.viewmodels.y_axis_vm import YAxisVM
 from valisync.gui.views.graph_panel_view import _Y_AXIS_FIXED_WIDTH, GraphPanelView
@@ -798,7 +798,9 @@ def test_axis_move_drop_calls_move_to_target(qtbot: QtBot) -> None:
     view.refresh()
     moved = vm.axes[1]  # move axis index 1 (b)
     view._axis_drop_target = lambda pos: (0, 0)  # type: ignore  # force target
-    mime = encode_axis_index(1)  # hold local (a GC'd mime mid-send is a known pitfall)
+    mime = encode_axis_move(
+        0, 1
+    )  # hold local (a GC'd mime mid-send is a known pitfall)
     event = QDropEvent(
         QPointF(10.0, 10.0),
         Qt.DropAction.MoveAction,

@@ -47,19 +47,20 @@ def decode_signal_keys(md: QMimeData) -> list[str]:
     return raw.split("\n") if raw else []
 
 
-def encode_axis_index(index: int) -> QMimeData:
-    """Pack an axis VM *index* into a QMimeData payload under :data:`AXIS_INDEX_MIME`."""
+def encode_axis_move(source_panel_index: int, axis_index: int) -> QMimeData:
+    """Pack a {source_panel_index, axis_index} axis-move payload under AXIS_INDEX_MIME."""
     md = QMimeData()
-    md.setData(AXIS_INDEX_MIME, str(index).encode("utf-8"))
+    md.setData(AXIS_INDEX_MIME, f"{source_panel_index},{axis_index}".encode())
     return md
 
 
-def decode_axis_index(md: QMimeData) -> int | None:
-    """Extract the axis index from *md*; ``None`` if it carries no such payload."""
+def decode_axis_move(md: QMimeData) -> tuple[int, int] | None:
+    """Extract (source_panel_index, axis_index) from *md*; None if absent/invalid."""
     if not md.hasFormat(AXIS_INDEX_MIME):
         return None
     try:
-        return int(bytes(md.data(AXIS_INDEX_MIME).data()).decode("utf-8"))
+        src, axis = bytes(md.data(AXIS_INDEX_MIME).data()).decode("utf-8").split(",")
+        return int(src), int(axis)
     except (ValueError, TypeError):
         return None
 
