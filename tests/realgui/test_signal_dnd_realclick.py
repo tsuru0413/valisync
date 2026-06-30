@@ -16,7 +16,11 @@ from pathlib import Path
 import pytest
 from pytestqt.qtbot import QtBot
 
-from tests.realgui._realgui_input import drive_qdrag, skip_unless_real_display
+from tests.realgui._realgui_input import (
+    VK_CONTROL,
+    drive_qdrag,
+    skip_unless_real_display,
+)
 
 pytestmark = pytest.mark.realgui
 
@@ -151,3 +155,105 @@ def test_drop_on_plot_creates_new_axis(qtbot: QtBot, tmp_path: Path) -> None:
     # does not exist on GraphPanelVM; the VM uses _plotted internally.
     qtbot.waitUntil(lambda: keys[0] in panel.curve_keys(), timeout=2000)
     assert len(panel.vm.axes) >= max(1, n_before), "no axis holds the dropped signal"
+
+
+# ---------------------------------------------------------------------------
+# H2 / H3 helpers
+# ---------------------------------------------------------------------------
+
+
+def _prepare_one_axis(panel, keys: list[str], qtbot: QtBot) -> None:
+    """Plot keys[0] onto a fresh axis so a Y-band overwrite/join target exists."""
+    from PySide6.QtWidgets import QApplication
+
+    panel.vm.create_new_axis(keys[0])
+    for _ in range(3):
+        QApplication.processEvents()
+    # curve_keys() is a GraphPanelView method — confirmed in graph_panel_view.py.
+    qtbot.waitUntil(lambda: keys[0] in panel.curve_keys(), timeout=2000)
+
+
+def _y_band_phys(panel, axis_index: int) -> tuple[int, int]:
+    """Physical pixel inside the Y gutter INNER band of axis_index (ZONE_Y_INNER:
+    right half of the per-column gutter, closer to the plot).
+
+    YAxisVM attrs confirmed (y_axis_vm.py:17-19): top_ratio, height_ratio, column.
+    _Y_AXIS_FIXED_WIDTH=72 confirmed (graph_panel_view.py:89).
+    """
+    from valisync.gui.views.graph_panel_view import _Y_AXIS_FIXED_WIDTH
+
+    ax = panel.vm.axes[axis_index]
+    # Inner half of the gutter (closer to the plot) → ZONE_Y_INNER.
+    lx = int(_Y_AXIS_FIXED_WIDTH * (ax.column + 0.75))
+    ly = int((ax.top_ratio + ax.height_ratio / 2) * panel.height())
+    return _panel_point_phys(panel, lx, ly)
+
+
+# ---------------------------------------------------------------------------
+# H2: Y-band drop → overwrite
+# ---------------------------------------------------------------------------
+
+
+def test_drop_on_y_band_overwrites_axis(qtbot: QtBot, tmp_path: Path) -> None:
+    """H2: drop a 2nd signal on an existing axis's Y band (no Ctrl) → overwrite."""
+    skip_unless_real_display()
+    from PySide6.QtWidgets import QApplication
+
+    browser, panel, keys = _make_browser_and_panel(qtbot, tmp_path)
+    _prepare_one_axis(panel, keys, qtbot)  # keys[0] on axis 0
+
+    _select_rows(browser, [1])
+    QApplication.processEvents()
+    press = _row_phys(browser, 1)
+    target = _y_band_phys(panel, 0)
+    mid = ((press[0] + target[0]) // 2, (press[1] + target[1]) // 2)
+
+    drive_qdrag(press, [mid, target], done=lambda: panel.drop_seen)
+
+    for _ in range(3):
+        QApplication.processEvents()
+    with contextlib.suppress(Exception):
+        QApplication.primaryScreen().grabWindow(0).save(str(tmp_path / "h2.png"))
+
+    assert panel.drop_seen, f"no dropEvent. screenshot: {tmp_path / 'h2.png'}"
+    # Overwrite: axis 0 now holds keys[1] and NOT keys[0].
+    qtbot.waitUntil(lambda: keys[1] in panel.curve_keys(), timeout=2000)
+    assert keys[0] not in panel.curve_keys(), (
+        f"overwrite did not replace the original signal. screenshot: {tmp_path / 'h2.png'}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# H3: Y-band Ctrl drop → join
+# ---------------------------------------------------------------------------
+
+
+def test_ctrl_drop_on_y_band_joins_axis(qtbot: QtBot, tmp_path: Path) -> None:
+    """H3: Ctrl-held drop on an existing axis's Y band → join (both signals kept)."""
+    skip_unless_real_display()
+    from PySide6.QtWidgets import QApplication
+
+    browser, panel, keys = _make_browser_and_panel(qtbot, tmp_path)
+    _prepare_one_axis(panel, keys, qtbot)  # keys[0] on axis 0
+
+    _select_rows(browser, [1])
+    QApplication.processEvents()
+    press = _row_phys(browser, 1)
+    target = _y_band_phys(panel, 0)
+    mid = ((press[0] + target[0]) // 2, (press[1] + target[1]) // 2)
+
+    drive_qdrag(
+        press, [mid, target], done=lambda: panel.drop_seen, modifier_vk=VK_CONTROL
+    )
+
+    for _ in range(3):
+        QApplication.processEvents()
+    with contextlib.suppress(Exception):
+        QApplication.primaryScreen().grabWindow(0).save(str(tmp_path / "h3.png"))
+
+    assert panel.drop_seen, f"no dropEvent. screenshot: {tmp_path / 'h3.png'}"
+    # Join: BOTH signals present on the axis.
+    qtbot.waitUntil(
+        lambda: keys[0] in panel.curve_keys() and keys[1] in panel.curve_keys(),
+        timeout=2000,
+    )
