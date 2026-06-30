@@ -3,32 +3,31 @@
 from __future__ import annotations
 
 import contextlib
-import ctypes
-import sys
 import time
 from pathlib import Path
 
 import pytest
 from pytestqt.qtbot import QtBot
 
+from tests.realgui._realgui_input import (
+    LDOWN,
+    LUP,
+    MOVE,
+    at,
+    skip_unless_real_display,
+    to_phys,
+)
+
 pytestmark = pytest.mark.realgui
-_MOVE, _LDOWN, _LUP = 0x0001, 0x0002, 0x0004
 
 
 def test_grip_drag_resizes_only_active_axis(qtbot: QtBot, tmp_path: Path) -> None:
-    if sys.platform != "win32":
-        pytest.skip("real OS input is Windows-only")
+    skip_unless_real_display()
     from PySide6.QtCore import QPoint, Qt
-    from PySide6.QtGui import QGuiApplication
     from PySide6.QtWidgets import QApplication
 
-    if QGuiApplication.platformName() == "offscreen":
-        pytest.skip(
-            "requires a real display — run: uv run pytest --realgui tests/realgui/"
-        )
     from tests.gui._panel_factory import make_two_axis_panel
 
-    user32 = ctypes.windll.user32
     view = make_two_axis_panel()
     qtbot.addWidget(view)
     view.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
@@ -61,20 +60,16 @@ def test_grip_drag_resizes_only_active_axis(qtbot: QtBot, tmp_path: Path) -> Non
     dpr = view.devicePixelRatioF()
     gx, gy = round(g.x() * dpr), round(g.y() * dpr)
 
-    def at(x: float, y: float, f: int) -> None:
-        user32.SetCursorPos(int(x), int(y))
-        user32.mouse_event(f, 0, 0, 0, 0)
-
     # Drag the bottom grip UP to SHRINK axis 0. Growing it by dragging DOWN is
     # correctly impossible here: model B never pushes the neighbour, and with two
     # contiguous axes there is no gap below axis 0 to grow into.
-    at(gx, gy, _LDOWN)
+    at(gx, gy, LDOWN)
     time.sleep(0.05)
     for k in range(1, 6):  # drag UP ~60px
-        at(gx, gy - k * 12, _MOVE)
+        at(gx, gy - k * 12, MOVE)
         QApplication.processEvents()
         time.sleep(0.03)
-    at(gx, gy - 60, _LUP)
+    at(gx, gy - 60, LUP)
     for _ in range(4):
         QApplication.processEvents()
     with contextlib.suppress(Exception):
@@ -104,19 +99,12 @@ def test_grips_track_cursor_to_target(qtbot: QtBot, tmp_path: Path) -> None:
     feedback (flicker/collapse). The older 'shrank by > 0.03' assertion passed even
     when the axis collapsed; these pin the edge to the cursor's absolute position.
     """
-    if sys.platform != "win32":
-        pytest.skip("real OS input is Windows-only")
-    from PySide6.QtCore import QPoint, Qt
-    from PySide6.QtGui import QGuiApplication
+    skip_unless_real_display()
+    from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
 
-    if QGuiApplication.platformName() == "offscreen":
-        pytest.skip(
-            "requires a real display — run: uv run pytest --realgui tests/realgui/"
-        )
     from tests.gui._panel_factory import make_two_axis_panel
 
-    user32 = ctypes.windll.user32
     view = make_two_axis_panel()
     qtbot.addWidget(view)
     view.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
@@ -129,16 +117,6 @@ def test_grips_track_cursor_to_target(qtbot: QtBot, tmp_path: Path) -> None:
         lambda: view._view_boxes[0].sceneBoundingRect().height() > 100, timeout=3000
     )
     R = view._view_boxes[0].sceneBoundingRect()
-    dpr = view.devicePixelRatioF()
-
-    def to_phys(scene_x: float, scene_y: float) -> tuple[int, int]:
-        vp = view.plot_widget.mapFromScene(QPoint(int(scene_x), int(scene_y)))
-        g = view.plot_widget.viewport().mapToGlobal(vp)
-        return round(g.x() * dpr), round(g.y() * dpr)
-
-    def at(x: float, y: float, f: int) -> None:
-        user32.SetCursorPos(int(x), int(y))
-        user32.mouse_event(f, 0, 0, 0, 0)
 
     def strip(i: int) -> tuple[float, float]:
         r = view._y_axes[i].sceneBoundingRect()
@@ -150,9 +128,9 @@ def test_grips_track_cursor_to_target(qtbot: QtBot, tmp_path: Path) -> None:
         spine = view._y_axes[axis_idx].sceneBoundingRect()
         grip_x = spine.center().x()
         grip_y = spine.top() + 2 if edge == "top" else spine.bottom() - 2
-        gx, gy = to_phys(grip_x, grip_y)
-        tx, ty = to_phys(grip_x, R.y() + target_ratio * R.height())
-        at(gx, gy, _LDOWN)
+        gx, gy = to_phys(view, grip_x, grip_y)
+        tx, ty = to_phys(view, grip_x, R.y() + target_ratio * R.height())
+        at(gx, gy, LDOWN)
         time.sleep(0.05)
         # Move to the target in small uniform steps (~8 phys px each). The zone is
         # classified once, when pyqtgraph crosses its drag threshold; a single large
@@ -161,10 +139,10 @@ def test_grips_track_cursor_to_target(qtbot: QtBot, tmp_path: Path) -> None:
         dy = ty - gy
         n = max(2, (abs(dy) + 7) // 8)
         for k in range(1, n + 1):
-            at(gx, gy + dy * k // n, _MOVE)
+            at(gx, gy + dy * k // n, MOVE)
             QApplication.processEvents()
             time.sleep(0.02)
-        at(tx, ty, _LUP)
+        at(tx, ty, LUP)
         for _ in range(4):
             QApplication.processEvents()
 

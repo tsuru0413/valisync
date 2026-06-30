@@ -11,8 +11,6 @@
 from __future__ import annotations
 
 import contextlib
-import ctypes
-import sys
 import tempfile
 import threading
 import time
@@ -22,42 +20,19 @@ import numpy as np
 import pytest
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
+from tests.realgui._realgui_input import (
+    LDOWN,
+    LUP,
+    MOVE,
+    VK_ESCAPE,
+    VK_RETURN,
+    at,
+    key,
+    skip_unless_real_display,
+    to_phys,
+)
+
 pytestmark = pytest.mark.realgui
-_MOVE, _LDOWN, _LUP = 0x0001, 0x0002, 0x0004
-_KEYDOWN, _KEYUP = 0x0000, 0x0002
-_VK_RETURN, _VK_ESCAPE = 0x0D, 0x1B
-
-
-def _skip_unless_real_display() -> None:
-    if sys.platform != "win32":
-        pytest.skip("real OS input is Windows-only")
-    from PySide6.QtGui import QGuiApplication
-
-    if QGuiApplication.platformName() == "offscreen":
-        pytest.skip(
-            "requires a real display — run: uv run pytest --realgui tests/realgui/"
-        )
-
-
-def _to_phys(view, sx: float, sy: float) -> tuple[int, int]:
-    from PySide6.QtCore import QPoint
-
-    vp = view.plot_widget.mapFromScene(QPoint(int(sx), int(sy)))
-    g = view.plot_widget.viewport().mapToGlobal(vp)
-    dpr = view.devicePixelRatioF()
-    return round(g.x() * dpr), round(g.y() * dpr)
-
-
-def _at(x: float, y: float, flag: int) -> None:
-    user32 = ctypes.windll.user32
-    user32.SetCursorPos(int(x), int(y))
-    user32.mouse_event(flag, 0, 0, 0, 0)
-
-
-def _key(vk: int) -> None:
-    user32 = ctypes.windll.user32
-    user32.keybd_event(vk, 0, _KEYDOWN, 0)
-    user32.keybd_event(vk, 0, _KEYUP, 0)
 
 
 def _dialog_dismisser(stop: threading.Event) -> None:
@@ -70,12 +45,12 @@ def _dialog_dismisser(stop: threading.Event) -> None:
     """
     time.sleep(0.5)
     if not stop.is_set():
-        _key(_VK_RETURN)
+        key(VK_RETURN)
     deadline = time.time() + 3.0
     while time.time() < deadline and not stop.is_set():
         time.sleep(0.2)
     if not stop.is_set():
-        _key(_VK_ESCAPE)
+        key(VK_ESCAPE)
 
 
 def _two_panel_area(qtbot: QtBot):
@@ -140,13 +115,13 @@ def _two_panel_area(qtbot: QtBot):
 
 
 def test_real_offset_drag_shifts_both_panels(qtbot: QtBot, tmp_path) -> None:
-    _skip_unless_real_display()
+    skip_unless_real_display()
     from PySide6.QtWidgets import QApplication
 
-    _view, panels, key = _two_panel_area(qtbot)
+    _view, panels, signal_key = _two_panel_area(qtbot)
     p0, p1 = panels[0], panels[1]
-    x0_before = np.asarray(p0.curve_xy(key)[0]).copy()
-    x1_before = np.asarray(p1.curve_xy(key)[0]).copy()
+    x0_before = np.asarray(p0.curve_xy(signal_key)[0]).copy()
+    x1_before = np.asarray(p1.curve_xy(signal_key)[0]).copy()
 
     # Grab p0's curve at the plot centre (linear v=t passes through it) and drag right.
     vb = p0._view_boxes[0]
@@ -154,20 +129,20 @@ def test_real_offset_drag_shifts_both_panels(qtbot: QtBot, tmp_path) -> None:
     start_sx = rect.x() + rect.width() * 0.5
     start_sy = rect.y() + rect.height() * 0.5
     target_sx = rect.x() + rect.width() * 0.75
-    gx, gy = _to_phys(p0, start_sx, start_sy)
-    tx, _ = _to_phys(p0, target_sx, start_sy)
+    gx, gy = to_phys(p0, start_sx, start_sy)
+    tx, _ = to_phys(p0, target_sx, start_sy)
 
     stop = threading.Event()
     dismisser = threading.Thread(target=_dialog_dismisser, args=(stop,), daemon=True)
 
-    _at(gx, gy, _LDOWN)
+    at(gx, gy, LDOWN)
     time.sleep(0.05)
     steps = max(2, (abs(tx - gx) + 7) // 8)
     for k in range(1, steps + 1):
-        _at(gx + (tx - gx) * k // steps, gy, _MOVE)
+        at(gx + (tx - gx) * k // steps, gy, MOVE)
         QApplication.processEvents()
         time.sleep(0.02)
-    _at(tx, gy, _LUP)
+    at(tx, gy, LUP)
     # ダイアログは QTimer.singleShot(0,...) でリリース後に開口するため、
     # dismisser はリリース後に開始する (HiDPI でドラッグ所要時間が伸びても競合しない)。
     dismisser.start()
@@ -183,8 +158,8 @@ def test_real_offset_drag_shifts_both_panels(qtbot: QtBot, tmp_path) -> None:
             str(tmp_path / "offset_cross.png")
         )
 
-    x0_after = np.asarray(p0.curve_xy(key)[0])
-    x1_after = np.asarray(p1.curve_xy(key)[0])
+    x0_after = np.asarray(p0.curve_xy(signal_key)[0])
+    x1_after = np.asarray(p1.curve_xy(signal_key)[0])
     # p0 (dragged) re-rendered with the committed offset → leftmost x moved right.
     assert float(x0_after.min()) > float(x0_before.min()) + 1e-3
     # p1 (the OTHER panel) re-rendered identically via the real 'offsets' broadcast
