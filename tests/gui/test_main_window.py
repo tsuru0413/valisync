@@ -149,31 +149,12 @@ class TestStatePersistence:
             w2.dockWidgetArea(w2.file_dock) == Qt.DockWidgetArea.LeftDockWidgetArea
         ), "dock layout not restored — restoreState no-op (setObjectName missing?)"
 
-    def test_save_state_runs_without_error(
-        self, qtbot: QtBot, tmp_path: object
-    ) -> None:
-        from PySide6.QtCore import QSettings
-
-        # Redirect settings to a temp location to avoid polluting user settings
-        QSettings.setPath(
-            QSettings.Format.IniFormat,
-            QSettings.Scope.UserScope,
-            str(tmp_path),  # type: ignore[arg-type]
-        )
+    def test_save_state_runs_without_error(self, qtbot: QtBot) -> None:
         window = _make_window(qtbot)
         window.save_state()  # type: ignore[union-attr]
 
-    def test_second_mainwindow_restore_does_not_crash(
-        self, qtbot: QtBot, tmp_path: object
-    ) -> None:
+    def test_second_mainwindow_restore_does_not_crash(self, qtbot: QtBot) -> None:
         """After save_state, constructing a new MainWindow must not raise."""
-        from PySide6.QtCore import QSettings
-
-        QSettings.setPath(
-            QSettings.Format.IniFormat,
-            QSettings.Scope.UserScope,
-            str(tmp_path),  # type: ignore[arg-type]
-        )
         from valisync.gui.views.main_window import MainWindow
 
         app_vm = AppViewModel()
@@ -186,21 +167,12 @@ class TestStatePersistence:
         qtbot.addWidget(w2)
         assert w2.windowTitle() == "ValiSync"
 
-    def test_first_run_no_stored_state_does_not_crash(
-        self, qtbot: QtBot, tmp_path: object
-    ) -> None:
-        """First run with an empty settings store must not crash."""
-        # Point to a fresh empty directory — no prior state exists
-        import uuid
+    def test_first_run_no_stored_state_does_not_crash(self, qtbot: QtBot) -> None:
+        """First run with an empty settings store must not crash.
 
-        from PySide6.QtCore import QSettings
-
-        fresh = str(tmp_path) + "/" + str(uuid.uuid4())  # type: ignore[operator]
-        QSettings.setPath(
-            QSettings.Format.IniFormat,
-            QSettings.Scope.UserScope,
-            fresh,
-        )
+        The autouse _isolate_qsettings fixture provides a fresh per-test key,
+        so no prior state is present for this test instance.
+        """
         window = _make_window(qtbot)
         assert window is not None  # type: ignore[union-attr]
 

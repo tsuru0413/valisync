@@ -1,5 +1,4 @@
 import os
-from pathlib import Path
 
 import pytest
 
@@ -9,18 +8,21 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 @pytest.fixture(autouse=True)
-def _isolate_qsettings(tmp_path: Path) -> None:
-    """Redirect IniFormat QSettings to a per-test temp dir.
+def _isolate_qsettings(request, monkeypatch):
+    """Isolate QSettings from real ValiSync state AND from other tests.
 
-    main_window.py uses QSettings(IniFormat, UserScope, ...) so that settings are
-    file-based and redirectable.  NativeFormat (registry on Windows) cannot be
-    redirected via setPath, which is why IniFormat is used in production code too.
-    This fixture ensures tests never read or write real ValiSync app state.
+    Redirect MainWindow's save/restore to a per-test-unique registry key (no
+    real user data, no cross-test pollution), and clear it on teardown so the
+    registry is not littered with stale test keys.
     """
     from PySide6.QtCore import QSettings
 
-    QSettings.setPath(
-        QSettings.Format.IniFormat,
-        QSettings.Scope.UserScope,
-        str(tmp_path),
-    )
+    import valisync.gui.views.main_window as mw
+
+    test_org = "ValiSync-Test"
+    # Per-test-unique app name so saved state from one test cannot leak into another.
+    test_app = f"test-{abs(hash(request.node.nodeid)) & 0xFFFFFFFF:08x}"
+    monkeypatch.setattr(mw, "_ORG", test_org)
+    monkeypatch.setattr(mw, "_APP", test_app)
+    yield
+    QSettings(test_org, test_app).clear()

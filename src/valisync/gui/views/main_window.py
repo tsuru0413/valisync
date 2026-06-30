@@ -78,9 +78,7 @@ class MainWindow(QMainWindow):
 
         # ── Channel Browser dock (right bottom) ──────────────────────────────
         self.channel_dock = QDockWidget("Channel Browser", self)
-        self.channel_dock.setObjectName(
-            "channel_dock"
-        )  # required for saveState/restoreState
+        self.channel_dock.setObjectName("channel_dock")
         self.channel_dock.setWidget(self.channel_browser_view)
         self.channel_dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetFloatable
@@ -165,11 +163,7 @@ class MainWindow(QMainWindow):
 
     def save_state(self) -> None:
         """Persist window geometry and dock arrangement to QSettings."""
-        # IniFormat: file-based, cross-platform, redirectable in tests.
-        # NativeFormat (registry on Windows) cannot be redirected via setPath.
-        settings = QSettings(
-            QSettings.Format.IniFormat, QSettings.Scope.UserScope, _ORG, _APP
-        )
+        settings = QSettings(_ORG, _APP)
         settings.setValue("geometry", self.saveGeometry())
         settings.setValue("windowState", self.saveState())
 
@@ -184,9 +178,7 @@ class MainWindow(QMainWindow):
         Guarded against missing/corrupt values: absent keys return None and
         both restoreGeometry/restoreState silently ignore falsy byte-arrays.
         """
-        settings = QSettings(
-            QSettings.Format.IniFormat, QSettings.Scope.UserScope, _ORG, _APP
-        )
+        settings = QSettings(_ORG, _APP)
         geometry = settings.value("geometry")
         state = settings.value("windowState")
         if geometry:
