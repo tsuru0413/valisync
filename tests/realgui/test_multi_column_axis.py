@@ -128,12 +128,26 @@ def test_axis_drag_from_inner_column_to_outer_column(
     class _CapturingView(GraphPanelView):
         mid_path: str = ""
         drop_seen: bool = False
+        # M7: feedback state captured inside dragMoveEvent (GUI thread, safe).
+        mid_line_visible: bool = False
+        mid_highlight_visible: bool = False
+        mid_source_opacity: float = 1.0
 
         def dragMoveEvent(self, ev: object) -> None:  # type: ignore[override]
             super().dragMoveEvent(ev)  # type: ignore[arg-type]
             if self.mid_path:
                 with contextlib.suppress(Exception):
                     QApplication.primaryScreen().grabWindow(0).save(self.mid_path)
+            # M7: capture insertion-line / column-highlight visibility and source
+            # opacity while the drag is live (GUI thread only — safe to read scene
+            # state).  Items are lazily created so guard against None.
+            with contextlib.suppress(Exception):
+                if self._axis_move_line is not None:  # type: ignore[attr-defined]
+                    self.mid_line_visible = self._axis_move_line.isVisible()  # type: ignore[attr-defined]
+                if self._axis_move_highlight is not None:  # type: ignore[attr-defined]
+                    self.mid_highlight_visible = self._axis_move_highlight.isVisible()  # type: ignore[attr-defined]
+                if self._y_axes:  # type: ignore[attr-defined]
+                    self.mid_source_opacity = self._y_axes[0].opacity()  # type: ignore[attr-defined]
 
         def dropEvent(self, ev: object) -> None:  # type: ignore[override]
             super().dropEvent(ev)  # type: ignore[arg-type]
@@ -258,5 +272,230 @@ def test_axis_drag_from_inner_column_to_outer_column(
     )
     assert rem_top == pytest.approx(0.5, abs=0.06), (
         f"inner remainder spine not at top 0.5 (blank above) — got {rem_top}. "
+        f"Screenshots: {tmp_path}"
+    )
+    # M7: mid-drag feedback — empty-column path uses the highlight rect (col 0 was
+    # empty when the drag passed through it); the insertion line stays hidden.
+    assert view.mid_highlight_visible, (
+        "M7: empty-col highlight not visible mid-drag — feedback not rendered. "
+        f"Screenshots: {tmp_path}"
+    )
+    assert not view.mid_line_visible, (
+        "M7: insertion line unexpectedly visible for empty-column drag path. "
+        f"Screenshots: {tmp_path}"
+    )
+    assert view.mid_source_opacity == pytest.approx(0.35, abs=0.01), (
+        f"M7: source axis not dimmed to 0.35 mid-drag (got {view.mid_source_opacity}). "
+        f"Screenshots: {tmp_path}"
+    )
+
+
+def test_same_col_axis_reorder(qtbot: QtBot, tmp_path: Path) -> None:
+    """M4 — drag axis 0 from top to bottom within the same column (col 1 reorder).
+
+    Both axes start in the inner column (col 1).  A real-OS QDrag from the FRAME
+    zone of the top axis (_y_axes[0]) to the bottom band of col 1 reorders the
+    axes so the formerly-top axis paints below the other.
+
+    M7 feedback (same-column path): col 1 is non-empty so the orange insertion
+    line — not the column-highlight rect — must be visible mid-drag, and the
+    source axis dimmed to 0.35 opacity.
+
+    Honest RED gate: force ``_apply_deferred_axis_move`` to pass ``position=None``
+    (always-append) and the reorder-to-bottom assert fails when the axis was
+    already at the bottom (no visible reorder).
+    """
+    skip_unless_real_display()
+
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtWidgets import QApplication
+
+    from valisync.core.models import Delimiter, FormatDefinition
+    from valisync.core.session import Session
+    from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+    from valisync.gui.views.graph_panel_view import (
+        _Y_AXIS_FIXED_WIDTH,
+        GraphPanelView,
+    )
+
+    # ─── Session with two signals ──────────────────────────────────────────────
+    def _write_tiny_csv(path: Path) -> Path:
+        lines = ["t,s1,s2"]
+        for i in range(50):
+            t = i * 0.01
+            lines.append(f"{t:.3f},{float(i % 50):.1f},{float((i * 2) % 50):.1f}")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    csv = _write_tiny_csv(tmp_path / "data.csv")
+    session = Session()
+    session.load(
+        csv,
+        FormatDefinition(
+            name="fmt",
+            delimiter=Delimiter.COMMA,
+            timestamp_column=0,
+            timestamp_unit="sec",
+            signal_start_column=1,
+            signal_end_column=2,
+            has_header=True,
+        ),
+    )
+    signal_keys = sorted(s.name for s in session.signals())
+    k0, k1 = signal_keys[0], signal_keys[1]
+
+    # ─── ViewModel: column_count=2, two axes in the inner column ───────────────
+    # Same initial layout as the col1→col0 test; neither axis is moved to col 0,
+    # so the same-column reorder gesture stays within col 1.
+    vm = GraphPanelVM(session)
+    vm.add_signal_to_axis(k0, 0)  # axis 0, col 1, top half
+    vm.create_new_axis(k1)  # axis 1, col 1, bottom half
+
+    assert len(vm.axes) == 2
+    assert all(a.column == vm.column_count - 1 for a in vm.axes), (
+        "setup error: both axes must start in the inner column for same-col reorder"
+    )
+
+    # ─── View: capturing subclass with M7 state ────────────────────────────────
+    class _CapturingView(GraphPanelView):
+        mid_path: str = ""
+        drop_seen: bool = False
+        # M7: feedback state captured inside dragMoveEvent (GUI thread, safe).
+        mid_line_visible: bool = False
+        mid_highlight_visible: bool = False
+        mid_source_opacity: float = 1.0
+
+        def dragMoveEvent(self, ev: object) -> None:  # type: ignore[override]
+            super().dragMoveEvent(ev)  # type: ignore[arg-type]
+            if self.mid_path:
+                with contextlib.suppress(Exception):
+                    QApplication.primaryScreen().grabWindow(0).save(self.mid_path)
+            # M7: col 1 is non-empty → insertion-line path.  Capture feedback
+            # state on every dragMove (last captured value wins).
+            with contextlib.suppress(Exception):
+                if self._axis_move_line is not None:  # type: ignore[attr-defined]
+                    self.mid_line_visible = self._axis_move_line.isVisible()  # type: ignore[attr-defined]
+                if self._axis_move_highlight is not None:  # type: ignore[attr-defined]
+                    self.mid_highlight_visible = self._axis_move_highlight.isVisible()  # type: ignore[attr-defined]
+                if self._y_axes:  # type: ignore[attr-defined]
+                    self.mid_source_opacity = self._y_axes[0].opacity()  # type: ignore[attr-defined]
+
+        def dropEvent(self, ev: object) -> None:  # type: ignore[override]
+            super().dropEvent(ev)  # type: ignore[arg-type]
+            self.drop_seen = True
+
+    view = _CapturingView(vm)
+    view.mid_path = str(tmp_path / "mid_drag.png")
+    qtbot.addWidget(view)
+    view.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+    view.setGeometry(300, 300, 800, 600)
+    view.show()
+    qtbot.waitExposed(view)
+    QApplication.processEvents()
+    QApplication.processEvents()
+    qtbot.waitUntil(
+        lambda: view._y_axes[0].sceneBoundingRect().width() > 0,  # type: ignore[attr-defined]
+        timeout=3000,
+    )
+
+    # Activate axis 0 — FRAME-zone drag is only accepted on the active axis.
+    view.set_active_axis(0)
+    QApplication.processEvents()
+
+    dpr = view.devicePixelRatioF()
+
+    # ─── Source: FRAME zone of _y_axes[0] (top axis, left edge, vertical centre) ──
+    # _y_axes[0] is vm.axes[0] — column 1, top half.  Press 2 px from the left
+    # edge (within FRAME=8 px) so the zone is AXZONE_FRAME → move QDrag fires.
+    src_item = view._y_axes[0]  # type: ignore[attr-defined]
+    _src_rect = src_item.sceneBoundingRect()
+    scene_src = QPoint(int(_src_rect.x() + 2), int(_src_rect.center().y()))
+    src_vp = view.plot_widget.mapFromScene(scene_src)  # type: ignore[attr-defined]
+    src_global = view.plot_widget.viewport().mapToGlobal(src_vp)  # type: ignore[attr-defined]
+    src_phys_x = round(src_global.x() * dpr)
+    src_phys_y = round(src_global.y() * dpr)
+
+    # ─── Target: col 1 band, bottom-quarter y ─────────────────────────────────
+    # x ∈ [_Y_AXIS_FIXED_WIDTH, 2*_Y_AXIS_FIXED_WIDTH) keeps _axis_drop_target
+    # in col 1 (col = int(x // 72) = 1).  y at 85 % of the view height is
+    # nearest the bottom boundary → position=2 (after both axes), so the dragged
+    # axis appends below axis 1.
+    tgt_logi = view.mapToGlobal(
+        QPoint(
+            _Y_AXIS_FIXED_WIDTH + _Y_AXIS_FIXED_WIDTH // 2,
+            int(view.height() * 0.85),
+        )
+    )
+    tgt_phys_x = round(tgt_logi.x() * dpr)
+    tgt_phys_y = round(tgt_logi.y() * dpr)
+
+    mid_phys_x = (src_phys_x + tgt_phys_x) // 2
+    mid_phys_y = (src_phys_y + tgt_phys_y) // 2
+
+    # ─── Real-OS QDrag ────────────────────────────────────────────────────────
+    drive_qdrag(
+        (src_phys_x, src_phys_y),
+        [(mid_phys_x, mid_phys_y), (tgt_phys_x, tgt_phys_y)],
+        done=lambda: view.drop_seen,
+    )
+
+    for _ in range(3):
+        QApplication.processEvents()
+    with contextlib.suppress(Exception):
+        QApplication.primaryScreen().grabWindow(0).save(
+            str(tmp_path / "after_drag.png")
+        )
+
+    # ─── Assertions ───────────────────────────────────────────────────────────
+    assert view.drop_seen, (
+        "no dropEvent fired — the real-OS drag never completed (watchdog "
+        f"cancelled it). Screenshots saved to {tmp_path}"
+    )
+    assert len(vm.axes) == 2, f"expected 2 axes after drag, got {len(vm.axes)}"
+
+    for _ in range(3):
+        QApplication.processEvents()
+    qtbot.waitUntil(
+        lambda: (
+            len(view._y_axes) == 2  # type: ignore[attr-defined]
+            and view._view_boxes[0].sceneBoundingRect().height() > 100  # type: ignore[attr-defined]
+        ),
+        timeout=3000,
+    )
+    R = view._view_boxes[0].sceneBoundingRect()  # type: ignore[attr-defined]
+
+    def _strip(i: int) -> tuple[float, float]:
+        r = view._y_axes[i].sceneBoundingRect()  # type: ignore[attr-defined]
+        return ((r.y() - R.y()) / R.height(), r.height() / R.height())
+
+    # M4: axis 0 (dragged from top) must now paint in the BOTTOM half of col 1.
+    # top_ratio > 0.4 proves it is no longer at the top position.
+    moved_top, moved_h = _strip(0)
+    assert moved_top > 0.4, (
+        f"M4: reorder failed — axis 0 still near top (got top={moved_top:.3f}). "
+        f"Expected > 0.4 after dragging to bottom. Screenshots: {tmp_path}"
+    )
+    assert moved_h == pytest.approx(0.5, abs=0.06), (
+        f"M4: moved axis height changed unexpectedly (got {moved_h:.3f}). "
+        f"Screenshots: {tmp_path}"
+    )
+    # Axis 1 must now occupy the top half (vacated by axis 0 moving down).
+    rem_top, _rem_h = _strip(1)
+    assert rem_top < 0.1, (
+        f"M4: axis 1 not at top after reorder (got top={rem_top:.3f}). "
+        f"Screenshots: {tmp_path}"
+    )
+
+    # M7: col 1 is non-empty → insertion-line path (not column-highlight).
+    assert view.mid_line_visible, (
+        "M7: insertion line not visible mid-drag for same-col gesture "
+        f"(col 1 non-empty path). Screenshots: {tmp_path}"
+    )
+    assert not view.mid_highlight_visible, (
+        "M7: column-highlight unexpectedly visible for same-col gesture. "
+        f"Screenshots: {tmp_path}"
+    )
+    assert view.mid_source_opacity == pytest.approx(0.35, abs=0.01), (
+        f"M7: source axis not dimmed to 0.35 mid-drag (got {view.mid_source_opacity}). "
         f"Screenshots: {tmp_path}"
     )
