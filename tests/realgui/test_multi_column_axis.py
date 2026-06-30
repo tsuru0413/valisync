@@ -37,23 +37,14 @@ real Windows display.
 from __future__ import annotations
 
 import contextlib
-import ctypes
-import sys
-import threading
-import time
 from pathlib import Path
 
 import pytest
 from pytestqt.qtbot import QtBot
 
-pytestmark = pytest.mark.realgui
+from tests.realgui._realgui_input import drive_qdrag, skip_unless_real_display
 
-# Win32 input constants
-_MOUSEEVENTF_MOVE = 0x0001
-_MOUSEEVENTF_LEFTDOWN = 0x0002
-_MOUSEEVENTF_LEFTUP = 0x0004
-_KEYEVENTF_KEYUP = 0x0002
-_VK_ESCAPE = 0x1B
+pytestmark = pytest.mark.realgui
 
 
 def test_axis_drag_from_inner_column_to_outer_column(
@@ -72,17 +63,10 @@ def test_axis_drag_from_inner_column_to_outer_column(
         axis spine paints in the outer-column 0 band at top ~0.0 with height ~0.5;
         inner remainder spine paints in column 1 at top ~0.5 (blank gap above)
     """
-    if sys.platform != "win32":
-        pytest.skip("real OS drag uses Win32 mouse_event (Windows-only)")
+    skip_unless_real_display()
 
     from PySide6.QtCore import QPoint, Qt
-    from PySide6.QtGui import QGuiApplication
     from PySide6.QtWidgets import QApplication
-
-    if QGuiApplication.platformName() == "offscreen":
-        pytest.skip(
-            "requires a real display — run: uv run pytest --realgui tests/realgui/"
-        )
 
     from valisync.core.models import Delimiter, FormatDefinition
     from valisync.core.session import Session
@@ -91,8 +75,6 @@ def test_axis_drag_from_inner_column_to_outer_column(
         _Y_AXIS_FIXED_WIDTH,
         GraphPanelView,
     )
-
-    user32 = ctypes.windll.user32
 
     # ─── Session with two signals ──────────────────────────────────────────────
     # A tiny CSV is sufficient: the axis-move gesture only needs two axes to exist.
@@ -208,52 +190,12 @@ def test_axis_drag_from_inner_column_to_outer_column(
     mid_phys_x = (src_phys_x + tgt_phys_x) // 2
     mid_phys_y = (src_phys_y + tgt_phys_y) // 2
 
-    # ─── Real-OS gesture driven from a BACKGROUND THREAD ──────────────────────
-    # WHY a thread (not QTimer): QDrag.exec() enters Windows' OLE DoDragDrop
-    # modal loop, which does NOT pump Qt single-shot timers, so QTimer-driven
-    # moves/release stall forever (the original bug — see module docstring).  A
-    # plain OS thread issues real mouse_event() input on wall-clock time, which
-    # DOES drive the modal loop, so the drop completes.
-    finished = threading.Event()  # main → worker: the gesture resolved
-
-    def _at(x: int, y: int, flag: int) -> None:
-        user32.SetCursorPos(int(x), int(y))
-        user32.mouse_event(flag, 0, 0, 0, 0)
-
-    def drive() -> None:
-        time.sleep(0.3)  # let the main thread reach its event pump
-        _at(src_phys_x, src_phys_y, _MOUSEEVENTF_LEFTDOWN)
-        time.sleep(0.1)
-        # Cross pyqtgraph's threshold with a VERTICAL move so the drag STARTS in the
-        # frame zone (lx stays in the 3-px frame band); a horizontal move would leave
-        # it and mis-classify the gesture as pan. QDrag.exec then starts on the main
-        # thread.
-        _at(src_phys_x, src_phys_y + 15, _MOUSEEVENTF_MOVE)
-        time.sleep(0.2)
-        _at(mid_phys_x, mid_phys_y, _MOUSEEVENTF_MOVE)
-        time.sleep(0.2)
-        _at(tgt_phys_x, tgt_phys_y, _MOUSEEVENTF_MOVE)
-        time.sleep(0.3)  # let dragMoveEvent render feedback + grab the mid shot
-        _at(tgt_phys_x, tgt_phys_y, _MOUSEEVENTF_LEFTUP)  # drop
-        # Watchdog: if the drop did not unblock the main thread within 3 s, the
-        # drag is stuck — cancel with ESC and force the button up.
-        if not finished.wait(timeout=3.0):
-            user32.keybd_event(_VK_ESCAPE, 0, 0, 0)
-            user32.keybd_event(_VK_ESCAPE, 0, _KEYEVENTF_KEYUP, 0)
-            user32.mouse_event(_MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-
-    worker = threading.Thread(target=drive, daemon=True)
-    worker.start()
-
-    # Pump the GUI thread until the drop fires or the worker gives up.
-    # processEvents() blocks inside QDrag.exec while the drag is live; the
-    # worker's LEFTUP (or watchdog ESC) is what lets it return.
-    deadline = time.monotonic() + 15.0
-    while not view.drop_seen and worker.is_alive() and time.monotonic() < deadline:
-        QApplication.processEvents()
-        time.sleep(0.01)
-    finished.set()  # release the worker's watchdog wait
-    worker.join(timeout=4.0)
+    # ─── Real-OS QDrag driven by shared helper ────────────────────────────────
+    drive_qdrag(
+        (src_phys_x, src_phys_y),
+        [(mid_phys_x, mid_phys_y), (tgt_phys_x, tgt_phys_y)],
+        done=lambda: view.drop_seen,
+    )
 
     # Settle the layout, then grab the post-drop screenshot on the GUI thread.
     for _ in range(3):
