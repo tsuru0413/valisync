@@ -298,7 +298,12 @@ def test_delta_line_survives_axis_rebuild(qtbot: QtBot, tmp_path: Path) -> None:
     assert view.delta_line_visible()
     a_before = view.cursor_line_value()
     b_before = view.delta_line_value()
-    vb_before = id(view._view_boxes[0])
+    # Keep the OBJECT reference (not id()): id() is a memory address that CPython
+    # reuses once the old ViewBox is freed, so `id(new) != id(old)` flakes (the
+    # freed slot is reallocated to the new ViewBox → equal ids → spurious failure
+    # seen on CI). Holding the object pins its memory and lets `is not` do a true
+    # identity check.
+    vb_before = view._view_boxes[0]
 
     # signature を変えてスローパス (実リビルド) を強制。set_column_count は "axes"
     # を notify し _on_vm_change -> refresh() を通る。
@@ -306,7 +311,7 @@ def test_delta_line_survives_axis_rebuild(qtbot: QtBot, tmp_path: Path) -> None:
 
     # master ViewBox が実際に作り直された (ファストパス早期 return ではない) こと。
     # これが無いと scene assertion は detach されず自明に通り、false-green になる。
-    assert id(view._view_boxes[0]) != vb_before
+    assert view._view_boxes[0] is not vb_before
     assert view.cursor_line_visible()
     assert view.delta_line_visible()  # B 線は rebuild を生き延びる
     assert view.cursor_line_value() == pytest.approx(a_before)
