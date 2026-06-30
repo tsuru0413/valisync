@@ -217,10 +217,10 @@ def test_move_to_blank_panel_leaves_no_phantom_axis(tmp_path: Path) -> None:
     )
     p1_keys = [e.signal_key for e in p1._plotted]
     assert keys[0] in p1_keys, "moved signal absent from target"
-    # The target's only axis must be the moved one (carries the signal).
-    assert p1._axes[0].name or p1._plotted[0].axis_index == 0, (
-        "target axis index mapping is broken"
-    )
+    # The moved signal must map to the sole surviving axis (index 0 after the
+    # placeholder is pruned). Assert the index directly — the prior `name or ...`
+    # form short-circuited on the non-empty axis name and never checked the index.
+    assert p1._plotted[0].axis_index == 0, "target axis index mapping is broken"
 
 
 # ─── Layer B: View→VM wiring test (Task 3) ───────────────────────────────────
