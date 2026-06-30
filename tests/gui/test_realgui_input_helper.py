@@ -10,6 +10,7 @@ from valisync.gui.views.graph_panel_view import GraphPanelView
 
 def test_flag_and_vk_constants() -> None:
     assert (ri.MOVE, ri.LDOWN, ri.LUP) == (0x0001, 0x0002, 0x0004)
+    assert (ri.RDOWN, ri.RUP) == (0x0008, 0x0010)
     assert (ri.KEYDOWN, ri.KEYUP) == (0x0000, 0x0002)
     assert ri.VK_RETURN == 0x0D and ri.VK_ESCAPE == 0x1B
     assert ri.VK_CONTROL == 0x11 and ri.VK_SHIFT == 0x10

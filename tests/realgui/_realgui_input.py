@@ -21,6 +21,7 @@ from PySide6.QtWidgets import QApplication
 
 # Win32 mouse_event / keybd_event フラグ
 MOVE, LDOWN, LUP = 0x0001, 0x0002, 0x0004
+RDOWN, RUP = 0x0008, 0x0010
 KEYDOWN, KEYUP = 0x0000, 0x0002
 VK_RETURN, VK_ESCAPE, VK_CONTROL, VK_SHIFT = 0x0D, 0x1B, 0x11, 0x10
 

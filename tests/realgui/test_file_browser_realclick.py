@@ -17,41 +17,29 @@ Note: this hijacks the mouse cursor for ~1s while it runs.
 
 from __future__ import annotations
 
-import ctypes
-import sys
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 from pytestqt.qtbot import QtBot
 
-pytestmark = pytest.mark.realgui
+from tests.realgui._realgui_input import RDOWN, RUP, at, skip_unless_real_display
 
-_MOUSEEVENTF_RIGHTDOWN = 0x0008
-_MOUSEEVENTF_RIGHTUP = 0x0010
+pytestmark = pytest.mark.realgui
 
 
 def test_remove_file_menu_appears_on_real_os_right_click(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
-    if sys.platform != "win32":
-        pytest.skip("real OS right-click uses Win32 mouse_event (Windows-only)")
+    skip_unless_real_display()
 
     from PySide6.QtCore import QEventLoop, Qt, QTimer
-    from PySide6.QtGui import QGuiApplication
     from PySide6.QtWidgets import QApplication, QMenu
-
-    if QGuiApplication.platformName() == "offscreen":
-        pytest.skip(
-            "requires a real display — run: uv run pytest --realgui tests/realgui/"
-        )
 
     from valisync.core.models import SignalGroup
     from valisync.gui.viewmodels.app_viewmodel import AppViewModel
     from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
     from valisync.gui.views.file_browser_view import FileBrowserView
-
-    user32 = ctypes.windll.user32
 
     # Two loaded files so the FileBrowser list has rows to right-click.
     app_vm = AppViewModel()
@@ -84,9 +72,8 @@ def test_remove_file_menu_appears_on_real_os_right_click(
     captured: dict[str, object] = {}
 
     def do_real_right_click() -> None:
-        user32.SetCursorPos(int(phys_x), int(phys_y))
-        user32.mouse_event(_MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
-        user32.mouse_event(_MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+        at(phys_x, phys_y, RDOWN)
+        at(phys_x, phys_y, RUP)
         # A real menu opens modally here; capture() fires inside that loop.
 
     loop = QEventLoop()

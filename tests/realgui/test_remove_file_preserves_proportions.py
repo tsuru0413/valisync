@@ -39,6 +39,8 @@ from pytestqt.qtbot import QtBot
 from tests.realgui._realgui_input import (
     KEYUP,
     LUP,
+    RDOWN,
+    RUP,
     VK_ESCAPE,
     at,
     skip_unless_real_display,
@@ -46,9 +48,6 @@ from tests.realgui._realgui_input import (
 
 pytestmark = pytest.mark.realgui
 
-# Right-click constants not in shared helper
-_MOUSEEVENTF_RIGHTDOWN = 0x0008
-_MOUSEEVENTF_RIGHTUP = 0x0010
 _ASFW_ANY = -1
 
 
@@ -80,7 +79,7 @@ def test_remove_file_preserves_graph_panel_proportions(
             user32.keybd_event(VK_ESCAPE, 0, 0, 0)
             user32.keybd_event(VK_ESCAPE, 0, KEYUP, 0)
             user32.mouse_event(LUP, 0, 0, 0, 0)
-            user32.mouse_event(_MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+            user32.mouse_event(RUP, 0, 0, 0, 0)
 
     wd = threading.Thread(target=_watchdog, daemon=True)
     wd.start()
@@ -209,8 +208,8 @@ def test_remove_file_preserves_graph_panel_proportions(
         loop = QEventLoop()
 
         def _do_right_click() -> None:
-            at(rx, ry, _MOUSEEVENTF_RIGHTDOWN)
-            user32.mouse_event(_MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+            at(rx, ry, RDOWN)
+            at(rx, ry, RUP)
             # The modal menu opens here; _capture() (a later singleShot) runs
             # inside that loop.
 
