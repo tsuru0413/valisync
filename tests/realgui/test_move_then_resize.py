@@ -88,6 +88,9 @@ def test_first_resize_after_axis_move_works(qtbot: QtBot, tmp_path: Path) -> Non
     )
     assert view._active_axis_index == 0, "axis 0 lost active status across the move"
     h0_before = view.vm.axes[0].height_ratio
+    # ② honest gate: capture the RENDERED height of axis 0's viewbox (not just the
+    # VM ratio) so a "VM changed but paint no-op" false-green cannot pass.
+    vb0_h_before = view._view_boxes[0].sceneBoundingRect().height()
 
     # ── Immediately grip-resize axis 0 (still active) — FIRST attempt only ──
     # Small uniform steps keep the threshold-crossing inside the thin grip band.
@@ -112,6 +115,14 @@ def test_first_resize_after_axis_move_works(qtbot: QtBot, tmp_path: Path) -> Non
         )
 
     h0_after = view.vm.axes[0].height_ratio
+    vb0_h_after = view._view_boxes[0].sceneBoundingRect().height()
+    # ② honest gate: the RENDERED viewbox must actually shrink — proving the resize
+    # reached the paint path, not merely the VM. (VM ratio ~0.5 → ~0.30.)
+    assert vb0_h_after < vb0_h_before * 0.85, (
+        f"axis 0 viewbox did not shrink on screen: {vb0_h_after:.1f} "
+        f"(was {vb0_h_before:.1f}) — VM ratio changed but the paint may be a no-op. "
+        f"Screens: {tmp_path}"
+    )
     assert h0_after < h0_before - 0.05, (
         f"FIRST resize after a move was a no-op: height stayed {h0_after} "
         f"(was {h0_before}). Stale post-QDrag scene state misrouted the drag. "
