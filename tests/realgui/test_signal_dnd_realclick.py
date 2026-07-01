@@ -355,3 +355,94 @@ def test_drop_then_immediate_gesture_does_not_hang(
         QApplication.primaryScreen().grabWindow(0).save(str(tmp_path / "c2.png"))
     # Reaching here without a hang is the primary assertion.
     assert panel.vm.axes, "panel lost its axes after drop+gesture"
+
+
+def test_drop_highlight_visible_mid_drag(qtbot: QtBot, tmp_path: Path) -> None:
+    """Low: the blue drop-highlight border is shown mid-drag and cleared after drop.
+
+    GraphPanelView.dragEnterEvent sets _set_drop_highlight(True) for signal mime
+    (graph_panel_view.py:1656-1660); dropEvent clears it. Existing D&D realgui only
+    asserts drop_seen — this asserts the honest visual state: is_drop_highlighted()
+    is True while the drag hovers, and False after the drop.
+
+    Honest RED: make GraphPanelView._set_drop_highlight (graph_panel_view.py:1650)
+    a no-op (``self._drop_active = active`` → ``pass``) — the highlight never turns
+    on, mid_highlighted stays False, and the assertion fails.
+    """
+    skip_unless_real_display()
+    from PySide6.QtWidgets import QApplication
+
+    from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+    from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
+    from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+    from valisync.gui.views.channel_browser_view import ChannelBrowserView
+    from valisync.gui.views.graph_panel_view import GraphPanelView
+
+    class _HighlightCapturingPanel(GraphPanelView):
+        mid_highlighted: bool = False
+        mid_border: bool = False
+        drop_seen: bool = False
+
+        def dragMoveEvent(self, ev: object) -> None:  # type: ignore[override]
+            super().dragMoveEvent(ev)  # type: ignore[arg-type]
+            # Capture the drop-highlight state WHILE the drag hovers the panel.
+            if self.is_drop_highlighted():
+                self.mid_highlighted = True
+                if "border" in self.styleSheet():
+                    self.mid_border = True
+
+        def dropEvent(self, ev: object) -> None:  # type: ignore[override]
+            super().dropEvent(ev)  # type: ignore[arg-type]
+            self.drop_seen = True
+
+    from PySide6.QtCore import Qt
+
+    csv = tmp_path / "d.csv"
+    csv.write_text("t,a,b\n0.0,1.0,4.0\n1.0,2.0,5.0\n", encoding="utf-8")
+    app_vm = AppViewModel()
+    file_key = app_vm.request_load(csv, _fmt())
+    app_vm.set_active_file(file_key)
+
+    browser = ChannelBrowserView(ChannelBrowserVM(app_vm))
+    panel = _HighlightCapturingPanel(GraphPanelVM(app_vm.session))
+    qtbot.addWidget(browser)
+    qtbot.addWidget(panel)
+    for w, x in ((browser, 200), (panel, 640)):
+        w.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        w.setGeometry(x, 250, 400, 360)
+        w.show()
+        qtbot.waitExposed(w)
+    qtbot.waitUntil(
+        lambda: browser.tree.visualRect(browser.model.index(0, 0)).height() > 0,
+        timeout=3000,
+    )
+    QApplication.processEvents()
+
+    _select_rows(browser, [0])
+    QApplication.processEvents()
+
+    press = _row_phys(browser, 0)
+    target = _panel_point_phys(panel, panel.width() // 2, panel.height() // 2)
+    mid = ((press[0] + target[0]) // 2, (press[1] + target[1]) // 2)
+
+    drive_qdrag(press, [mid, target], done=lambda: panel.drop_seen)
+
+    for _ in range(3):
+        QApplication.processEvents()
+    with contextlib.suppress(Exception):
+        QApplication.primaryScreen().grabWindow(0).save(
+            str(tmp_path / "drop_highlight.png")
+        )
+
+    assert panel.drop_seen, (
+        f"no dropEvent — QDrag never completed. screenshot: {tmp_path / 'drop_highlight.png'}"
+    )
+    assert panel.mid_highlighted, (
+        "drop-highlight (is_drop_highlighted) was never True mid-drag — the blue "
+        f"border feedback is broken. screenshot: {tmp_path / 'drop_highlight.png'}"
+    )
+    assert panel.mid_border, "styleSheet had no border while highlighted mid-drag"
+    # Cleared after drop.
+    assert not panel.is_drop_highlighted(), (
+        "drop-highlight not cleared after drop — _set_drop_highlight(False) not reached"
+    )
