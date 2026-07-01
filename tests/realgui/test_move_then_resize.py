@@ -88,9 +88,11 @@ def test_first_resize_after_axis_move_works(qtbot: QtBot, tmp_path: Path) -> Non
     )
     assert view._active_axis_index == 0, "axis 0 lost active status across the move"
     h0_before = view.vm.axes[0].height_ratio
-    # ② honest gate: capture the RENDERED height of axis 0's viewbox (not just the
-    # VM ratio) so a "VM changed but paint no-op" false-green cannot pass.
-    vb0_h_before = view._view_boxes[0].sceneBoundingRect().height()
+    # ② honest gate: capture the RENDERED height of axis 0's SPINE (not viewbox).
+    # The multi-axis layout is region-based: _view_boxes[0] is the master ViewBox
+    # spanning the full plot height (fixed, ~537 for 800x600) -- it never shrinks.
+    # Only _y_axes[i].setGeometry(strip) tracks height_ratio*R.height() per axis.
+    spine0_h_before = view._y_axes[0].sceneBoundingRect().height()
 
     # ── Immediately grip-resize axis 0 (still active) — FIRST attempt only ──
     # Small uniform steps keep the threshold-crossing inside the thin grip band.
@@ -115,12 +117,13 @@ def test_first_resize_after_axis_move_works(qtbot: QtBot, tmp_path: Path) -> Non
         )
 
     h0_after = view.vm.axes[0].height_ratio
-    vb0_h_after = view._view_boxes[0].sceneBoundingRect().height()
-    # ② honest gate: the RENDERED viewbox must actually shrink — proving the resize
-    # reached the paint path, not merely the VM. (VM ratio ~0.5 → ~0.30.)
-    assert vb0_h_after < vb0_h_before * 0.85, (
-        f"axis 0 viewbox did not shrink on screen: {vb0_h_after:.1f} "
-        f"(was {vb0_h_before:.1f}) — VM ratio changed but the paint may be a no-op. "
+    spine0_h_after = view._y_axes[0].sceneBoundingRect().height()
+    # ② honest gate: the RENDERED spine must actually shrink (~0.5→0.30, ~40% drop).
+    # _y_axes[0].sceneBoundingRect().height() == height_ratio * R.height(), which is
+    # set by _sync_overlay_geometry. If the resize was a paint no-op the spine stays put.
+    assert spine0_h_after < spine0_h_before * 0.80, (
+        f"axis 0 spine did not shrink on screen: {spine0_h_after:.1f} "
+        f"(was {spine0_h_before:.1f}) — VM ratio changed but the paint may be a no-op. "
         f"Screens: {tmp_path}"
     )
     assert h0_after < h0_before - 0.05, (
