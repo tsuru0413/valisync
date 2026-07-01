@@ -71,14 +71,33 @@ gantt
 
 巨大な親 spec `valisync-gui`（requirements.md に 29 要件）を、統合リスクを早期検証する **MVP 垂直スライス**方針で **6 つの sub-spec** に分解する（2026-05-27 決定）。親 `valisync-gui/requirements.md` を一次情報源として保持し、各 sub-spec は該当要件を抽出して requirements/design/tasks を持つ。（その後 `valisync-gui-file-browser` を mvp から分離して追加。`analysis` は **R14–R17 完了**（増分A=R15 Global Cursor PR #21/#22・B=R16 Delta+R17 範囲統計 PR #23・C=R14 時間オフセット PR #25、realgui ①証拠ゲート充足）、`derived`/`views`/`script` は未着手。各 sub-spec 表の「状態」列は着手当時のもので、最新の完了状況は CLAUDE.md Phase 表を一次とする。**横断 / realgui カバレッジ拡充（Phase 1-7）**: low クラスタ＋C3 昇格（Plan 7 実装）で監査 missing 解消・全フェーズ実装完了（merge 前 ①ゲートで実機実証予定）— 詳細は `docs/realgui-coverage-audit.md`。）
 
-| sub-spec | 担当要件（親 R番号） | 状態 | 概要 |
-|------|------|------|------|
-| `valisync-gui-mvp` | R1, R3, R4, R5, R6, R7, R8.1–8.5, R12, R13, R21, R22, R27, R28, R29(最小) | **実装完了**（tasks 0〜11 全 `[x]`・454 tests green・`feature/valisync-gui-mvp`・PR 未作成） | 歩く骨格: シェル/ドッキング・データ取込/閲覧・タブ/パネル分割・基本Y-T波形・X/Yズーム/パン・**動的LOD**・X 軸同期・D&D・コンテキストメニュー |
-| `valisync-gui-axes` | R8.6–8.18 | 未作成 | 複数Y軸レイアウト（独立スケール・高さ比率・自由配置）+ X-Yプロットモード |
-| `valisync-gui-analysis` | R14, R15, R16, R17 | 未作成 | Global/Deltaカーソル・範囲統計表示・Drag-offset（時間オフセット） |
-| `valisync-gui-derived` | R18, R19 | 未作成 | Calcbar UI + Formula エディタ（構文ハイライト・補完） |
-| `valisync-gui-views` | R9, R10, R11 | 未作成 | Table / 棒グラフ / コンタープロット |
-| `valisync-gui-script` | R20 | 未作成 | Python Script Console（スクリプティング統合） |
+**バケット分類**: 各 sub-spec は「① 今後実装予定（未着手の新機能）」と、既存機能の欠陥を束ねる「② 実装済みだが不足（改善サブスペック）」に分ける。②の全課題は ID 付きで [audit-findings-catalog.md](audit-findings-catalog.md) が一次情報源。
+
+**① 機能サブスペック**（親 `valisync-gui` の要件分解。状態は CLAUDE.md Phase 表を一次とする）
+
+| sub-spec | 担当要件（親 R番号） | 状態 | バケット | 概要 |
+|------|------|------|------|------|
+| `valisync-gui-mvp` | R1, R3–R8.5, R12, R13, R21, R22, R27–R29(最小) | **完了**（PR #1/#2 merged） | — | 歩く骨格: シェル/ドッキング・データ取込/閲覧・タブ/パネル分割・基本Y-T波形・X/Yズーム/パン・**動的LOD**・X 軸同期・D&D・コンテキストメニュー |
+| `valisync-gui-file-browser` | （分離） | **完了**（PR #3 merged） | — | FileBrowser 分離・マスター/ディテール |
+| `valisync-gui-axes` | R8.6–8.18 | **完了**（PR #4/#13/#14/#16/#17/#19 merged） | — | 複数Y軸レイアウト（独立スケール・高さ比率・自由配置・軸ごとリサイズ） |
+| `valisync-gui-analysis` | R14, R15, R16, R17 | **完了**（PR #21–#25 merged・realgui ①ゲート充足） | — | Global/Deltaカーソル・範囲統計表示・Drag-offset（時間オフセット） |
+| 横断 / realgui カバレッジ拡充 | — | **完了**（Phase 1-7・PR #27–#35） | — | headless false-green 経路を実 OS 入力（Layer C）で検証 |
+| `valisync-gui-derived` | R18, R19 | 未着手 | ① | Calcbar UI + Formula エディタ（構文ハイライト・補完） |
+| `valisync-gui-views` | R9, R10, R11 | 未着手 | ① | Table / 棒グラフ / コンタープロット |
+| `valisync-gui-script` | R20 | 未着手 | ① | Python Script Console（スクリプティング統合） |
+
+**② 改善サブスペック（実装済みだが不足）** — 一次情報源: [audit-findings-catalog.md](audit-findings-catalog.md)（実ユーザージャーニー監査で確定した 64 課題を割当）
+
+| 改善サブスペック | 主眼 | 件数 | 優先 | 代表課題（catalog ID） |
+|------|------|------|------|------|
+| `gui-feedback-errors` | エラー/診断/状態フィードバックの可視化 | 10 | 🔴最優先 | FB-01 全ロード失敗が無言・FB-02 Session が skip 診断を破棄 |
+| `gui-shell-controls` | シェル操作（File メニュー・タブ/パネル/レイアウト管理・エクスポート導線） | 15 | 🔴高 | SH-01 File>Open 無し・SH-03 エクスポート導線無し・SH-12 ドックトグルボタン |
+| `gui-plot-analysis-controls` | プロット/曲線/軸/カーソルの操作コントロール | 20 | 🟠中 | PC-01 曲線管理コントロール無し・PC-03 オフセット操作が隠れ・PC-11 単位無し |
+| `core-loaders-hardening` | ローダー堅牢性・対応形式拡張 | 11 | 🔴高 | LD-01 CSV 開けず・LD-02 .mf4 限定・LD-03 重複TS ch 無言欠落 |
+| `analysis-correctness` | 統計・補間の計算の正しさ | 3 | 🔴高（正しさ） | AN-01 範囲統計の NaN 汚染（count>0 なのに全 nan） |
+| `rendering-correctness-perf` | 描画の正しさ・LOD/同期の性能 | 5 | 🟠中 | RN-01 ズーム時の疎信号消失（境界サンプル） |
+
+> ②の着手起点は `gui-feedback-errors`（FB-01/FB-02）。サイレント失敗連鎖の元を断つと、`core-loaders-hardening`・`gui-shell-controls` の欠陥が「気づける」ようになる。各改善サブスペックも着手時に `brainstorming` → `writing-plans` から始め、catalog の ID を要件参照点に使う。
 
 **境界判断**:
 - **LOD（R21）は MVP に統合**（当初は独立 spec 案）。静的DSはズームイン時に生データ細部・スパイクが見えず ADAS 解析に不十分なため、viewport 連動の動的DSを最初から導入し実用精度を確保
@@ -192,9 +211,15 @@ graph LR
     CORE[valisync-core<br/>Phase 1] --> MVP[valisync-gui-mvp<br/>Phase 2]
     MVP --> AXES[valisync-gui-axes]
     MVP --> ANALYSIS[valisync-gui-analysis]
-    MVP --> DERIVED[valisync-gui-derived]
-    MVP --> VIEWS[valisync-gui-views]
-    MVP --> SCRIPT[valisync-gui-script]
+    MVP --> DERIVED[valisync-gui-derived ①]
+    MVP --> VIEWS[valisync-gui-views ①]
+    MVP --> SCRIPT[valisync-gui-script ①]
+    MVP --> FB[gui-feedback-errors ②]
+    MVP --> SH[gui-shell-controls ②]
+    MVP --> PC[gui-plot-analysis-controls ②]
+    MVP --> RN[rendering-correctness-perf ②]
+    CORE --> LD[core-loaders-hardening ②]
+    CORE --> AN[analysis-correctness ②]
     AXES --> PERSIST[valisync-persistence<br/>Phase 3]
     ANALYSIS --> PERSIST
     DERIVED --> PERSIST
