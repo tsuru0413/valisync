@@ -121,6 +121,106 @@ def test_outer_drag_pans_on_active_axis(qtbot: QtBot, tmp_path) -> None:
     )
 
 
+def test_lod_render_after_resize(qtbot: QtBot, tmp_path) -> None:
+    """M11: resize-driven LOD — View applies LOD-reduced arrays to PlotDataItem.
+
+    Existing VM tests only check vm.lod_active / vm.last_rendered_points (ViewModel
+    state).  They would stay green even if refresh() passed raw signal arrays to
+    pyqtgraph instead of the LOD-reduced ones.  This test closes that gap by
+    asserting panel._items[key].getData()[0] point count directly.
+
+    Honest RED: replace ``item.setData(curve.timestamps, curve.values)`` in
+    graph_panel_view.py:refresh() with raw ``sig.timestamps, sig.values`` → the
+    5000-point signal fills the item; ``len(getData()[0]) <= 2*200 + 10`` fails.
+    OR force ``vm.lod_active = False`` just before the check — the assertion catches it.
+    """
+    skip_unless_real_display()
+
+    import tempfile
+    from pathlib import Path
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
+    from valisync.core.models import Delimiter, FormatDefinition
+    from valisync.core.session import Session
+    from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+    from valisync.gui.views.graph_panel_view import GraphPanelView
+
+    # Build a 5 000-point signal — well above any plausible 2*width LOD threshold.
+    n = 5000
+    d = Path(tempfile.mkdtemp())
+    csv = d / "large.csv"
+    rows = ["t,sig"] + [f"{i / 1000.0:.6f},{float(i % 100)}" for i in range(n)]
+    csv.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    session = Session()
+    session.load(
+        csv,
+        FormatDefinition(
+            name="fmt",
+            delimiter=Delimiter.COMMA,
+            timestamp_column=0,
+            timestamp_unit="sec",
+            signal_start_column=1,
+            signal_end_column=1,
+            has_header=True,
+        ),
+    )
+    keys = sorted(s.name for s in session.signals())
+    key = keys[0]  # namespaced, e.g. "csv_1::sig"
+
+    vm = GraphPanelVM(session)
+    vm.add_signal_to_axis(key, 0)
+    view = GraphPanelView(vm)
+
+    # ── Narrow viewport ──────────────────────────────────────────────────────────
+    qtbot.addWidget(view)
+    view.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+    view.setGeometry(300, 300, 200, 600)
+    view.show()
+    qtbot.waitExposed(view)
+    for _ in range(3):
+        QApplication.processEvents()
+
+    assert vm.panel_width_px <= 200
+    assert vm.lod_active is True, "5000-pt signal at 200 px width should activate LOD"
+
+    item = view._items[key]
+    xs_narrow, _ = item.getData()
+    assert xs_narrow is not None, "PlotDataItem has no data after narrow show"
+    narrow_count = len(xs_narrow)
+    # The key assertion VM tests lack: the VIEW must have applied the LOD-reduced
+    # arrays (≤ 2*width points), not the raw 5000-point signal.
+    assert narrow_count <= 2 * vm.panel_width_px + 10, (
+        f"View applied raw arrays to PlotDataItem: "
+        f"{narrow_count} points > 2*{vm.panel_width_px}+10 "
+        f"(screens: {tmp_path})"
+    )
+
+    with contextlib.suppress(Exception):
+        QApplication.primaryScreen().grabWindow(0).save(
+            str(tmp_path / "lod_narrow.png")
+        )
+
+    # ── Wide viewport — LOD budget increases, point count must grow ──────────────
+    view.setGeometry(300, 300, 1600, 600)
+    for _ in range(3):
+        QApplication.processEvents()
+
+    xs_wide, _ = view._items[key].getData()
+    assert xs_wide is not None, "PlotDataItem has no data after wide resize"
+    wide_count = len(xs_wide)
+    assert wide_count > narrow_count, (
+        f"LOD did not relax at wide viewport: "
+        f"wide={wide_count} <= narrow={narrow_count} "
+        f"(screens: {tmp_path})"
+    )
+
+    with contextlib.suppress(Exception):
+        QApplication.primaryScreen().grabWindow(0).save(str(tmp_path / "lod_wide.png"))
+
+
 def test_cursor_changes_per_zone(qtbot: QtBot) -> None:
     """Hovering each zone of the active axis sets a zone-specific cursor on the AxisItem."""
     skip_unless_real_display()
