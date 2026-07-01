@@ -301,9 +301,15 @@ def test_same_col_axis_reorder(qtbot: QtBot, tmp_path: Path) -> None:
     line — not the column-highlight rect — must be visible mid-drag, and the
     source axis dimmed to 0.35 opacity.
 
-    Honest RED gate: force ``_apply_deferred_axis_move`` to pass ``position=None``
-    (always-append) and the reorder-to-bottom assert fails when the axis was
-    already at the bottom (no visible reorder).
+    Honest RED gate: force ``_apply_deferred_axis_move`` to pass ``position=0``
+    (always top-insert) in its call to ``vm.move_axis_to_column(...)``
+    (graph_panel_view.py line 1691).  With ``position=0``, axis 0 is always
+    inserted at the TOP of the column, so the ``moved_top > 0.4`` assertion
+    (which checks that the dragged axis painted *below* the midpoint) flips RED.
+
+    Why ``position=None`` is VACUOUS: ``None`` means always-append, which lands
+    axis 0 at the bottom of the column — the SAME observable result as the
+    correct bottom-drop reorder — so the test stays GREEN with that mutation.
     """
     skip_unless_real_display()
 

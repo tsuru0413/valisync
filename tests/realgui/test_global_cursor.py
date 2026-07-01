@@ -147,7 +147,8 @@ def test_real_drag_b_cursor_stats_live_recalc(qtbot: QtBot, tmp_path) -> None:
     - 最後に primaryScreen.grabWindow(0) → stats_live.png(判読可能フォント確認用)
 
     honest RED gate: view._cursor_line_b.sigPositionChanged.disconnect(
-        view._on_cursor_line_b_dragged)  # graph_panel_view.py L1122
+        view._on_cursor_line_b_dragged)  # graph_panel_view.py L1127
+        # (sigPositionChanged.connect(on_dragged) inside _make_cursor_line)
     を挿入すると B ドラッグ後も統計が更新されず texts_before != texts_after が RED になる。
     """
     skip_unless_real_display()

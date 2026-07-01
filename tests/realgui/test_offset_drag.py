@@ -175,11 +175,13 @@ def test_real_escape_cancels_offset_drag(qtbot: QtBot, tmp_path: Path) -> None:
     After Escape the drag state must be fully cleared and _finish_offset / the apply
     dialog must never have been called.
 
-    honest RED gate: remove graph_panel_view.py lines 1608-1610 (the keyPressEvent
-    Escape handler) → Escape is ignored → drag stays active (_offset_drag_key is not
-    None immediately after the key) OR the LUP triggers _end_offset_drag → the patched
-    _apply_dialog_fn is called → dialog_called=True → the ``assert not dialog_called``
-    assertion below flips RED.
+    honest RED gate: remove graph_panel_view.py lines 1638-1640 — the keyPressEvent
+    Escape handler (``if event.key() == Qt.Key.Key_Escape and
+    self._offset_drag_key is not None: self._cancel_offset_drag()``) → Escape is
+    ignored → drag stays active (_offset_drag_key is not None immediately after the
+    key) OR the LUP triggers _end_offset_drag → the patched _apply_dialog_fn is
+    called → dialog_called=True → the ``assert not dialog_called`` assertion below
+    flips RED.
     """
     skip_unless_real_display()
     from PySide6.QtWidgets import QApplication
@@ -269,10 +271,16 @@ def test_real_cursor_line_wins_overlap_press(qtbot: QtBot, tmp_path: Path) -> No
       • Distance to nearest curve point ≈ 5 scene px < CURVE_HIT_TOL_PX=8 → without
         the guard, _curve_at WOULD return the curve key
 
-    honest RED gate: remove graph_panel_view.py lines 1407-1408 (the cursor-line guard
-    inside _curve_at) → _curve_at finds the curve at ~5 scene px (< CURVE_HIT_TOL_PX)
+    honest RED gate: remove or neuter graph_panel_view.py lines 1412-1413 — the
+    ``CURSOR_LINE_HIT_PX`` early-return guard inside ``_curve_at``
+    (``if abs(scene_pos.x() - line_scene_x) <= CURSOR_LINE_HIT_PX: return None``)
+    → _curve_at finds the curve at ~5 scene px (< CURVE_HIT_TOL_PX)
     → _begin_offset_drag is called → _offset_drag_key is not None → the primary
     assertion below flips RED, proving the test is not vacuously green.
+
+    NOTE: lines 1407-1408 (``if not line.isVisible(): continue``) is NOT the
+    load-bearing target — removing the visibility skip does not disable the guard
+    because the visible cursor-A line still reaches the ``return None`` at line 1413.
 
     Positive line-engagement signal: no cursor-line movement is observable here
     because the press lands outside the InfiniteLine's bounding rect (the line item

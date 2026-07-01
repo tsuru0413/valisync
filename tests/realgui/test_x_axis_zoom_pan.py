@@ -10,7 +10,7 @@ All gestures are plain OS mouse drags (no QDrag / OLE modal loop).
 
 honest RED gates:
   M10: comment ``if zone in (ZONE_X_INNER, ZONE_X_OUTER):`` at graph_panel_view.py
-       lines 1573-1575 → _drag_zone never set → mouseReleaseEvent guard fails →
+       lines 1578-1580 → _drag_zone never set → mouseReleaseEvent guard fails →
        x_range unchanged → both M10 assertions flip RED.
   M12: call ``view.vm.set_x_sync(0, False)`` before the drag → propagate_x_range
        skips → panel-1 x_range stays at the original auto-fit value → assertion
@@ -170,8 +170,10 @@ def test_x_inner_drag_zooms_in(qtbot: QtBot, tmp_path) -> None:
     apply_zone_drag sets x_range to ordered_pair(start_value, end_value) which
     is ~40% of the original span.  The assertion checks span < 90% of original.
 
-    honest RED: comment graph_panel_view.py lines 1573-1575 → _drag_zone never
-    set → mouseReleaseEvent apply is skipped → x_range stays at full original span.
+    honest RED: comment graph_panel_view.py lines 1578-1580 — the ZONE_X branch
+    in mousePressEvent (``if zone in (ZONE_X_INNER, ZONE_X_OUTER): self._drag_zone
+    = zone``) → _drag_zone never set → mouseReleaseEvent apply is skipped →
+    x_range stays at full original span.
     """
     skip_unless_real_display()
 
@@ -204,8 +206,9 @@ def test_x_outer_drag_pans(qtbot: QtBot, tmp_path) -> None:
     pan_range(lo, hi, start-end) where start<end → negative delta → pans left.
     The assertion checks span unchanged and center shifted by > 5% of span.
 
-    honest RED: same as M10-zoom (comment lines 1573-1575 → _drag_zone None →
-    x_range unchanged → center shift = 0 → assertion flips RED).
+    honest RED: same as M10-zoom (comment lines 1578-1580 — the ZONE_X branch in
+    mousePressEvent → _drag_zone None → x_range unchanged → center shift = 0 →
+    assertion flips RED).
     """
     skip_unless_real_display()
 
