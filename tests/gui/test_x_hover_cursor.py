@@ -1,0 +1,131 @@
+"""M13 Production Fix: Layer B (headless) test — viewport eventFilter hover cursor.
+
+Sends a synthetic no-button QMouseEvent(MouseMove) to ``plot_widget.viewport()``
+and asserts that GraphPanelView's cursor updates via the eventFilter.
+
+Proof structure:
+- RED before the fix: ``installEventFilter`` not called → the viewport event is
+  delivered only to the QGraphicsView; GraphPanelView.mouseMoveEvent is never
+  reached → cursor stays ArrowCursor → X-strip assertion FAILS.
+- GREEN after the fix: ``GraphPanelView.eventFilter`` intercepts the viewport
+  move, maps coords, calls ``self.setCursor(SizeHorCursor)`` → assertion PASSES.
+
+Why this is an honest Layer B gate (not false-green):
+  Without the eventFilter, ``QApplication.sendEvent(viewport, ev)`` is delivered
+  only to QGraphicsView machinery — the parent GraphPanelView.mouseMoveEvent is
+  not called (mirrors the OS-level non-propagation confirmed by the
+  `gui_realgui_move_not_reaching_parent_qwidget` memory).  Installing the event
+  filter is the ONLY way this test passes; there is no shortcut path.
+"""
+
+from __future__ import annotations
+
+from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtGui import QMouseEvent
+from PySide6.QtWidgets import QApplication
+from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
+
+from tests.gui._panel_factory import make_two_axis_panel
+from valisync.gui.views.graph_panel_view import GraphPanelView
+
+# ─── Setup ────────────────────────────────────────────────────────────────────
+
+
+def _setup_panel(qtbot: QtBot) -> GraphPanelView:
+    """Build and expose a two-axis panel so scene geometry is valid."""
+    view = make_two_axis_panel()
+    qtbot.addWidget(view)
+    view.resize(800, 600)
+    view.show()
+    qtbot.waitExposed(view)
+    for _ in range(3):
+        QApplication.processEvents()
+    # Wait until the first viewbox has rendered (non-zero scene height).
+    qtbot.waitUntil(
+        lambda: view._view_boxes[0].sceneBoundingRect().height() > 10, timeout=3000
+    )
+    QApplication.processEvents()
+    return view
+
+
+def _hover(view: GraphPanelView, viewport_pos: QPointF) -> None:
+    """Send a synthetic no-button MouseMove to view.plot_widget.viewport()."""
+    ev = QMouseEvent(
+        QEvent.Type.MouseMove,
+        viewport_pos,
+        Qt.MouseButton.NoButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    QApplication.sendEvent(view.plot_widget.viewport(), ev)
+    QApplication.processEvents()
+
+
+# ─── Tests ────────────────────────────────────────────────────────────────────
+
+
+def test_x_strip_hover_sets_sizehor_cursor(qtbot: QtBot) -> None:
+    """Layer B: viewport hover over X strip → SizeHorCursor via eventFilter.
+
+    Coordinate path:
+      X-axis strip sceneBoundingRect → inner-zone centre (sy = 25% into strip)
+      → plot_widget.mapFromScene → viewport-local QPointF
+      → sendEvent(viewport, MouseMove, NoButton)
+      → GraphPanelView.eventFilter intercepts (after fix)
+      → viewport.mapTo(self, ...) → panel coords
+      → _zone_at → ZONE_X_INNER
+      → setCursor(SizeHorCursor).
+
+    RED before fix: no eventFilter → GraphPanelView.mouseMoveEvent not reached
+    → cursor stays ArrowCursor.
+    GREEN after fix: eventFilter sets SizeHorCursor.
+    """
+    view = _setup_panel(qtbot)
+
+    strip = view._x_axis.sceneBoundingRect()
+    sx = strip.x() + strip.width() * 0.5
+    sy = strip.y() + strip.height() * 0.25  # top half → ZONE_X_INNER
+    viewport_pos = QPointF(view.plot_widget.mapFromScene(QPointF(sx, sy)))
+
+    _hover(view, viewport_pos)
+
+    assert view.cursor().shape() == Qt.CursorShape.SizeHorCursor, (
+        f"Expected SizeHorCursor after hovering X strip; got {view.cursor().shape()}. "
+        "Fix: install self.plot_widget.viewport().installEventFilter(self) in "
+        "GraphPanelView.__init__ and add the eventFilter override."
+    )
+
+
+def test_plot_zone_hover_resets_to_arrow_cursor(qtbot: QtBot) -> None:
+    """Layer B: viewport hover over plot zone → ArrowCursor via eventFilter.
+
+    After the X-strip hover sets SizeHorCursor, moving into the plot area must
+    call cursor_for_zone(ZONE_PLOT) = ArrowCursor and reset the widget cursor.
+
+    This validates the zone-mapping reset path and guards against a sticky
+    SizeHorCursor when the user moves back into the plot.
+
+    In RED-first state (no eventFilter), both hovers leave the cursor at the
+    default ArrowCursor, so this assertion passes trivially.  Its value is
+    post-fix reset validation.
+    """
+    view = _setup_panel(qtbot)
+
+    # Step 1: hover X strip (sets SizeHorCursor once fix is active).
+    strip = view._x_axis.sceneBoundingRect()
+    sx = strip.x() + strip.width() * 0.5
+    sy = strip.y() + strip.height() * 0.25
+    _hover(view, QPointF(view.plot_widget.mapFromScene(QPointF(sx, sy))))
+
+    # Step 2: hover plot centre → expect ArrowCursor.
+    vb = view._view_boxes[0]
+    plot_rect = vb.sceneBoundingRect()
+    px = plot_rect.x() + plot_rect.width() * 0.5
+    py = plot_rect.y() + plot_rect.height() * 0.5
+    _hover(view, QPointF(view.plot_widget.mapFromScene(QPointF(px, py))))
+
+    assert view.cursor().shape() == Qt.CursorShape.ArrowCursor, (
+        f"Expected ArrowCursor after hovering plot zone; got {view.cursor().shape()}. "
+        "Zone mapping may be off: panel coords produced by viewport.mapTo(self, ...) "
+        "should match what _zone_at expects."
+    )

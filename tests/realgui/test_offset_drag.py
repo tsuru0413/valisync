@@ -166,3 +166,190 @@ def test_real_offset_drag_shifts_both_panels(qtbot: QtBot, tmp_path) -> None:
     # (same width → same LOD → identical arrays). This is the cross-panel evidence.
     np.testing.assert_allclose(x1_after, x0_after, atol=1e-6)
     assert float(x1_after.min()) > float(x1_before.min()) + 1e-3
+
+
+def test_real_escape_cancels_offset_drag(qtbot: QtBot, tmp_path: Path) -> None:
+    """M1: Escape mid-drag cancels the offset gesture without opening the apply dialog.
+
+    Flow: LDOWN on curve → MOVEs to set non-zero delta → VK_ESCAPE → LUP.
+    After Escape the drag state must be fully cleared and _finish_offset / the apply
+    dialog must never have been called.
+
+    honest RED gate: remove graph_panel_view.py lines 1638-1640 — the keyPressEvent
+    Escape handler (``if event.key() == Qt.Key.Key_Escape and
+    self._offset_drag_key is not None: self._cancel_offset_drag()``) → Escape is
+    ignored → drag stays active (_offset_drag_key is not None immediately after the
+    key) OR the LUP triggers _end_offset_drag → the patched _apply_dialog_fn is
+    called → dialog_called=True → the ``assert not dialog_called`` assertion below
+    flips RED.
+    """
+    skip_unless_real_display()
+    from PySide6.QtWidgets import QApplication
+
+    _view, panels, _signal_key = _two_panel_area(qtbot)
+    p0 = panels[0]
+
+    # Patch the apply-dialog function so that if it IS called (honest-RED path),
+    # we detect it without blocking on a modal dialog.
+    dialog_called = False
+
+    def _fake_dialog(sk: str, dt: float) -> str | None:
+        nonlocal dialog_called
+        dialog_called = True
+        return None  # return None = "cancel from dialog" (does not commit the offset)
+
+    p0._apply_dialog_fn = _fake_dialog
+
+    # Build drag coordinates (same centre-of-plot pattern as the main test).
+    vb = p0._view_boxes[0]
+    rect = vb.sceneBoundingRect()
+    start_sx = rect.x() + rect.width() * 0.5
+    start_sy = rect.y() + rect.height() * 0.5
+    target_sx = rect.x() + rect.width() * 0.75
+    gx, gy = to_phys(p0, start_sx, start_sy)
+    tx, _ = to_phys(p0, target_sx, start_sy)
+
+    # ── Start the offset drag ──────────────────────────────────────────────────
+    at(gx, gy, LDOWN)
+    time.sleep(0.05)
+    # Real win32 press delivery can take several event-loop turns; pump until
+    # the drag state is set rather than asserting after a single processEvents.
+    for _ in range(25):
+        QApplication.processEvents()
+        if p0._offset_drag_key is not None:
+            break
+        time.sleep(0.02)
+
+    # Confirm drag engaged before testing the cancel path.
+    assert p0._offset_drag_key is not None, (
+        "offset drag did not start — curve may not be in the ZONE_PLOT hit area"
+    )
+
+    # ── Move to set a non-zero delta so _finish_offset would see a real shift ──
+    steps = 4
+    for k in range(1, steps + 1):
+        at(gx + (tx - gx) * k // steps, gy, MOVE)
+        QApplication.processEvents()
+        time.sleep(0.02)
+
+    # ── Press Escape while grabMouse is held → _cancel_offset_drag ────────────
+    key(VK_ESCAPE)
+    time.sleep(0.05)
+    QApplication.processEvents()
+
+    # ── Release the mouse (grab already released by _reset_offset_state) ──────
+    at(tx, gy, LUP)
+    # Pump the event loop so any deferred QTimer.singleShot callbacks can fire.
+    for _ in range(10):
+        QApplication.processEvents()
+        time.sleep(0.02)
+
+    # ── Assertions ────────────────────────────────────────────────────────────
+    assert p0._offset_drag_key is None, (
+        "Escape did not cancel the offset drag — _offset_drag_key still set"
+    )
+    assert p0._offset_orig_pen is None, (
+        "_offset_orig_pen not cleared — _reset_offset_state was not reached"
+    )
+    assert not dialog_called, (
+        "apply dialog was invoked despite Escape cancellation — "
+        "_end_offset_drag must not have been called"
+    )
+
+    with contextlib.suppress(Exception):
+        QApplication.primaryScreen().grabWindow(0).save(
+            str(tmp_path / "escape_cancel.png")
+        )
+
+
+def test_real_cursor_line_wins_overlap_press(qtbot: QtBot, tmp_path: Path) -> None:
+    """M2: Pressing at cursor-line × curve overlap routes to the line, not the curve.
+
+    _curve_at returns None when the press is within CURSOR_LINE_HIT_PX (10 scene px)
+    of a visible cursor line, so no offset drag is started even though a curve is
+    also nearby (within CURVE_HIT_TOL_PX=8 scene px).
+
+    Press geometry: 5 scene pixels to the right of the cursor line —
+      • Inside CURSOR_LINE_HIT_PX=10  → guard fires → _curve_at returns None
+      • Outside InfiniteLine bounding rect (~2 scene px) → p0.mousePressEvent IS
+        reached (event is not captured by the scene item) → the guard is genuinely
+        exercised, not bypassed by Qt's event routing
+      • Distance to nearest curve point ≈ 5 scene px < CURVE_HIT_TOL_PX=8 → without
+        the guard, _curve_at WOULD return the curve key
+
+    honest RED gate: remove or neuter graph_panel_view.py lines 1412-1413 — the
+    ``CURSOR_LINE_HIT_PX`` early-return guard inside ``_curve_at``
+    (``if abs(scene_pos.x() - line_scene_x) <= CURSOR_LINE_HIT_PX: return None``)
+    → _curve_at finds the curve at ~5 scene px (< CURVE_HIT_TOL_PX)
+    → _begin_offset_drag is called → _offset_drag_key is not None → the primary
+    assertion below flips RED, proving the test is not vacuously green.
+
+    NOTE: lines 1407-1408 (``if not line.isVisible(): continue``) is NOT the
+    load-bearing target — removing the visibility skip does not disable the guard
+    because the visible cursor-A line still reaches the ``return None`` at line 1413.
+
+    Positive line-engagement signal: no cursor-line movement is observable here
+    because the press lands outside the InfiniteLine's bounding rect (the line item
+    does not grab the drag at +5 px). Non-vacuity is therefore established by the
+    honest-RED gate above, not by observing the line move.
+    """
+    skip_unless_real_display()
+    from PySide6.QtCore import QPointF
+    from PySide6.QtWidgets import QApplication
+
+    _view, panels, _signal_key = _two_panel_area(qtbot)
+    p0 = panels[0]
+
+    # ── Place cursor A at a known data position ────────────────────────────────
+    # The CSV data is lin.csv: t[i] = i/50, lin[i] = i/50 (i=0..49).
+    # At t=0.5 the curve passes through (0.5, 0.5) in data space.
+    t_line = 0.5
+    p0.vm.set_cursor(t_line)  # synchronous: _notify("cursor") → _sync_cursor_from_vm
+    QApplication.processEvents()
+
+    assert p0.cursor_line_visible(), "cursor A line not visible after set_cursor"
+    assert abs(p0.cursor_line_value() - t_line) < 1e-9, (
+        "cursor line value mismatch after set_cursor"
+    )
+
+    # ── Compute the press point in scene coordinates ───────────────────────────
+    vb = p0._view_boxes[0]
+    # Scene x of the cursor line (vertical line at data_x = t_line).
+    cursor_scene_x = vb.mapViewToScene(QPointF(t_line, 0.0)).x()
+    # Scene y of the curve at that same data_x (lin = t, so data_y = t_line).
+    curve_scene_y = vb.mapViewToScene(QPointF(t_line, t_line)).y()
+
+    # 5 scene pixels to the right: inside CURSOR_LINE_HIT_PX(10) but outside the
+    # InfiniteLine's bounding rect (~2 scene px half-width based on pen width=2).
+    # At this offset the nearest curve point is ~5 scene px away, which is less
+    # than CURVE_HIT_TOL_PX=8 — so without the guard the curve would be returned.
+    press_sx = cursor_scene_x + 5.0
+    press_sy = curve_scene_y
+    px, py = to_phys(p0, press_sx, press_sy)
+
+    # ── Press and release at the overlap point ────────────────────────────────
+    at(px, py, LDOWN)
+    time.sleep(0.05)
+    QApplication.processEvents()
+    at(px, py, LUP)
+    QApplication.processEvents()
+
+    # ── Primary assertion: cursor-line guard prevented offset drag ─────────────
+    assert p0._offset_drag_key is None, (
+        "offset drag started at cursor-line overlap — "
+        "_curve_at guard (graph_panel_view.py:1407-1408) did not fire"
+    )
+    assert p0._offset_orig_pen is None, (
+        "curve pen was highlighted — _begin_offset_drag must have been called"
+    )
+
+    # Cursor line still at its original position (no drag redirected it).
+    assert p0.cursor_line_visible(), "cursor line disappeared after overlap press"
+    assert abs(p0.cursor_line_value() - t_line) < 1e-6, (
+        "cursor line moved unexpectedly — routing may have engaged the InfiniteLine"
+    )
+
+    with contextlib.suppress(Exception):
+        QApplication.primaryScreen().grabWindow(0).save(
+            str(tmp_path / "cursor_overlap.png")
+        )
