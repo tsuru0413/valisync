@@ -57,7 +57,15 @@ def _single_panel(qtbot: QtBot):
     view = make_two_axis_panel()
     qtbot.addWidget(view)
     view.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-    view.setGeometry(300, 300, 800, 600)
+    # Position the window so it fits entirely on the available screen even at
+    # high DPR (e.g. 1.25 on a 1080p display reduces logical height to 864).
+    # setGeometry(300, 300, 800, 600) would place the widget bottom at logical
+    # y=900 which exceeds the screen on 1.25-DPR displays, clamping outer-zone
+    # clicks to the screen edge and misclassifying them as inner-zone.
+    avail = QApplication.primaryScreen().availableGeometry()
+    win_h = min(600, avail.height() - 100)
+    win_y = avail.top() + 50
+    view.setGeometry(avail.left() + 50, win_y, min(800, avail.width() - 100), win_h)
     view.show()
     qtbot.waitExposed(view)
     for _ in range(3):
@@ -136,17 +144,37 @@ def _x_strip_drag(panel, y_frac: float) -> None:
 
     y_frac=0.25 → inner zone (top half, closer to plot) → range-select zoom.
     y_frac=0.75 → outer zone (bottom half, closer to window edge) → pan.
-    Drag covers 30%-70% of the strip width for a significant effect.
+    Drag covers 30%-70% of the plot width for a significant effect.
+
+    Uses widget-space coordinates aligned with classify_zone's actual strip
+    geometry: strip = [plot_rect.bottom(), panel.height()], inner = top half.
+    The AxisItem's sceneBoundingRect sits entirely in the inner half of that
+    full strip, so scene-coord y_frac=0.75 would still land in the inner zone.
+    Widget-space mapping is the only reliable way to target the outer zone.
     """
+    from PySide6.QtCore import QPoint
     from PySide6.QtWidgets import QApplication
 
-    strip = panel._x_axis.sceneBoundingRect()
-    sy = strip.y() + strip.height() * y_frac
-    left_x = strip.x() + strip.width() * 0.30
-    right_x = strip.x() + strip.width() * 0.70
+    plot_rect = panel._plot_rect_in_widget()
+    bottom = plot_rect.bottom()
+    wh = float(panel.height())
+    strip_h = wh - bottom
 
-    gx_start, gy = to_phys(panel, left_x, sy)
-    gx_end, _ = to_phys(panel, right_x, sy)
+    # Widget-space y: bottom + strip_h * y_frac maps into classify_zone's strip.
+    # y_frac=0.25 → top half of strip → ZONE_X_INNER (zoom).
+    # y_frac=0.75 → bottom half of strip → ZONE_X_OUTER (pan).
+    wy = bottom + strip_h * y_frac
+    left_wx = plot_rect.left() + plot_rect.width() * 0.30
+    right_wx = plot_rect.left() + plot_rect.width() * 0.70
+
+    # Map widget-local → physical pixels (same pattern as _widget_phys in
+    # test_file_drop_realclick.py: mapToGlobal gives logical pixels, *dpr gives physical).
+    dpr = panel.devicePixelRatioF()
+    gp_start = panel.mapToGlobal(QPoint(int(left_wx), int(wy)))
+    gp_end = panel.mapToGlobal(QPoint(int(right_wx), int(wy)))
+    gx_start = round(gp_start.x() * dpr)
+    gy = round(gp_start.y() * dpr)
+    gx_end = round(gp_end.x() * dpr)
 
     at(gx_start, gy, LDOWN)
     time.sleep(0.05)
@@ -156,8 +184,9 @@ def _x_strip_drag(panel, y_frac: float) -> None:
         QApplication.processEvents()
         time.sleep(0.03)
     at(gx_end, gy, LUP)
-    for _ in range(4):
+    for _ in range(5):
         QApplication.processEvents()
+        time.sleep(0.02)
 
 
 # ─── M10: X-axis zoom/pan (single panel) ─────────────────────────────────────

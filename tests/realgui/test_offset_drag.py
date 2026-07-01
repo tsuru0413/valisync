@@ -212,7 +212,13 @@ def test_real_escape_cancels_offset_drag(qtbot: QtBot, tmp_path: Path) -> None:
     # ── Start the offset drag ──────────────────────────────────────────────────
     at(gx, gy, LDOWN)
     time.sleep(0.05)
-    QApplication.processEvents()
+    # Real win32 press delivery can take several event-loop turns; pump until
+    # the drag state is set rather than asserting after a single processEvents.
+    for _ in range(25):
+        QApplication.processEvents()
+        if p0._offset_drag_key is not None:
+            break
+        time.sleep(0.02)
 
     # Confirm drag engaged before testing the cancel path.
     assert p0._offset_drag_key is not None, (
