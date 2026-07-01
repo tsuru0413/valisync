@@ -53,6 +53,8 @@ ADAS ソフトウェア開発向けの時系列信号データ統合・同期・
 | 横断 / realgui カバレッジ拡充 | headless が構造的に false-green を出す経路を実 OS 入力（Layer C）で検証。監査で realgui 必須 39・covered 16・missing 23 を特定し high クラスタから充足 | **Phase 1-7 実装完了（low クラスタ＋C3 昇格で全 missing 解消・merge 前 ①ゲートで実機実証）**。P1 共有ヘルパ `_realgui_input`/`drive_qdrag`（PR #27）／P2 コンテナメニュー3経路 H5-H7（ChannelBrowser/DataExplorer CustomContextMenu 化＋GraphPanel setMenuEnabled、PR #28）／P3 信号 D&D 実配送 H1-H4（クロスウィジェット QDrag、PR #29）／P4 click_to_activate_axis H8（純クリック活性化、PR #30）。付随: id() フレーク修正 #31（memory `gui_id_reuse_flake_object_recreation`）。P7 low: DataExplorer ドロップ・ドロップ青枠・非アクティブ軸 hover・grip 記録・C3 昇格（Plan 7 実装）。**残存（別計画）**: P5 クロスパネル軸移動（新機能）・C1 dock 復元（Layer A） | 監査 [docs/realgui-coverage-audit.md](docs/realgui-coverage-audit.md)・設計 [spec](docs/superpowers/specs/2026-06-30-realgui-coverage-expansion-design.md)・プラン `docs/superpowers/plans/2026-06-30-realgui-plan{1-4}-*.md` |
 
 > Phase 2 `valisync-gui` は sub-spec に分解済み（mvp / file-browser / axes / **analysis（R14–R17 完了・realgui ①ゲート充足）** 完了、未着手: derived / views / script）。realgui カバレッジ拡充（横断）は Phase 1-7 実装完了（low クラスタ＋C3 昇格で全 missing 解消・merge 前 ①ゲートで実機実証）。詳細は `docs/roadmap.md`。
+>
+> **改善サブスペック（バケット② 実装済みだが不足）**: 実ユーザージャーニー監査（開く→表示→解析）で確定した 64 課題を、`gui-feedback-errors` / `gui-shell-controls` / `gui-plot-analysis-controls` / `core-loaders-hardening` / `analysis-correctness` / `rendering-correctness-perf` の6サブスペックに割当。一次情報源は [docs/audit-findings-catalog.md](docs/audit-findings-catalog.md)（ID 付き・file:line・優先度）、俯瞰は `docs/roadmap.md`。着手起点は `gui-feedback-errors`（FB-01 全ロード失敗が無言・FB-02 診断破棄）でサイレント失敗連鎖を断つ。
 
 新規実装は **writing-plans のプラン（`docs/superpowers/plans/`）に従い番号順 / 依存グラフ順** に進める。完了済み Phase 1/2 の `.kiro/specs/*/tasks.md` はアーカイブ（編集しない）。
 
