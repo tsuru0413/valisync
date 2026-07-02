@@ -822,12 +822,10 @@ View メニューにトグル追加（既存 `view_menu` に）:
         source = self.app_vm.session.source_name(outcome.key)
         self.diagnostics_vm.add(source, outcome.diagnostics)
         self.app_vm.set_active_file(outcome.key)  # FB-03: fill Channel Browser
-        warn = self.diagnostics_vm.counts()[1]
         msg = f"{source} を読み込みました"
         if outcome.diagnostics:
             msg += f" ・ ⚠ {len(outcome.diagnostics)} 件の診断（Diagnostics を参照）"
         self.statusBar().showMessage(msg)
-        _ = warn  # counts kept for future summary refinement
 
     def _on_load_error(self, path: Path, err: Exception) -> None:
         # FB-01: never silent — record + modal + status.
