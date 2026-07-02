@@ -10,10 +10,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from valisync.core.loaders.csv_loader import CsvLoader
 from valisync.core.loaders.mdf4_loader import Mdf4Loader
 from valisync.core.models import Delimiter, FormatDefinition
+from valisync.core.session import LoadCancelled
 
 from .mdf4_helpers import CAN, ETHERNET, NONE, write_mdf4
 
@@ -151,6 +153,27 @@ def test_csv_too_few_columns(tmp_path: Path) -> None:
     assert result.diagnostics[0].level == "error"
 
 
+# ─── CsvLoader: cooperative cancel (FB-04 hard side) ──────────────────────────
+
+
+def test_csv_loader_cancel_checked_per_1000_rows(tmp_path: Path) -> None:
+    # 2500 データ行 → チェックは概ね 1000 行ごと(毎行呼ばれないこと)を検証
+    fmt = _fmt(signal_start_column=1, signal_end_column=1)
+    path = tmp_path / "big.csv"
+    rows = "\n".join(f"{i * 0.001},{i}" for i in range(2500))
+    path.write_text("t,v\n" + rows + "\n", encoding="utf-8")
+
+    calls: list[int] = []
+
+    def cancel() -> bool:
+        calls.append(1)
+        return len(calls) >= 2  # 2回目のチェックで中断
+
+    with pytest.raises(LoadCancelled):
+        CsvLoader().load(path, fmt, cancel=cancel)
+    assert 2 <= len(calls) <= 5  # 行数比例で毎行呼ばれていないこと
+
+
 # ─── Mdf4Loader: happy path ───────────────────────────────────────────────────
 
 
@@ -239,3 +262,22 @@ def test_mdf4_corrupt_file(tmp_path: Path) -> None:
     result = Mdf4Loader().load(path)
     assert result.signal_group is None
     assert result.diagnostics[0].level == "error"
+
+
+# ─── Mdf4Loader: cooperative cancel (FB-04 hard side) ─────────────────────────
+
+
+def test_mdf4_loader_cancel_raises(tmp_path: Path) -> None:
+    path = write_mdf4(
+        tmp_path / "x.mf4",
+        [
+            {
+                "name": "speed",
+                "timestamps": [0.0, 0.1],
+                "values": [1.0, 2.0],
+                "bus_type": CAN,
+            }
+        ],
+    )
+    with pytest.raises(LoadCancelled):
+        Mdf4Loader().load(path, cancel=lambda: True)

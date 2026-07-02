@@ -9,7 +9,7 @@ import pytest
 
 from valisync.core.interpolation import InterpolationMethod
 from valisync.core.models import Delimiter, FormatDefinition, Signal
-from valisync.core.session import LoadError, LoadOutcome, Session
+from valisync.core.session import LoadCancelled, LoadError, LoadOutcome, Session
 
 
 def _derived(name: str, ts: list[float], vs: list[float]) -> Signal:
@@ -224,3 +224,23 @@ def test_load_error_carries_diagnostics(tmp_path):
         assert isinstance(exc.diagnostics, tuple)
     else:
         raise AssertionError("expected LoadError")
+
+
+# ─── Cooperative cancel (FB-04 hard side) ─────────────────────────────────────
+
+
+def test_load_cancel_raises_and_registers_nothing(tmp_path):
+    csv = tmp_path / "a.csv"
+    _write_csv(csv, "t,speed", ["0.0,10.0", "1.0,20.0"])
+    session = Session()
+    with pytest.raises(LoadCancelled):
+        session.load(csv, format_def=_FMT, cancel=lambda: True)
+    assert session.signals() == []
+
+
+def test_load_without_cancel_is_unchanged(tmp_path):
+    csv = tmp_path / "a.csv"
+    _write_csv(csv, "t,speed", ["0.0,10.0", "1.0,20.0"])
+    session = Session()
+    outcome = session.load(csv, format_def=_FMT)
+    assert outcome.key == "csv_1"

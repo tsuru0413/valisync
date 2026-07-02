@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import datetime
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from valisync.core.models import (
     Signal,
     SignalGroup,
 )
+from valisync.core.models.load_result import LoadCancelled
 
 
 class CsvLoader:
@@ -22,7 +24,12 @@ class CsvLoader:
     def supports(self, file_path: Path) -> bool:
         return file_path.suffix.lower() == ".csv"
 
-    def load(self, file_path: Path, format_def: FormatDefinition) -> LoadResult:
+    def load(
+        self,
+        file_path: Path,
+        format_def: FormatDefinition,
+        cancel: Callable[[], bool] | None = None,
+    ) -> LoadResult:
         if not file_path.exists() or not file_path.is_file():
             return LoadResult(
                 signal_group=None,
@@ -104,7 +111,13 @@ class CsvLoader:
         timestamps_list: list[float] = []
         values_lists: list[list[float]] = [[] for _ in range(n_signals)]
 
+        data_start = row_idx  # header/unit rows already consumed; first data row
         for raw_idx, row in enumerate(rows[row_idx:], start=row_idx):
+            # 1000 データ行ごとの協調的キャンセル確認(毎行だとオーバーヘッド・spec
+            # §4.1)。ヘッダー/単位行の有無で raw_idx のオフセットが変わるため、
+            # 判定はデータ行の相対位置(先頭データ行を含む)で行う。
+            if cancel is not None and (raw_idx - data_start) % 1000 == 0 and cancel():
+                raise LoadCancelled(f"load cancelled: {file_path.name}")
             line_number = raw_idx + 1  # 1-based for user-facing messages
 
             if not any(cell.strip() for cell in row):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -13,9 +14,18 @@ from valisync.core.loaders.csv_loader import CsvLoader
 from valisync.core.loaders.mdf4_loader import Mdf4Loader
 from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR, SignalGroupManager
 from valisync.core.models import FormatDefinition, Signal
-from valisync.core.models.load_result import Diagnostic
+from valisync.core.models.load_result import Diagnostic, LoadCancelled
 from valisync.core.statistics.range_stats import RangeStatistics, StatisticsResult
 from valisync.core.sync.synchronizer import TimeSynchronizer
+
+__all__ = [
+    "LoadCancelled",
+    "LoadError",
+    "LoadManyResult",
+    "LoadOutcome",
+    "RemovalResult",
+    "Session",
+]
 
 
 class LoadError(Exception):
@@ -93,20 +103,26 @@ class Session:
         self._derived: list[_DerivedRecord] = []
 
     def load(
-        self, file_path: Path, format_def: FormatDefinition | None = None
+        self,
+        file_path: Path,
+        format_def: FormatDefinition | None = None,
+        cancel: Callable[[], bool] | None = None,
     ) -> LoadOutcome:
         """Load a file and return the group key plus any loader diagnostics.
 
         Dispatches to the CSV or MDF4 loader by file type. Raises LoadError when
-        the loader reports failure.
+        the loader reports failure. ``cancel`` is a cooperative callback the
+        loader polls at checkpoints; when it returns True the loader raises
+        LoadCancelled and no group is registered (FB-04 — user-initiated, not
+        an error).
         """
         file_path = Path(file_path)
         if self._csv_loader.supports(file_path):
             if format_def is None:
                 raise ValueError("CSV files require a FormatDefinition")
-            result = self._csv_loader.load(file_path, format_def)
+            result = self._csv_loader.load(file_path, format_def, cancel=cancel)
         elif self._mdf4_loader.supports(file_path):
-            result = self._mdf4_loader.load(file_path)
+            result = self._mdf4_loader.load(file_path, cancel=cancel)
         else:
             raise ValueError(f"no loader supports file: {file_path}")
 
