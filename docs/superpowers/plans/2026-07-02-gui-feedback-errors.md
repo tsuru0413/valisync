@@ -8,6 +8,17 @@
 
 **Tech Stack:** Python 3.12/3.13・PySide6・pytest/pytest-qt・ruff・mypy。MVVM（Session が唯一のゲートウェイ、ViewModel は Qt-free）。
 
+## Status / Resume（2026-07-02）
+
+- **Task 1: 完了** — commit `21e92f4`（`Session.load` → `LoadOutcome`、`LoadError.diagnostics`、呼び出し移行）。task review clean（Minor は `src/valisync/core/session.py:50` の `LoadManyResult` docstring stale のみ・最終レビューで修正）。全 suite green（633 passed/37 skipped・mypy/ruff clean）。
+- **再開点: Task 2 から**。ブランチ `worktree-gui-feedback-errors`、進捗 ledger は `.superpowers/sdd/progress.md`。
+- 実行は `superpowers:executing-plans`（別セッション）または `superpowers:subagent-driven-development` で Task 2 以降を順に。各タスク末尾で品質ゲート（pytest/ruff/ruff format --check/mypy）全通過を確認。
+
+> **⚠️ Task 2 の順序注意（Task 1 の暫定移行に起因・必読）**
+> `tests/gui/test_integration.py:65 test_file_drop_loads_and_refreshes_tree` は `main_window._load_file` → LoadController/worker → `_finish`/`_on_loaded` を実際に叩く。Task 1 は全 suite green のため、暫定的に `main_window._load_file` の lambda を `lambda: session.load(target, None).key`（**str 返し**）に変更している。
+> Task 2 で `LoadWorker.finished` を `Signal(object)`・`LoadController._finish` を `outcome.key`/`on_success(outcome)` に変えると、この暫定 str と衝突して当該テストが赤になる（worker が str を emit → `_finish` が `str.key` で AttributeError）。
+> **対処**: Task 2 では併せて `main_window._load_file` を `lambda: session.load(target, None)`（**LoadOutcome 返し**）に戻し、`_on_loaded(self, outcome: LoadOutcome)` として最小限 `self.app_vm.register_loaded(outcome.key)` にする（＝Task 5 の `_load_file`/`_on_loaded` シグネチャ変更の中核を Task 2 に前倒し）。Task 5 は outcome 型になった `_on_loaded` の上に診断追記／ステータスバー／アクティブ化／ドックを積む（Task 5 Step 3 のコードはこの前提で読む）。
+
 ## Global Constraints
 
 - 品質ゲート（コミット前に全通過）: `uv run pytest` / `uv run ruff check` / `uv run ruff format --check` / `uv run mypy src/`。
