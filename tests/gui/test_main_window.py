@@ -268,10 +268,12 @@ def test_load_error_shows_dialog_and_records(qtbot, monkeypatch):
 
 def test_on_loaded_records_warnings_and_activates(qtbot, tmp_path):
     window = _make_window(qtbot)
-    # Load a real CSV via the app_vm so a group exists, then simulate the callback.
+    # Load a real CSV directly via the Session (no register_loaded) so a group
+    # exists without the key already being tracked; _on_loaded below performs
+    # the single registration, matching the production off-thread callback path.
     # (QSettings isolation is applied automatically by the autouse fixture in
     #  tests/gui/conftest.py — no import needed.)
-    key = window.app_vm.request_load(_write_csv(tmp_path), _csv_format())
+    key = window.app_vm.session.load(_write_csv(tmp_path), _csv_format()).key
     outcome = LoadOutcome(
         key=key,
         diagnostics=(Diagnostic(level="warning", message="skip", signal_name="x"),),

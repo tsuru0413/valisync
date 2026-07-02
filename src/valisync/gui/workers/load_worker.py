@@ -2,9 +2,10 @@
 
 ``LoadWorker`` runs an injected load callable on a ``QThreadPool`` thread and
 reports the outcome via queued signals.  Only the thread-safe heavy work
-(``Session.load``, which returns immutable Signals) runs off-thread; all state
-changes and notifications happen back on the GUI thread, so ViewModels stay
-Qt-free and are never mutated from a worker thread.
+(``Session.load``, which returns a ``LoadOutcome`` — group key plus loader
+diagnostics) runs off-thread; all state changes and notifications happen back
+on the GUI thread, so ViewModels stay Qt-free and are never mutated from a
+worker thread.
 
 ``LoadController`` orchestrates one load: it flips a ``LoadTask`` to loading,
 shows a ``BusyOverlay``, submits the worker, and on the queued completion
@@ -43,7 +44,7 @@ class LoadWorker(QRunnable):
         keeps the worker decoupled from Session and trivially testable.
     """
 
-    def __init__(self, load_callable: Callable[[], object]) -> None:
+    def __init__(self, load_callable: Callable[[], LoadOutcome]) -> None:
         super().__init__()
         self._load_callable = load_callable
         self.signals = LoadWorkerSignals()
@@ -77,7 +78,7 @@ class LoadController(QObject):
 
     def submit(
         self,
-        load_callable: Callable[[], object],
+        load_callable: Callable[[], LoadOutcome],
         *,
         task: LoadTask | None = None,
         busy: BusyOverlay | None = None,

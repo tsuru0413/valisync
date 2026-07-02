@@ -47,7 +47,7 @@ class LoadOutcome:
 
 @dataclass(frozen=True)
 class LoadManyResult:
-    """Outcome of a batch load: keys of successes and per-file failures (Req 5.4)."""
+    """Outcome of a batch load: ``succeeded`` is a tuple of ``LoadOutcome`` (Req 5.4)."""
 
     succeeded: tuple[LoadOutcome, ...] = ()
     failed: tuple[tuple[Path, tuple[str, ...]], ...] = ()

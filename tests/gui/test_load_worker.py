@@ -187,7 +187,7 @@ class TestLoadController:
     def test_failure_sets_task_error(self, qtbot: QtBot) -> None:
         from valisync.gui.workers.load_worker import LoadController
 
-        def boom() -> str:
+        def boom():
             raise ValueError("bad file")
 
         task = LoadTask()
