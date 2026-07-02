@@ -5,9 +5,14 @@ TDD: tests written first; all must FAIL before implementation exists.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtWidgets import QDockWidget
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
+from valisync.core.models import Delimiter, FormatDefinition
+from valisync.core.models.load_result import Diagnostic
+from valisync.core.session import LoadError, LoadOutcome
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 
 # ---------------------------------------------------------------------------
@@ -23,6 +28,25 @@ def _make_window(qtbot: QtBot) -> object:
     window = MainWindow(app_vm)
     qtbot.addWidget(window)
     return window
+
+
+def _csv_format() -> FormatDefinition:
+    return FormatDefinition(
+        name="test_fmt",
+        delimiter=Delimiter.COMMA,
+        timestamp_column=0,
+        timestamp_unit="sec",
+        signal_start_column=1,
+        signal_end_column=1,
+        has_header=True,
+    )
+
+
+def _write_csv(dir_path: Path) -> Path:
+    """Write a minimal valid CSV into *dir_path* and return its path."""
+    csv_file = dir_path / "data.csv"
+    csv_file.write_text("t,speed\n0.0,10.0\n1.0,20.0\n2.0,30.0\n")
+    return csv_file
 
 
 # ---------------------------------------------------------------------------
@@ -211,3 +235,44 @@ class TestSaveOnClose:
         window.save_state = _spy  # type: ignore[attr-defined,method-assign]
         window.close()
         assert calls, "closeEvent must call save_state so geometry persists"
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics dock + modal + status-bar wiring (FB-01/02/03/06)
+# ---------------------------------------------------------------------------
+
+
+def test_load_error_shows_dialog_and_records(qtbot, monkeypatch):
+    window = _make_window(qtbot)
+    calls = {}
+    import valisync.gui.views.main_window as mw
+
+    monkeypatch.setattr(
+        mw.QMessageBox,
+        "critical",
+        lambda *a, **k: calls.setdefault("shown", a),
+    )
+    err = LoadError(Path("bad.mdf"), ["no loader supports file"])
+    window._on_load_error(Path("bad.mdf"), err)
+    assert "shown" in calls  # FB-01: modal shown
+    assert window.diagnostics_vm.counts()[0] == 1  # 1 error recorded
+
+
+def test_on_loaded_records_warnings_and_activates(qtbot, tmp_path):
+    window = _make_window(qtbot)
+    # Load a real CSV via the app_vm so a group exists, then simulate the callback.
+    # (QSettings isolation is applied automatically by the autouse fixture in
+    #  tests/gui/conftest.py — no import needed.)
+    key = window.app_vm.request_load(_write_csv(tmp_path), _csv_format())
+    outcome = LoadOutcome(
+        key=key,
+        diagnostics=(Diagnostic(level="warning", message="skip", signal_name="x"),),
+    )
+    window._on_loaded(outcome)
+    assert window.app_vm.active_file_key == key  # FB-03
+    assert window.diagnostics_vm.counts()[1] >= 1  # FB-02 warning recorded
+
+
+def test_diagnostics_dock_exists_with_object_name(qtbot):
+    window = _make_window(qtbot)
+    assert window.diagnostics_dock.objectName() == "diagnostics_dock"
