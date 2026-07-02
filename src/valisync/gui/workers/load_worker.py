@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 if TYPE_CHECKING:
+    from valisync.core.session import LoadOutcome
     from valisync.gui.viewmodels.load_task import LoadTask
     from valisync.gui.views.busy_overlay import BusyOverlay
 
@@ -27,8 +28,8 @@ if TYPE_CHECKING:
 class LoadWorkerSignals(QObject):
     """Signal carrier for :class:`LoadWorker` (QRunnable cannot emit signals)."""
 
-    finished = Signal(str)  # the group key on success
-    failed = Signal(str)  # the error message on failure
+    finished = Signal(object)  # LoadOutcome on success
+    failed = Signal(object)  # the raised Exception (usually LoadError) on failure
 
 
 class LoadWorker(QRunnable):
@@ -37,23 +38,23 @@ class LoadWorker(QRunnable):
     Parameters
     ----------
     load_callable:
-        A zero-argument callable returning the loaded group key — typically
-        ``lambda: session.load(path, format_def)``.  Injecting it keeps the
-        worker decoupled from Session and trivially testable.
+        A zero-argument callable returning the loaded :class:`LoadOutcome` —
+        typically ``lambda: session.load(path, format_def)``.  Injecting it
+        keeps the worker decoupled from Session and trivially testable.
     """
 
-    def __init__(self, load_callable: Callable[[], str]) -> None:
+    def __init__(self, load_callable: Callable[[], object]) -> None:
         super().__init__()
         self._load_callable = load_callable
         self.signals = LoadWorkerSignals()
 
     def run(self) -> None:
         try:
-            key = self._load_callable()
+            outcome = self._load_callable()  # LoadOutcome
         except Exception as exc:  # report, never crash the pool thread
-            self.signals.failed.emit(str(exc))
+            self.signals.failed.emit(exc)
         else:
-            self.signals.finished.emit(key)
+            self.signals.finished.emit(outcome)
 
 
 class LoadController(QObject):
@@ -76,12 +77,12 @@ class LoadController(QObject):
 
     def submit(
         self,
-        load_callable: Callable[[], str],
+        load_callable: Callable[[], object],
         *,
         task: LoadTask | None = None,
         busy: BusyOverlay | None = None,
-        on_success: Callable[[str], None] | None = None,
-        on_error: Callable[[str], None] | None = None,
+        on_success: Callable[[LoadOutcome], None] | None = None,
+        on_error: Callable[[Exception], None] | None = None,
     ) -> None:
         """Begin loading: flag task/busy, then run *load_callable* off-thread."""
         if task is not None:
@@ -92,41 +93,41 @@ class LoadController(QObject):
         worker = LoadWorker(load_callable)
         self._active.add(worker)
         worker.signals.finished.connect(
-            lambda key: self._finish(worker, key, task, busy, on_success)
+            lambda outcome: self._finish(worker, outcome, task, busy, on_success)
         )
         worker.signals.failed.connect(
-            lambda msg: self._fail(worker, msg, task, busy, on_error)
+            lambda exc: self._fail(worker, exc, task, busy, on_error)
         )
         self._pool.start(worker)
 
     def _finish(
         self,
         worker: LoadWorker,
-        key: str,
+        outcome: LoadOutcome,
         task: LoadTask | None,
         busy: BusyOverlay | None,
-        on_success: Callable[[str], None] | None,
+        on_success: Callable[[LoadOutcome], None] | None,
     ) -> None:
         self._active.discard(worker)
         if busy is not None:
             busy.hide()
         if task is not None:
-            task.succeed(key)
+            task.succeed(outcome.key)
         if on_success is not None:
-            on_success(key)
+            on_success(outcome)
 
     def _fail(
         self,
         worker: LoadWorker,
-        message: str,
+        exc: Exception,
         task: LoadTask | None,
         busy: BusyOverlay | None,
-        on_error: Callable[[str], None] | None,
+        on_error: Callable[[Exception], None] | None,
     ) -> None:
         self._active.discard(worker)
         if busy is not None:
             busy.hide()
         if task is not None:
-            task.fail(message)
+            task.fail(str(exc))
         if on_error is not None:
-            on_error(message)
+            on_error(exc)

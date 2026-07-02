@@ -101,30 +101,30 @@ class TestBusyOverlay:
 
 
 class TestLoadWorker:
-    def test_emits_finished_with_key(self, qtbot: QtBot, tmp_path: Path) -> None:
+    def test_emits_finished_with_outcome(self, qtbot: QtBot, tmp_path: Path) -> None:
+        from valisync.core.session import LoadOutcome
         from valisync.gui.workers.load_worker import LoadWorker
 
         path, fmt = _csv(tmp_path)
         session = Session()
-        worker = LoadWorker(lambda: session.load(path, fmt).key)
-
+        worker = LoadWorker(lambda: session.load(path, fmt))
         with qtbot.waitSignal(worker.signals.finished, timeout=3000) as blocker:
             QThreadPool.globalInstance().start(worker)
-
-        assert isinstance(blocker.args[0], str) and blocker.args[0]
+        assert isinstance(blocker.args[0], LoadOutcome)
+        assert blocker.args[0].key
         assert len(session.signals()) == 1
 
-    def test_emits_failed_on_exception(self, qtbot: QtBot) -> None:
+    def test_emits_failed_with_exception(self, qtbot: QtBot) -> None:
         from valisync.gui.workers.load_worker import LoadWorker
 
-        def boom() -> str:
+        def boom():
             raise ValueError("nope")
 
         worker = LoadWorker(boom)
         with qtbot.waitSignal(worker.signals.failed, timeout=3000) as blocker:
             QThreadPool.globalInstance().start(worker)
-
-        assert "nope" in blocker.args[0]
+        assert isinstance(blocker.args[0], Exception)
+        assert "nope" in str(blocker.args[0])
 
 
 # ─── LoadController ───────────────────────────────────────────────────────────
@@ -147,10 +147,13 @@ class TestLoadController:
 
         controller = LoadController()
         controller.submit(
-            lambda: app_vm.session.load(path, fmt).key,
+            lambda: app_vm.session.load(path, fmt),
             task=task,
             busy=busy,
-            on_success=lambda key: (app_vm.register_loaded(key), keys.append(key)),
+            on_success=lambda outcome: (
+                app_vm.register_loaded(outcome.key),
+                keys.append(outcome.key),
+            ),
         )
 
         qtbot.waitUntil(lambda: task.state == "done", timeout=3000)
@@ -188,10 +191,10 @@ class TestLoadController:
             raise ValueError("bad file")
 
         task = LoadTask()
-        errors: list[str] = []
+        errors: list[Exception] = []
         controller = LoadController()
         controller.submit(boom, task=task, on_error=errors.append)
 
         qtbot.waitUntil(lambda: task.state == "error", timeout=3000)
         assert "bad file" in (task.error_message or "")
-        assert errors and "bad file" in errors[0]
+        assert errors and "bad file" in str(errors[0])

@@ -21,6 +21,7 @@ from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import QDockWidget, QMainWindow, QToolBar
 
+from valisync.core.session import LoadOutcome
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
 from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
@@ -121,17 +122,18 @@ class MainWindow(QMainWindow):
         session = self.app_vm.session
         target = Path(path)
         self._load_controller.submit(
-            lambda: session.load(target, None).key,
+            lambda: session.load(target, None),
             busy=self.busy_overlay,
             on_success=self._on_loaded,
             on_error=self._on_load_error,
         )
 
-    def _on_loaded(self, key: str) -> None:
+    def _on_loaded(self, outcome: LoadOutcome) -> None:
         # Runs on the GUI thread; register_loaded notifies "loaded".
-        self.app_vm.register_loaded(key)
+        # Diagnostics/status-bar surfacing lands in a later task (Task 5).
+        self.app_vm.register_loaded(outcome.key)
 
-    def _on_load_error(self, _message: str) -> None:
+    def _on_load_error(self, _exc: Exception) -> None:
         # MVP: keep running; a status surface for errors is a later refinement.
         pass
 
