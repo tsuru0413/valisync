@@ -25,6 +25,7 @@ __all__ = [
     "LoadOutcome",
     "RemovalResult",
     "Session",
+    "SourceInfo",
 ]
 
 
@@ -73,6 +74,22 @@ class RemovalResult:
 
     removed: bool
     dependent_signals: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class SourceInfo:
+    """Read-only metadata of a loaded file for GUI surfaces (FB-10 tooltip).
+
+    ``size_bytes`` is None when the file no longer exists on disk;
+    ``t_min``/``t_max`` are None for 0-channel groups.
+    """
+
+    full_path: Path
+    size_bytes: int | None
+    t_min: float | None
+    t_max: float | None
+    n_channels: int
+    file_format: str
 
 
 @dataclass(frozen=True)
@@ -169,6 +186,24 @@ class Session:
         Lets callers fetch one file's signals without scanning every group.
         """
         return self._groups.group_signals(key)
+
+    def source_info(self, key: str) -> SourceInfo:
+        """Return read-only metadata for the group under *key* (KeyError if unknown)."""
+        group = self._groups.group(key)
+        try:
+            size: int | None = group.source_path.stat().st_size
+        except OSError:
+            size = None  # moved/deleted after load — show what we still know
+        t_mins = [s.timestamps[0] for s in group.signals if len(s.timestamps)]
+        t_maxs = [s.timestamps[-1] for s in group.signals if len(s.timestamps)]
+        return SourceInfo(
+            full_path=group.source_path,
+            size_bytes=size,
+            t_min=min(t_mins) if t_mins else None,
+            t_max=max(t_maxs) if t_maxs else None,
+            n_channels=len(group.signals),
+            file_format=group.file_format,
+        )
 
     def evaluate_formula(
         self,

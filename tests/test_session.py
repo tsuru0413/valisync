@@ -9,7 +9,13 @@ import pytest
 
 from valisync.core.interpolation import InterpolationMethod
 from valisync.core.models import Delimiter, FormatDefinition, Signal
-from valisync.core.session import LoadCancelled, LoadError, LoadOutcome, Session
+from valisync.core.session import (
+    LoadCancelled,
+    LoadError,
+    LoadOutcome,
+    Session,
+    SourceInfo,
+)
 
 
 def _derived(name: str, ts: list[float], vs: list[float]) -> Signal:
@@ -244,3 +250,37 @@ def test_load_without_cancel_is_unchanged(tmp_path):
     session = Session()
     outcome = session.load(csv, format_def=_FMT)
     assert outcome.key == "csv_1"
+
+
+# ─── SourceInfo (FB-10 tooltip data) ─────────────────────────────────────────
+
+
+def test_source_info_fields(tmp_path):
+    csv = tmp_path / "a.csv"
+    _write_csv(csv, "t,speed", ["0.0,10.0", "1.0,20.0"])
+    session = Session()
+    key = session.load(csv, format_def=_FMT).key
+    info = session.source_info(key)
+    assert isinstance(info, SourceInfo)
+    assert info.full_path == csv.resolve()
+    assert info.size_bytes == csv.stat().st_size
+    assert info.n_channels >= 1
+    assert info.file_format == "CSV"
+    assert info.t_min is not None and info.t_max is not None
+    assert info.t_min <= info.t_max
+
+
+def test_source_info_size_none_when_file_gone(tmp_path):
+    csv = tmp_path / "a.csv"
+    _write_csv(csv, "t,speed", ["0.0,10.0", "1.0,20.0"])
+    session = Session()
+    key = session.load(csv, format_def=_FMT).key
+    csv.unlink()
+    info = session.source_info(key)
+    assert info.size_bytes is None  # graceful degradation (spec §6)
+    assert info.n_channels >= 1  # メモリ上の情報は生きている
+
+
+def test_source_info_unknown_key_raises():
+    with pytest.raises(KeyError):
+        Session().source_info("nope_1")
