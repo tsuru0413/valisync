@@ -1,3 +1,5 @@
+from PySide6.QtCore import Qt
+
 from valisync.core.models.load_result import Diagnostic
 from valisync.gui.viewmodels.diagnostics_vm import DiagnosticsViewModel
 from valisync.gui.views.diagnostics_view import DiagnosticsView
@@ -40,3 +42,62 @@ def test_clear_empties_view(qtbot):
     vm.add("a", [Diagnostic(level="warning", message="w")])
     view.clear_diagnostics()
     assert view.row_count() == 0
+
+
+# ---------------------------------------------------------------------------
+# Real input-event paths (Layer B) — qtbot.mouseClick / mouseDClick drive the
+# SAME routing a real click/dblclick takes (QPushButton.clicked / QTableWidget
+# viewport hit-test → cellDoubleClicked), not a programmatic .click()/.emit()
+# (see docs/gui-testing-layers.md, Layer B honest-layering note).
+# ---------------------------------------------------------------------------
+
+
+def test_real_click_on_filter_buttons_filters_rows(qtbot):
+    """Real QPushButton clicks (not ``.click()``) drive the filter bar."""
+    vm, view = _mk(qtbot)
+    vm.add(
+        "a",
+        [
+            Diagnostic(level="error", message="e"),
+            Diagnostic(level="warning", message="w"),
+        ],
+    )
+
+    qtbot.mouseClick(view._btn_warn, Qt.MouseButton.LeftButton)
+    assert view.row_count() == 1
+
+    qtbot.mouseClick(view._btn_all, Qt.MouseButton.LeftButton)
+    assert view.row_count() == 2
+
+    qtbot.mouseClick(view._btn_clear, Qt.MouseButton.LeftButton)
+    assert view.row_count() == 0
+    assert vm.entries() == []
+
+
+def test_real_double_click_on_row_emits_entry_activated(qtbot):
+    """A real dblclick on a table row (not a direct ``.emit()``) fires
+    ``entry_activated`` with the activated entry's payload."""
+    vm, view = _mk(qtbot)
+    vm.add("a.mf4", [Diagnostic(level="error", message="boom")])
+    vm.add("b.mf4", [Diagnostic(level="warning", message="skip", signal_name="gps")])
+
+    view.show()
+    qtbot.waitExposed(view)
+    table = view._table
+    qtbot.waitUntil(
+        lambda: table.visualItemRect(table.item(0, 0)).height() > 0, timeout=2000
+    )
+
+    pos = table.visualItemRect(table.item(1, 0)).center()
+    # A lone qtbot.mouseDClick() on a freshly-shown QAbstractItemView does not
+    # reliably fire cellDoubleClicked: QTest's synthetic dblclick event arrives
+    # after Qt's internal pressedIndex was already cleared by the preceding
+    # release, so it falls back to a plain press+click instead of a double
+    # click. A real double click, whose first click lands on an already
+    # up-to-date view (from prior interaction), does not hit this replay-order
+    # quirk. A warm-up single click brings the view to that same state.
+    qtbot.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=pos)
+    with qtbot.waitSignal(view.entry_activated, timeout=1000) as blocker:
+        qtbot.mouseDClick(table.viewport(), Qt.MouseButton.LeftButton, pos=pos)
+
+    assert blocker.args == ["gps"]

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDockWidget
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
@@ -45,6 +46,13 @@ def _csv_format() -> FormatDefinition:
 def _write_csv(dir_path: Path) -> Path:
     """Write a minimal valid CSV into *dir_path* and return its path."""
     csv_file = dir_path / "data.csv"
+    csv_file.write_text("t,speed\n0.0,10.0\n1.0,20.0\n2.0,30.0\n")
+    return csv_file
+
+
+def _write_csv_named(dir_path: Path, name: str) -> Path:
+    """Write a minimal valid CSV named *name* into *dir_path* (distinct basename)."""
+    csv_file = dir_path / name
     csv_file.write_text("t,speed\n0.0,10.0\n1.0,20.0\n2.0,30.0\n")
     return csv_file
 
@@ -313,3 +321,41 @@ class TestDiagnosticActivatedJump:
         window._on_diagnostic_activated("no_such_thing")
 
         assert window.app_vm.active_file_key == key
+
+
+# ---------------------------------------------------------------------------
+# Real dblclick on the Diagnostics dock's table jumps the active file
+# (Layer B integration: exercises the FULL wiring — cellDoubleClicked →
+# entry_activated → MainWindow._on_diagnostic_activated — via a real
+# qtbot.mouseDClick, never entry_activated.emit() directly).
+# ---------------------------------------------------------------------------
+
+
+def test_real_dblclick_on_diagnostics_row_switches_active_file(qtbot, tmp_path):
+    window = _make_window(qtbot)
+    window.show()
+    qtbot.waitExposed(window)
+
+    key_a = window.app_vm.request_load(
+        _write_csv_named(tmp_path, "a.csv"), _csv_format()
+    )
+    key_b = window.app_vm.request_load(
+        _write_csv_named(tmp_path, "b.csv"), _csv_format()
+    )
+    window.app_vm.set_active_file(key_a)
+
+    source_b = window.app_vm.session.source_name(key_b)
+    window.diagnostics_vm.add(source_b, [Diagnostic(level="warning", message="skip")])
+
+    table = window.diagnostics_dock._table
+    qtbot.waitUntil(
+        lambda: table.visualItemRect(table.item(0, 0)).height() > 0, timeout=2000
+    )
+    pos = table.visualItemRect(table.item(0, 0)).center()
+    # Warm-up single click before the double click (see comment in
+    # tests/gui/test_diagnostics_view.py::test_real_double_click_on_row_emits_entry_activated
+    # for why a lone qtbot.mouseDClick() doesn't reliably fire cellDoubleClicked).
+    qtbot.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=pos)
+    qtbot.mouseDClick(table.viewport(), Qt.MouseButton.LeftButton, pos=pos)
+
+    assert window.app_vm.active_file_key == key_b
