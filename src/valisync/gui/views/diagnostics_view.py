@@ -61,7 +61,11 @@ class DiagnosticsView(QDockWidget):
         outer.addWidget(self._table)
 
         self.setWidget(container)
-        self._unsubscribe = self._vm.subscribe(self._on_vm_change)
+        unsubscribe = self._vm.subscribe(self._on_vm_change)
+        self._unsubscribe = unsubscribe
+        # The VM outlives this widget; drop the subscription when the C++ object
+        # is destroyed so a later notify never calls into a deleted view.
+        self.destroyed.connect(lambda *_: unsubscribe())
         self._rebuild()
 
     def set_filter(self, level: str | None) -> None:
