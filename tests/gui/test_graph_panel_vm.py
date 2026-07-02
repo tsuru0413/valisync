@@ -70,7 +70,7 @@ def _loaded_session(
     """Return (session, group_key) with signals loaded from a temp CSV."""
     csv_file = _write_csv(tmp_path / "data.csv", n_rows, n_signals)
     session = Session()
-    key = session.load(csv_file, _csv_format(n_signals))
+    key = session.load(csv_file, _csv_format(n_signals)).key
     return session, key
 
 

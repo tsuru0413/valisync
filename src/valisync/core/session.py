@@ -13,6 +13,7 @@ from valisync.core.loaders.csv_loader import CsvLoader
 from valisync.core.loaders.mdf4_loader import Mdf4Loader
 from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR, SignalGroupManager
 from valisync.core.models import FormatDefinition, Signal
+from valisync.core.models.load_result import Diagnostic
 from valisync.core.statistics.range_stats import RangeStatistics, StatisticsResult
 from valisync.core.sync.synchronizer import TimeSynchronizer
 
@@ -20,17 +21,35 @@ from valisync.core.sync.synchronizer import TimeSynchronizer
 class LoadError(Exception):
     """Raised when a single-file load fails; carries the loader diagnostics."""
 
-    def __init__(self, file_path: Path, messages: list[str]) -> None:
+    def __init__(
+        self,
+        file_path: Path,
+        messages: list[str],
+        diagnostics: tuple[Diagnostic, ...] = (),
+    ) -> None:
         self.file_path = file_path
         self.messages = messages
+        self.diagnostics = tuple(diagnostics)
         super().__init__(f"failed to load {file_path}: {'; '.join(messages)}")
+
+
+@dataclass(frozen=True)
+class LoadOutcome:
+    """Result of a successful single-file load: group key + loader diagnostics.
+
+    ``diagnostics`` surfaces non-fatal issues (skipped channels, dropped enum
+    labels, 0-channel files) that the GUI shows in the Diagnostics dock (FB-02).
+    """
+
+    key: str
+    diagnostics: tuple[Diagnostic, ...] = ()
 
 
 @dataclass(frozen=True)
 class LoadManyResult:
     """Outcome of a batch load: keys of successes and per-file failures (Req 5.4)."""
 
-    succeeded: tuple[str, ...] = ()
+    succeeded: tuple[LoadOutcome, ...] = ()
     failed: tuple[tuple[Path, tuple[str, ...]], ...] = ()
 
 
@@ -73,8 +92,10 @@ class Session:
         self._exporter = CsvExporter()
         self._derived: list[_DerivedRecord] = []
 
-    def load(self, file_path: Path, format_def: FormatDefinition | None = None) -> str:
-        """Load a file and return the key of the registered Signal_Group.
+    def load(
+        self, file_path: Path, format_def: FormatDefinition | None = None
+    ) -> LoadOutcome:
+        """Load a file and return the group key plus any loader diagnostics.
 
         Dispatches to the CSV or MDF4 loader by file type. Raises LoadError when
         the loader reports failure.
@@ -91,8 +112,9 @@ class Session:
 
         if result.signal_group is None:
             messages = [d.message for d in result.diagnostics]
-            raise LoadError(file_path, messages)
-        return self._groups.add(result.signal_group)
+            raise LoadError(file_path, messages, diagnostics=result.diagnostics)
+        key = self._groups.add(result.signal_group)
+        return LoadOutcome(key=key, diagnostics=result.diagnostics)
 
     def load_many(
         self, specs: list[tuple[Path, FormatDefinition | None]]
@@ -102,7 +124,7 @@ class Session:
         A failure on one file never aborts the batch (Req 5.4): each successful
         load is registered, each failure is reported with its diagnostics.
         """
-        succeeded: list[str] = []
+        succeeded: list[LoadOutcome] = []
         failed: list[tuple[Path, tuple[str, ...]]] = []
         for file_path, format_def in specs:
             try:

@@ -9,7 +9,7 @@ import pytest
 
 from valisync.core.interpolation import InterpolationMethod
 from valisync.core.models import Delimiter, FormatDefinition, Signal
-from valisync.core.session import Session
+from valisync.core.session import LoadError, LoadOutcome, Session
 
 
 def _derived(name: str, ts: list[float], vs: list[float]) -> Signal:
@@ -44,7 +44,7 @@ def test_load_csv_returns_key_and_exposes_namespaced_signals(tmp_path):
     _write_csv(csv, "t,speed", ["0.0,10.0", "1.0,20.0"])
 
     session = Session()
-    key = session.load(csv, format_def=_FMT)
+    key = session.load(csv, format_def=_FMT).key
 
     assert key == "csv_1"
     signals = session.signals()
@@ -65,7 +65,7 @@ def test_source_name_returns_basename_for_key(tmp_path):
     csv = tmp_path / "drive.csv"
     _write_csv(csv, "t,speed", ["0.0,1.0"])
     session = Session()
-    key = session.load(csv, format_def=_FMT)
+    key = session.load(csv, format_def=_FMT).key
 
     assert session.source_name(key) == "drive.csv"
     with pytest.raises(KeyError):
@@ -79,8 +79,8 @@ def test_group_signals_returns_namespaced_signals_for_one_group(tmp_path):
     _write_csv(a, "t,speed", ["0.0,1.0"])
     _write_csv(b, "t,rpm", ["0.0,2.0"])
     session = Session()
-    ka = session.load(a, format_def=_FMT)
-    kb = session.load(b, format_def=_FMT)
+    ka = session.load(a, format_def=_FMT).key
+    kb = session.load(b, format_def=_FMT).key
 
     only_a = session.group_signals(ka)
     assert [s.name for s in only_a] == [f"{ka}::speed"]
@@ -99,7 +99,7 @@ def test_load_many_reports_partial_failure(tmp_path):
     result = session.load_many([(good, _FMT), (missing, _FMT)])
 
     assert len(result.succeeded) == 1  # the good file is usable (Req 5.4)
-    assert result.succeeded[0] == "csv_1"
+    assert result.succeeded[0].key == "csv_1"
     assert len(result.failed) == 1
     failed_path, messages = result.failed[0]
     assert failed_path == missing
@@ -111,7 +111,7 @@ def test_remove_group_without_dependents_removes_immediately(tmp_path):
     csv = tmp_path / "a.csv"
     _write_csv(csv, "t,speed", ["0.0,10.0", "1.0,20.0"])
     session = Session()
-    key = session.load(csv, format_def=_FMT)
+    key = session.load(csv, format_def=_FMT).key
 
     outcome = session.remove_group(key)
 
@@ -124,7 +124,7 @@ def test_remove_group_with_dependent_derived_requires_confirmation(tmp_path):
     csv = tmp_path / "a.csv"
     _write_csv(csv, "t,speed", ["0.0,10.0", "1.0,20.0"])
     session = Session()
-    key = session.load(csv, format_def=_FMT)
+    key = session.load(csv, format_def=_FMT).key
     src = session.signals()[0]  # csv_1::speed
     derived = session.evaluate_formula("csv_1::speed * 2", {"csv_1::speed": src})
 
@@ -199,3 +199,28 @@ def test_unified_timeline_applies_offsets_preserving_count_and_order(tmp_path):
             s.timestamps, np.array([2.0, 3.0])
         )  # offset (8.1)
         assert len(s.timestamps) == 2  # sample count unchanged (8.4)
+
+
+# ─── LoadOutcome / diagnostics (FB-02 foundation) ─────────────────────────────
+
+
+def test_load_returns_outcome_with_key_and_diagnostics(tmp_path):
+    csv = tmp_path / "a.csv"
+    _write_csv(csv, "t,speed", ["0.0,10.0", "1.0,20.0"])
+    session = Session()
+    outcome = session.load(csv, format_def=_FMT)
+    assert isinstance(outcome, LoadOutcome)
+    assert outcome.key == "csv_1"
+    assert isinstance(outcome.diagnostics, tuple)
+
+
+def test_load_error_carries_diagnostics(tmp_path):
+    session = Session()
+    bad = tmp_path / "nope.mf4"  # 存在しない → mdf4 ローダーが失敗
+    bad.write_bytes(b"not an mdf")
+    try:
+        session.load(bad, None)
+    except LoadError as exc:
+        assert isinstance(exc.diagnostics, tuple)
+    else:
+        raise AssertionError("expected LoadError")

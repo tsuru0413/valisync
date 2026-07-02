@@ -121,7 +121,7 @@ class MainWindow(QMainWindow):
         session = self.app_vm.session
         target = Path(path)
         self._load_controller.submit(
-            lambda: session.load(target, None),
+            lambda: session.load(target, None).key,
             busy=self.busy_overlay,
             on_success=self._on_loaded,
             on_error=self._on_load_error,

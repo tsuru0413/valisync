@@ -106,7 +106,7 @@ class TestLoadWorker:
 
         path, fmt = _csv(tmp_path)
         session = Session()
-        worker = LoadWorker(lambda: session.load(path, fmt))
+        worker = LoadWorker(lambda: session.load(path, fmt).key)
 
         with qtbot.waitSignal(worker.signals.finished, timeout=3000) as blocker:
             QThreadPool.globalInstance().start(worker)
@@ -147,7 +147,7 @@ class TestLoadController:
 
         controller = LoadController()
         controller.submit(
-            lambda: app_vm.session.load(path, fmt),
+            lambda: app_vm.session.load(path, fmt).key,
             task=task,
             busy=busy,
             on_success=lambda key: (app_vm.register_loaded(key), keys.append(key)),

@@ -161,7 +161,7 @@ def test_run_with_real_session_load(tmp_path: Path) -> None:
     fmt = _csv_format()
     task = LoadTask()
 
-    task.run(lambda: session.load(csv_file, fmt))
+    task.run(lambda: session.load(csv_file, fmt).key)
 
     assert task.state == "done"
     assert task.result_key is not None
@@ -176,7 +176,7 @@ def test_run_with_real_session_load_notifies_done(tmp_path: Path) -> None:
     changes: list[str] = []
     task.subscribe(changes.append)
 
-    task.run(lambda: session.load(csv_file, fmt))
+    task.run(lambda: session.load(csv_file, fmt).key)
 
     assert "done" in changes
 
@@ -186,7 +186,7 @@ def test_run_with_missing_file_session_load_error(tmp_path: Path) -> None:
     fmt = _csv_format()
     task = LoadTask()
 
-    task.run(lambda: session.load(tmp_path / "missing.csv", fmt))
+    task.run(lambda: session.load(tmp_path / "missing.csv", fmt).key)
 
     assert task.state == "error"
     assert task.error_message is not None
