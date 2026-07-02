@@ -179,8 +179,22 @@ class MainWindow(QMainWindow):
         # Best-effort jump: select the signal's file in the channel browser.
         # (Detailed signal-row selection is a later task; activating the file is
         # enough to surface the context.)
+        #
+        # `target` is `e.signal_name or e.source` from DiagnosticsView — either a
+        # signal name or a source basename (see diagnostics_view.py). Group keys
+        # ("csv_1", "mf4_2") share no textual relationship with either, so we
+        # resolve via Session's public recovery points instead of string
+        # matching against the key itself.
         for key in self.app_vm.loaded_file_keys:
-            if target.startswith(key) or key in target:
+            if self.app_vm.session.source_name(key) == target:
+                self.app_vm.set_active_file(key)
+                return
+        for key in self.app_vm.loaded_file_keys:
+            try:
+                group_sigs = self.app_vm.session.group_signals(key)
+            except KeyError:
+                continue
+            if any(sig.name == target for sig in group_sigs):
                 self.app_vm.set_active_file(key)
                 return
 

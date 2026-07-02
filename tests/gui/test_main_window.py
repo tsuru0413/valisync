@@ -276,3 +276,40 @@ def test_on_loaded_records_warnings_and_activates(qtbot, tmp_path):
 def test_diagnostics_dock_exists_with_object_name(qtbot):
     window = _make_window(qtbot)
     assert window.diagnostics_dock.objectName() == "diagnostics_dock"
+
+
+# ---------------------------------------------------------------------------
+# _on_diagnostic_activated — best-effort jump to source/signal (spec §4.4)
+# ---------------------------------------------------------------------------
+
+
+class TestDiagnosticActivatedJump:
+    def test_jumps_by_source_basename(self, qtbot, tmp_path):
+        """entry_activated may emit the file basename (e.source) as target."""
+        window = _make_window(qtbot)
+        key = window.app_vm.request_load(_write_csv(tmp_path), _csv_format())
+        source = window.app_vm.session.source_name(key)
+
+        window._on_diagnostic_activated(source)
+
+        assert window.app_vm.active_file_key == key
+
+    def test_jumps_by_signal_name(self, qtbot, tmp_path):
+        """entry_activated may emit a namespaced signal name as target."""
+        window = _make_window(qtbot)
+        key = window.app_vm.request_load(_write_csv(tmp_path), _csv_format())
+        sig = window.app_vm.session.group_signals(key)[0]
+
+        window._on_diagnostic_activated(sig.name)
+
+        assert window.app_vm.active_file_key == key
+
+    def test_unknown_target_is_noop(self, qtbot, tmp_path):
+        """A target matching neither a source name nor a signal name is a no-op."""
+        window = _make_window(qtbot)
+        key = window.app_vm.request_load(_write_csv(tmp_path), _csv_format())
+        window.app_vm.set_active_file(key)
+
+        window._on_diagnostic_activated("no_such_thing")
+
+        assert window.app_vm.active_file_key == key
