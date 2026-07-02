@@ -56,7 +56,7 @@ def _loaded_session(
 ) -> tuple[Session, str]:
     csv = _write_csv(tmp_path / "data.csv", n_rows, n_signals)
     session = Session()
-    key = session.load(csv, _csv_format(n_signals))
+    key = session.load(csv, _csv_format(n_signals)).key
     return session, key
 
 

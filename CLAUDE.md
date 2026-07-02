@@ -54,7 +54,7 @@ ADAS ソフトウェア開発向けの時系列信号データ統合・同期・
 
 > Phase 2 `valisync-gui` は sub-spec に分解済み（mvp / file-browser / axes / **analysis（R14–R17 完了・realgui ①ゲート充足）** 完了、未着手: derived / views / script）。realgui カバレッジ拡充（横断）は Phase 1-7 実装完了（low クラスタ＋C3 昇格で全 missing 解消・merge 前 ①ゲートで実機実証）。詳細は `docs/roadmap.md`。
 >
-> **改善サブスペック（バケット② 実装済みだが不足）**: 実ユーザージャーニー監査（開く→表示→解析）で確定した 64 課題を、`gui-feedback-errors` / `gui-shell-controls` / `gui-plot-analysis-controls` / `core-loaders-hardening` / `analysis-correctness` / `rendering-correctness-perf` の6サブスペックに割当。一次情報源は [docs/audit-findings-catalog.md](docs/audit-findings-catalog.md)（ID 付き・file:line・優先度）、俯瞰は `docs/roadmap.md`。着手起点は `gui-feedback-errors`（FB-01 全ロード失敗が無言・FB-02 診断破棄）でサイレント失敗連鎖を断つ。
+> **改善サブスペック（バケット② 実装済みだが不足）**: 実ユーザージャーニー監査（開く→表示→解析）で確定した 64 課題を、`gui-feedback-errors` / `gui-shell-controls` / `gui-plot-analysis-controls` / `core-loaders-hardening` / `analysis-correctness` / `rendering-correctness-perf` の6サブスペックに割当。一次情報源は [docs/audit-findings-catalog.md](docs/audit-findings-catalog.md)（ID 付き・file:line・優先度）、俯瞰は `docs/roadmap.md`。着手起点の `gui-feedback-errors` は**第1弾（FB-01/02/03/06＝診断伝播＋Diagnostics ドック/モーダル/ステータスバー）を PR #37 で実装済み**（spec/プランは `docs/superpowers/`、残り FB-04/05/07-10 は第2弾）。
 
 新規実装は **writing-plans のプラン（`docs/superpowers/plans/`）に従い番号順 / 依存グラフ順** に進める。完了済み Phase 1/2 の `.kiro/specs/*/tasks.md` はアーカイブ（編集しない）。
 

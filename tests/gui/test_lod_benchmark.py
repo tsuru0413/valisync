@@ -40,7 +40,7 @@ def _million_point_session(tmp_path: Path) -> tuple[Session, str, float, float]:
         [{"name": "sig", "timestamps": ts, "values": vs, "bus_type": CAN}],
     )
     session = Session()
-    key = session.load(mf4, None)
+    key = session.load(mf4, None).key
     return session, f"{key}::sig", float(vs.min()), float(vs.max())
 
 

@@ -19,15 +19,18 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction, QCloseEvent
-from PySide6.QtWidgets import QDockWidget, QMainWindow, QToolBar
+from PySide6.QtWidgets import QDockWidget, QMainWindow, QMessageBox, QToolBar
 
+from valisync.core.session import LoadOutcome
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
+from valisync.gui.viewmodels.diagnostics_vm import DiagnosticsViewModel
 from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 from valisync.gui.views.busy_overlay import BusyOverlay
 from valisync.gui.views.channel_browser_view import ChannelBrowserView
 from valisync.gui.views.data_explorer_view import DataExplorerView
+from valisync.gui.views.diagnostics_view import DiagnosticsView
 from valisync.gui.views.file_browser_view import FileBrowserView
 from valisync.gui.views.graph_area_view import GraphAreaView
 from valisync.gui.workers.load_worker import LoadController
@@ -56,6 +59,7 @@ class MainWindow(QMainWindow):
         self.file_browser_vm = FileBrowserVM(app_vm)
         self.channel_browser_vm = ChannelBrowserVM(app_vm)
         self.graph_area_vm = GraphAreaVM(app_vm)
+        self.diagnostics_vm = DiagnosticsViewModel()
 
         # ── Views ────────────────────────────────────────────────────────────
         self.file_browser_view = FileBrowserView(self.file_browser_vm)
@@ -90,6 +94,13 @@ class MainWindow(QMainWindow):
         # Stack them vertically
         self.splitDockWidget(self.file_dock, self.channel_dock, Qt.Orientation.Vertical)
 
+        # ── Diagnostics dock (bottom, FB-02/FB-06 surface) ───────────────────
+        self.diagnostics_dock = DiagnosticsView(self.diagnostics_vm)
+        self.diagnostics_dock.entry_activated.connect(self._on_diagnostic_activated)
+        self.addDockWidget(
+            Qt.DockWidgetArea.BottomDockWidgetArea, self.diagnostics_dock
+        )
+
         # ── Graph Area (Central Widget) ──────────────────────────────────────
         self.setCentralWidget(self.graph_area_view)
 
@@ -97,6 +108,7 @@ class MainWindow(QMainWindow):
         view_menu = self.menuBar().addMenu("View")
         view_menu.addAction(self.file_dock.toggleViewAction())
         view_menu.addAction(self.channel_dock.toggleViewAction())
+        view_menu.addAction(self.diagnostics_dock.toggleViewAction())
 
         # ── Toolbar (R1.5) ───────────────────────────────────────────────────
         toolbar: QToolBar = self.addToolBar("Main")
@@ -104,6 +116,9 @@ class MainWindow(QMainWindow):
         self.action_data_explorer: QAction = QAction("Data Explorer", self)
         self.action_data_explorer.triggered.connect(self.open_data_explorer)
         toolbar.addAction(self.action_data_explorer)
+
+        # Status bar surfaces load outcomes (FB-06); shown even before any load.
+        self.statusBar().showMessage("準備完了")
 
         # ── Cross-view wiring ────────────────────────────────────────────────
         self.channel_browser_view.add_to_panel_requested.connect(
@@ -124,16 +139,64 @@ class MainWindow(QMainWindow):
             lambda: session.load(target, None),
             busy=self.busy_overlay,
             on_success=self._on_loaded,
-            on_error=self._on_load_error,
+            on_error=lambda err: self._on_load_error(target, err),
         )
 
-    def _on_loaded(self, key: str) -> None:
-        # Runs on the GUI thread; register_loaded notifies "loaded".
-        self.app_vm.register_loaded(key)
+    def _on_loaded(self, outcome: LoadOutcome) -> None:
+        # GUI thread; register, surface diagnostics, activate, update status.
+        self.app_vm.register_loaded(outcome.key)
+        source = self.app_vm.session.source_name(outcome.key)
+        self.diagnostics_vm.add(source, outcome.diagnostics)
+        self.app_vm.set_active_file(outcome.key)  # FB-03: fill Channel Browser
+        msg = f"{source} を読み込みました"
+        if outcome.diagnostics:
+            msg += f" ・ ⚠ {len(outcome.diagnostics)} 件の診断（Diagnostics を参照）"  # noqa: RUF001
+        self.statusBar().showMessage(msg)
 
-    def _on_load_error(self, _message: str) -> None:
-        # MVP: keep running; a status surface for errors is a later refinement.
-        pass
+    def _on_load_error(self, path: Path, err: Exception) -> None:
+        # FB-01: never silent — record + modal + status.
+        source = path.name
+        diags = getattr(err, "diagnostics", ())
+        messages = getattr(err, "messages", [str(err)])
+        if diags:
+            self.diagnostics_vm.add(source, diags)
+        else:
+            from valisync.core.models.load_result import Diagnostic
+
+            self.diagnostics_vm.add(
+                source, [Diagnostic(level="error", message="; ".join(messages))]
+            )
+        self.statusBar().showMessage(f"⛔ 読み込み失敗: {source}")
+        self.diagnostics_dock.show()
+        self.diagnostics_dock.raise_()
+        QMessageBox.critical(
+            self,
+            "読み込みエラー",
+            f"{source} を読み込めませんでした。\n\n" + "; ".join(messages),
+        )
+
+    def _on_diagnostic_activated(self, target: str) -> None:
+        # Best-effort jump: select the signal's file in the channel browser.
+        # (Detailed signal-row selection is a later task; activating the file is
+        # enough to surface the context.)
+        #
+        # `target` is `e.signal_name or e.source` from DiagnosticsView — either a
+        # signal name or a source basename (see diagnostics_view.py). Group keys
+        # ("csv_1", "mf4_2") share no textual relationship with either, so we
+        # resolve via Session's public recovery points instead of string
+        # matching against the key itself.
+        for key in self.app_vm.loaded_file_keys:
+            if self.app_vm.session.source_name(key) == target:
+                self.app_vm.set_active_file(key)
+                return
+        for key in self.app_vm.loaded_file_keys:
+            try:
+                group_sigs = self.app_vm.session.group_signals(key)
+            except KeyError:
+                continue
+            if any(sig.name == target for sig in group_sigs):
+                self.app_vm.set_active_file(key)
+                return
 
     def _on_app_change(self, change: str) -> None:
         if change == "loaded":

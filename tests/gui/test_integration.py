@@ -89,7 +89,7 @@ class TestLoadRefresh:
         mf4 = _mf4(tmp_path)
         # Pre-load to learn the namespaced key, then start fresh-ish: add the
         # signal to a panel BEFORE the panel has data, then load via the window.
-        key = session.load(mf4, None)
+        key = session.load(mf4, None).key
         sig_name = f"{key}::speed"
 
         panel = window.graph_area_vm.panels(0)[0]  # type: ignore[attr-defined]
@@ -112,7 +112,7 @@ class TestAddToActivePanel:
     ) -> None:
         window = _window(qtbot)
         session = window.app_vm.session  # type: ignore[attr-defined]
-        key = session.load(_mf4(tmp_path), None)
+        key = session.load(_mf4(tmp_path), None).key
         sig_name = f"{key}::speed"
 
         window.channel_browser_view.add_to_panel_requested.emit([sig_name])  # type: ignore[attr-defined]

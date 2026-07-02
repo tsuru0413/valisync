@@ -28,7 +28,7 @@ def _loaded_session(tmp_path: Path) -> tuple[Session, str]:
         has_header=True,
     )
     session = Session()
-    key = session.load(csv_file, fmt)
+    key = session.load(csv_file, fmt).key
     return session, key
 
 

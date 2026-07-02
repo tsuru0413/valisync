@@ -145,9 +145,9 @@ class AppViewModel(Observable):
         str
             The group key assigned by the Session (e.g. ``"csv_1"``).
         """
-        key = self._session.load(Path(path), format_def)
-        self.register_loaded(key)
-        return key
+        outcome = self._session.load(Path(path), format_def)
+        self.register_loaded(outcome.key)
+        return outcome.key
 
     def register_loaded(self, key: str) -> None:
         """Record an already-loaded group key and notify (GUI-thread side)."""

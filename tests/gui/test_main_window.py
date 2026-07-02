@@ -5,9 +5,15 @@ TDD: tests written first; all must FAIL before implementation exists.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDockWidget
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
+from valisync.core.models import Delimiter, FormatDefinition
+from valisync.core.models.load_result import Diagnostic
+from valisync.core.session import LoadError, LoadOutcome
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 
 # ---------------------------------------------------------------------------
@@ -23,6 +29,32 @@ def _make_window(qtbot: QtBot) -> object:
     window = MainWindow(app_vm)
     qtbot.addWidget(window)
     return window
+
+
+def _csv_format() -> FormatDefinition:
+    return FormatDefinition(
+        name="test_fmt",
+        delimiter=Delimiter.COMMA,
+        timestamp_column=0,
+        timestamp_unit="sec",
+        signal_start_column=1,
+        signal_end_column=1,
+        has_header=True,
+    )
+
+
+def _write_csv(dir_path: Path) -> Path:
+    """Write a minimal valid CSV into *dir_path* and return its path."""
+    csv_file = dir_path / "data.csv"
+    csv_file.write_text("t,speed\n0.0,10.0\n1.0,20.0\n2.0,30.0\n")
+    return csv_file
+
+
+def _write_csv_named(dir_path: Path, name: str) -> Path:
+    """Write a minimal valid CSV named *name* into *dir_path* (distinct basename)."""
+    csv_file = dir_path / name
+    csv_file.write_text("t,speed\n0.0,10.0\n1.0,20.0\n2.0,30.0\n")
+    return csv_file
 
 
 # ---------------------------------------------------------------------------
@@ -211,3 +243,121 @@ class TestSaveOnClose:
         window.save_state = _spy  # type: ignore[attr-defined,method-assign]
         window.close()
         assert calls, "closeEvent must call save_state so geometry persists"
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics dock + modal + status-bar wiring (FB-01/02/03/06)
+# ---------------------------------------------------------------------------
+
+
+def test_load_error_shows_dialog_and_records(qtbot, monkeypatch):
+    window = _make_window(qtbot)
+    calls = {}
+    import valisync.gui.views.main_window as mw
+
+    monkeypatch.setattr(
+        mw.QMessageBox,
+        "critical",
+        lambda *a, **k: calls.setdefault("shown", a),
+    )
+    err = LoadError(Path("bad.mdf"), ["no loader supports file"])
+    window._on_load_error(Path("bad.mdf"), err)
+    assert "shown" in calls  # FB-01: modal shown
+    assert window.diagnostics_vm.counts()[0] == 1  # 1 error recorded
+
+
+def test_on_loaded_records_warnings_and_activates(qtbot, tmp_path):
+    window = _make_window(qtbot)
+    # Load a real CSV directly via the Session (no register_loaded) so a group
+    # exists without the key already being tracked; _on_loaded below performs
+    # the single registration, matching the production off-thread callback path.
+    # (QSettings isolation is applied automatically by the autouse fixture in
+    #  tests/gui/conftest.py — no import needed.)
+    key = window.app_vm.session.load(_write_csv(tmp_path), _csv_format()).key
+    outcome = LoadOutcome(
+        key=key,
+        diagnostics=(Diagnostic(level="warning", message="skip", signal_name="x"),),
+    )
+    window._on_loaded(outcome)
+    assert window.app_vm.active_file_key == key  # FB-03
+    assert window.diagnostics_vm.counts()[1] >= 1  # FB-02 warning recorded
+
+
+def test_diagnostics_dock_exists_with_object_name(qtbot):
+    window = _make_window(qtbot)
+    assert window.diagnostics_dock.objectName() == "diagnostics_dock"
+
+
+# ---------------------------------------------------------------------------
+# _on_diagnostic_activated — best-effort jump to source/signal (spec §4.4)
+# ---------------------------------------------------------------------------
+
+
+class TestDiagnosticActivatedJump:
+    def test_jumps_by_source_basename(self, qtbot, tmp_path):
+        """entry_activated may emit the file basename (e.source) as target."""
+        window = _make_window(qtbot)
+        key = window.app_vm.request_load(_write_csv(tmp_path), _csv_format())
+        source = window.app_vm.session.source_name(key)
+
+        window._on_diagnostic_activated(source)
+
+        assert window.app_vm.active_file_key == key
+
+    def test_jumps_by_signal_name(self, qtbot, tmp_path):
+        """entry_activated may emit a namespaced signal name as target."""
+        window = _make_window(qtbot)
+        key = window.app_vm.request_load(_write_csv(tmp_path), _csv_format())
+        sig = window.app_vm.session.group_signals(key)[0]
+
+        window._on_diagnostic_activated(sig.name)
+
+        assert window.app_vm.active_file_key == key
+
+    def test_unknown_target_is_noop(self, qtbot, tmp_path):
+        """A target matching neither a source name nor a signal name is a no-op."""
+        window = _make_window(qtbot)
+        key = window.app_vm.request_load(_write_csv(tmp_path), _csv_format())
+        window.app_vm.set_active_file(key)
+
+        window._on_diagnostic_activated("no_such_thing")
+
+        assert window.app_vm.active_file_key == key
+
+
+# ---------------------------------------------------------------------------
+# Real dblclick on the Diagnostics dock's table jumps the active file
+# (Layer B integration: exercises the FULL wiring — cellDoubleClicked →
+# entry_activated → MainWindow._on_diagnostic_activated — via a real
+# qtbot.mouseDClick, never entry_activated.emit() directly).
+# ---------------------------------------------------------------------------
+
+
+def test_real_dblclick_on_diagnostics_row_switches_active_file(qtbot, tmp_path):
+    window = _make_window(qtbot)
+    window.show()
+    qtbot.waitExposed(window)
+
+    key_a = window.app_vm.request_load(
+        _write_csv_named(tmp_path, "a.csv"), _csv_format()
+    )
+    key_b = window.app_vm.request_load(
+        _write_csv_named(tmp_path, "b.csv"), _csv_format()
+    )
+    window.app_vm.set_active_file(key_a)
+
+    source_b = window.app_vm.session.source_name(key_b)
+    window.diagnostics_vm.add(source_b, [Diagnostic(level="warning", message="skip")])
+
+    table = window.diagnostics_dock._table
+    qtbot.waitUntil(
+        lambda: table.visualItemRect(table.item(0, 0)).height() > 0, timeout=2000
+    )
+    pos = table.visualItemRect(table.item(0, 0)).center()
+    # Warm-up single click before the double click (see comment in
+    # tests/gui/test_diagnostics_view.py::test_real_double_click_on_row_emits_entry_activated
+    # for why a lone qtbot.mouseDClick() doesn't reliably fire cellDoubleClicked).
+    qtbot.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=pos)
+    qtbot.mouseDClick(table.viewport(), Qt.MouseButton.LeftButton, pos=pos)
+
+    assert window.app_vm.active_file_key == key_b
