@@ -7,21 +7,23 @@ diagnostics) runs off-thread; all state changes and notifications happen back
 on the GUI thread, so ViewModels stay Qt-free and are never mutated from a
 worker thread.
 
-``LoadController`` orchestrates one load: it flips a ``LoadTask`` to loading,
+``LoadController`` orchestrates loads: it flips a ``LoadTask`` to loading,
 shows a ``BusyOverlay``, submits the worker, and on the queued completion
-drives the task to done/error, hides the overlay, and invokes a caller-supplied
-success/error callback.
+drives the task to done/error/cancelled, updates the overlay, and invokes a
+caller-supplied success/error callback.
 """
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
+from valisync.core.session import LoadCancelled, LoadOutcome
+
 if TYPE_CHECKING:
-    from valisync.core.session import LoadOutcome
     from valisync.gui.viewmodels.load_task import LoadTask
     from valisync.gui.views.busy_overlay import BusyOverlay
 
@@ -59,10 +61,13 @@ class LoadWorker(QRunnable):
 
 
 class LoadController(QObject):
-    """Drive a single off-thread load and update GUI state on completion.
+    """Drive off-thread loads and update GUI state on completion.
 
-    Lives on the GUI thread; the worker's queued signals are delivered here so
-    every state change runs on the GUI thread.
+    Busy visibility is count-based: the overlay stays up until every active
+    load finishes (multiple drops share one overlay). ``cancel_active`` sets
+    each load's cancel_event (cooperative hard-cancel) and releases the UI
+    immediately (soft-cancel); late results from already-cancelled workers
+    are routed to ``on_discard`` so the caller can roll back registration.
     """
 
     def __init__(
@@ -72,9 +77,17 @@ class LoadController(QObject):
     ) -> None:
         super().__init__(parent)
         self._pool = thread_pool or QThreadPool.globalInstance()
-        # Keep workers referenced until they finish; QThreadPool.start does not
-        # hold a Python reference, so a GC'd worker would drop its signals.
-        self._active: set[LoadWorker] = set()
+        # worker → (cancel_event, label, busy, on_discard)
+        self._active: dict[
+            LoadWorker,
+            tuple[
+                threading.Event | None,
+                str | None,
+                BusyOverlay | None,
+                Callable[[LoadOutcome], None] | None,
+            ],
+        ] = {}
+        self._cancelled: set[LoadWorker] = set()
 
     def submit(
         self,
@@ -84,34 +97,85 @@ class LoadController(QObject):
         busy: BusyOverlay | None = None,
         on_success: Callable[[LoadOutcome], None] | None = None,
         on_error: Callable[[Exception], None] | None = None,
+        cancel_event: threading.Event | None = None,
+        label: str | None = None,
+        on_cancelled: Callable[[], None] | None = None,
+        on_discard: Callable[[LoadOutcome], None] | None = None,
     ) -> None:
-        """Begin loading: flag task/busy, then run *load_callable* off-thread."""
+        """Begin loading: flag task, then run *load_callable* off-thread."""
         if task is not None:
             task.begin()
-        if busy is not None:
-            busy.show()
 
         worker = LoadWorker(load_callable)
-        self._active.add(worker)
+        self._active[worker] = (cancel_event, label, busy, on_discard)
         worker.signals.finished.connect(
-            lambda outcome: self._finish(worker, outcome, task, busy, on_success)
+            lambda outcome: self._finish(worker, outcome, task, on_success)
         )
         worker.signals.failed.connect(
-            lambda exc: self._fail(worker, exc, task, busy, on_error)
+            lambda exc: self._fail(worker, exc, task, on_error, on_cancelled)
         )
+        self._refresh_busy(busy)
         self._pool.start(worker)
+
+    def cancel_active(self) -> None:
+        """Cancel every active load: hard (events) + soft (immediate UI release)."""
+        busies = set()
+        for worker, (event, _label, busy, _discard) in self._active.items():
+            if event is not None:
+                event.set()
+            self._cancelled.add(worker)
+            if busy is not None:
+                busies.add(busy)
+        for busy in busies:
+            busy.hide()
+
+    def _pop(
+        self, worker: LoadWorker
+    ) -> tuple[
+        threading.Event | None,
+        str | None,
+        BusyOverlay | None,
+        Callable[[LoadOutcome], None] | None,
+    ]:
+        info = self._active.pop(worker)
+        was_cancelled = worker in self._cancelled
+        self._cancelled.discard(worker)
+        if not was_cancelled:
+            self._refresh_busy(info[2])
+        return info if not was_cancelled else (info[0], info[1], None, info[3])
+
+    def _refresh_busy(self, busy: BusyOverlay | None) -> None:
+        """Count-based visibility: label for 1, count for N, hide at 0."""
+        if busy is None:
+            return
+        labels = [
+            label
+            for w, (_e, label, b, _d) in self._active.items()
+            if b is busy and w not in self._cancelled
+        ]
+        if not labels:
+            busy.hide()
+            return
+        if len(labels) == 1:
+            busy.set_message(f"読み込み中: {labels[0] or 'ファイル'}")
+        else:
+            busy.set_message(f"{len(labels)} ファイルを読み込み中")
+        busy.show()
 
     def _finish(
         self,
         worker: LoadWorker,
         outcome: LoadOutcome,
         task: LoadTask | None,
-        busy: BusyOverlay | None,
         on_success: Callable[[LoadOutcome], None] | None,
     ) -> None:
-        self._active.discard(worker)
-        if busy is not None:
-            busy.hide()
+        was_cancelled = worker in self._cancelled
+        _event, _label, _busy, on_discard = self._pop(worker)
+        if was_cancelled:
+            # 手遅れ完走: 呼び出し側に登録の巻き戻しを委ねる(spec §5)
+            if on_discard is not None:
+                on_discard(outcome)
+            return
         if task is not None:
             task.succeed(outcome.key)
         if on_success is not None:
@@ -122,12 +186,18 @@ class LoadController(QObject):
         worker: LoadWorker,
         exc: Exception,
         task: LoadTask | None,
-        busy: BusyOverlay | None,
         on_error: Callable[[Exception], None] | None,
+        on_cancelled: Callable[[], None] | None,
     ) -> None:
-        self._active.discard(worker)
-        if busy is not None:
-            busy.hide()
+        was_cancelled = worker in self._cancelled
+        self._pop(worker)
+        if isinstance(exc, LoadCancelled) or was_cancelled:
+            # ユーザー起点の正常系 — エラー面へ流さない(spec §4.1/§6)
+            if task is not None:
+                task.cancel()
+            if on_cancelled is not None:
+                on_cancelled()
+            return
         if task is not None:
             task.fail(str(exc))
         if on_error is not None:

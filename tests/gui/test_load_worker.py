@@ -217,3 +217,87 @@ class TestLoadController:
         qtbot.waitUntil(lambda: task.state == "error", timeout=3000)
         assert "bad file" in (task.error_message or "")
         assert errors and "bad file" in str(errors[0])
+
+    def test_cancel_active_hides_busy_immediately_and_discards_result(
+        self, qtbot: QtBot
+    ) -> None:
+        import threading
+
+        from valisync.gui.views.busy_overlay import BusyOverlay
+        from valisync.gui.workers.load_worker import LoadController
+
+        release = threading.Event()
+        cancel_event = threading.Event()
+        results: list[object] = []
+        discards: list[object] = []
+
+        def slow_ok() -> str:
+            release.wait(timeout=3.0)  # cancel 後に「手遅れ完走」する
+            return "late_result"
+
+        busy = BusyOverlay()
+        qtbot.addWidget(busy)
+        controller = LoadController()
+        controller.submit(
+            slow_ok,
+            busy=busy,
+            cancel_event=cancel_event,
+            label="a.mf4",
+            on_success=results.append,
+            on_discard=discards.append,
+        )
+        assert not busy.isHidden()
+
+        controller.cancel_active()
+        assert cancel_event.is_set()  # ハード側へ中断要求
+        assert busy.isHidden()  # ソフト側は即時解放
+
+        release.set()  # worker は完走するが…
+        qtbot.waitUntil(lambda: len(discards) == 1, timeout=3000)
+        assert results == []  # on_success は呼ばれない
+        assert discards == ["late_result"]
+
+    def test_load_cancelled_routes_to_on_cancelled_not_on_error(
+        self, qtbot: QtBot
+    ) -> None:
+        from valisync.core.session import LoadCancelled
+        from valisync.gui.viewmodels.load_task import LoadTask
+        from valisync.gui.workers.load_worker import LoadController
+
+        def boom() -> str:
+            raise LoadCancelled("cancelled")
+
+        task = LoadTask()
+        errors: list[object] = []
+        cancelled: list[bool] = []
+        controller = LoadController()
+        controller.submit(
+            boom,
+            task=task,
+            on_error=errors.append,
+            on_cancelled=lambda: cancelled.append(True),
+        )
+        qtbot.waitUntil(lambda: task.state == "cancelled", timeout=3000)
+        assert cancelled == [True]
+        assert errors == []  # エラー扱いしない(spec §4.1)
+
+    def test_busy_stays_visible_until_all_loads_finish(self, qtbot: QtBot) -> None:
+        import threading
+
+        from valisync.gui.views.busy_overlay import BusyOverlay
+        from valisync.gui.workers.load_worker import LoadController
+
+        rel1, rel2 = threading.Event(), threading.Event()
+        busy = BusyOverlay()
+        qtbot.addWidget(busy)
+        controller = LoadController()
+        controller.submit(lambda: rel1.wait(3.0) or "k1", busy=busy, label="a.mf4")
+        controller.submit(lambda: rel2.wait(3.0) or "k2", busy=busy, label="b.mf4")
+        assert "2 ファイル" in busy.message()  # 複数ロード表示
+
+        rel1.set()
+        qtbot.waitUntil(lambda: "b.mf4" in busy.message(), timeout=3000)
+        assert not busy.isHidden()  # 片方完了ではまだ隠さない
+
+        rel2.set()
+        qtbot.waitUntil(lambda: busy.isHidden(), timeout=3000)

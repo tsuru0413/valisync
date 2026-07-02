@@ -7,8 +7,9 @@ integration in a later task can wrap ``run`` in a QRunnable without changing
 this module.
 
 State machine:
-    idle → loading → done   (on success)
-    idle → loading → error  (on exception)
+    idle → loading → done       (on success)
+    idle → loading → error      (on exception)
+    idle → loading → cancelled  (user-initiated abort — not an error)
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ class LoadTask(Observable):
     Attributes
     ----------
     state:
-        One of ``"idle"``, ``"loading"``, ``"done"``, ``"error"``.
+        One of ``"idle"``, ``"loading"``, ``"done"``, ``"error"``, ``"cancelled"``.
     result_key:
         The string key returned by the load callable on success; ``None``
         otherwise.
@@ -55,6 +56,11 @@ class LoadTask(Observable):
         self.error_message = message
         self.state = "error"
         self._notify("error")
+
+    def cancel(self) -> None:
+        """Enter the cancelled state and notify (user-initiated, not an error)."""
+        self.state = "cancelled"
+        self._notify("cancelled")
 
     def run(self, load_callable: Callable[[], str]) -> None:
         """Execute *load_callable* synchronously, driving state transitions.
