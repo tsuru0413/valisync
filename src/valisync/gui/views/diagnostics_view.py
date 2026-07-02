@@ -1,18 +1,23 @@
 """DiagnosticsView — dockable list of load diagnostics (FB-02 surface).
 
-A QDockWidget with a table (level / source / message / signal) plus a filter
-(All/Errors/Warnings) and Clear. Subscribes to DiagnosticsViewModel and rebuilds
-its rows on the "diagnostics" change tag. Double-clicking a row emits
-``entry_activated`` with the signal name (or source) so MainWindow can jump to it.
+A QDockWidget with a table (level / order / source / message / signal) plus a
+filter (All/Errors/Warnings), Clear, and a counts chip — per design spec
+§4.4. Subscribes to DiagnosticsViewModel and rebuilds its rows on the
+"diagnostics" change tag. Double-clicking a row emits ``entry_activated`` with
+the signal name (or source) so MainWindow can jump to it. When the filtered
+entry list is empty, a placeholder replaces the table (spec §7: "ドックは
+診断ゼロでも存在。空時はプレースホルダ").
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDockWidget,
     QHBoxLayout,
+    QLabel,
     QPushButton,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -22,7 +27,11 @@ from PySide6.QtWidgets import (
 from valisync.gui.viewmodels.diagnostics_vm import DiagnosticsViewModel
 
 _LEVEL_ICON = {"error": "⛔", "warning": "⚠"}
-_HEADERS = ("Lv", "ソース", "メッセージ", "対象")
+# spec §4.4 column order: レベルアイコン / 時刻 / ソース / メッセージ / 対象.
+# "時刻" is satisfied by DiagnosticEntry.seq (spec §4.3: wall-clock time OR
+# receipt-order sequence number is acceptable) — header kept terse ("#").
+_HEADERS = ("レベル", "#", "ソース", "メッセージ", "対象")
+_PLACEHOLDER_TEXT = "診断はありません"
 
 
 class DiagnosticsView(QDockWidget):
@@ -51,6 +60,8 @@ class DiagnosticsView(QDockWidget):
         for b in (self._btn_all, self._btn_err, self._btn_warn, self._btn_clear):
             bar.addWidget(b)
         bar.addStretch(1)
+        self._counts_label = QLabel()
+        bar.addWidget(self._counts_label)
         outer.addLayout(bar)
 
         self._table = QTableWidget(0, len(_HEADERS), container)
@@ -58,7 +69,16 @@ class DiagnosticsView(QDockWidget):
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.cellDoubleClicked.connect(self._on_double_click)
-        outer.addWidget(self._table)
+
+        self._placeholder = QLabel(_PLACEHOLDER_TEXT)
+        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # QStackedWidget (not overlapping widgets) so the placeholder cleanly
+        # replaces the table rather than fighting it for layout space.
+        self._stack = QStackedWidget(container)
+        self._stack.addWidget(self._table)
+        self._stack.addWidget(self._placeholder)
+        outer.addWidget(self._stack)
 
         self.setWidget(container)
         unsubscribe = self._vm.subscribe(self._on_vm_change)
@@ -89,12 +109,23 @@ class DiagnosticsView(QDockWidget):
         for r, e in enumerate(entries):
             cells = (
                 _LEVEL_ICON.get(e.level, "?"),
+                str(e.seq),
                 e.source,
                 e.message,
                 e.signal_name or "—",
             )
             for c, text in enumerate(cells):
                 self._table.setItem(r, c, QTableWidgetItem(text))
+
+        # placeholder tracks the *filtered* view, not just the VM's raw
+        # entries — an empty filter result (e.g. "Errors" with none) reads
+        # the same as a truly empty dock (spec §7).
+        self._stack.setCurrentWidget(self._table if entries else self._placeholder)
+
+        errors, warnings = self._vm.counts()
+        # plain ASCII slash keeps ruff's ambiguous-unicode check (RUF001/003)
+        # clean; the fullwidth variant reads identically here.
+        self._counts_label.setText(f"⛔ {errors} / ⚠ {warnings}")
 
     def _on_double_click(self, row: int, _col: int) -> None:
         entries = self._vm.entries(self._filter)
