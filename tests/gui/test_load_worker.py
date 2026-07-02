@@ -96,6 +96,25 @@ class TestBusyOverlay:
         overlay.hide()
         assert overlay.isHidden()
 
+    def test_set_message_reflected_in_label(self, qtbot: QtBot) -> None:
+        from valisync.gui.views.busy_overlay import BusyOverlay
+
+        overlay = BusyOverlay()
+        qtbot.addWidget(overlay)
+        overlay.set_message("読み込み中: a.mf4")
+        assert overlay.message() == "読み込み中: a.mf4"
+
+    def test_cancel_button_click_emits_cancel_requested(self, qtbot: QtBot) -> None:
+        from PySide6.QtCore import Qt
+
+        from valisync.gui.views.busy_overlay import BusyOverlay
+
+        overlay = BusyOverlay()
+        qtbot.addWidget(overlay)
+        overlay.show()
+        with qtbot.waitSignal(overlay.cancel_requested, timeout=2000):
+            qtbot.mouseClick(overlay.cancel_button, Qt.MouseButton.LeftButton)
+
 
 # ─── LoadWorker ───────────────────────────────────────────────────────────────
 
