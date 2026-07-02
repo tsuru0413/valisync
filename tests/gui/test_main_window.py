@@ -361,3 +361,32 @@ def test_real_dblclick_on_diagnostics_row_switches_active_file(qtbot, tmp_path):
     qtbot.mouseDClick(table.viewport(), Qt.MouseButton.LeftButton, pos=pos)
 
     assert window.app_vm.active_file_key == key_b
+
+
+# ---------------------------------------------------------------------------
+# FB-04: cancel wiring — busy_overlay.cancel_requested → controller, and the
+# cancelled-outcome status update (no modal, no diagnostics — spec §6)
+# ---------------------------------------------------------------------------
+
+
+def test_cancel_requested_wired_to_controller(qtbot, monkeypatch):
+    window = _make_window(qtbot)
+    calls = []
+    monkeypatch.setattr(
+        window._load_controller, "cancel_active", lambda: calls.append(True)
+    )
+    window.busy_overlay.cancel_requested.emit()
+    assert calls == [True]
+
+
+def test_on_load_cancelled_updates_status_without_dialog(qtbot, monkeypatch):
+    import valisync.gui.views.main_window as mw
+
+    window = _make_window(qtbot)
+    dialogs = []
+    monkeypatch.setattr(mw.QMessageBox, "critical", lambda *a, **k: dialogs.append(a))
+    window._on_load_cancelled(Path("big.mf4"))
+    assert "キャンセル" in window.statusBar().currentMessage()
+    assert "big.mf4" in window.statusBar().currentMessage()
+    assert dialogs == []  # モーダル無し(spec §6)
+    assert window.diagnostics_vm.counts() == (0, 0)  # 診断追記無し
