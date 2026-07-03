@@ -108,7 +108,9 @@ class TestWindowTitle:
         window = _make_window(qtbot)
         assert window.windowTitle() == "ValiSync"  # type: ignore[union-attr]
 
-    def test_window_title_tracks_active_file(self, qtbot: QtBot, tmp_path: Path) -> None:
+    def test_window_title_tracks_active_file(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
         window = _make_window(qtbot)
         assert window.windowTitle() == "ValiSync"  # type: ignore[union-attr]
         key = window.app_vm.request_load(_write_csv(tmp_path), _csv_format())  # type: ignore[union-attr]
