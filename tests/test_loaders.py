@@ -160,6 +160,55 @@ def test_csv_too_few_columns(tmp_path: Path) -> None:
     assert result.diagnostics[0].level == "error"
 
 
+# ─── CsvLoader: 品質診断 (LD-04/06/08/09) ─────────────────────────────────────
+
+
+def _load_csv_text(tmp_path: Path, text: str):
+    # _fmt(): ts列0・信号列1-2・header あり — 下記テストの "t,a,b" 形状に合わせた
+    # 既存ヘルパをそのまま流用(新規ヘルパを増やさない)。
+    return CsvLoader().load(_write_csv(tmp_path, text), _fmt())
+
+
+def test_csv_non_monotonic_is_accepted_with_file_warning(tmp_path: Path) -> None:
+    result = _load_csv_text(tmp_path, "t,a,b\n0.0,1,2\n2.0,3,4\n1.0,5,6\n1.0,7,8\n")
+    assert result.signal_group is not None  # 旧実装ではファイル全滅
+    assert any(
+        d.level == "warning" and "非単調" in d.message for d in result.diagnostics
+    )
+    assert not result.signal_group.signals[0].is_monotonic  # 生データ無改変
+
+
+def test_csv_nan_inf_values_accepted_with_count_warning(tmp_path: Path) -> None:
+    result = _load_csv_text(tmp_path, "t,a,b\n0.0,nan,1\n1.0,inf,2\n")
+    assert result.signal_group is not None
+    a = result.signal_group.signals[0]
+    assert np.isnan(a.values[0]) and np.isinf(a.values[1])
+    assert any("非有限値 2 個" in d.message for d in result.diagnostics)
+
+
+def test_csv_duplicate_headers_disambiguated_like_mdf4(tmp_path: Path) -> None:
+    result = _load_csv_text(tmp_path, "t,spd,spd\n0.0,1,2\n1.0,3,4\n")
+    assert result.signal_group is not None
+    names = [s.name for s in result.signal_group.signals]
+    assert names == ["spd[0]", "spd[1]"]  # MDF4 と同一方式
+    assert any("重複ヘッダ" in d.message for d in result.diagnostics)
+
+
+def test_csv_header_only_succeeds_with_warning(tmp_path: Path) -> None:
+    result = _load_csv_text(tmp_path, "t,a,b\n")
+    assert result.signal_group is not None
+    assert all(len(s.timestamps) == 0 for s in result.signal_group.signals)
+    assert any("データ行が 0 行" in d.message for d in result.diagnostics)
+
+
+def test_csv_non_finite_timestamp_fails_with_error(tmp_path: Path) -> None:
+    result = _load_csv_text(tmp_path, "t,a,b\n0.0,1,2\nnan,3,4\n")
+    assert result.signal_group is None
+    assert any(
+        d.level == "error" and "タイムスタンプ" in d.message for d in result.diagnostics
+    )
+
+
 # ─── CsvLoader: cooperative cancel (FB-04 hard side) ──────────────────────────
 
 

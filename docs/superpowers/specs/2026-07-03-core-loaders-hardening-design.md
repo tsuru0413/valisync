@@ -68,7 +68,7 @@
 
 - **LD-05**: MDF4 で `len(signals) == 0` のとき warning「チャンネルが 0 本です（全チャンネルが読み取り不能）」を diagnostics に追加（成功扱いは維持 — GUI は R2 の `no_channels` プレースホルダ＋Diagnostics ドックが受け皿）。
 - **LD-06**: CSV の値パースで NaN/Inf を**受け入れた上で**列ごとに件数を集計し、warning「`<col>`: 非有限値 K 個（'nan'/'inf' 文字列由来）」。float() の挙動は変えない（'nan'→NaN・'inf'→Inf は業界標準・NaN は欠測表現として正当）。
-- **LD-08**: CSV の同名ヘッダを MDF4 と同じ**連番方式**で曖昧化解消（`name`・`name_2`・`name_3`…）＋warning「重複ヘッダ `<name>` を連番で改名」。`Signal.name` の一意性がグループ内で保証される。
+- **LD-08**: CSV の同名ヘッダを MDF4 と同じ**連番方式**で曖昧化解消（`name[0]`・`name[1]`…）＋warning「重複ヘッダ `<name>` を連番で改名」。`Signal.name` の一意性がグループ内で保証される。
 - **LD-09**: データ行が 0 行の CSV（ヘッダのみ）はロード成功＋warning「データ行が 0 行です」（長さ 0 の Signal 群を生成 — `SourceInfo.t_min/t_max=None`・ツールチップ「時間範囲: —」と整合）。
 
 ### 4.4 診断の文言方針
