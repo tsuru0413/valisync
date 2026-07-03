@@ -390,3 +390,43 @@ def test_on_load_cancelled_updates_status_without_dialog(qtbot, monkeypatch):
     assert "big.mf4" in window.statusBar().currentMessage()
     assert dialogs == []  # モーダル無し(spec §6)
     assert window.diagnostics_vm.counts() == (0, 0)  # 診断追記無し
+
+
+def test_load_file_wires_cancel_event_and_adapter(qtbot, monkeypatch, tmp_path):
+    """Verify _load_file creates a cancel Event and passes cancel=event.is_set to session.load.
+
+    This test guards against regression in the critical adapter that allows
+    LoadController to request cancellation. If the adapter is missing, hard
+    cancellation (via BusyOverlay cancel button) becomes a silent no-op.
+    """
+    import contextlib
+    import threading
+
+    window = _make_window(qtbot)
+    captured = {}
+
+    def fake_submit(load_callable, **kwargs):
+        captured["kwargs"] = kwargs
+        captured["load_callable"] = load_callable
+
+    monkeypatch.setattr(window._load_controller, "submit", fake_submit)
+    window._load_file(tmp_path / "x.mf4")
+
+    kw = captured["kwargs"]
+    event = kw["cancel_event"]
+    assert isinstance(event, threading.Event)
+    assert kw["label"] == "x.mf4"
+    assert callable(kw["on_cancelled"]) and callable(kw["on_discard"])
+
+    # load_callable が session.load に cancel=event.is_set を渡すこと
+    # (欠けるとハードキャンセルが無音で無効化される - 本タスクの肝の配線ガード)
+    seen = {}
+
+    def fake_load(path, fmt, cancel=None):
+        seen["cancel"] = cancel
+        raise RuntimeError("stop before real load")
+
+    monkeypatch.setattr(window.app_vm.session, "load", fake_load)
+    with contextlib.suppress(RuntimeError):
+        captured["load_callable"]()
+    assert seen["cancel"] == event.is_set  # 同一 Event の bound method
