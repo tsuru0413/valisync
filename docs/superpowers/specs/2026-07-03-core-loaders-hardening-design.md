@@ -73,7 +73,7 @@
 
 ### 4.4 診断の文言方針
 
-- すべて `Diagnostic(level="warning", message=..., signal_name=<ch生名 or None>)` で発行（`signal_name` は R2 までの慣行どおり loader の生名。namespaced 照合の follow-up は既知の ledger 項目）。
+- すべて `Diagnostic(level="warning", message=..., signal_name=<ch生名 or None>)` で発行（`signal_name` は R2 までの慣行どおり loader の生名。namespaced 照合の follow-up は Task 5 fix（診断ジャンプを `e.source` 一本化）で根絶済み — `signal_name` は表示専用で、ジャンプ解決には使わない）。
 - 件数を必ず含める（「何がどれだけ」— 監査可能性）。修復・変換をした場合（LD-08 の改名）は前後を明記。
 
 ## 5. データフロー
