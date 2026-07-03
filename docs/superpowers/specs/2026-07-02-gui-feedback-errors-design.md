@@ -72,7 +72,7 @@ MVVM を維持し、Session を唯一のゲートウェイとする。
 
 - `objectName="diagnostics_dock"`（saveState/restoreState 対応。既存ドックと整合）。既定は `BottomDockWidgetArea`。
 - 中身: テーブル（列 = レベルアイコン / 時刻 / ソース / メッセージ / 対象[signal_name]）＋ヘッダのフィルタ（All / Errors / Warnings）＋ Clear ＋ 件数チップ。
-- 行ダブルクリック → 該当ソース/信号へジャンプ（Channel Browser で選択）。選択行はハイライト。
+- 行ダブルクリック → 該当ソース（ファイル basename）へジャンプ（Channel Browser で選択）。選択行はハイライト。活性化対象は常にファイル — `entry_activated` は `signal_name`（表示用の対象列）ではなく常に `source` を emit する（LD 第1弾で `signal_name` 付き診断が実運用化し、生 ch 名/namespaced 名との照合不能で no-op となる回帰が判明したための修正）。
 - `View` メニューに `diagnostics_dock.toggleViewAction()` を追加。
 
 ### 4.5 MainWindow の配線変更

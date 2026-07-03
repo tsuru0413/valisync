@@ -375,6 +375,43 @@ def test_real_dblclick_on_diagnostics_row_switches_active_file(qtbot, tmp_path):
     assert window.app_vm.active_file_key == key_b
 
 
+def test_real_dblclick_on_row_with_signal_name_switches_active_file(qtbot, tmp_path):
+    """LD Task 5 review fix: diagnostics carrying ``signal_name`` (e.g. a raw
+    channel name from a non-monotonic-timestamp warning) must still resolve to
+    their file on double-click. Before the fix, DiagnosticsView emitted
+    ``e.signal_name or e.source`` — a raw channel name matches neither
+    ``source_name(key)`` (basename) nor a group signal's namespaced
+    ``"key::name"`` in ``MainWindow._on_diagnostic_activated``, so the
+    double-click silently no-op'd. Fix: DiagnosticsView always emits
+    ``e.source`` (the file basename), which the first loop always resolves."""
+    window = _make_window(qtbot)
+    window.show()
+    qtbot.waitExposed(window)
+
+    key_a = window.app_vm.request_load(
+        _write_csv_named(tmp_path, "a.csv"), _csv_format()
+    )
+    key_b = window.app_vm.request_load(
+        _write_csv_named(tmp_path, "b.csv"), _csv_format()
+    )
+    window.app_vm.set_active_file(key_a)
+
+    source_b = window.app_vm.session.source_name(key_b)
+    window.diagnostics_vm.add(
+        source_b, [Diagnostic(level="warning", message="skip", signal_name="gps")]
+    )
+
+    table = window.diagnostics_dock._table
+    qtbot.waitUntil(
+        lambda: table.visualItemRect(table.item(0, 0)).height() > 0, timeout=2000
+    )
+    pos = table.visualItemRect(table.item(0, 0)).center()
+    qtbot.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=pos)
+    qtbot.mouseDClick(table.viewport(), Qt.MouseButton.LeftButton, pos=pos)
+
+    assert window.app_vm.active_file_key == key_b
+
+
 # ---------------------------------------------------------------------------
 # FB-04: cancel wiring — busy_overlay.cancel_requested → controller, and the
 # cancelled-outcome status update (no modal, no diagnostics — spec §6)

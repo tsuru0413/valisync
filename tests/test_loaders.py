@@ -271,7 +271,7 @@ def test_mdf4_corrupt_file(tmp_path: Path) -> None:
     assert result.diagnostics[0].level == "error"
 
 
-# ─── Mdf4Loader: cooperative cancel (FB-04 hard side) ─────────────────────────
+# ─── Mdf4Loader: 非単調/0ch 診断 (LD-03/05) ───────────────────────────────────
 
 
 def test_mdf4_non_monotonic_channel_is_accepted_with_warning(tmp_path: Path) -> None:
@@ -292,6 +292,9 @@ def test_mdf4_zero_channels_emits_warning(tmp_path: Path) -> None:
     assert result.signal_group is not None
     assert len(result.signal_group.signals) == 0
     assert any("0 本" in d.message for d in result.diagnostics)
+
+
+# ─── Mdf4Loader: cooperative cancel (FB-04 hard side) ─────────────────────────
 
 
 def test_mdf4_loader_cancel_raises(tmp_path: Path) -> None:
