@@ -8,7 +8,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtWidgets import QListView, QMenu, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QLabel,
+    QListView,
+    QMenu,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from valisync.gui.adapters.qt_signal_models import FileListModel
 
@@ -39,15 +46,32 @@ class FileBrowserView(QWidget):
         # item view, so the menu would not appear in the real GUI.
         self.list_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
+        self.placeholder_label = QLabel(
+            "ファイルが読み込まれていません\n\nウィンドウへファイルをドロップして追加",
+            self,
+        )
+        self.placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.placeholder_label.setWordWrap(True)
+
+        self._stack = QStackedWidget(self)
+        self._stack.addWidget(self.list_view)  # index 0
+        self._stack.addWidget(self.placeholder_label)  # index 1
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.list_view)
+        layout.addWidget(self._stack)
 
         # Connect selection changes to VM
         self.list_view.selectionModel().selectionChanged.connect(
             self._on_selection_changed
         )
         self.list_view.customContextMenuRequested.connect(self._show_context_menu)
+
+        # The VM outlives this widget; drop the subscription when the C++ object
+        # is destroyed so a later notify never calls into a deleted view.
+        unsubscribe = self._vm.subscribe(self._on_vm_change)
+        self.destroyed.connect(lambda *_: unsubscribe())
+        self._refresh_state()
 
     def _on_selection_changed(self) -> None:
         """Translate view selection to ViewModel selection."""
@@ -78,3 +102,17 @@ class FileBrowserView(QWidget):
         self.list_view.setCurrentIndex(index)  # right-click selects the row
         global_pos = self.list_view.viewport().mapToGlobal(pos)
         self.build_context_menu(index.row()).exec(global_pos)
+
+    def is_showing_placeholder(self) -> bool:
+        """True when the placeholder (not the list) is visible (test-facing)."""
+        return self._stack.currentWidget() is self.placeholder_label
+
+    def _on_vm_change(self, change: str) -> None:
+        if change == "files":
+            self._refresh_state()
+
+    def _refresh_state(self) -> None:
+        if self._vm.files:
+            self._stack.setCurrentWidget(self.list_view)
+        else:
+            self._stack.setCurrentWidget(self.placeholder_label)

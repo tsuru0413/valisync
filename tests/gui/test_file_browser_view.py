@@ -215,3 +215,46 @@ def test_right_click_on_empty_area_shows_no_menu(qtbot: QtBot, monkeypatch) -> N
     _send_context_menu_event(view.list_view, QPoint(5, 10_000))
 
     assert built == []  # no menu for empty space
+
+
+def _load_csv(app_vm: AppViewModel, tmp_path):
+    """Load a minimal CSV file and return the group key."""
+    import csv
+
+    from valisync.core.models import Delimiter, FormatDefinition
+
+    csv_path = tmp_path / "test.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["t", "speed"])
+        writer.writerow(["0.0", "10.0"])
+        writer.writerow(["1.0", "20.0"])
+
+    format_def = FormatDefinition(
+        name="test",
+        delimiter=Delimiter.COMMA,
+        timestamp_column=0,
+        timestamp_unit="sec",
+        signal_start_column=1,
+        signal_end_column=1,
+        has_header=True,
+    )
+
+    return app_vm.request_load(csv_path, format_def)
+
+
+def test_placeholder_shown_when_no_files(qtbot: QtBot) -> None:
+    app_vm = AppViewModel()
+    view = FileBrowserView(FileBrowserVM(app_vm))
+    qtbot.addWidget(view)
+    assert view.is_showing_placeholder()
+    assert "読み込まれていません" in view.placeholder_label.text()
+
+
+def test_placeholder_hidden_after_load(qtbot: QtBot, tmp_path) -> None:
+    app_vm = AppViewModel()
+    vm = FileBrowserVM(app_vm)
+    view = FileBrowserView(vm)
+    qtbot.addWidget(view)
+    _load_csv(app_vm, tmp_path)
+    assert not view.is_showing_placeholder()
