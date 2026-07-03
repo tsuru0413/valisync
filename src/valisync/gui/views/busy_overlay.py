@@ -1,9 +1,12 @@
 """BusyOverlay — indeterminate busy indicator shown during loads (Task 9.1).
 
-A thin widget with a centred indeterminate QProgressBar.  Starts hidden; the
-load controller shows it while a worker runs and hides it on completion.  When
-given a parent, ``cover()`` resizes it to fill the parent so it reads as an
-overlay.
+A message label, a centred indeterminate QProgressBar, and a cancel button
+(``cancel_requested`` is emitted on click; wiring the click to an actual
+cancellation is the caller's job — see ``LoadController.cancel_active``).
+Starts hidden. ``LoadController`` drives visibility on a count basis: shown
+while at least one load is active (label text reflects 1-vs-N loads), hidden
+once the active count reaches zero. When given a parent, ``cover()`` resizes
+it to fill the parent so it reads as an overlay.
 """
 
 from __future__ import annotations

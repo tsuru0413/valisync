@@ -9,7 +9,11 @@ this module.
 State machine:
     idle → loading → done       (on success)
     idle → loading → error      (on exception)
-    idle → loading → cancelled  (user-initiated abort — not an error)
+    idle → loading → cancelled  (user-initiated abort — not an error; reached
+                                  from both the failed path (LoadCancelled
+                                  raised before completion) and the finished
+                                  path (a worker that completes too late,
+                                  after cancel_active() — the "手遅れ完走" case)
 """
 
 from __future__ import annotations

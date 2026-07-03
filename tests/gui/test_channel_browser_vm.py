@@ -191,7 +191,9 @@ def test_no_match_state_and_query(tmp_path: Path) -> None:
 def test_no_channels_state(tmp_path: Path, monkeypatch) -> None:
     app_vm, vm, key = _loaded_vm(tmp_path)
     app_vm.set_active_file(key)
-    # 0ch グループは現行ローダーでは作れないため session 面で再現(spec §4.2)
+    # mdf4_loader は全チャンネル skip 時に 0ch グループを登録し得る
+    # (production 到達可能・catalog LD-05)。ここでは決定的な単体テストのため
+    # session 面で直接再現する(spec §4.2)。
     monkeypatch.setattr(app_vm.session, "group_signals", lambda _key: [])
     assert vm.empty_state() == "no_channels"
     assert vm.header_text() == "d.csv — 0 ch"

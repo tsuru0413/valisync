@@ -172,7 +172,11 @@ class LoadController(QObject):
         was_cancelled = worker in self._cancelled
         _event, _label, _busy, on_discard = self._pop(worker)
         if was_cancelled:
-            # 手遅れ完走: 呼び出し側に登録の巻き戻しを委ねる(spec §5)
+            # 手遅れ完走: task はまだ "loading" のまま(failed 経路の LoadCancelled
+            # と違い、この経路は例外を投げないので task.cancel() を明示しないと
+            # 固着する)。登録の巻き戻しは呼び出し側に委ねる(spec §5)。
+            if task is not None:
+                task.cancel()
             if on_discard is not None:
                 on_discard(outcome)
             return

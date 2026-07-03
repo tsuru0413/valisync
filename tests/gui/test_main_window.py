@@ -442,3 +442,16 @@ def test_load_file_wires_cancel_event_and_adapter(qtbot, monkeypatch, tmp_path):
     with contextlib.suppress(RuntimeError):
         captured["load_callable"]()
     assert seen["cancel"] == event.is_set  # 同一 Event の bound method
+
+    # on_discard 本体(手遅れ完走の巻き戻し)が正しい key/force で remove_group
+    # を呼ぶこと — 「callable であること」だけでは中身の配線ミスを拾えない
+    import types
+
+    calls: list[tuple[str, bool]] = []
+    monkeypatch.setattr(
+        window.app_vm.session,
+        "remove_group",
+        lambda key, force=False: calls.append((key, force)),
+    )
+    kw["on_discard"](types.SimpleNamespace(key="csv_9"))
+    assert calls == [("csv_9", True)]

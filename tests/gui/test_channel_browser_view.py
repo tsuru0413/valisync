@@ -149,3 +149,21 @@ def test_placeholder_no_match_includes_query_and_recovers(
     assert "xyz123" in view.placeholder_label.text()
     view.search_box.setText("")
     assert not view.is_showing_placeholder()
+
+
+def test_no_channels_placeholder_shown_after_refresh(
+    qtbot: QtBot, tmp_path: Path, monkeypatch
+) -> None:
+    # mdf4_loader は全チャンネル skip 時に 0ch グループを登録し得る
+    # (production 到達可能・catalog LD-05) — この経路が View まで通しで
+    # プレースホルダに落ちることを確認する(VM 単体では View の
+    # QStackedWidget 切替配線までは検証できない)。
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    view = _make_view(qtbot, vm)
+
+    monkeypatch.setattr(app_vm.session, "group_signals", lambda _k: [])
+    vm.refresh()  # "signals" notify で View を再描画させる
+
+    assert view.is_showing_placeholder()
+    assert "このファイルに信号がありません" in view.placeholder_label.text()

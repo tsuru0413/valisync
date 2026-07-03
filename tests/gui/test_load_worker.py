@@ -301,3 +301,40 @@ class TestLoadController:
 
         rel2.set()
         qtbot.waitUntil(lambda: busy.isHidden(), timeout=3000)
+
+    def test_cancel_active_late_finish_sets_task_cancelled(self, qtbot: QtBot) -> None:
+        """A task submitted with `task=` must not stick at "loading" forever.
+
+        The failed-path late result (LoadCancelled) already flips the task to
+        "cancelled"; the finished-path late completion ("手遅れ完走") must do
+        the same, otherwise the task is stuck "loading" even though
+        on_discard already rolled back Session registration.
+        """
+        from valisync.gui.views.busy_overlay import BusyOverlay
+        from valisync.gui.workers.load_worker import LoadController
+
+        release = threading.Event()
+        cancel_event = threading.Event()
+        discards: list[object] = []
+
+        def slow_ok() -> str:
+            release.wait(timeout=3.0)  # cancel 後に完走する(手遅れ完走)
+            return "late_result"
+
+        busy = BusyOverlay()
+        qtbot.addWidget(busy)
+        task = LoadTask()
+        controller = LoadController()
+        controller.submit(
+            slow_ok,
+            task=task,
+            busy=busy,
+            cancel_event=cancel_event,
+            on_discard=discards.append,
+        )
+
+        controller.cancel_active()
+        release.set()
+
+        qtbot.waitUntil(lambda: task.state == "cancelled", timeout=3000)
+        assert discards == ["late_result"]
