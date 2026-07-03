@@ -17,7 +17,14 @@ from valisync.core.loaders.mdf4_loader import Mdf4Loader
 from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.session import LoadCancelled
 
-from .mdf4_helpers import CAN, ETHERNET, NONE, write_mdf4
+from .mdf4_helpers import (
+    CAN,
+    ETHERNET,
+    NONE,
+    write_mdf4,
+    write_mdf4_all_channels_bad,
+    write_mdf4_non_monotonic,
+)
 
 
 def _fmt(**overrides: object) -> FormatDefinition:
@@ -265,6 +272,26 @@ def test_mdf4_corrupt_file(tmp_path: Path) -> None:
 
 
 # ─── Mdf4Loader: cooperative cancel (FB-04 hard side) ─────────────────────────
+
+
+def test_mdf4_non_monotonic_channel_is_accepted_with_warning(tmp_path: Path) -> None:
+    path = write_mdf4_non_monotonic(tmp_path)
+    result = Mdf4Loader().load(path)
+    assert result.signal_group is not None
+    names = [s.name for s in result.signal_group.signals]
+    assert "messy" in names  # 旧実装では skip されていた
+    warnings = [d for d in result.diagnostics if d.level == "warning"]
+    assert any("非単調" in d.message or "重複" in d.message for d in warnings)
+    messy = next(s for s in result.signal_group.signals if s.name == "messy")
+    assert not messy.is_monotonic  # 生データ無改変で受け入れ
+
+
+def test_mdf4_zero_channels_emits_warning(tmp_path: Path) -> None:
+    path = write_mdf4_all_channels_bad(tmp_path)
+    result = Mdf4Loader().load(path)
+    assert result.signal_group is not None
+    assert len(result.signal_group.signals) == 0
+    assert any("0 本" in d.message for d in result.diagnostics)
 
 
 def test_mdf4_loader_cancel_raises(tmp_path: Path) -> None:

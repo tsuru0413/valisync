@@ -161,8 +161,38 @@ class Mdf4Loader:
                 )
                 continue
 
-            try:
-                signal = Signal(
+            # 記録どおり受け入れ、異常は O(n) 検出して診断で透明化(spec §4.2)
+            if len(timestamps) > 0 and not np.all(np.isfinite(timestamps)):
+                diagnostics.append(
+                    Diagnostic(
+                        level="error",
+                        message=(
+                            f"Signal '{base_name}': 非有限タイムスタンプを含むため"
+                            " skip（時刻軸が破損）"  # noqa: RUF001
+                        ),
+                        signal_name=base_name,
+                    )
+                )
+                continue
+
+            diffs = np.diff(timestamps)
+            n_backward = int(np.sum(diffs < 0))
+            n_dup = int(np.sum(diffs == 0))
+            if n_backward or n_dup:
+                diagnostics.append(
+                    Diagnostic(
+                        level="warning",
+                        message=(
+                            f"Signal '{base_name}': 非単調 {n_backward} 箇所・"
+                            f"重複タイムスタンプ {n_dup} 点"
+                            "（表示/演算は整列ビューで補正）"  # noqa: RUF001
+                        ),
+                        signal_name=base_name,
+                    )
+                )
+
+            signals.append(
+                Signal(
                     name=signal_name,
                     timestamps=timestamps,
                     values=values,
@@ -171,14 +201,15 @@ class Mdf4Loader:
                     source_file=abs_path,
                     metadata=_extract_metadata(asammdf_sig),
                 )
-                signals.append(signal)
-            except ValueError as exc:
-                diagnostics.append(
-                    Diagnostic(
-                        level="warning",
-                        message=f"Signal '{signal_name}' failed validation, skipped: {exc}",
-                    )
+            )
+
+        if not signals:
+            diagnostics.append(
+                Diagnostic(
+                    level="warning",
+                    message="チャンネルが 0 本です（全チャンネルが読み取り不能）",  # noqa: RUF001
                 )
+            )
 
         signal_group = SignalGroup(
             signals=tuple(signals),
