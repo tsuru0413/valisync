@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from PySide6.QtCore import QItemSelection, QMimeData, QPoint, Qt, Signal
 from PySide6.QtWidgets import (
+    QLabel,
     QLineEdit,
     QMenu,
+    QStackedWidget,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -20,6 +22,13 @@ from valisync.gui.adapters.qt_signal_models import (
     encode_signal_keys,
 )
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
+
+# Empty-state placeholder text (FB-05/08/09); no_match takes a format arg.
+_EMPTY_MESSAGES = {
+    "none_selected": "File Browser でファイルを選択すると\n信号一覧を表示します",
+    "no_match": "「{query}」に一致する信号はありません",
+    "no_channels": "このファイルに信号がありません\n（Diagnostics に詳細）",  # noqa: RUF001
+}
 
 
 class ChannelBrowserView(QWidget):
@@ -54,12 +63,28 @@ class ChannelBrowserView(QWidget):
         # menu would not appear in the real GUI (mirrors FileBrowser PR#11).
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
+        self.header_label = QLabel(self)
+        self.placeholder_label = QLabel(self)
+        self.placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.placeholder_label.setWordWrap(True)
+        # QLabel は既定で plain text — クエリ文字列を HTML 解釈させない (spec §6)
+        self.placeholder_label.setTextFormat(Qt.TextFormat.PlainText)
+
+        self._stack = QStackedWidget(self)
+        self._stack.addWidget(self.tree)  # index 0
+        self._stack.addWidget(self.placeholder_label)  # index 1
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.header_label)
         layout.addWidget(self.search_box)
-        layout.addWidget(self.tree)
+        layout.addWidget(self._stack)
 
         # ── Wiring ───────────────────────────────────────────────────────────
+        # set_filter() synchronously notifies "filter" -> _on_vm_change() ->
+        # _refresh_state(), so a second direct textChanged->_refresh_state
+        # connection would double-call it on every keystroke; the VM notify
+        # path alone is sufficient (see _on_vm_change below).
         self.search_box.textChanged.connect(self._vm.set_filter)
         self.tree.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
@@ -69,13 +94,31 @@ class ChannelBrowserView(QWidget):
         unsubscribe = self._vm.subscribe(self._on_vm_change)
         self.destroyed.connect(lambda *_: unsubscribe())
 
+        self._refresh_state()
+
     # ─── VM reactions ──────────────────────────────────────────────────────────
+
+    def is_showing_placeholder(self) -> bool:
+        """True when the placeholder (not the tree) is visible (test-facing)."""
+        return self._stack.currentWidget() is self.placeholder_label
+
+    def _refresh_state(self) -> None:
+        """Sync header + tree/placeholder switch with the VM (FB-05/08/09)."""
+        self.header_label.setText(self._vm.header_text())
+        state = self._vm.empty_state()
+        if state == "has_rows":
+            self._stack.setCurrentWidget(self.tree)
+            return
+        message = _EMPTY_MESSAGES[state]
+        if state == "no_match":
+            message = message.format(query=self._vm.filter_query())
+        self.placeholder_label.setText(message)
+        self._stack.setCurrentWidget(self.placeholder_label)
 
     def _on_vm_change(self, change: str) -> None:
         """Handle notifications from ChannelBrowserVM."""
-        # The SignalTableModel already reacts to VM changes internally via its own subscription.
-        # We only need to react here if the view itself needs UI adjustment.
-        pass
+        if change in ("signals", "filter"):
+            self._refresh_state()
 
     def _on_selection_changed(
         self, _selected: QItemSelection, _deselected: QItemSelection
