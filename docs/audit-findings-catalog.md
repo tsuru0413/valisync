@@ -37,13 +37,13 @@
 | FB-01 | 🔴 | ✅**解消（PR #37）** `_on_load_error` が `pass`。全ロード失敗（破損/非対応/権限/Data Explorer 経由）が無言。ダイアログもステータス面も無い → 診断記録＋モーダル＋ステータスバー＋ドック自動 raise | `gui/views/main_window.py`（旧 :134）, `data_explorer_view.py:150`（load_handler 経由で合流） | 開けたか失敗したか判別不能。実ファイルの破損/版差で頻発 |
 | FB-02 | 🔴 | ✅**解消（PR #37）** `Session.load` が成功時に `result.diagnostics` を破棄。チャンネル skip/空グループ/0ch の警告が構造的に UI へ到達不能 → `LoadOutcome(key, diagnostics)` 化＋Diagnostics ドック表示（LD-03/05 の診断発行は core-loaders-hardening 側で本器に載る） | `core/session.py`（旧 :92） | 一部信号が無言で欠落しても警告が出ない（サイレントなデータ欠損の増幅器） |
 | FB-03 | 🟠 | ✅**解消（PR #37）** ロード直後にアクティブファイルが未設定で Channel Browser が空のまま → `_on_loaded` で `set_active_file` | `gui/viewmodels/app_viewmodel.py`（旧 :152） | 開いた直後に「壊れて見える」 |
-| FB-04 | 🟠 | BusyOverlay がラベル/進捗/キャンセルなしの全画面ブロック | `gui/views/busy_overlay.py:15,22` | 重い MDF4 ロード中に何が起きているか不明・中断不可 |
-| FB-05 | 🟠 | 検索0件/未選択ファイルでリストが無言に空・件数表示なし | `gui/views/channel_browser_view.py:41` | 「信号が無い」のか「条件で消えた」のか分からない |
+| FB-04 | 🟠 | ✅**解消（PR #38）** BusyOverlay がラベル/進捗/キャンセルなしの全画面ブロック → ラベル＋キャンセルボタン＋ハイブリッドキャンセル（`Session.load(cancel=...)` 協調的中断＋世代管理・進捗%は非ゴール） | `gui/views/busy_overlay.py`（旧 :15,22） | 重い MDF4 ロード中に何が起きているか不明・中断不可 |
+| FB-05 | 🟠 | ✅**解消（PR #38）** 検索0件/未選択ファイルでリストが無言に空・件数表示なし → ヘッダ「file — M ch 中 N 件表示」＋空状態3分類プレースホルダ | `gui/views/channel_browser_view.py`（旧 :41） | 「信号が無い」のか「条件で消えた」のか分からない |
 | FB-06 | 🟡 | ✅**解消（PR #37）** ステータスバー未使用（進捗/件数/準備完了/エラーの常設面が無い） → 常設化（準備完了／ロード結果＋警告件数要約） | `gui/views/main_window.py`（旧 :106） | 状態の常設表示先が無い |
-| FB-07 | 🟡 | ウィンドウタイトルが固定「ValiSync」で状態/アクティブファイルを反映しない | `gui/views/main_window.py:53` | 何を見ているか分からない |
-| FB-08 | 🟡 | 空状態ガイド皆無（初回起動が真っ白・File/Channel Browser にプレースホルダなし） | `channel_browser_view.py:41`, `file_browser_view.py:42` | 初回ユーザーが取り残される |
-| FB-09 | 🟡 | 表示中ファイルがビューに示されない（コンテキスト不可視） | `gui/viewmodels/channel_browser_vm.py:53` | どのファイルの信号か分からない |
-| FB-10 | 🟡 | File Browser が basename のみ（ツールチップ/パス/サイズ/時間範囲/ch数なし） | `gui/viewmodels/file_browser_vm.py:70` | ファイルの素性が確認できない |
+| FB-07 | 🟡 | ✅**解消（PR #38）** ウィンドウタイトルが固定「ValiSync」で状態/アクティブファイルを反映しない → 「<basename> — ValiSync」追従 | `gui/views/main_window.py`（旧 :53） | 何を見ているか分からない |
+| FB-08 | 🟡 | ✅**解消（PR #38）** 空状態ガイド皆無（File/Channel Browser にプレースホルダなし） → 両 Browser にプレースホルダ（グラフエリアは views 系の表示オブジェクト切替構想へ委譲・spec 境界注記） | `channel_browser_view.py`・`file_browser_view.py`（旧 :41/:42） | 初回ユーザーが取り残される |
+| FB-09 | 🟡 | ✅**解消（PR #38）** 表示中ファイルがビューに示されない（コンテキスト不可視） → ChannelBrowser ヘッダにアクティブファイル名（FB-05 と統合） | `gui/viewmodels/channel_browser_vm.py`（旧 :53） | どのファイルの信号か分からない |
+| FB-10 | 🟡 | ✅**解消（PR #38）** File Browser が basename のみ → ホバーツールチップ（パス/サイズ/時間範囲/ch数/形式）＋`Session.source_info` 新設 | `gui/viewmodels/file_browser_vm.py`（旧 :70） | ファイルの素性が確認できない |
 
 ---
 
