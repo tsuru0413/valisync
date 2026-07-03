@@ -83,6 +83,45 @@ class ChannelBrowserVM(Observable):
 
         return results
 
+    # ─── Header / empty-state (FB-05/09) ────────────────────────────────────
+
+    def _group_total(self) -> tuple[str, int] | None:
+        """Return (basename, total channel count) for the active file, or None."""
+        active_key = self._app_vm.active_file_key
+        if not active_key:
+            return None
+        try:
+            total = len(self._app_vm.session.group_signals(active_key))
+            name = self._app_vm.session.source_name(active_key)
+        except KeyError:
+            return None
+        return name, total
+
+    def header_text(self) -> str:
+        """One-line context header: which file, how many shown of how many."""
+        info = self._group_total()
+        if info is None:
+            return "ファイル未選択"
+        name, total = info
+        if total == 0:
+            return f"{name} — 0 ch"
+        return f"{name} — {total} ch 中 {len(self.signals)} 件表示"
+
+    def empty_state(self) -> str:
+        """Why the list is empty: none_selected / no_channels / no_match / has_rows."""
+        info = self._group_total()
+        if info is None:
+            return "none_selected"
+        if info[1] == 0:
+            return "no_channels"
+        if not self.signals:
+            return "no_match"
+        return "has_rows"
+
+    def filter_query(self) -> str:
+        """Current filter text (for the no_match placeholder message)."""
+        return self._filter_text
+
     # ─── Refresh ─────────────────────────────────────────────────────────────
 
     def refresh(self) -> None:

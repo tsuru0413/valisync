@@ -143,3 +143,55 @@ def test_active_file_switch_fetches_only_active_group_no_full_scan(
     assert {s.name for s in items} == {"sig_a", "sig_b"}
     assert group_calls == [key]  # only the active group was fetched
     assert full_scan_calls == 0  # the full Session was never scanned
+
+
+# ─── Header / Empty State Tests (FB-05/09) ──────────────────────────────────
+
+
+def _loaded_vm(tmp_path: Path) -> tuple[AppViewModel, ChannelBrowserVM, str]:
+    fmt = FormatDefinition(
+        name="fmt",
+        delimiter=Delimiter.COMMA,
+        timestamp_column=0,
+        timestamp_unit="sec",
+        signal_start_column=1,
+        signal_end_column=2,
+        has_header=True,
+    )
+    path = tmp_path / "d.csv"
+    path.write_text("t,speed,brake\n0.0,1.0,0.0\n1.0,2.0,1.0\n", encoding="utf-8")
+    app_vm = AppViewModel()
+    key = app_vm.request_load(path, fmt)
+    return app_vm, ChannelBrowserVM(app_vm), key
+
+
+def test_header_none_selected(tmp_path: Path) -> None:
+    app_vm, vm, _key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(None)
+    assert vm.header_text() == "ファイル未選択"
+    assert vm.empty_state() == "none_selected"
+
+
+def test_header_counts_and_has_rows(tmp_path: Path) -> None:
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    assert vm.header_text() == "d.csv — 2 ch 中 2 件表示"
+    assert vm.empty_state() == "has_rows"
+
+
+def test_no_match_state_and_query(tmp_path: Path) -> None:
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    vm.set_filter("xyz123")
+    assert vm.empty_state() == "no_match"
+    assert vm.filter_query() == "xyz123"
+    assert vm.header_text() == "d.csv — 2 ch 中 0 件表示"
+
+
+def test_no_channels_state(tmp_path: Path, monkeypatch) -> None:
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    # 0ch グループは現行ローダーでは作れないため session 面で再現(spec §4.2)
+    monkeypatch.setattr(app_vm.session, "group_signals", lambda _key: [])
+    assert vm.empty_state() == "no_channels"
+    assert vm.header_text() == "d.csv — 0 ch"
