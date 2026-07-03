@@ -84,3 +84,12 @@ def test_single_point_range() -> None:
     assert res.count == 1
     assert res.mean == 2.0
     assert res.std == 0.0
+
+
+def test_range_stats_non_monotonic_uses_keep_last() -> None:
+    # t=1.0 の重複は後勝ち(3.0 が有効・2.0 は集計に入らない)
+    messy = _sig([0.0, 1.0, 1.0, 2.0], [1.0, 2.0, 3.0, 4.0])
+    result = RangeStatistics().compute(messy, 0.0, 2.0)
+    assert result.count == 3
+    assert result.max == 4.0
+    assert result.mean == pytest.approx((1.0 + 3.0 + 4.0) / 3)

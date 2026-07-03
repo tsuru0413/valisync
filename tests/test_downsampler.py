@@ -101,3 +101,24 @@ def test_downsample_large_signal_is_fast() -> None:
 
     assert len(result.timestamps) <= 2000
     assert elapsed < 1.0
+
+
+def test_downsample_non_monotonic_output_is_monotonic() -> None:
+    ts = [float(x) for x in [0, 5, 1, 6, 2, 7, 3, 8, 4, 9]]
+    sig = _sig(ts, [float(i) for i in range(10)])
+    out = Downsampler().downsample(sig, 4)
+    assert np.all(np.diff(out.timestamps) > 0)
+
+
+def test_downsample_passthrough_non_monotonic_returns_sorted_signal() -> None:
+    sig = _sig(
+        [0.0, 2.0, 1.0], [1.0, 2.0, 3.0]
+    )  # len<=n のパススルー経路 returns sorted signal
+    out = Downsampler().downsample(sig, 10)
+    assert np.all(np.diff(out.timestamps) > 0)
+    assert out.timestamps.tolist() == [0.0, 1.0, 2.0]
+
+
+def test_downsample_passthrough_monotonic_returns_same_object() -> None:
+    sig = _sig([0.0, 1.0, 2.0], [1.0, 2.0, 3.0])
+    assert Downsampler().downsample(sig, 10) is sig  # fast path は無コピー維持

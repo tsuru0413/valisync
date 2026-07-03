@@ -80,3 +80,13 @@ def test_linear_nan_adjacent_propagates() -> None:
     right_nan = _sig([0.0, 10.0], [0.0, math.nan])
     assert math.isnan(Interpolator().interpolate(left_nan, 5.0, LINEAR))  # type: ignore[arg-type]
     assert math.isnan(Interpolator().interpolate(right_nan, 5.0, LINEAR))  # type: ignore[arg-type]
+
+
+def test_interpolate_non_monotonic_input_matches_sorted() -> None:
+    messy = _sig([0.0, 2.0, 1.0], [0.0, 20.0, 10.0])
+    tidy = _sig([0.0, 1.0, 2.0], [0.0, 10.0, 20.0])
+    interp = Interpolator()
+    for t in (0.5, 1.0, 1.5):
+        assert interp.interpolate(messy, t, LINEAR) == interp.interpolate(
+            tidy, t, LINEAR
+        )

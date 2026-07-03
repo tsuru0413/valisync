@@ -26,12 +26,23 @@ class Downsampler:
         if n < 2:
             raise ValueError(f"n must be ≥ 2, got {n!r}")
 
-        ts = signal.timestamps
-        vs = signal.values
+        ts, vs = signal.sorted_view()
 
-        # Req 14.4: pass-through when already within target
+        # Req 14.4: pass-through when already within target.
+        # 非単調入力では raw をそのまま返すと下流(render)に非単調が漏れる
+        # ため、整列ビューから作り直した Signal を返す(単調なら無コピー)。
         if len(ts) <= n:
-            return signal
+            if signal.is_monotonic:
+                return signal
+            return Signal(
+                name=signal.name,
+                timestamps=ts,
+                values=vs,
+                file_format=signal.file_format,
+                bus_type=signal.bus_type,
+                source_file=signal.source_file,
+                metadata=signal.metadata,
+            )
 
         n_buckets = n // 2
         t_lo = float(ts[0])

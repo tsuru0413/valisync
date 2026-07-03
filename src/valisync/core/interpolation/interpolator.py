@@ -30,8 +30,7 @@ class Interpolator:
         Returns the exact sample value without interpolation when *t* matches a
         timestamp exactly (Req 12.8).
         """
-        ts = signal.timestamps
-        vs = signal.values
+        ts, vs = signal.sorted_view()
 
         # Req 12.10: insufficient samples
         if len(ts) < 2:
