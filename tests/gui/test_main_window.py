@@ -108,6 +108,16 @@ class TestWindowTitle:
         window = _make_window(qtbot)
         assert window.windowTitle() == "ValiSync"  # type: ignore[union-attr]
 
+    def test_window_title_tracks_active_file(self, qtbot: QtBot, tmp_path: Path) -> None:
+        window = _make_window(qtbot)
+        assert window.windowTitle() == "ValiSync"  # type: ignore[union-attr]
+        key = window.app_vm.request_load(_write_csv(tmp_path), _csv_format())  # type: ignore[union-attr]
+        window.app_vm.set_active_file(key)  # type: ignore[union-attr]
+        assert window.windowTitle().endswith(" — ValiSync")  # type: ignore[union-attr]
+        assert window.windowTitle().startswith("data.csv")  # type: ignore[union-attr]
+        window.app_vm.set_active_file(None)  # type: ignore[union-attr]
+        assert window.windowTitle() == "ValiSync"  # type: ignore[union-attr]
+
 
 # ---------------------------------------------------------------------------
 # Toggle-view action re-shows a closed dock (R1.4)

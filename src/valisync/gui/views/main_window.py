@@ -54,7 +54,7 @@ class MainWindow(QMainWindow):
     def __init__(self, app_vm: AppViewModel) -> None:
         super().__init__()
         self.app_vm = app_vm
-        self.setWindowTitle("ValiSync")
+        self._update_window_title()
 
         # ── Shared ViewModels (one Session) ──────────────────────────────────
         self.file_browser_vm = FileBrowserVM(app_vm)
@@ -219,6 +219,21 @@ class MainWindow(QMainWindow):
         if change == "loaded":
             self.channel_browser_vm.refresh()
             # Panels are reconciled by GraphAreaVM, which subscribes to app_vm.
+        if change in ("active_file", "loaded", "unloaded"):
+            self._update_window_title()
+
+    def _update_window_title(self) -> None:
+        """FB-07: show the active file so the title answers 'what am I looking at'."""
+        key = self.app_vm.active_file_key
+        if key is None:
+            self.setWindowTitle("ValiSync")
+            return
+        try:
+            name = self.app_vm.session.source_name(key)
+        except KeyError:
+            self.setWindowTitle("ValiSync")
+            return
+        self.setWindowTitle(f"{name} — ValiSync")
 
     def _add_to_active_panel(self, keys: list[str]) -> None:
         """Plot *keys* on the first panel of the active tab (the 'active' panel)."""
