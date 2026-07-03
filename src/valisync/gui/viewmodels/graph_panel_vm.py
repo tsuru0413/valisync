@@ -490,8 +490,9 @@ class GraphPanelVM(Observable):
             sig = sig_map.get(entry.signal_key)
             if sig is None or len(sig.timestamps) == 0:
                 continue
-            ts0 = float(sig.timestamps[0])
-            tsN = float(sig.timestamps[-1])
+            s_ts = sig.sorted_view()[0]
+            ts0 = float(s_ts[0])
+            tsN = float(s_ts[-1])
             lo = ts0 if lo is None else min(lo, ts0)
             hi = tsN if hi is None else max(hi, tsN)
         # Clear to None when nothing is fittable so a later add_signal can
@@ -575,8 +576,7 @@ class GraphPanelVM(Observable):
                 )
                 continue
 
-            ts = sig.timestamps
-            vs = sig.values
+            ts, vs = sig.sorted_view()
 
             # Determine visible x-window
             if self.x_range is not None:
@@ -895,8 +895,9 @@ class GraphPanelVM(Observable):
                 sig = sig_map.get(entry.signal_key)
                 if sig is None or len(sig.timestamps) == 0:
                     continue
-                ts0 = float(sig.timestamps[0])
-                tsN = float(sig.timestamps[-1])
+                s_ts = sig.sorted_view()[0]
+                ts0 = float(s_ts[0])
+                tsN = float(s_ts[-1])
                 x_lo = ts0 if x_lo is None else min(x_lo, ts0)
                 x_hi = tsN if x_hi is None else max(x_hi, tsN)
             if x_lo is not None and x_hi is not None:
