@@ -113,7 +113,7 @@ class CsvLoader:
             diagnostics.append(
                 Diagnostic(
                     level="warning",
-                    message=f"重複ヘッダ {dups} を連番で改名（name[idx] 方式）",  # noqa: RUF001
+                    message=f"重複ヘッダ {', '.join(dups)} を連番で改名（name[idx] 方式）",  # noqa: RUF001
                 )
             )
             signal_names = renamed
@@ -150,6 +150,7 @@ class CsvLoader:
                 return LoadResult(
                     signal_group=None,
                     diagnostics=(
+                        *diagnostics,
                         Diagnostic(
                             level="error",
                             message=(
@@ -167,6 +168,7 @@ class CsvLoader:
                 return LoadResult(
                     signal_group=None,
                     diagnostics=(
+                        *diagnostics,
                         Diagnostic(
                             level="error",
                             message=f"Non-numeric timestamp {ts_str!r}",
@@ -181,6 +183,7 @@ class CsvLoader:
                 return LoadResult(
                     signal_group=None,
                     diagnostics=(
+                        *diagnostics,
                         Diagnostic(
                             level="error",
                             message=f"非有限タイムスタンプ {ts_str!r}（時刻軸が破損）",  # noqa: RUF001
@@ -203,6 +206,7 @@ class CsvLoader:
                     return LoadResult(
                         signal_group=None,
                         diagnostics=(
+                            *diagnostics,
                             Diagnostic(
                                 level="error",
                                 message=f"Non-numeric value {val_str!r} in signal column",

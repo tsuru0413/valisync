@@ -209,6 +209,19 @@ def test_csv_non_finite_timestamp_fails_with_error(tmp_path: Path) -> None:
     )
 
 
+def test_csv_failure_preserves_accumulated_diagnostics(tmp_path: Path) -> None:
+    # 重複ヘッダ warning が発行された後に非有限 ts で失敗するケース:
+    # 失敗 LoadResult にも集約済み warning が残ること - 後出し診断の防止
+    result = _load_csv_text(tmp_path, "t,spd,spd\n0.0,1,2\nnan,3,4\n")
+    assert result.signal_group is None
+    assert any(
+        d.level == "error" and "タイムスタンプ" in d.message for d in result.diagnostics
+    )
+    assert any(
+        "重複ヘッダ" in d.message for d in result.diagnostics
+    )  # fix 前は消えていた
+
+
 # ─── CsvLoader: cooperative cancel (FB-04 hard side) ──────────────────────────
 
 
