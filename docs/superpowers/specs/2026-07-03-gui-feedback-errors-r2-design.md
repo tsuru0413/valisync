@@ -3,7 +3,7 @@
 エラー・診断・状態フィードバック可視化の第2弾。第1弾（FB-01/02/03/06・PR #37）が作った器（ステータスバー・Diagnostics ドック・`LoadOutcome` 伝播）の上に、ロード中の可視化/中断と「いま何を見ているか」の常設表示を積む。
 
 - **作成**: 2026-07-03
-- **ステータス**: 設計承認済み（brainstorming でモックアップ承認・実装プラン未作成）
+- **ステータス**: 実装完了（プラン 2026-07-03-gui-feedback-errors-r2.md・全11タスク消化済み）
 - **一次情報源の課題**: [docs/audit-findings-catalog.md](../../audit-findings-catalog.md) の **FB-04/05/07/08/09/10**
 - **第1弾 spec**: [2026-07-02-gui-feedback-errors-design.md](2026-07-02-gui-feedback-errors-design.md)
 - **完成イメージ**: brainstorming で提示・承認された2モック（第2弾サーフェス全体像／FileBrowser・ChannelBrowser 詳細＝ヘッダ行・空状態3分類・ツールチップ・BusyOverlay）
@@ -52,7 +52,13 @@ MVVM を維持し、Session を唯一のゲートウェイとする。ViewModel 
 - `Session.load(path, format_def=None, cancel: Callable[[], bool] | None = None) -> LoadOutcome`。`cancel` はローダーへ透過。
 - `Mdf4Loader.load(path, cancel=None)`: 現行の `raw = list(mdf.iter_channels(...))`（mdf4_loader.py:88・支配的コスト）を逐次ループに変え、**1チャンネルごと**に `cancel()` を確認 → True なら `LoadCancelled` を raise（グループ未登録のまま脱出）。変換ループ（同 :112）にも同チェック。
 - `CsvLoader.load(path, fmt, cancel=None)`: 行パースループで **N 行ごと**（N=1000）に確認。
-- 中断できない盲点は `MDF()` 構造パース（mdf4_loader.py:73）のみ — ソフト側が UI を守る。
+- 中断できない盲点は `MDF()` 構造パース（mdf4_loader.py:73）と、CSV の
+  `rows = list(csv.reader(f, ...))`（csv_loader.py:46 付近・ファイル全体を
+  一括でメモリへ読み切ってからでないとチェックポイントに辿り着けない）の
+  2箇所 — いずれもソフトキャンセル（ボタン即応・busy 即時解放）が UI を
+  守る。CSV をストリーミング処理（`csv.reader` を1行ずつ消費しつつチェック
+  ポイントを打つ）に変えれば大容量 CSV の途中中断も可能になるが、本弾の
+  スコープ外の follow-up とする。
 
 **gui**
 - `BusyOverlay`: ラベル（単一ロード「読み込み中: <basename>」／複数「N ファイルを読み込み中」）＋「キャンセル」`QPushButton` を追加。`cancel_requested = Signal()`。
@@ -67,14 +73,14 @@ MVVM を維持し、Session を唯一のゲートウェイとする。ViewModel 
 ### 4.2 FB-05＋FB-09 — ChannelBrowser ヘッダ行と空状態3分類（統合実装）
 
 - `ChannelBrowserVM`（Qt-free）に追加:
-  - `header_text() -> str`: 「<アクティブファイル basename> — 全 M ch 中 N 件表示」（M=ファイル全ch数、N=フィルタ通過数）。未選択時は「ファイル未選択」。
+  - `header_text() -> str`: 「<アクティブファイル basename> — M ch 中 N 件表示」（M=ファイル全ch数、N=フィルタ通過数）。未選択時は「ファイル未選択」、0ch 時は「<basename> — 0 ch」（M/N の内訳を出さないヘッダ変種）。
   - `empty_state() -> str`: `"none_selected" | "no_match" | "no_channels" | "has_rows"` の4値（`no_match` は現在のクエリ文字列を `filter_query()` で併せて公開）。
   - 既存の `"signals"` 通知に載せて View が再描画（新規通知タグは増やさない）。
 - `ChannelBrowserView`:
   - 検索ボックス上にヘッダ `QLabel` 1本。
   - ツリーを `QStackedWidget` で「ツリー ⇄ プレースホルダ QLabel」に切替（第1弾 DiagnosticsView の空プレースホルダと同一パターン）。メッセージ:
     - `none_selected`: 「File Browser でファイルを選択すると信号一覧を表示します」（FB-08 の ChannelBrowser 側を兼ねる）
-    - `no_match`: 「『<query>』に一致する信号はありません」
+    - `no_match`: 「「<query>」に一致する信号はありません」（引用符は `『』` ではなく `「」`）
     - `no_channels`: 「このファイルに信号がありません（Diagnostics に詳細）」
   - **既存の検索・信号 D&D・右クリックメニューの入力経路は無変更**（realgui 実証済み経路を壊さない）。
 
