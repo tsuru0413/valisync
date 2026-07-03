@@ -303,3 +303,21 @@ def test_source_info_time_range_non_monotonic(tmp_path):
     key = session._groups.add(_group_of([messy], tmp_path / "messy.csv"))
     info = session.source_info(key)
     assert info.t_min == 1.0 and info.t_max == 5.0
+
+
+def test_namespaced_wrappers_share_sorted_view_cache(tmp_path):
+    # signals() がマテリアライズする namespaced ラッパーは呼び出しごとに別オブジェクト
+    # だが、render ホットパスで毎 tick 単調性スキャンを繰り返さないよう、
+    # sorted_view() のキャッシュは長寿命の元 Signal に委譲共有される (Fix 1)。
+    # 単調な信号だと sorted_view() が生配列をそのまま返すため委譲の効果が
+    # 自明に隠れてしまう — 非単調にして初めて「委譲先で計算した同一オブジェクト」
+    # であることを検証できる。
+    session = Session()
+    messy = _derived("x", [0.0, 2.0, 1.0], [10.0, 30.0, 20.0])
+    session._groups.add(_group_of([messy], tmp_path / "messy.csv"))
+
+    sigs_a = session.signals()
+    sigs_b = session.signals()
+
+    assert sigs_a[0] is not sigs_b[0]  # ラッパーは毎回新規生成される(前提)
+    assert sigs_a[0].sorted_view()[0] is sigs_b[0].sorted_view()[0]  # キャッシュ共有

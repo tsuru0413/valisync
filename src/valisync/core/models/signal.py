@@ -56,6 +56,14 @@ class Signal:
         cache = getattr(self, "_sorted_view_cache", None)
         if cache is not None:
             return cache
+        # 配列を共有するラッパー(namespaced コピー)は長寿命の元 Signal に
+        # 委譲してキャッシュを共有する — ラッパーが毎回作り直されても
+        # 単調性スキャンは元 Signal で1回しか走らない(render ホットパス対策)
+        delegate = getattr(self, "_sorted_view_delegate", None)
+        if delegate is not None:
+            cache = delegate.sorted_view()
+            object.__setattr__(self, "_sorted_view_cache", cache)
+            return cache
         ts, vs = self.timestamps, self.values
         if len(ts) < 2 or bool(np.all(np.diff(ts) > 0)):
             cache = (ts, vs)

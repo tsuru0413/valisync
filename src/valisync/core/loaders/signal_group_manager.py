@@ -69,8 +69,9 @@ class SignalGroupManager:
 
         The returned Signals share the stored timestamp/value arrays.
         """
-        return [
-            Signal(
+        result: list[Signal] = []
+        for sig in group.signals:
+            ns_sig = Signal(
                 name=f"{key}{KEY_SEPARATOR}{sig.name}",
                 timestamps=sig.timestamps,
                 values=sig.values,
@@ -79,8 +80,14 @@ class SignalGroupManager:
                 source_file=sig.source_file,
                 metadata=sig.metadata,
             )
-            for sig in group.signals
-        ]
+            # namespaced ラッパーは呼び出しごとに新規生成される(signals() は
+            # 毎回リストを作り直す)ので、sorted_view の単調性スキャン結果を
+            # 元の長寿命 Signal に委譲して共有する。委譲は timestamps/values の
+            # 配列オブジェクトが元 Signal と同一であることが前提
+            # (offset 適用後の別配列 Signal には絶対に付けないこと)。
+            object.__setattr__(ns_sig, "_sorted_view_delegate", sig)
+            result.append(ns_sig)
+        return result
 
     def group_signals(self, key: str) -> list[Signal]:
         """Namespaced signals for a single group (KeyError if key is unknown).

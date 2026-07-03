@@ -574,9 +574,13 @@ def test_render_data_non_monotonic_signal_yields_monotonic_curve(
     sig_key = _register_signal(session, _non_monotonic_signal(), tmp_path)
     vm = GraphPanelVM(session)
     vm.add_signal(sig_key)
-    # Wide fixed window so the assertion doesn't depend on auto-fit, which
-    # (pre-fix) derives ts0/tsN from the raw unsorted array (see memory:
-    # gui_offset_render_test_xrange_pitfall).
+    # add_signal auto-fits x_range via _auto_fit_ranges(); for the raw
+    # timestamps [0.0, 2.0, 1.0] the sorted endpoints are 0.0/2.0 — this
+    # pins down that auto-fit reads sorted_view(), not the raw array.
+    assert vm.x_range == (0.0, 2.0)
+    # Wide fixed window so the render assertion below doesn't depend on
+    # auto-fit, which (pre-fix) derives ts0/tsN from the raw unsorted array
+    # (see memory: gui_offset_render_test_xrange_pitfall).
     vm.x_range = (0.0, 10.0)
 
     curves = vm.render_data()
@@ -584,6 +588,27 @@ def test_render_data_non_monotonic_signal_yields_monotonic_curve(
     ts = curves[0].timestamps
     assert len(ts) > 0
     assert np.all(np.diff(ts) > 0)
+
+
+def test_reset_x_sorts_non_monotonic_signal_to_sorted_endpoints(
+    tmp_path: Path,
+) -> None:
+    """reset_x fits x_range to the sorted (not raw) endpoints of a non-monotonic Signal.
+
+    Mirrors test_reset_x_sets_full_range but with an out-of-order Signal, so
+    it fails if reset_x's auto-fit ever regresses to reading raw timestamps
+    instead of sorted_view().
+    """
+    session = Session()
+    sig_key = _register_signal(session, _non_monotonic_signal(), tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(sig_key)
+    # Manually narrow x_range first so reset_x has something to overwrite.
+    vm.set_x_range(0.1, 0.2)
+
+    vm.reset_x()
+
+    assert vm.x_range == (0.0, 2.0)
 
 
 def test_render_data_empty_range_yields_empty_curve(tmp_path: Path) -> None:
