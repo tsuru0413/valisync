@@ -18,13 +18,14 @@ Tests verify (strict TDD — tests written before implementation):
 from __future__ import annotations
 
 import csv
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from valisync.core.interpolation import InterpolationMethod
-from valisync.core.models import Delimiter, FormatDefinition
+from valisync.core.models import Delimiter, FormatDefinition, Signal, SignalGroup
 from valisync.core.session import Session
 from valisync.core.statistics.range_stats import StatisticsResult  # noqa: F401
 from valisync.gui.viewmodels.graph_panel_vm import (
@@ -77,6 +78,37 @@ def _loaded_session(
 def _first_signal_key(session: Session) -> str:
     """Return the namespaced name of the first signal in session."""
     return session.signals()[0].name
+
+
+def _non_monotonic_signal(name: str = "messy") -> Signal:
+    """A Signal with out-of-order timestamps (accepted since Task 1)."""
+    return Signal(
+        name=name,
+        timestamps=np.array([0.0, 2.0, 1.0], dtype=np.float64),
+        values=np.array([10.0, 30.0, 20.0], dtype=np.float64),
+        file_format="CSV",
+        bus_type="",
+        source_file="",
+    )
+
+
+def _register_signal(session: Session, sig: Signal, tmp_path: Path) -> str:
+    """Register *sig* directly into *session* (bypassing the loader) and return its namespaced key.
+
+    Mirrors the ``_group_of`` pattern in tests/test_session.py: signals are
+    injected via ``session._groups.add`` so tests can exercise a Signal shape
+    the CSV loader cannot yet produce (Task 4 predates Task 6's non-monotonic
+    CSV support).
+    """
+    key = session._groups.add(
+        SignalGroup(
+            signals=(sig,),
+            source_path=tmp_path / f"{sig.name}.csv",
+            file_format="CSV",
+            loaded_at=datetime.now(),
+        )
+    )
+    return session.group_signals(key)[0].name
 
 
 # ─── RenderCurve ─────────────────────────────────────────────────────────────
@@ -332,6 +364,34 @@ def test_reset_y_covers_all_visible_values(tmp_path: Path) -> None:
         assert y_hi >= float(finite_vals.max()) - 1e-9
 
 
+def test_reset_y_uses_aligned_view_not_raw_values(tmp_path: Path) -> None:
+    """reset_y must fit on the aligned (sorted, keep-last) view, not raw values.
+
+    ts=[0,1,1] has a duplicate ts=1 where sorted_view's keep-last dedup drops
+    the 100 sample (never rendered) and keeps 1. Fitting on raw sig.values
+    would stretch y_range to include that discarded, never-drawn 100.
+    """
+    csv_file = tmp_path / "dup.csv"
+    with csv_file.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["t", "s1"])
+        writer.writerow([0.0, 5.0])
+        writer.writerow([1.0, 100.0])
+        writer.writerow([1.0, 1.0])
+    session = Session()
+    session.load(csv_file, _csv_format(1))
+    sig = session.signals()[0]
+    assert not sig.is_monotonic  # sanity: duplicate ts triggers the divergence
+
+    vm = GraphPanelVM(session)
+    vm.add_signal(sig.name)
+    vm.reset_y()
+
+    assert vm.y_range is not None
+    _, y_hi = vm.y_range
+    assert y_hi < 100.0  # displayed values top out near 5, not the discarded 100
+
+
 def test_reset_y_empty_graceful() -> None:
     """reset_y with no plotted signals does not raise; y_range stays None or is set."""
     session = Session()
@@ -527,6 +587,56 @@ def test_render_data_timestamps_within_x_range(tmp_path: Path) -> None:
     if len(curves[0].timestamps) > 0:
         assert float(curves[0].timestamps[0]) >= x_lo - 1e-12
         assert float(curves[0].timestamps[-1]) <= x_hi + 1e-12
+
+
+def test_render_data_non_monotonic_signal_yields_monotonic_curve(
+    tmp_path: Path,
+) -> None:
+    """render_data yields strictly-monotonic timestamps for a non-monotonic Signal.
+
+    Signal no longer rejects out-of-order timestamps (Task 1); render must
+    consume Signal.sorted_view() (not raw timestamps) so RenderCurve stays
+    strictly monotonic and searchsorted slicing is correct.
+    """
+    session = Session()
+    sig_key = _register_signal(session, _non_monotonic_signal(), tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(sig_key)
+    # add_signal auto-fits x_range via _auto_fit_ranges(); for the raw
+    # timestamps [0.0, 2.0, 1.0] the sorted endpoints are 0.0/2.0 — this
+    # pins down that auto-fit reads sorted_view(), not the raw array.
+    assert vm.x_range == (0.0, 2.0)
+    # Wide fixed window so the render assertion below doesn't depend on
+    # auto-fit, which (pre-fix) derives ts0/tsN from the raw unsorted array
+    # (see memory: gui_offset_render_test_xrange_pitfall).
+    vm.x_range = (0.0, 10.0)
+
+    curves = vm.render_data()
+
+    ts = curves[0].timestamps
+    assert len(ts) > 0
+    assert np.all(np.diff(ts) > 0)
+
+
+def test_reset_x_sorts_non_monotonic_signal_to_sorted_endpoints(
+    tmp_path: Path,
+) -> None:
+    """reset_x fits x_range to the sorted (not raw) endpoints of a non-monotonic Signal.
+
+    Mirrors test_reset_x_sets_full_range but with an out-of-order Signal, so
+    it fails if reset_x's auto-fit ever regresses to reading raw timestamps
+    instead of sorted_view().
+    """
+    session = Session()
+    sig_key = _register_signal(session, _non_monotonic_signal(), tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(sig_key)
+    # Manually narrow x_range first so reset_x has something to overwrite.
+    vm.set_x_range(0.1, 0.2)
+
+    vm.reset_x()
+
+    assert vm.x_range == (0.0, 2.0)
 
 
 def test_render_data_empty_range_yields_empty_curve(tmp_path: Path) -> None:

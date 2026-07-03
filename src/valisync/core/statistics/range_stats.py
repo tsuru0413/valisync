@@ -41,8 +41,7 @@ class RangeStatistics:
         if t_start > t_end:
             raise ValueError(f"t_start must be ≤ t_end, got {t_start!r} > {t_end!r}")
 
-        ts = signal.timestamps
-        vs = signal.values
+        ts, vs = signal.sorted_view()
 
         in_range = vs[(ts >= t_start) & (ts <= t_end)]
 

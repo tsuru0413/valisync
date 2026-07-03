@@ -319,14 +319,14 @@ def _compute_result_timestamps(
     if any(len(signals[n].timestamps) == 0 for n in refs):
         return np.array([], dtype=np.float64)
 
-    t_start = max(signals[n].timestamps[0] for n in refs)
-    t_end = min(signals[n].timestamps[-1] for n in refs)
+    t_start = max(signals[n].sorted_view()[0][0] for n in refs)
+    t_end = min(signals[n].sorted_view()[0][-1] for n in refs)
     if t_start > t_end:
         return np.array([], dtype=np.float64)
 
     parts: list[np.ndarray] = []
     for n in refs:
-        ts = signals[n].timestamps
+        ts = signals[n].sorted_view()[0]
         parts.append(ts[(ts >= t_start) & (ts <= t_end)])
 
     return np.unique(np.concatenate(parts))
@@ -351,7 +351,8 @@ class _Evaluator:
         sig = self._signals[name]
         if len(sig.timestamps) == 0 or len(self._result_ts) == 0:
             return np.zeros(len(self._result_ts), dtype=np.float64)
-        return np.interp(self._result_ts, sig.timestamps, sig.values)
+        ts, vs = sig.sorted_view()  # np.interp は単調な xp が前提
+        return np.interp(self._result_ts, ts, vs)
 
     def eval(self, node: Any) -> Any:
         if isinstance(node, _NumberNode):

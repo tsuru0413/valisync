@@ -129,7 +129,10 @@ def test_real_click_on_filter_buttons_filters_rows(qtbot):
 
 def test_real_double_click_on_row_emits_entry_activated(qtbot):
     """A real dblclick on a table row (not a direct ``.emit()``) fires
-    ``entry_activated`` with the activated entry's payload."""
+    ``entry_activated`` with the activated entry's source (file basename) —
+    the activation target is always the file, even when the entry carries a
+    ``signal_name`` (display-only; see diagnostics_view.py's
+    ``_on_double_click``)."""
     vm, view = _mk(qtbot)
     vm.add("a.mf4", [Diagnostic(level="error", message="boom")])
     vm.add("b.mf4", [Diagnostic(level="warning", message="skip", signal_name="gps")])
@@ -153,4 +156,4 @@ def test_real_double_click_on_row_emits_entry_activated(qtbot):
     with qtbot.waitSignal(view.entry_activated, timeout=1000) as blocker:
         qtbot.mouseDClick(table.viewport(), Qt.MouseButton.LeftButton, pos=pos)
 
-    assert blocker.args == ["gps"]
+    assert blocker.args == ["b.mf4"]

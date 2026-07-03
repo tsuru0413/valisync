@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from valisync.core.interpolation import InterpolationMethod
-from valisync.core.models import Delimiter, FormatDefinition, Signal
+from valisync.core.models import Delimiter, FormatDefinition, Signal, SignalGroup
 from valisync.core.session import (
     LoadCancelled,
     LoadError,
@@ -27,6 +28,15 @@ def _derived(name: str, ts: list[float], vs: list[float]) -> Signal:
         bus_type="",
         source_file="",
         metadata={},
+    )
+
+
+def _group_of(signals: list[Signal], source_path: Path) -> SignalGroup:
+    return SignalGroup(
+        signals=tuple(signals),
+        source_path=source_path,
+        file_format="CSV",
+        loaded_at=datetime.now(),
     )
 
 
@@ -284,3 +294,30 @@ def test_source_info_size_none_when_file_gone(tmp_path):
 def test_source_info_unknown_key_raises():
     with pytest.raises(KeyError):
         Session().source_info("nope_1")
+
+
+def test_source_info_time_range_non_monotonic(tmp_path):
+    # 非単調 CSV は Task 6 まで作れないため、group へ直接 Signal を積んで検証
+    session = Session()
+    messy = _derived("x", [5.0, 1.0, 3.0], [1.0, 2.0, 3.0])
+    key = session._groups.add(_group_of([messy], tmp_path / "messy.csv"))
+    info = session.source_info(key)
+    assert info.t_min == 1.0 and info.t_max == 5.0
+
+
+def test_namespaced_wrappers_share_sorted_view_cache(tmp_path):
+    # signals() がマテリアライズする namespaced ラッパーは呼び出しごとに別オブジェクト
+    # だが、render ホットパスで毎 tick 単調性スキャンを繰り返さないよう、
+    # sorted_view() のキャッシュは長寿命の元 Signal に委譲共有される (Fix 1)。
+    # 単調な信号だと sorted_view() が生配列をそのまま返すため委譲の効果が
+    # 自明に隠れてしまう — 非単調にして初めて「委譲先で計算した同一オブジェクト」
+    # であることを検証できる。
+    session = Session()
+    messy = _derived("x", [0.0, 2.0, 1.0], [10.0, 30.0, 20.0])
+    session._groups.add(_group_of([messy], tmp_path / "messy.csv"))
+
+    sigs_a = session.signals()
+    sigs_b = session.signals()
+
+    assert sigs_a[0] is not sigs_b[0]  # ラッパーは毎回新規生成される(前提)
+    assert sigs_a[0].sorted_view()[0] is sigs_b[0].sorted_view()[0]  # キャッシュ共有

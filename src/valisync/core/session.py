@@ -194,8 +194,8 @@ class Session:
             size: int | None = group.source_path.stat().st_size
         except OSError:
             size = None  # moved/deleted after load — show what we still know
-        t_mins = [s.timestamps[0] for s in group.signals if len(s.timestamps)]
-        t_maxs = [s.timestamps[-1] for s in group.signals if len(s.timestamps)]
+        t_mins = [s.sorted_view()[0][0] for s in group.signals if len(s.timestamps)]
+        t_maxs = [s.sorted_view()[0][-1] for s in group.signals if len(s.timestamps)]
         return SourceInfo(
             full_path=group.source_path,
             size_bytes=size,
@@ -301,7 +301,7 @@ class Session:
 
     def moving_average(self, signal: Signal, window: int) -> Signal:
         """Simple moving average with a shrinking head window (Req 26.1)."""
-        v = self._require_min_samples(signal, "moving_average")
+        t, v = self._require_min_samples(signal, "moving_average")
         n = len(v)
         if not (1 <= window <= n):
             raise ValueError(f"window must be in 1..{n} (signal length), got {window}")
@@ -309,47 +309,56 @@ class Session:
         for i in range(n):
             start = max(0, i - window + 1)
             out[i] = v[start : i + 1].mean()
-        return self._derive(signal, f"sma({signal.name})", out)
+        return self._derive(signal, f"sma({signal.name})", out, t)
 
     def linear_regression(self, signal: Signal) -> Signal:
-        """Least-squares line evaluated on the input timestamps (Req 26.2)."""
-        v = self._require_min_samples(signal, "linear_regression")
-        t = signal.timestamps
+        """Least-squares line evaluated on the (sorted) input timestamps (Req 26.2)."""
+        t, v = self._require_min_samples(signal, "linear_regression")
         slope, intercept = np.polyfit(t, v, 1)
-        predicted = slope * t + intercept
-        return self._derive(signal, f"linreg({signal.name})", predicted)
+        return self._derive(signal, f"linreg({signal.name})", slope * t + intercept, t)
 
     def differentiate(self, signal: Signal) -> Signal:
         """Numerical derivative: central difference, one-sided at ends (Req 26.3)."""
-        v = self._require_min_samples(signal, "differentiate")
-        t = signal.timestamps
+        t, v = self._require_min_samples(signal, "differentiate")
         d = np.empty(len(v), dtype=np.float64)
         d[1:-1] = (v[2:] - v[:-2]) / (t[2:] - t[:-2])
         d[0] = (v[1] - v[0]) / (t[1] - t[0])
         d[-1] = (v[-1] - v[-2]) / (t[-1] - t[-2])
-        return self._derive(signal, f"diff({signal.name})", d)
+        return self._derive(signal, f"diff({signal.name})", d, t)
 
     def integrate(self, signal: Signal) -> Signal:
         """Cumulative trapezoidal integral, starting at 0.0 (Req 26.4)."""
-        v = self._require_min_samples(signal, "integrate")
-        t = signal.timestamps
+        t, v = self._require_min_samples(signal, "integrate")
         segments = (v[1:] + v[:-1]) / 2.0 * (t[1:] - t[:-1])
         cumulative = np.concatenate([[0.0], np.cumsum(segments)])
-        return self._derive(signal, f"integ({signal.name})", cumulative)
+        return self._derive(signal, f"integ({signal.name})", cumulative, t)
 
     @staticmethod
-    def _require_min_samples(signal: Signal, op: str) -> np.ndarray:
-        """Return the values array, raising if fewer than 2 samples (Req 26.7)."""
-        v = signal.values
+    def _require_min_samples(signal: Signal, op: str) -> tuple[np.ndarray, np.ndarray]:
+        """Return the sorted (timestamps, values), raising if fewer than 2 samples (Req 26.7).
+
+        The "≥2 samples" check is against the aligned axis: non-monotonic
+        input is dedup'd (keep-last) by sorted_view first, so the count that
+        matters is the aligned length, not the raw (possibly duplicate-laden)
+        input length.
+        """
+        t, v = signal.sorted_view()
         if len(v) < 2:
             raise ValueError(f"{op} requires at least 2 samples, got {len(v)}")
-        return v
+        return t, v
 
-    def _derive(self, source: Signal, name: str, values: np.ndarray) -> Signal:
-        """Build a Derived_Signal sharing the source timestamps (Req 26.5)."""
+    def _derive(
+        self, source: Signal, name: str, values: np.ndarray, timestamps: np.ndarray
+    ) -> Signal:
+        """Build a Derived_Signal on the sorted axis its values were computed on (Req 26.5).
+
+        *timestamps* is expected to already be the aligned (sorted, dedup'd)
+        axis returned by ``_require_min_samples`` — Derived_Signals always
+        carry a strictly-increasing axis regardless of the source's ordering.
+        """
         return Signal(
             name=name,
-            timestamps=source.timestamps,
+            timestamps=timestamps,
             values=values,
             file_format="Derived",
             bus_type="",

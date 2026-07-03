@@ -490,8 +490,9 @@ class GraphPanelVM(Observable):
             sig = sig_map.get(entry.signal_key)
             if sig is None or len(sig.timestamps) == 0:
                 continue
-            ts0 = float(sig.timestamps[0])
-            tsN = float(sig.timestamps[-1])
+            s_ts = sig.sorted_view()[0]
+            ts0 = float(s_ts[0])
+            tsN = float(s_ts[-1])
             lo = ts0 if lo is None else min(lo, ts0)
             hi = tsN if hi is None else max(hi, tsN)
         # Clear to None when nothing is fittable so a later add_signal can
@@ -518,7 +519,12 @@ class GraphPanelVM(Observable):
                 sig = sig_map.get(sig_key)
                 if sig is None or len(sig.values) == 0:
                     continue
-                finite_vals = sig.values[np.isfinite(sig.values)]
+                # Fit on the aligned (sorted, keep-last) view — this is what
+                # actually gets drawn. Raw sig.values still holds duplicate-ts
+                # samples that keep-last discards; letting those leak in would
+                # stretch y_range past what's ever visible on screen.
+                vs = sig.sorted_view()[1]
+                finite_vals = vs[np.isfinite(vs)]
                 if len(finite_vals) == 0:
                     continue
                 v_lo = float(finite_vals.min())
@@ -575,8 +581,7 @@ class GraphPanelVM(Observable):
                 )
                 continue
 
-            ts = sig.timestamps
-            vs = sig.values
+            ts, vs = sig.sorted_view()
 
             # Determine visible x-window
             if self.x_range is not None:
@@ -895,8 +900,9 @@ class GraphPanelVM(Observable):
                 sig = sig_map.get(entry.signal_key)
                 if sig is None or len(sig.timestamps) == 0:
                     continue
-                ts0 = float(sig.timestamps[0])
-                tsN = float(sig.timestamps[-1])
+                s_ts = sig.sorted_view()[0]
+                ts0 = float(s_ts[0])
+                tsN = float(s_ts[-1])
                 x_lo = ts0 if x_lo is None else min(x_lo, ts0)
                 x_hi = tsN if x_hi is None else max(x_hi, tsN)
             if x_lo is not None and x_hi is not None:
@@ -915,7 +921,10 @@ class GraphPanelVM(Observable):
                     sig = sig_map.get(sig_key)
                     if sig is None or len(sig.values) == 0:
                         continue
-                    finite_vals = sig.values[np.isfinite(sig.values)]
+                    # See reset_y: fit on the aligned view, not raw duplicate-ts
+                    # values that keep-last discards before rendering.
+                    vs = sig.sorted_view()[1]
+                    finite_vals = vs[np.isfinite(vs)]
                     if len(finite_vals) == 0:
                         continue
                     v_lo = float(finite_vals.min())

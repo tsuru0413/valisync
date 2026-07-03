@@ -4,7 +4,9 @@ A QDockWidget with a table (level / order / source / message / signal) plus a
 filter (All/Errors/Warnings), Clear, and a counts chip — per design spec
 §4.4. Subscribes to DiagnosticsViewModel and rebuilds its rows on the
 "diagnostics" change tag. Double-clicking a row emits ``entry_activated`` with
-the signal name (or source) so MainWindow can jump to it. When the filtered
+the entry's source (file basename) so MainWindow can activate it; the target
+is always the file — signal_name is display-only (see ``_on_double_click``).
+When the filtered
 entry list is empty, a placeholder replaces the table (spec §7: "ドックは
 診断ゼロでも存在。空時はプレースホルダ").
 """
@@ -131,4 +133,11 @@ class DiagnosticsView(QDockWidget):
         entries = self._vm.entries(self._filter)
         if 0 <= row < len(entries):
             e = entries[row]
-            self.entry_activated.emit(e.signal_name or e.source)
+            # Activation target is the FILE (spec §4.4's best-effort jump), not
+            # the signal: signal_name is a raw channel name for display only
+            # ("対象" column) and matches neither source_name(key) nor a group
+            # signal's namespaced "key::name" in
+            # MainWindow._on_diagnostic_activated — emitting it verbatim made
+            # skipped/duplicate/generic channel names silently unmatchable.
+            # source (the file basename) always resolves via the first loop.
+            self.entry_activated.emit(e.source)

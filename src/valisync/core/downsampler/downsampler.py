@@ -16,7 +16,12 @@ class Downsampler:
         ``n`` output points (Req 14.2). Output timestamps are always a strict
         subset of the input timestamps (Req 14.3, 14.6).
 
-        Returns *signal* unchanged when ``len(signal.timestamps) <= n`` (Req 14.4).
+        When the *aligned* (sorted, dedup'd) view is already within *n* samples
+        (Req 14.4), monotonic inputs return the same Signal object unchanged;
+        non-monotonic inputs get a freshly-built Signal on the aligned axis
+        instead, so the pass-through never leaks raw disorder downstream. The
+        ``<= n`` threshold is evaluated against this aligned length, not the
+        raw (possibly duplicate-laden) input length.
 
         Raises ValueError when *n* is not a plain integer, is bool, or is < 2
         (Req 14.7).
@@ -26,12 +31,23 @@ class Downsampler:
         if n < 2:
             raise ValueError(f"n must be ≥ 2, got {n!r}")
 
-        ts = signal.timestamps
-        vs = signal.values
+        ts, vs = signal.sorted_view()
 
-        # Req 14.4: pass-through when already within target
+        # Req 14.4: pass-through when already within target.
+        # 非単調入力では raw をそのまま返すと下流(render)に非単調が漏れる
+        # ため、整列ビューから作り直した Signal を返す(単調なら無コピー)。
         if len(ts) <= n:
-            return signal
+            if signal.is_monotonic:
+                return signal
+            return Signal(
+                name=signal.name,
+                timestamps=ts,
+                values=vs,
+                file_format=signal.file_format,
+                bus_type=signal.bus_type,
+                source_file=signal.source_file,
+                metadata=signal.metadata,
+            )
 
         n_buckets = n // 2
         t_lo = float(ts[0])

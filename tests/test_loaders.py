@@ -17,7 +17,15 @@ from valisync.core.loaders.mdf4_loader import Mdf4Loader
 from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.session import LoadCancelled
 
-from .mdf4_helpers import CAN, ETHERNET, NONE, write_mdf4
+from .mdf4_helpers import (
+    CAN,
+    ETHERNET,
+    NONE,
+    write_mdf4,
+    write_mdf4_all_channels_bad,
+    write_mdf4_non_finite_ts,
+    write_mdf4_non_monotonic,
+)
 
 
 def _fmt(**overrides: object) -> FormatDefinition:
@@ -153,6 +161,68 @@ def test_csv_too_few_columns(tmp_path: Path) -> None:
     assert result.diagnostics[0].level == "error"
 
 
+# ─── CsvLoader: 品質診断 (LD-04/06/08/09) ─────────────────────────────────────
+
+
+def _load_csv_text(tmp_path: Path, text: str):
+    # _fmt(): ts列0・信号列1-2・header あり — 下記テストの "t,a,b" 形状に合わせた
+    # 既存ヘルパをそのまま流用(新規ヘルパを増やさない)。
+    return CsvLoader().load(_write_csv(tmp_path, text), _fmt())
+
+
+def test_csv_non_monotonic_is_accepted_with_file_warning(tmp_path: Path) -> None:
+    result = _load_csv_text(tmp_path, "t,a,b\n0.0,1,2\n2.0,3,4\n1.0,5,6\n1.0,7,8\n")
+    assert result.signal_group is not None  # 旧実装ではファイル全滅
+    assert any(
+        d.level == "warning" and "非単調" in d.message for d in result.diagnostics
+    )
+    assert not result.signal_group.signals[0].is_monotonic  # 生データ無改変
+
+
+def test_csv_nan_inf_values_accepted_with_count_warning(tmp_path: Path) -> None:
+    result = _load_csv_text(tmp_path, "t,a,b\n0.0,nan,1\n1.0,inf,2\n")
+    assert result.signal_group is not None
+    a = result.signal_group.signals[0]
+    assert np.isnan(a.values[0]) and np.isinf(a.values[1])
+    assert any("非有限値 2 個" in d.message for d in result.diagnostics)
+
+
+def test_csv_duplicate_headers_disambiguated_like_mdf4(tmp_path: Path) -> None:
+    result = _load_csv_text(tmp_path, "t,spd,spd\n0.0,1,2\n1.0,3,4\n")
+    assert result.signal_group is not None
+    names = [s.name for s in result.signal_group.signals]
+    assert names == ["spd[0]", "spd[1]"]  # MDF4 と同一方式
+    assert any("重複ヘッダ" in d.message for d in result.diagnostics)
+
+
+def test_csv_header_only_succeeds_with_warning(tmp_path: Path) -> None:
+    result = _load_csv_text(tmp_path, "t,a,b\n")
+    assert result.signal_group is not None
+    assert all(len(s.timestamps) == 0 for s in result.signal_group.signals)
+    assert any("データ行が 0 行" in d.message for d in result.diagnostics)
+
+
+def test_csv_non_finite_timestamp_fails_with_error(tmp_path: Path) -> None:
+    result = _load_csv_text(tmp_path, "t,a,b\n0.0,1,2\nnan,3,4\n")
+    assert result.signal_group is None
+    assert any(
+        d.level == "error" and "タイムスタンプ" in d.message for d in result.diagnostics
+    )
+
+
+def test_csv_failure_preserves_accumulated_diagnostics(tmp_path: Path) -> None:
+    # 重複ヘッダ warning が発行された後に非有限 ts で失敗するケース:
+    # 失敗 LoadResult にも集約済み warning が残ること - 後出し診断の防止
+    result = _load_csv_text(tmp_path, "t,spd,spd\n0.0,1,2\nnan,3,4\n")
+    assert result.signal_group is None
+    assert any(
+        d.level == "error" and "タイムスタンプ" in d.message for d in result.diagnostics
+    )
+    assert any(
+        "重複ヘッダ" in d.message for d in result.diagnostics
+    )  # fix 前は消えていた
+
+
 # ─── CsvLoader: cooperative cancel (FB-04 hard side) ──────────────────────────
 
 
@@ -262,6 +332,42 @@ def test_mdf4_corrupt_file(tmp_path: Path) -> None:
     result = Mdf4Loader().load(path)
     assert result.signal_group is None
     assert result.diagnostics[0].level == "error"
+
+
+# ─── Mdf4Loader: 非単調/0ch 診断 (LD-03/05) ───────────────────────────────────
+
+
+def test_mdf4_non_monotonic_channel_is_accepted_with_warning(tmp_path: Path) -> None:
+    path = write_mdf4_non_monotonic(tmp_path)
+    result = Mdf4Loader().load(path)
+    assert result.signal_group is not None
+    names = [s.name for s in result.signal_group.signals]
+    assert "messy" in names  # 旧実装では skip されていた
+    warnings = [d for d in result.diagnostics if d.level == "warning"]
+    assert any("非単調" in d.message or "重複" in d.message for d in warnings)
+    messy = next(s for s in result.signal_group.signals if s.name == "messy")
+    assert not messy.is_monotonic  # 生データ無改変で受け入れ
+
+
+def test_mdf4_non_finite_ts_channel_is_skipped_with_error(tmp_path: Path) -> None:
+    """A NaN-timestamp channel is skipped with an error diagnostic (spec §7);
+    the sibling clean channel still loads."""
+    path = write_mdf4_non_finite_ts(tmp_path)
+    result = Mdf4Loader().load(path)
+    assert result.signal_group is not None
+    names = [s.name for s in result.signal_group.signals]
+    assert "broken" not in names
+    assert "clean" in names
+    errors = [d for d in result.diagnostics if d.level == "error"]
+    assert any("非有限" in d.message and d.signal_name == "broken" for d in errors)
+
+
+def test_mdf4_zero_channels_emits_warning(tmp_path: Path) -> None:
+    path = write_mdf4_all_channels_bad(tmp_path)
+    result = Mdf4Loader().load(path)
+    assert result.signal_group is not None
+    assert len(result.signal_group.signals) == 0
+    assert any("0 本" in d.message for d in result.diagnostics)
 
 
 # ─── Mdf4Loader: cooperative cancel (FB-04 hard side) ─────────────────────────

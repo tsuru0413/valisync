@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import datetime
+import math
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,7 @@ class CsvLoader:
         n_signals = format_def.signal_end_column - format_def.signal_start_column + 1
         min_cols = max(format_def.timestamp_column, format_def.signal_end_column) + 1
         row_idx = 0
+        diagnostics: list[Diagnostic] = []
 
         # --- Header row ---
         signal_names: list[str]
@@ -96,6 +98,26 @@ class CsvLoader:
         else:
             signal_names = [f"ch_{i + 1}" for i in range(n_signals)]
 
+        # LD-08: 重複ヘッダは MDF4 と同一の name[idx] 方式で曖昧化(取り違え防止)
+        name_total: dict[str, int] = {}
+        for n in signal_names:
+            name_total[n] = name_total.get(n, 0) + 1
+        if any(c > 1 for c in name_total.values()):
+            name_seen: dict[str, int] = {}
+            renamed: list[str] = []
+            for n in signal_names:
+                idx = name_seen.get(n, 0)
+                name_seen[n] = idx + 1
+                renamed.append(f"{n}[{idx}]" if name_total[n] > 1 else n)
+            dups = sorted(n for n, c in name_total.items() if c > 1)
+            diagnostics.append(
+                Diagnostic(
+                    level="warning",
+                    message=f"重複ヘッダ {', '.join(dups)} を連番で改名（name[idx] 方式）",  # noqa: RUF001
+                )
+            )
+            signal_names = renamed
+
         # --- Unit row (immediately after header) ---
         unit_by_sig_idx: dict[int, str] = {}
         if format_def.has_unit_row and row_idx < len(rows):
@@ -110,6 +132,7 @@ class CsvLoader:
         # --- Data rows ---
         timestamps_list: list[float] = []
         values_lists: list[list[float]] = [[] for _ in range(n_signals)]
+        nonfinite_counts: dict[int, int] = {}
 
         data_start = row_idx  # header/unit rows already consumed; first data row
         for raw_idx, row in enumerate(rows[row_idx:], start=row_idx):
@@ -127,6 +150,7 @@ class CsvLoader:
                 return LoadResult(
                     signal_group=None,
                     diagnostics=(
+                        *diagnostics,
                         Diagnostic(
                             level="error",
                             message=(
@@ -144,9 +168,25 @@ class CsvLoader:
                 return LoadResult(
                     signal_group=None,
                     diagnostics=(
+                        *diagnostics,
                         Diagnostic(
                             level="error",
                             message=f"Non-numeric timestamp {ts_str!r}",
+                            line_number=line_number,
+                            column_number=format_def.timestamp_column,
+                        ),
+                    ),
+                )
+            if not math.isfinite(ts):
+                # 非有限タイムスタンプは値の nan/inf(LD-06)と違い時刻軸そのものが
+                # 破損するため受け入れ不能(sorted_view の単調前提が壊れる)
+                return LoadResult(
+                    signal_group=None,
+                    diagnostics=(
+                        *diagnostics,
+                        Diagnostic(
+                            level="error",
+                            message=f"非有限タイムスタンプ {ts_str!r}（時刻軸が破損）",  # noqa: RUF001
                             line_number=line_number,
                             column_number=format_def.timestamp_column,
                         ),
@@ -161,11 +201,12 @@ class CsvLoader:
             ):
                 val_str = row[col]
                 try:
-                    values_lists[sig_idx].append(float(val_str))
+                    val = float(val_str)
                 except ValueError:
                     return LoadResult(
                         signal_group=None,
                         diagnostics=(
+                            *diagnostics,
                             Diagnostic(
                                 level="error",
                                 message=f"Non-numeric value {val_str!r} in signal column",
@@ -174,20 +215,56 @@ class CsvLoader:
                             ),
                         ),
                     )
+                # LD-06: nan/inf は欠測として正当なので受け入れ、件数だけ集計する
+                if not math.isfinite(val):
+                    nonfinite_counts[sig_idx] = nonfinite_counts.get(sig_idx, 0) + 1
+                values_lists[sig_idx].append(val)
 
         # --- Build Signal objects ---
         timestamps = np.array(timestamps_list, dtype=np.float64)
         abs_path = str(file_path.resolve())
-        signals: list[Signal] = []
 
+        # LD-04: 非単調/重複はファイル単位で1件の warning(全列が同一時間軸)
+        diffs = np.diff(timestamps)
+        n_backward = int(np.sum(diffs < 0))
+        n_dup = int(np.sum(diffs == 0))
+        if n_backward or n_dup:
+            diagnostics.append(
+                Diagnostic(
+                    level="warning",
+                    message=(
+                        f"タイムスタンプ列: 非単調 {n_backward} 箇所・"
+                        f"重複 {n_dup} 点（表示/演算は整列ビューで補正）"  # noqa: RUF001
+                    ),
+                )
+            )
+
+        # LD-09: ヘッダのみ(データ行 0)は成功+warning
+        if len(timestamps) == 0:
+            diagnostics.append(
+                Diagnostic(level="warning", message="データ行が 0 行です")
+            )
+
+        signals: list[Signal] = []
         for sig_idx, name in enumerate(signal_names):
             values = np.array(values_lists[sig_idx], dtype=np.float64)
             metadata: dict[str, Any] = {}
             if sig_idx in unit_by_sig_idx:
                 metadata["unit"] = unit_by_sig_idx[sig_idx]
-
-            try:
-                signal = Signal(
+            # LD-06: 非有限値は受け入れ(NaN は欠測として正当)・件数を可視化
+            if nonfinite_counts.get(sig_idx):
+                diagnostics.append(
+                    Diagnostic(
+                        level="warning",
+                        message=(
+                            f"'{name}': 非有限値 {nonfinite_counts[sig_idx]} 個"
+                            "（'nan'/'inf' 文字列由来）"  # noqa: RUF001
+                        ),
+                        signal_name=name,
+                    )
+                )
+            signals.append(
+                Signal(
                     name=name,
                     timestamps=timestamps,
                     values=values,
@@ -196,17 +273,7 @@ class CsvLoader:
                     source_file=abs_path,
                     metadata=metadata,
                 )
-                signals.append(signal)
-            except ValueError as exc:
-                return LoadResult(
-                    signal_group=None,
-                    diagnostics=(
-                        Diagnostic(
-                            level="error",
-                            message=f"Signal '{name}' failed validation: {exc}",
-                        ),
-                    ),
-                )
+            )
 
         signal_group = SignalGroup(
             signals=tuple(signals),
@@ -214,4 +281,4 @@ class CsvLoader:
             file_format="CSV",
             loaded_at=datetime.datetime.now(),
         )
-        return LoadResult(signal_group=signal_group)
+        return LoadResult(signal_group=signal_group, diagnostics=tuple(diagnostics))
