@@ -46,12 +46,10 @@ class CsvExporter:
         names = [s.name for s in signals]
         header = ",".join([_TIMESTAMP_HEADER, *names])
 
-        unified = np.unique(np.concatenate([s.timestamps for s in signals]))
-        # Per-signal lookup from exact timestamp to value.
-        lookups = [
-            dict(zip(s.timestamps.tolist(), s.values.tolist(), strict=True))
-            for s in signals
-        ]
+        views = [s.sorted_view() for s in signals]
+        unified = np.unique(np.concatenate([ts for ts, _vs in views]))
+        # Per-signal lookup from exact timestamp to value (keep-last 済みで一意).
+        lookups = [dict(zip(ts.tolist(), vs.tolist(), strict=True)) for ts, vs in views]
 
         lines = [header]
         for ts in unified.tolist():
@@ -64,11 +62,13 @@ class CsvExporter:
         """Build CSV lines assuming all signals share one timestamp axis."""
         names = [s.name for s in signals]
         header = ",".join([_TIMESTAMP_HEADER, *names])
-        timestamps = signals[0].timestamps
+        # 共有軸前提: 各信号の ts は同一配列なので keep 判定も同一 index になる
+        timestamps = signals[0].sorted_view()[0]
+        sorted_values = [s.sorted_view()[1] for s in signals]
         lines = [header]
         for i in range(len(timestamps)):
             cells = [_fmt(timestamps[i])]
-            cells.extend(_fmt(s.values[i]) for s in signals)
+            cells.extend(_fmt(vs[i]) for vs in sorted_values)
             lines.append(",".join(cells))
         return lines
 

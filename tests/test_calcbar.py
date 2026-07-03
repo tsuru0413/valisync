@@ -80,3 +80,14 @@ def test_calcbar_does_not_mutate_input():
     Session().integrate(sig)
     np.testing.assert_array_equal(sig.timestamps, ts_before)
     np.testing.assert_array_equal(sig.values, vs_before)
+
+
+def test_integrate_non_monotonic_matches_sorted():
+    messy = _sig([0.0, 2.0, 1.0], [1.0, 3.0, 2.0])
+    tidy = _sig([0.0, 1.0, 2.0], [1.0, 2.0, 3.0])
+    session = Session()
+    out_m = session.integrate(messy)
+    out_t = session.integrate(tidy)
+    assert out_m.timestamps.tolist() == out_t.timestamps.tolist()
+    assert out_m.values.tolist() == out_t.values.tolist()
+    assert np.all(np.diff(out_m.timestamps) > 0)  # Derived は整列軸

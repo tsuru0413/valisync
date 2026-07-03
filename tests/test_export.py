@@ -80,3 +80,14 @@ def test_export_atomic_failure_preserves_existing_file(tmp_path, monkeypatch):
     # original file untouched; no leftover temp files in the directory
     assert out.read_text(encoding="utf-8") == "ORIGINAL"
     assert [p.name for p in tmp_path.iterdir()] == ["out.csv"]
+
+
+def test_export_shared_timeline_non_monotonic_sorted_rows(tmp_path):
+    sig = _signal("x", [0.0, 2.0, 1.0], [10.0, 30.0, 20.0])
+    out = tmp_path / "o.csv"
+
+    CsvExporter().export([sig], out, use_unified_timeline=False)
+
+    lines = out.read_text(encoding="utf-8").strip().splitlines()
+    ts_col = [float(line.split(",")[0]) for line in lines[1:]]
+    assert ts_col == sorted(ts_col)
