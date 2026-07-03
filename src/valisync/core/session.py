@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -13,9 +14,19 @@ from valisync.core.loaders.csv_loader import CsvLoader
 from valisync.core.loaders.mdf4_loader import Mdf4Loader
 from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR, SignalGroupManager
 from valisync.core.models import FormatDefinition, Signal
-from valisync.core.models.load_result import Diagnostic
+from valisync.core.models.load_result import Diagnostic, LoadCancelled
 from valisync.core.statistics.range_stats import RangeStatistics, StatisticsResult
 from valisync.core.sync.synchronizer import TimeSynchronizer
+
+__all__ = [
+    "LoadCancelled",
+    "LoadError",
+    "LoadManyResult",
+    "LoadOutcome",
+    "RemovalResult",
+    "Session",
+    "SourceInfo",
+]
 
 
 class LoadError(Exception):
@@ -66,6 +77,22 @@ class RemovalResult:
 
 
 @dataclass(frozen=True)
+class SourceInfo:
+    """Read-only metadata of a loaded file for GUI surfaces (FB-10 tooltip).
+
+    ``size_bytes`` is None when the file no longer exists on disk;
+    ``t_min``/``t_max`` are None for 0-channel groups.
+    """
+
+    full_path: Path
+    size_bytes: int | None
+    t_min: float | None
+    t_max: float | None
+    n_channels: int
+    file_format: str
+
+
+@dataclass(frozen=True)
 class _DerivedRecord:
     """A Derived_Signal and the namespaced input signal names it depends on."""
 
@@ -93,20 +120,26 @@ class Session:
         self._derived: list[_DerivedRecord] = []
 
     def load(
-        self, file_path: Path, format_def: FormatDefinition | None = None
+        self,
+        file_path: Path,
+        format_def: FormatDefinition | None = None,
+        cancel: Callable[[], bool] | None = None,
     ) -> LoadOutcome:
         """Load a file and return the group key plus any loader diagnostics.
 
         Dispatches to the CSV or MDF4 loader by file type. Raises LoadError when
-        the loader reports failure.
+        the loader reports failure. ``cancel`` is a cooperative callback the
+        loader polls at checkpoints; when it returns True the loader raises
+        LoadCancelled and no group is registered (FB-04 — user-initiated, not
+        an error).
         """
         file_path = Path(file_path)
         if self._csv_loader.supports(file_path):
             if format_def is None:
                 raise ValueError("CSV files require a FormatDefinition")
-            result = self._csv_loader.load(file_path, format_def)
+            result = self._csv_loader.load(file_path, format_def, cancel=cancel)
         elif self._mdf4_loader.supports(file_path):
-            result = self._mdf4_loader.load(file_path)
+            result = self._mdf4_loader.load(file_path, cancel=cancel)
         else:
             raise ValueError(f"no loader supports file: {file_path}")
 
@@ -153,6 +186,24 @@ class Session:
         Lets callers fetch one file's signals without scanning every group.
         """
         return self._groups.group_signals(key)
+
+    def source_info(self, key: str) -> SourceInfo:
+        """Return read-only metadata for the group under *key* (KeyError if unknown)."""
+        group = self._groups.group(key)
+        try:
+            size: int | None = group.source_path.stat().st_size
+        except OSError:
+            size = None  # moved/deleted after load — show what we still know
+        t_mins = [s.timestamps[0] for s in group.signals if len(s.timestamps)]
+        t_maxs = [s.timestamps[-1] for s in group.signals if len(s.timestamps)]
+        return SourceInfo(
+            full_path=group.source_path,
+            size_bytes=size,
+            t_min=min(t_mins) if t_mins else None,
+            t_max=max(t_maxs) if t_maxs else None,
+            n_channels=len(group.signals),
+            file_format=group.file_format,
+        )
 
     def evaluate_formula(
         self,

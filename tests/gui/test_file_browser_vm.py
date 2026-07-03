@@ -11,9 +11,28 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from valisync.core.models import SignalGroup
+from valisync.core.models import Delimiter, FormatDefinition, SignalGroup
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
+
+
+def _fmt() -> FormatDefinition:
+    """CSV format for tests."""
+    return FormatDefinition(
+        name="test_fmt",
+        delimiter=Delimiter.COMMA,
+        timestamp_column=0,
+        timestamp_unit="sec",
+        signal_start_column=1,
+        signal_end_column=1,
+        has_header=True,
+    )
+
+
+def _write_csv(path: Path) -> Path:
+    """Write a minimal valid CSV and return its path."""
+    path.write_text("t,speed\n0.0,10.0\n1.0,20.0\n2.0,30.0\n")
+    return path
 
 
 def test_initial_files_list_is_empty() -> None:
@@ -89,3 +108,32 @@ def test_unload_removes_file_from_list() -> None:
 
     assert fb_vm.files == ["b.csv"]
     assert fb_vm.unload(5) is None  # out of range is a safe no-op
+
+
+def test_tooltip_text_four_lines(tmp_path: Path) -> None:
+    app_vm = AppViewModel()
+    vm = FileBrowserVM(app_vm)
+    path = _write_csv(tmp_path / "data.csv")
+    app_vm.request_load(path, _fmt())
+    text = vm.tooltip_text(0)
+    lines = text.splitlines()
+    assert lines[0] == str(path.resolve())
+    assert lines[1].startswith("サイズ: ")
+    assert lines[2].startswith("時間範囲: ")
+    assert "（" in lines[2] and lines[2].endswith("s）")  # noqa: RUF001
+    assert lines[3].startswith("チャンネル: ") and "形式: CSV" in lines[3]
+
+
+def test_tooltip_omits_size_when_file_gone(tmp_path: Path) -> None:
+    app_vm = AppViewModel()
+    vm = FileBrowserVM(app_vm)
+    path = _write_csv(tmp_path / "data.csv")
+    app_vm.request_load(path, _fmt())
+    path.unlink()
+    text = vm.tooltip_text(0)
+    assert "サイズ:" not in text  # graceful degradation (spec §6)
+    assert "時間範囲:" in text
+
+
+def test_tooltip_none_for_out_of_range() -> None:
+    assert FileBrowserVM(AppViewModel()).tooltip_text(0) is None

@@ -27,3 +27,14 @@ class LoadResult:
 
     signal_group: SignalGroup | None
     diagnostics: tuple[Diagnostic, ...] = ()
+
+
+class LoadCancelled(Exception):
+    """Raised when a load is cancelled via the cooperative ``cancel`` callback.
+
+    User-initiated: callers must NOT surface this as an error (no modal, no
+    diagnostics entry) — see spec §4.1/§6.
+
+    Defined here (not in session.py) to avoid a circular import: loaders need
+    to raise it but must not import from session, which imports the loaders.
+    """

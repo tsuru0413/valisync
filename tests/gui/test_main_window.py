@@ -108,6 +108,18 @@ class TestWindowTitle:
         window = _make_window(qtbot)
         assert window.windowTitle() == "ValiSync"  # type: ignore[union-attr]
 
+    def test_window_title_tracks_active_file(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        window = _make_window(qtbot)
+        assert window.windowTitle() == "ValiSync"  # type: ignore[union-attr]
+        key = window.app_vm.request_load(_write_csv(tmp_path), _csv_format())  # type: ignore[union-attr]
+        window.app_vm.set_active_file(key)  # type: ignore[union-attr]
+        assert window.windowTitle().endswith(" — ValiSync")  # type: ignore[union-attr]
+        assert window.windowTitle().startswith("data.csv")  # type: ignore[union-attr]
+        window.app_vm.set_active_file(None)  # type: ignore[union-attr]
+        assert window.windowTitle() == "ValiSync"  # type: ignore[union-attr]
+
 
 # ---------------------------------------------------------------------------
 # Toggle-view action re-shows a closed dock (R1.4)
@@ -361,3 +373,85 @@ def test_real_dblclick_on_diagnostics_row_switches_active_file(qtbot, tmp_path):
     qtbot.mouseDClick(table.viewport(), Qt.MouseButton.LeftButton, pos=pos)
 
     assert window.app_vm.active_file_key == key_b
+
+
+# ---------------------------------------------------------------------------
+# FB-04: cancel wiring — busy_overlay.cancel_requested → controller, and the
+# cancelled-outcome status update (no modal, no diagnostics — spec §6)
+# ---------------------------------------------------------------------------
+
+
+def test_cancel_requested_wired_to_controller(qtbot, monkeypatch):
+    window = _make_window(qtbot)
+    calls = []
+    monkeypatch.setattr(
+        window._load_controller, "cancel_active", lambda: calls.append(True)
+    )
+    window.busy_overlay.cancel_requested.emit()
+    assert calls == [True]
+
+
+def test_on_load_cancelled_updates_status_without_dialog(qtbot, monkeypatch):
+    import valisync.gui.views.main_window as mw
+
+    window = _make_window(qtbot)
+    dialogs = []
+    monkeypatch.setattr(mw.QMessageBox, "critical", lambda *a, **k: dialogs.append(a))
+    window._on_load_cancelled(Path("big.mf4"))
+    assert "キャンセル" in window.statusBar().currentMessage()
+    assert "big.mf4" in window.statusBar().currentMessage()
+    assert dialogs == []  # モーダル無し(spec §6)
+    assert window.diagnostics_vm.counts() == (0, 0)  # 診断追記無し
+
+
+def test_load_file_wires_cancel_event_and_adapter(qtbot, monkeypatch, tmp_path):
+    """Verify _load_file creates a cancel Event and passes cancel=event.is_set to session.load.
+
+    This test guards against regression in the critical adapter that allows
+    LoadController to request cancellation. If the adapter is missing, hard
+    cancellation (via BusyOverlay cancel button) becomes a silent no-op.
+    """
+    import contextlib
+    import threading
+
+    window = _make_window(qtbot)
+    captured = {}
+
+    def fake_submit(load_callable, **kwargs):
+        captured["kwargs"] = kwargs
+        captured["load_callable"] = load_callable
+
+    monkeypatch.setattr(window._load_controller, "submit", fake_submit)
+    window._load_file(tmp_path / "x.mf4")
+
+    kw = captured["kwargs"]
+    event = kw["cancel_event"]
+    assert isinstance(event, threading.Event)
+    assert kw["label"] == "x.mf4"
+    assert callable(kw["on_cancelled"]) and callable(kw["on_discard"])
+
+    # load_callable が session.load に cancel=event.is_set を渡すこと
+    # (欠けるとハードキャンセルが無音で無効化される - 本タスクの肝の配線ガード)
+    seen = {}
+
+    def fake_load(path, fmt, cancel=None):
+        seen["cancel"] = cancel
+        raise RuntimeError("stop before real load")
+
+    monkeypatch.setattr(window.app_vm.session, "load", fake_load)
+    with contextlib.suppress(RuntimeError):
+        captured["load_callable"]()
+    assert seen["cancel"] == event.is_set  # 同一 Event の bound method
+
+    # on_discard 本体(手遅れ完走の巻き戻し)が正しい key/force で remove_group
+    # を呼ぶこと — 「callable であること」だけでは中身の配線ミスを拾えない
+    import types
+
+    calls: list[tuple[str, bool]] = []
+    monkeypatch.setattr(
+        window.app_vm.session,
+        "remove_group",
+        lambda key, force=False: calls.append((key, force)),
+    )
+    kw["on_discard"](types.SimpleNamespace(key="csv_9"))
+    assert calls == [("csv_9", True)]

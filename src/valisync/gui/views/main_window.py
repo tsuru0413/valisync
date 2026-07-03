@@ -15,6 +15,7 @@ collaborators and connects their signals.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt
@@ -53,7 +54,7 @@ class MainWindow(QMainWindow):
     def __init__(self, app_vm: AppViewModel) -> None:
         super().__init__()
         self.app_vm = app_vm
-        self.setWindowTitle("ValiSync")
+        self._update_window_title()
 
         # ── Shared ViewModels (one Session) ──────────────────────────────────
         self.file_browser_vm = FileBrowserVM(app_vm)
@@ -67,6 +68,7 @@ class MainWindow(QMainWindow):
         self.graph_area_view = GraphAreaView(self.graph_area_vm)
         self.busy_overlay = BusyOverlay(self)
         self._load_controller = LoadController(parent=self)
+        self.busy_overlay.cancel_requested.connect(self._load_controller.cancel_active)
         self.data_explorer: DataExplorerView | None = None
 
         # ── File Browser dock (right top) ────────────────────────────────────
@@ -135,11 +137,22 @@ class MainWindow(QMainWindow):
         """Load *path* off-thread (MDF4; CSV needs a format picker, deferred)."""
         session = self.app_vm.session
         target = Path(path)
+        cancel_event = threading.Event()  # 所有=ここ・セット権=controller(spec §4.1)
+
+        def _discard(outcome: LoadOutcome) -> None:
+            # 手遅れ完走のロールバック; remove_group の戻り値は on_discard の
+            # Callable[[LoadOutcome], None] 契約に不要なので握りつぶす。
+            session.remove_group(outcome.key, force=True)
+
         self._load_controller.submit(
-            lambda: session.load(target, None),
+            lambda: session.load(target, None, cancel=cancel_event.is_set),
             busy=self.busy_overlay,
+            cancel_event=cancel_event,
+            label=target.name,
             on_success=self._on_loaded,
             on_error=lambda err: self._on_load_error(target, err),
+            on_cancelled=lambda: self._on_load_cancelled(target),
+            on_discard=_discard,
         )
 
     def _on_loaded(self, outcome: LoadOutcome) -> None:
@@ -175,6 +188,10 @@ class MainWindow(QMainWindow):
             f"{source} を読み込めませんでした。\n\n" + "; ".join(messages),
         )
 
+    def _on_load_cancelled(self, path: Path) -> None:
+        # ユーザー起点の正常系: status のみ(モーダル/診断は出さない・spec §6)
+        self.statusBar().showMessage(f"キャンセルしました: {path.name}")
+
     def _on_diagnostic_activated(self, target: str) -> None:
         # Best-effort jump: select the signal's file in the channel browser.
         # (Detailed signal-row selection is a later task; activating the file is
@@ -202,6 +219,21 @@ class MainWindow(QMainWindow):
         if change == "loaded":
             self.channel_browser_vm.refresh()
             # Panels are reconciled by GraphAreaVM, which subscribes to app_vm.
+        if change in ("active_file", "loaded", "unloaded"):
+            self._update_window_title()
+
+    def _update_window_title(self) -> None:
+        """FB-07: show the active file so the title answers 'what am I looking at'."""
+        key = self.app_vm.active_file_key
+        if key is None:
+            self.setWindowTitle("ValiSync")
+            return
+        try:
+            name = self.app_vm.session.source_name(key)
+        except KeyError:
+            self.setWindowTitle("ValiSync")
+            return
+        self.setWindowTitle(f"{name} — ValiSync")
 
     def _add_to_active_panel(self, keys: list[str]) -> None:
         """Plot *keys* on the first panel of the active tab (the 'active' panel)."""

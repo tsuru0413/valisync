@@ -90,7 +90,7 @@ gantt
 
 | 改善サブスペック | 主眼 | 件数 | 優先 | 代表課題（catalog ID） |
 |------|------|------|------|------|
-| `gui-feedback-errors` | エラー/診断/状態フィードバックの可視化 — **第1弾（FB-01/02/03/06）実装済み（PR #37）** | 10 | 🔴最優先 | FB-01 全ロード失敗が無言・FB-02 Session が skip 診断を破棄（→ともに解消） |
+| `gui-feedback-errors` | エラー/診断/状態フィードバックの可視化 — **完了: 第1弾（PR #37）＋第2弾（PR #38）で FB-01〜10 全10課題解消** | 10 | ✅完了 | FB-01 全ロード失敗が無言・FB-02 Session が skip 診断を破棄（→全て解消） |
 | `gui-shell-controls` | シェル操作（File メニュー・タブ/パネル/レイアウト管理・エクスポート導線） | 15 | 🔴高 | SH-01 File>Open 無し・SH-03 エクスポート導線無し・SH-12 ドックトグルボタン |
 | `gui-plot-analysis-controls` | プロット/曲線/軸/カーソルの操作コントロール | 20 | 🟠中 | PC-01 曲線管理コントロール無し・PC-03 オフセット操作が隠れ・PC-11 単位無し |
 | `core-loaders-hardening` | ローダー堅牢性・対応形式拡張 | 11 | 🔴高 | LD-01 CSV 開けず・LD-02 .mf4 限定・LD-03 重複TS ch 無言欠落 |
@@ -99,7 +99,7 @@ gantt
 
 > ②の着手起点は `gui-feedback-errors`（FB-01/FB-02）。サイレント失敗連鎖の元を断つと、`core-loaders-hardening`・`gui-shell-controls` の欠陥が「気づける」ようになる。各改善サブスペックも着手時に `brainstorming` → `writing-plans` から始め、catalog の ID を要件参照点に使う。
 >
-> **第1弾（FB-01/02/03/06＝案A 診断伝播＋Diagnostics ドック/モーダル/ステータスバー）は PR #37 で実装済み**（spec: [2026-07-02-gui-feedback-errors-design.md](superpowers/specs/2026-07-02-gui-feedback-errors-design.md)・プラン: [2026-07-02-gui-feedback-errors.md](superpowers/plans/2026-07-02-gui-feedback-errors.md)）。残り FB-04/05/07-10 は同 spec の第2弾として writing-plans から。
+> **`gui-feedback-errors` は完了**: 第1弾（FB-01/02/03/06＝案A 診断伝播＋Diagnostics ドック/モーダル/ステータスバー・PR #37、spec: [2026-07-02-gui-feedback-errors-design.md](superpowers/specs/2026-07-02-gui-feedback-errors-design.md)）＋第2弾（FB-04/05/07/08/09/10＝ハイブリッドキャンセル＋ヘッダ/タイトル/プレースホルダ/ツールチップ・PR #38、spec: [2026-07-03-gui-feedback-errors-r2-design.md](superpowers/specs/2026-07-03-gui-feedback-errors-r2-design.md)）。follow-up 候補（CSV ストリーミング化・ツールチップ stat の off-thread 化等）は第2弾プランの Status 節と PR #38 参照。次の改善サブスペックは優先度順に `core-loaders-hardening`・`gui-shell-controls` が候補。
 
 **境界判断**:
 - **LOD（R21）は MVP に統合**（当初は独立 spec 案）。静的DSはズームイン時に生データ細部・スパイクが見えず ADAS 解析に不十分なため、viewport 連動の動的DSを最初から導入し実用精度を確保

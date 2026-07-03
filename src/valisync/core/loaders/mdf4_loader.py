@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -8,6 +9,7 @@ import numpy as np
 from asammdf import MDF
 
 from valisync.core.models import Diagnostic, LoadResult, Signal, SignalGroup
+from valisync.core.models.load_result import LoadCancelled
 
 # Maps asammdf BusType int values to Signal.bus_type strings.
 # asammdf v4_constants.BusType: CAN=2, ETHERNET=7.
@@ -57,7 +59,11 @@ class Mdf4Loader:
     def supports(self, file_path: Path) -> bool:
         return file_path.suffix.lower() == ".mf4"
 
-    def load(self, file_path: Path) -> LoadResult:
+    def load(
+        self,
+        file_path: Path,
+        cancel: Callable[[], bool] | None = None,
+    ) -> LoadResult:
         if not file_path.exists() or not file_path.is_file():
             return LoadResult(
                 signal_group=None,
@@ -85,7 +91,18 @@ class Mdf4Loader:
         try:
             # skip_master=True: exclude time-axis channels from signal iteration.
             # copy_master=True: materialize timestamps as numpy arrays before close().
-            raw = list(mdf.iter_channels(skip_master=True, copy_master=True))
+            # Channel data reads are the dominant cost, so accumulate one channel
+            # at a time to allow a cooperative-cancel check per channel (spec §4.1).
+            raw = []
+            for ch in mdf.iter_channels(skip_master=True, copy_master=True):
+                if cancel is not None and cancel():
+                    raise LoadCancelled(f"load cancelled: {file_path.name}")
+                raw.append(ch)
+        except LoadCancelled:
+            # Must not be swallowed by the broad except below (LoadCancelled is
+            # an Exception too) — propagate so the caller sees a cancel, not a
+            # generic "failed to read channels" diagnostic.
+            raise
         except Exception as exc:
             return LoadResult(
                 signal_group=None,
@@ -110,6 +127,8 @@ class Mdf4Loader:
         abs_path = str(file_path.resolve())
 
         for asammdf_sig in raw:
+            if cancel is not None and cancel():
+                raise LoadCancelled(f"load cancelled: {file_path.name}")
             base_name = asammdf_sig.name
             idx = name_seen.get(base_name, 0)
             name_seen[base_name] = idx + 1

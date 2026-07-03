@@ -49,6 +49,15 @@ def _make_view(qtbot: QtBot, vm: ChannelBrowserVM) -> ChannelBrowserView:
     return view
 
 
+def _loaded_vm(tmp_path: Path) -> tuple[AppViewModel, ChannelBrowserVM, str]:
+    """Same fixture data as test_channel_browser_vm.py's helper of the same name."""
+    path = tmp_path / "d.csv"
+    path.write_text("t,speed,brake\n0.0,1.0,0.0\n1.0,2.0,1.0\n", encoding="utf-8")
+    app_vm = AppViewModel()
+    key = app_vm.request_load(path, _csv_format())
+    return app_vm, ChannelBrowserVM(app_vm), key
+
+
 def _select(view: ChannelBrowserView, row: int) -> None:
     index = view.model.index(row, 0)
     view.tree.selectionModel().select(
@@ -106,3 +115,55 @@ class TestActiveFileSync:
         assert view.model.rowCount() == 0
         app_vm.set_active_file(key)
         assert view.model.rowCount() == 2
+
+
+# ─── Header / Empty-State Tests (FB-05/08/09) ────────────────────────────────
+
+
+def test_header_label_shows_active_file_and_counts(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    view = _make_view(qtbot, vm)
+    assert "d.csv" in view.header_label.text()
+    assert "2 ch 中 2 件表示" in view.header_label.text()
+
+
+def test_placeholder_when_none_selected(qtbot: QtBot, tmp_path: Path) -> None:
+    app_vm, vm, _key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(None)
+    view = _make_view(qtbot, vm)
+    assert view.is_showing_placeholder()
+    assert "ファイルを選択" in view.placeholder_label.text()
+
+
+def test_placeholder_no_match_includes_query_and_recovers(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    view = _make_view(qtbot, vm)
+    view.search_box.setText("xyz123")  # 実経路: textChanged → set_filter
+    assert view.is_showing_placeholder()
+    assert "xyz123" in view.placeholder_label.text()
+    view.search_box.setText("")
+    assert not view.is_showing_placeholder()
+
+
+def test_no_channels_placeholder_shown_after_refresh(
+    qtbot: QtBot, tmp_path: Path, monkeypatch
+) -> None:
+    # mdf4_loader は全チャンネル skip 時に 0ch グループを登録し得る
+    # (production 到達可能・catalog LD-05) — この経路が View まで通しで
+    # プレースホルダに落ちることを確認する(VM 単体では View の
+    # QStackedWidget 切替配線までは検証できない)。
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    view = _make_view(qtbot, vm)
+
+    monkeypatch.setattr(app_vm.session, "group_signals", lambda _k: [])
+    vm.refresh()  # "signals" notify で View を再描画させる
+
+    assert view.is_showing_placeholder()
+    assert "このファイルに信号がありません" in view.placeholder_label.text()
