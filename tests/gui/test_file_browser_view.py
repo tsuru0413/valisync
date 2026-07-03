@@ -258,3 +258,16 @@ def test_placeholder_hidden_after_load(qtbot: QtBot, tmp_path) -> None:
     qtbot.addWidget(view)
     _load_csv(app_vm, tmp_path)
     assert not view.is_showing_placeholder()
+
+
+def test_model_provides_tooltip_role(qtbot: QtBot, tmp_path) -> None:
+    from PySide6.QtCore import Qt
+
+    app_vm = AppViewModel()
+    vm = FileBrowserVM(app_vm)
+    view = FileBrowserView(vm)
+    qtbot.addWidget(view)
+    _load_csv(app_vm, tmp_path)
+    index = view.model.index(0, 0)
+    tip = view.model.data(index, Qt.ItemDataRole.ToolTipRole)
+    assert tip and "チャンネル:" in tip

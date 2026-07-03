@@ -82,12 +82,12 @@ class FileListModel(QAbstractListModel):
         return len(self._vm.files)
 
     def data(self, index: _Index, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
-        if (
-            index.isValid()
-            and role == Qt.ItemDataRole.DisplayRole
-            and 0 <= index.row() < len(self._vm.files)
-        ):
+        if not index.isValid() or not (0 <= index.row() < len(self._vm.files)):
+            return None
+        if role == Qt.ItemDataRole.DisplayRole:
             return self._vm.files[index.row()]
+        if role == Qt.ItemDataRole.ToolTipRole:
+            return self._vm.tooltip_text(index.row())
         return None
 
 

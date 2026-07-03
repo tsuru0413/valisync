@@ -11,7 +11,18 @@ from typing import TYPE_CHECKING
 from valisync.gui.viewmodels.observable import Observable
 
 if TYPE_CHECKING:
+    from valisync.core.session import SourceInfo
     from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+
+
+def _fmt_size(size_bytes: int) -> str:
+    """Human-readable size, one decimal (B/KB/MB/GB)."""
+    value = float(size_bytes)
+    for unit in ("B", "KB", "MB"):
+        if value < 1024:
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+        value /= 1024
+    return f"{value:.1f} GB"
 
 
 class FileBrowserVM(Observable):
@@ -54,6 +65,36 @@ class FileBrowserVM(Observable):
         keys = self._app_vm.loaded_file_keys
         if 0 <= index < len(keys):
             self._app_vm.unload_file(keys[index])
+
+    # ─── FB-10 tooltip ───────────────────────────────────────────────────────
+
+    def file_info(self, index: int) -> SourceInfo | None:
+        """SourceInfo for the file at *index*, or None when out of range/unknown."""
+        keys = self._app_vm.loaded_file_keys
+        if not (0 <= index < len(keys)):
+            return None
+        try:
+            return self._app_vm.session.source_info(keys[index])
+        except KeyError:
+            return None
+
+    def tooltip_text(self, index: int) -> str | None:
+        """Multi-line hover text: path / size / time range / channels+format."""
+        info = self.file_info(index)
+        if info is None:
+            return None
+        lines = [str(info.full_path)]
+        if info.size_bytes is not None:
+            lines.append(f"サイズ: {_fmt_size(info.size_bytes)}")
+        if info.t_min is not None and info.t_max is not None:
+            duration = info.t_max - info.t_min
+            lines.append(
+                f"時間範囲: {info.t_min:.3f} – {info.t_max:.3f} s（{duration:.1f} s）"  # noqa: RUF001
+            )
+        else:
+            lines.append("時間範囲: —")
+        lines.append(f"チャンネル: {info.n_channels} ch ・ 形式: {info.file_format}")
+        return "\n".join(lines)
 
     def _on_app_change(self, change: str) -> None:
         """Handle notifications from AppViewModel."""
