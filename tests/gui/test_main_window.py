@@ -57,6 +57,13 @@ def _write_csv_named(dir_path: Path, name: str) -> Path:
     return csv_file
 
 
+def _write_csv_nonmonotonic(dir_path: Path) -> Path:
+    """Write a non-monotonic CSV (timestamps not strictly increasing)."""
+    csv_file = dir_path / "nonmonotonic.csv"
+    csv_file.write_text("t,speed\n0.0,10.0\n2.0,20.0\n1.0,30.0\n")
+    return csv_file
+
+
 # ---------------------------------------------------------------------------
 # Dock existence and type
 # ---------------------------------------------------------------------------
@@ -293,6 +300,42 @@ def test_on_loaded_records_warnings_and_activates(qtbot, tmp_path):
     window._on_loaded(outcome)
     assert window.app_vm.active_file_key == key  # FB-03
     assert window.diagnostics_vm.counts()[1] >= 1  # FB-02 warning recorded
+
+
+def test_on_loaded_records_nonmonotonic_csv_warning(qtbot, tmp_path):
+    """Task 7.1: Non-monotonic CSV end-to-end connection test.
+
+    Verifies that:
+    - A non-monotonic CSV (timestamps not strictly increasing) is loaded
+      successfully via session.load()
+    - The non-monotonic warning is issued by csv_loader and propagates
+      through _on_loaded() to the diagnostics dock VM
+    - The warning message contains '非単調' (non-monotonic)
+
+    This is a Layer B integration test: exercises the full wiring from
+    csv_loader diagnostics → LoadResult → _on_loaded() → diagnostics_vm.
+    """
+    window = _make_window(qtbot)
+    # Load non-monotonic CSV directly via Session to create the group
+    result = window.app_vm.session.load(
+        _write_csv_nonmonotonic(tmp_path), _csv_format()
+    )
+    key = result.key
+    # Wrap the result in a LoadOutcome (matching the callback path)
+    outcome = LoadOutcome(key=key, diagnostics=result.diagnostics)
+    window._on_loaded(outcome)
+
+    # Verify diagnostics were recorded
+    assert window.app_vm.active_file_key == key  # File is activated
+    assert window.diagnostics_vm.counts()[1] >= 1  # At least 1 warning recorded
+
+    # Verify the message contains "非単調" (non-monotonic)
+    entries = window.diagnostics_vm.entries(level="warning")
+    messages = [e.message for e in entries]
+
+    assert any("非単調" in msg for msg in messages), (
+        f"Expected '非単調' in diagnostics, got: {messages}"
+    )
 
 
 def test_diagnostics_dock_exists_with_object_name(qtbot):
