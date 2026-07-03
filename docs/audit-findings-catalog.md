@@ -108,13 +108,13 @@
 |---|---|---|---|---|
 | LD-01 | 🔴 | CSV を GUI から開けず無言失敗（format picker 未実装＋`format_def=None` ハードコード＋Session が `ValueError` 送出） | `main_window.py:124`, `core/session.py:84`（UI 側は SH-01 と連携） | 主要フォーマット CSV が完全な行き止まり |
 | LD-02 | 🔴 | MDF ローダーが `.mf4` 拡張子限定 — `.mdf`/`.dat` は `supports()`=False で黙って失敗 | `core/loaders/mdf4_loader.py:57` | 実務で多い測定ファイルが開けない |
-| LD-03 | 🔴 | MDF4 の非単調/重複タイムスタンプ chが `Signal` の厳密 `diff>0` 検証で弾かれ、警告降格で丸ごと skip | `core/loaders/mdf4_loader.py:156`（警告 surfacing は FB-02） | CAN/イベント駆動ログの信号が無言で欠落 |
-| LD-04 | 🔴 | CSV は1列の非単調/重複でファイル全体が読み込み失敗（per-channel skip と非対称） | `core/loaders/csv_loader.py:176` | 1列の乱れで全体が開けない |
-| LD-05 | 🟠 | チャンネル0本の MDF4 も「成功」扱い（空グループでリスト追加・行き止まり） | `core/loaders/mdf4_loader.py:164`（対: FB-02） | 開いたのに解析へ進めない |
-| LD-06 | 🟠 | CSV の `'nan'/'inf'` 文字列が `float()` で無言採用され Inf 混入 | `core/loaders/csv_loader.py:151` | 下流の統計/補間を Inf が誤誘導 |
+| LD-03 | 🔴 | ✅**解消（PR #39）** MDF4 の非単調/重複タイムスタンプ ch が厳密検証で丸ごと skip → 記録どおり受け入れ＋「非単調 N 箇所・重複 M 点」warning（演算/描画は `Signal.sorted_view()` 整列ビュー・重複は keep-last） | `core/loaders/mdf4_loader.py`（旧 :156） | CAN/イベント駆動ログの信号が無言で欠落 |
+| LD-04 | 🔴 | ✅**解消（PR #39）** CSV は1列の非単調/重複でファイル全体が読み込み失敗 → MDF4 と対称化（受け入れ＋ファイル単位 warning） | `core/loaders/csv_loader.py`（旧 :176） | 1列の乱れで全体が開けない |
+| LD-05 | 🟠 | ✅**解消（PR #39）** チャンネル0本の MDF4 も無言で「成功」 → 「チャンネルが 0 本」warning（R2 の no_channels プレースホルダと接続） | `core/loaders/mdf4_loader.py`（旧 :164） | 開いたのに解析へ進めない |
+| LD-06 | 🟠 | ✅**解消（PR #39）** CSV の `'nan'/'inf'` 文字列が無言採用 → 受け入れ＋列ごとの件数 warning（統計側の防御は AN-01） | `core/loaders/csv_loader.py`（旧 :151） | 下流の統計/補間を Inf が誤誘導 |
 | LD-07 | 🟠 | MDF4 の enum/状態信号がラベルを失い生数値化・文字列(VLSD)は非数値スキップ | `core/loaders/mdf4_loader.py:54` | 状態信号の意味が失われる/消える |
-| LD-08 | 🟠 | CSV 同名ヘッダ列で重複 `Signal.name` を生成（MDF4 と違い曖昧化しない） | `core/loaders/csv_loader.py:83` | 信号の取り違え |
-| LD-09 | 🟡 | ヘッダのみ CSV が長さ0の空信号を無言生成 | `core/loaders/csv_loader.py:166` | 何も描画されない理由が不明 |
+| LD-08 | 🟠 | ✅**解消（PR #39）** CSV 同名ヘッダ列で重複 `Signal.name` を生成 → MDF4 と同一の `name[idx]` 方式で曖昧化＋warning | `core/loaders/csv_loader.py`（旧 :83） | 信号の取り違え |
+| LD-09 | 🟡 | ✅**解消（PR #39）** ヘッダのみ CSV が長さ0の空信号を無言生成 → 成功＋「データ行が 0 行」warning | `core/loaders/csv_loader.py`（旧 :166） | 何も描画されない理由が不明 |
 | LD-10 | 🟡 | 大容量 MDF4 で配列多重コピー（astype＋Signal 再コピー）→ OOM リスク | `core/loaders/mdf4_loader.py:134` | 大きいログでメモリ不足 |
 | LD-11 | 🟡 | 同一ファイル二重読み込みで別グループ増殖（重複検出なし） | `core/loaders/signal_group_manager.py:24` | 重複エントリで混乱 |
 
