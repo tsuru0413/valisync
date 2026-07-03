@@ -83,6 +83,33 @@ def write_mdf4_non_monotonic(tmp_path: Path) -> Path:
     )
 
 
+def write_mdf4_non_finite_ts(tmp_path: Path) -> Path:
+    """Write an MDF4 file with one NaN-timestamp channel plus a clean one.
+
+    asammdf's writer accepts NaN timestamps verbatim (no validation on append),
+    so this reproduces a corrupted time axis without raw byte fixtures — the
+    loader must skip this channel with an error diagnostic (spec §7) rather
+    than let a non-finite axis leak into sorted_view/downstream sorting.
+    """
+    return write_mdf4(
+        tmp_path / "nants.mf4",
+        [
+            {
+                "name": "broken",
+                "timestamps": [0.0, float("nan"), 2.0],
+                "values": [1.0, 2.0, 3.0],
+                "bus_type": CAN,
+            },
+            {
+                "name": "clean",
+                "timestamps": [0.0, 1.0],
+                "values": [5.0, 6.0],
+                "bus_type": CAN,
+            },
+        ],
+    )
+
+
 def write_mdf4_all_channels_bad(tmp_path: Path) -> Path:
     """Write an MDF4 file whose only channel is unusable, so 0 channels survive.
 

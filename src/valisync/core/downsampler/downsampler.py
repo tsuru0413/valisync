@@ -16,7 +16,12 @@ class Downsampler:
         ``n`` output points (Req 14.2). Output timestamps are always a strict
         subset of the input timestamps (Req 14.3, 14.6).
 
-        Returns *signal* unchanged when ``len(signal.timestamps) <= n`` (Req 14.4).
+        When the *aligned* (sorted, dedup'd) view is already within *n* samples
+        (Req 14.4), monotonic inputs return the same Signal object unchanged;
+        non-monotonic inputs get a freshly-built Signal on the aligned axis
+        instead, so the pass-through never leaks raw disorder downstream. The
+        ``<= n`` threshold is evaluated against this aligned length, not the
+        raw (possibly duplicate-laden) input length.
 
         Raises ValueError when *n* is not a plain integer, is bool, or is < 2
         (Req 14.7).

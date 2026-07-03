@@ -91,3 +91,18 @@ def test_integrate_non_monotonic_matches_sorted():
     assert out_m.timestamps.tolist() == out_t.timestamps.tolist()
     assert out_m.values.tolist() == out_t.values.tolist()
     assert np.all(np.diff(out_m.timestamps) > 0)  # Derived は整列軸
+
+
+def test_evaluate_formula_non_monotonic_matches_sorted():
+    """evaluate_formula must be indifferent to input ordering (Formula half of
+
+    the calcbar/formula "aligned view" contract exercised above for integrate).
+    """
+    messy = _sig([0.0, 2.0, 1.0], [1.0, 3.0, 2.0])
+    tidy = _sig([0.0, 1.0, 2.0], [1.0, 2.0, 3.0])
+    session = Session()
+    out_m = session.evaluate_formula("x * 2", {"x": messy})
+    out_t = session.evaluate_formula("x * 2", {"x": tidy})
+    assert out_m.timestamps.tolist() == out_t.timestamps.tolist()
+    assert out_m.values.tolist() == out_t.values.tolist()
+    assert np.all(np.diff(out_m.timestamps) > 0)  # 結果軸は整列済み

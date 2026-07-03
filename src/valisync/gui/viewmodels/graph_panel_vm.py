@@ -519,7 +519,12 @@ class GraphPanelVM(Observable):
                 sig = sig_map.get(sig_key)
                 if sig is None or len(sig.values) == 0:
                     continue
-                finite_vals = sig.values[np.isfinite(sig.values)]
+                # Fit on the aligned (sorted, keep-last) view — this is what
+                # actually gets drawn. Raw sig.values still holds duplicate-ts
+                # samples that keep-last discards; letting those leak in would
+                # stretch y_range past what's ever visible on screen.
+                vs = sig.sorted_view()[1]
+                finite_vals = vs[np.isfinite(vs)]
                 if len(finite_vals) == 0:
                     continue
                 v_lo = float(finite_vals.min())
@@ -916,7 +921,10 @@ class GraphPanelVM(Observable):
                     sig = sig_map.get(sig_key)
                     if sig is None or len(sig.values) == 0:
                         continue
-                    finite_vals = sig.values[np.isfinite(sig.values)]
+                    # See reset_y: fit on the aligned view, not raw duplicate-ts
+                    # values that keep-last discards before rendering.
+                    vs = sig.sorted_view()[1]
+                    finite_vals = vs[np.isfinite(vs)]
                     if len(finite_vals) == 0:
                         continue
                     v_lo = float(finite_vals.min())

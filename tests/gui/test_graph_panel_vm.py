@@ -364,6 +364,34 @@ def test_reset_y_covers_all_visible_values(tmp_path: Path) -> None:
         assert y_hi >= float(finite_vals.max()) - 1e-9
 
 
+def test_reset_y_uses_aligned_view_not_raw_values(tmp_path: Path) -> None:
+    """reset_y must fit on the aligned (sorted, keep-last) view, not raw values.
+
+    ts=[0,1,1] has a duplicate ts=1 where sorted_view's keep-last dedup drops
+    the 100 sample (never rendered) and keeps 1. Fitting on raw sig.values
+    would stretch y_range to include that discarded, never-drawn 100.
+    """
+    csv_file = tmp_path / "dup.csv"
+    with csv_file.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["t", "s1"])
+        writer.writerow([0.0, 5.0])
+        writer.writerow([1.0, 100.0])
+        writer.writerow([1.0, 1.0])
+    session = Session()
+    session.load(csv_file, _csv_format(1))
+    sig = session.signals()[0]
+    assert not sig.is_monotonic  # sanity: duplicate ts triggers the divergence
+
+    vm = GraphPanelVM(session)
+    vm.add_signal(sig.name)
+    vm.reset_y()
+
+    assert vm.y_range is not None
+    _, y_hi = vm.y_range
+    assert y_hi < 100.0  # displayed values top out near 5, not the discarded 100
+
+
 def test_reset_y_empty_graceful() -> None:
     """reset_y with no plotted signals does not raise; y_range stays None or is set."""
     session = Session()

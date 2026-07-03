@@ -335,7 +335,13 @@ class Session:
 
     @staticmethod
     def _require_min_samples(signal: Signal, op: str) -> tuple[np.ndarray, np.ndarray]:
-        """Return the sorted (timestamps, values), raising if fewer than 2 samples."""
+        """Return the sorted (timestamps, values), raising if fewer than 2 samples (Req 26.7).
+
+        The "≥2 samples" check is against the aligned axis: non-monotonic
+        input is dedup'd (keep-last) by sorted_view first, so the count that
+        matters is the aligned length, not the raw (possibly duplicate-laden)
+        input length.
+        """
         t, v = signal.sorted_view()
         if len(v) < 2:
             raise ValueError(f"{op} requires at least 2 samples, got {len(v)}")
@@ -344,7 +350,12 @@ class Session:
     def _derive(
         self, source: Signal, name: str, values: np.ndarray, timestamps: np.ndarray
     ) -> Signal:
-        """Build a Derived_Signal on the sorted axis its values were computed on."""
+        """Build a Derived_Signal on the sorted axis its values were computed on (Req 26.5).
+
+        *timestamps* is expected to already be the aligned (sorted, dedup'd)
+        axis returned by ``_require_min_samples`` — Derived_Signals always
+        carry a strictly-increasing axis regardless of the source's ordering.
+        """
         return Signal(
             name=name,
             timestamps=timestamps,

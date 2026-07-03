@@ -89,5 +89,9 @@ def test_export_shared_timeline_non_monotonic_sorted_rows(tmp_path):
     CsvExporter().export([sig], out, use_unified_timeline=False)
 
     lines = out.read_text(encoding="utf-8").strip().splitlines()
-    ts_col = [float(line.split(",")[0]) for line in lines[1:]]
+    rows = [tuple(float(x) for x in line.split(",")) for line in lines[1:]]
+    ts_col = [ts for ts, _v in rows]
     assert ts_col == sorted(ts_col)
+    # Req 7.4 corollary: sorting must carry each value along with its own ts,
+    # not just reorder the ts column — (0,10),(1,20),(2,30) proves the pairing.
+    assert rows == [(0.0, 10.0), (1.0, 20.0), (2.0, 30.0)]

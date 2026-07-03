@@ -62,7 +62,9 @@ class CsvExporter:
         """Build CSV lines assuming all signals share one timestamp axis."""
         names = [s.name for s in signals]
         header = ",".join([_TIMESTAMP_HEADER, *names])
-        # 共有軸前提: 各信号の ts は同一配列なので keep 判定も同一 index になる
+        # 共有軸前提: 各信号の ts は等値(loader が同一リストから構築・
+        # __post_init__ でコピーされ別オブジェクト)。決定的な stable argsort
+        # により、値が等しい配列を独立にソートしても keep 判定が同一 index になる
         timestamps = signals[0].sorted_view()[0]
         sorted_values = [s.sorted_view()[1] for s in signals]
         lines = [header]

@@ -23,6 +23,7 @@ from .mdf4_helpers import (
     NONE,
     write_mdf4,
     write_mdf4_all_channels_bad,
+    write_mdf4_non_finite_ts,
     write_mdf4_non_monotonic,
 )
 
@@ -346,6 +347,19 @@ def test_mdf4_non_monotonic_channel_is_accepted_with_warning(tmp_path: Path) -> 
     assert any("非単調" in d.message or "重複" in d.message for d in warnings)
     messy = next(s for s in result.signal_group.signals if s.name == "messy")
     assert not messy.is_monotonic  # 生データ無改変で受け入れ
+
+
+def test_mdf4_non_finite_ts_channel_is_skipped_with_error(tmp_path: Path) -> None:
+    """A NaN-timestamp channel is skipped with an error diagnostic (spec §7);
+    the sibling clean channel still loads."""
+    path = write_mdf4_non_finite_ts(tmp_path)
+    result = Mdf4Loader().load(path)
+    assert result.signal_group is not None
+    names = [s.name for s in result.signal_group.signals]
+    assert "broken" not in names
+    assert "clean" in names
+    errors = [d for d in result.diagnostics if d.level == "error"]
+    assert any("非有限" in d.message and d.signal_name == "broken" for d in errors)
 
 
 def test_mdf4_zero_channels_emits_warning(tmp_path: Path) -> None:

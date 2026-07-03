@@ -197,15 +197,18 @@ class MainWindow(QMainWindow):
         # (Detailed signal-row selection is a later task; activating the file is
         # enough to surface the context.)
         #
-        # `target` is `e.signal_name or e.source` from DiagnosticsView — either a
-        # signal name or a source basename (see diagnostics_view.py). Group keys
-        # ("csv_1", "mf4_2") share no textual relationship with either, so we
-        # resolve via Session's public recovery points instead of string
-        # matching against the key itself.
+        # `target` is always `e.source` (a file basename) — DiagnosticsView
+        # unified diagnostic-jump to source only (signal_name is display-only,
+        # see diagnostics_view.py). Group keys ("csv_1", "mf4_2") share no
+        # textual relationship with the basename, so we resolve via Session's
+        # public recovery points instead of string matching against the key.
         for key in self.app_vm.loaded_file_keys:
             if self.app_vm.session.source_name(key) == target:
                 self.app_vm.set_active_file(key)
                 return
+        # Defensive: no current emitter sends a signal name here, but this
+        # fallback stays ready for a future signal-name emit / signal-row
+        # selection without another _on_diagnostic_activated rewrite.
         for key in self.app_vm.loaded_file_keys:
             try:
                 group_sigs = self.app_vm.session.group_signals(key)
