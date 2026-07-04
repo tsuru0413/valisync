@@ -612,7 +612,7 @@ def test_value_labels_extracted_to_metadata(tmp_path):
 
 - [ ] **Step 3: 実装**
 
-(a) `mdf4_loader.py` — 抽出関数（**asammdf の ChannelConversion API を実装時にソース確認** — TABX の val/text ペアの公開形。確認した取得方法を report に記録し、失敗時は labels なしで続行）:
+(a) `mdf4_loader.py` — 抽出関数。**重要（Task 2 レビューで実測確定）**: `select()` の戻り Signal は `conversion` が**常に None**（ignore_value2text の真偽に依らず）。抽出元は **`mdf.groups[gi].channels[ci].conversion`**（select を経ない生チャンネルメタデータ — TABX テーブルが残ることを対比確認済み）。`_load_group` は `_group_entries` の (name, gi, ci) を持っているので、そこからチャンネルオブジェクトを引いて `_extract_value_labels` に渡し、結果を `_extract_metadata` の meta に合流させる。（**ChannelConversion の val/text ペアの公開形は実装時にソース確認** — 確認した取得方法を report に記録し、失敗時は labels なしで続行）:
 
 ```python
 def _extract_value_labels(conversion: Any) -> dict[float, str] | None:
