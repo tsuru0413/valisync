@@ -645,7 +645,7 @@ def _pack_array_channel(values: np.ndarray) -> np.ndarray:
     write_mdf4_all_channels_bad が LD 第1弾で使ったのと同じ手法)。この結果
     iter_channels は ndim==2 のまま返し、Mdf4Loader が 2D として認識できる
     (第2弾時点は skip 診断・core-loaders-hardening 第3弾以降は Name[i] へ
-    要素展開＋info 診断)。本チャンネルは 2D 経路の検証専用データであり
+    要素展開+info 診断)。本チャンネルは 2D 経路の検証専用データであり
     物理精度は不要なため、0-255m にクリップ量子化する
     (非存在スロットの NaN は 0 に丸める)。
     """
