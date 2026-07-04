@@ -3,7 +3,7 @@
 ユーザーの実機確認データを本番（ADAS ECU の HILS 評価・CANape 計測）寄りにするための mf4 生成スクリプト。機能確認用の軽量データと、**ロード時間・メモリ挙動まで本番相当**の約2GB データの両方を、再現可能に生成する。
 
 - **作成**: 2026-07-04
-- **ステータス**: 設計承認済み（実装プラン未作成）
+- **ステータス**: 実装完了（プラン b4dcba4／実装 dde7c00..83cc1f6・全5タスク＋各タスク3レンズレビュー消化・最終パネル ship）
 - **種別**: 開発ツール（`scripts/`・製品コードは不変更）
 - **関連**: LD-10（大容量 OOM リスク・第3弾）— 本ツールの hils プロファイルがそのままテストデータになる／LD-07（enum ラベル）／FB-04（キャンセル）— 2GB ロードで実用性を確認
 
@@ -56,10 +56,10 @@ ADAS ECU の HILS 評価ログ。**CANape で計測**された MDF 4.1 ファイ
 |---|---|---|
 | `XCP_1ms` | 1ms 周期 | ADAS 制御内部値（高速）: `ACC.TargetAccel`・`AEB.TTC`・`LKA.SteerTrqCmd`・制御状態機械ほか **~60ch**（サイズの主要因 — §4.1 の試算と連動。物標の一部属性も含めてよい） |
 | `XCP_10ms` | 10ms 周期 | 物標リスト展開 (a): `Radar.Obj[0..7].{dx,dy,vx,vy,ExistProb}`（40ch）・`Cam.Obj[0..7].{dx,dy,vx,TypeClass}`（32ch）・`Cam.Lane.{C0,C1,Curvature,Quality}`・ACC/AEB 状態系 ~100ch |
-| `XCP_10ms_Struct` | 10ms | **(b) 2D チャンネル 2-3本**: 例 `Radar.ObjMatrix`（8×5）— 現行 valisync では「2D samples, skipped」警告になる（意図どおり） |
+| `XCP_10ms_Struct` | 10ms | **(b) 2D チャンネル 2本**: `Radar.ObjMatrix`・`Cam.ObjMatrix`（各 (N,8) uint8・8物標の dx を列に量子化。実装は非構造化 byte-array 2D＝structured-dtype は Mdf4Loader で ndim==1 に見え skip されず偽データ化するため不採用）— 現行 valisync では「2D samples, skipped」警告になる（意図どおり・LD-12） |
 | `VehDyn_10ms` | 10ms＋ジッタ | CAN: `VehSpd`・`YawRate`・`StrAngle`・`WhlSpd_FL/FR/RL/RR`（整数 raw＋線形変換・unit 付き） |
 | `PwrTrq_20ms` | 20ms＋ジッタ | CAN: `EngTrq`・`MotTrq`・`AccelPdl`・`BrkPress` |
-| `BodyInfo_100ms` | 100ms＋ジッタ | CAN: `TurnSig`（enum 生値＋conversion 埋込）・`GearPos`・`DoorState` |
+| `BodyInfo_100ms` | 100ms＋ジッタ | CAN: `TurnSig`（enum 生値のみ・ラベルは channel comment に記載。value2text 埋込は §4.4 のとおり見送り＝LD-13 の dead オプション問題でチャンネル消滅するため）・`GearPos`・`DoorState` |
 | `Cluster_100ms` | 100ms | ETH: `Cluster.SurrVeh[0..5].{RelX,RelY,Type}`・`Cluster.{ACCIcon,LaneStat,WarnMsg}` |
 
 - source メタ: CAN グループ= bus_type CAN・bus 名 `CAN1`、ETH グループ= bus_type ETHERNET・`ETH1`、XCP はデバイス名 `XCP:HILS_ECU`。
