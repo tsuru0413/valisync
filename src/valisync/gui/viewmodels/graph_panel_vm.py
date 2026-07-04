@@ -69,6 +69,7 @@ class CursorReading:
     color: str
     value: float | None
     in_range: bool
+    label: str | None = None  # value_labels 命中時のみ (LD-07)
 
 
 @dataclass
@@ -81,6 +82,20 @@ class DeltaReading:
     dy: float | None
     stats: StatisticsResult  # count==0 はデータなし
     in_range: bool
+    label: str | None = None  # value_a の value_labels 命中時のみ (LD-07)
+
+
+def _resolve_value_label(sig: Signal | None, value: float | None) -> str | None:
+    """整数に厳密一致し value_labels に載る値のみラベル化 (補間途中に嘘を付けない)。"""
+    if value is None or sig is None or not sig.metadata:
+        return None
+    labels = sig.metadata.get("value_labels")
+    if not labels:
+        return None
+    r = round(value)
+    if abs(value - r) < 1e-9:
+        return labels.get(float(r))
+    return None
 
 
 @dataclass
@@ -733,7 +748,13 @@ class GraphPanelVM(Observable):
                 continue
             val = self._session.interpolate(sig, self.cursor_t, self.interp_method)
             out.append(
-                CursorReading(entry.signal_key, entry.color, val, val is not None)
+                CursorReading(
+                    entry.signal_key,
+                    entry.color,
+                    val,
+                    val is not None,
+                    label=_resolve_value_label(sig, val),
+                )
             )
         return out
 
@@ -823,7 +844,13 @@ class GraphPanelVM(Observable):
             stats = self._session.compute_statistics(sig, lo, hi)
             out.append(
                 DeltaReading(
-                    entry.signal_key, entry.color, va, dy, stats, va is not None
+                    entry.signal_key,
+                    entry.color,
+                    va,
+                    dy,
+                    stats,
+                    va is not None,
+                    label=_resolve_value_label(sig, va),
                 )
             )
         return out

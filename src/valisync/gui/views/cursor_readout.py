@@ -24,6 +24,12 @@ def _fmt(v: float | None) -> str:
     return _OUT_OF_RANGE if v is None else f"{v:.4g}"
 
 
+def _fmt_labeled(v: float | None, label: str | None) -> str:
+    """value_labels 命中時は「値 (ラベル)」形式で併記する (LD-07)。"""
+    base = _fmt(v)
+    return f"{base} ({label})" if label else base
+
+
 def _fmt_dy(v: float | None) -> str:
     if v is None:
         return _OUT_OF_RANGE
@@ -96,7 +102,11 @@ class CursorReadout(QWidget):
         self._rebuild(
             col_headers=[],
             rows=[
-                (r.name, r.color, [_fmt(r.value if r.in_range else None)])
+                (
+                    r.name,
+                    r.color,
+                    [_fmt_labeled(r.value if r.in_range else None, r.label)],
+                )
                 for r in readings
             ],
         )
@@ -114,7 +124,11 @@ class CursorReadout(QWidget):
         self._rebuild(
             col_headers=[],
             rows=[
-                (r.name, r.color, [_fmt(r.value if r.in_range else None)])
+                (
+                    r.name,
+                    r.color,
+                    [_fmt_labeled(r.value if r.in_range else None, r.label)],
+                )
                 for r in readings
             ],
         )
@@ -138,7 +152,7 @@ class CursorReadout(QWidget):
         rows = []
         for r in readings:
             cells: list[str] = [
-                _fmt(r.value_a if r.in_range else None),
+                _fmt_labeled(r.value_a if r.in_range else None, r.label),
                 _fmt_dy(r.dy),
             ]
             if r.stats.count == 0:

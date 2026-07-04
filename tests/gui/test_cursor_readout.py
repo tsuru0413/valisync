@@ -172,6 +172,29 @@ def test_delta_column_headers_align_with_data_columns(qtbot: QtBot):
     assert grid.itemAtPosition(1, 2).widget().text() == "12.3"
 
 
+# --- Task 5 (LD-07): value_labels 併記 ---
+
+
+def test_readout_shows_label_alongside_value(qtbot: QtBot):
+    """label が非 None のとき「値 (ラベル)」形式で併記される."""
+    w = CursorReadout()
+    qtbot.addWidget(w)
+    w.set_global(
+        1.0,
+        [CursorReading("f::TurnSig", "#1f77b4", 1.0, True, label="LEFT")],
+    )
+    joined = " ".join(t for row in w.row_texts() for t in row)
+    assert "1 (LEFT)" in joined
+
+
+def test_readout_no_label_suffix_when_label_none(qtbot: QtBot):
+    """label=None のときは従来どおり値だけ (括弧なし)."""
+    w = CursorReadout()
+    qtbot.addWidget(w)
+    w.set_global(1.0, [CursorReading("csv::vCar", "#1f77b4", 1.0, True)])
+    assert w.row_texts()[0][1] == "1"
+
+
 def test_set_readings_after_set_global_hides_header(qtbot: QtBot):
     """set_global → set_readings 遷移で時刻ヘッダが非表示になることを検証する。
 

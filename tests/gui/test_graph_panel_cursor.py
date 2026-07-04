@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import csv
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock
 
+import numpy as np
 import pytest
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QContextMenuEvent, QMouseEvent
@@ -17,7 +19,7 @@ from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from valisync.core.interpolation import InterpolationMethod
-from valisync.core.models import Delimiter, FormatDefinition
+from valisync.core.models import Delimiter, FormatDefinition, Signal, SignalGroup
 from valisync.core.session import Session
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 from valisync.gui.views.graph_panel_view import GraphPanelView
@@ -373,3 +375,88 @@ def test_sub_toggle_action_drives_vm(qtbot: QtBot, tmp_path: Path) -> None:
     sub.setChecked(True)  # fires toggled(True) → vm.toggle_delta(True)
     assert vm.delta_enabled is True
     assert vm.cursor_t_b == pytest.approx(0.75)
+
+
+# --- Task 5 (LD-07): カーソル readout の value_labels 併記 ---
+#
+# 直接登録ヘルパは tests/gui/test_graph_panel_vm.py の _register_signal と同じ
+# パターン (session._groups.add) — CSV ローダーはまだ value_labels 付き Signal を
+# 生成できないため、Session に Signal を直接注入する。
+
+
+def _register_signal(session: Session, sig: Signal, tmp_path: Path) -> str:
+    """*sig* を *session* に直接登録し(ローダーを経由しない)、名前空間化された名前を返す。"""
+    key = session._groups.add(
+        SignalGroup(
+            signals=(sig,),
+            source_path=tmp_path / f"{sig.name}.csv",
+            file_format="CSV",
+            loaded_at=datetime.now(),
+        )
+    )
+    return session.group_signals(key)[0].name
+
+
+def _enum_signal(session: Session, tmp_path: Path, key_name: str = "TurnSig") -> str:
+    """value_labels 付き enum 信号を Session に直接登録するテストヘルパ."""
+    sig = Signal(
+        name=key_name,
+        timestamps=np.array([0.0, 1.0, 2.0, 3.0], dtype=np.float64),
+        values=np.array([0.0, 1.0, 2.0, 1.0], dtype=np.float64),
+        file_format="CSV",
+        bus_type="",
+        source_file="",
+        metadata={"value_labels": {0.0: "OFF", 1.0: "LEFT", 2.0: "RIGHT"}},
+    )
+    return _register_signal(session, sig, tmp_path)
+
+
+def test_cursor_reading_label_on_exact_integer(tmp_path: Path) -> None:
+    """カーソルがサンプル上 (値=1.0 ちょうど) のとき label='LEFT' が付く."""
+    session = Session()
+    sig_key = _enum_signal(session, tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(sig_key)
+
+    vm.set_cursor(1.0)
+
+    r = next(r for r in vm.cursor_readings() if "TurnSig" in r.name)
+    assert r.value == 1.0
+    assert r.label == "LEFT"
+
+
+def test_cursor_reading_no_label_between_samples(tmp_path: Path) -> None:
+    """線形補間の中間値 (1.5) には嘘ラベルを付けない."""
+    session = Session()
+    sig_key = _enum_signal(session, tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(sig_key)
+    vm.interp_method = InterpolationMethod.LINEAR
+
+    vm.set_cursor(1.5)
+
+    r = next(r for r in vm.cursor_readings() if "TurnSig" in r.name)
+    assert r.value == 1.5
+    assert r.label is None
+
+
+def test_cursor_reading_no_label_without_metadata(tmp_path: Path) -> None:
+    """value_labels を持たない通常信号は label=None."""
+    session = Session()
+    sig = Signal(
+        name="Plain",
+        timestamps=np.array([0.0, 1.0, 2.0, 3.0], dtype=np.float64),
+        values=np.array([0.0, 1.0, 2.0, 1.0], dtype=np.float64),
+        file_format="CSV",
+        bus_type="",
+        source_file="",
+    )
+    sig_key = _register_signal(session, sig, tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(sig_key)
+
+    vm.set_cursor(1.0)
+
+    r = next(r for r in vm.cursor_readings() if "Plain" in r.name)
+    assert r.value == 1.0
+    assert r.label is None
