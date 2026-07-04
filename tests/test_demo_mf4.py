@@ -92,3 +92,85 @@ def test_add_noise_deterministic_for_same_seed():
     a = gen.add_noise(values, scale=1.0, rng=np.random.default_rng(5))
     b = gen.add_noise(values, scale=1.0, rng=np.random.default_rng(5))
     assert np.array_equal(a, b, equal_nan=True)
+
+
+def test_smoke_mf4_roundtrip(tmp_path):
+    out = gen.write_mf4(
+        out=tmp_path / "smoke.mf4",
+        profile=gen.PROFILES["smoke"],
+        seed=42,
+        dirty=False,
+        progress=False,
+    )
+    from asammdf import MDF
+
+    with MDF(str(out)) as mdf:
+        names = {ch.name for group in mdf.groups for ch in group.channels}
+        assert "VehSpd" in names and "Radar.Obj[0].dx" in names
+        assert "Cluster.SurrVeh[0].RelX" in names
+        assert "Radar.ObjMatrix" in names  # (b) 2D チャンネル
+        spd = mdf.get("VehSpd")
+        assert spd.samples.dtype == np.float64 or np.issubdtype(
+            spd.samples.dtype, np.floating
+        )
+        assert 70.0 < float(np.nanmean(spd.samples)) < 90.0  # 物理値変換が効いている
+        assert str(spd.unit).strip() in ("km/h", "km/h ")
+
+
+def test_smoke_reproducible_same_seed(tmp_path):
+    a = gen.write_mf4(
+        out=tmp_path / "a.mf4",
+        profile=gen.PROFILES["smoke"],
+        seed=7,
+        dirty=False,
+        progress=False,
+    )
+    b = gen.write_mf4(
+        out=tmp_path / "b.mf4",
+        profile=gen.PROFILES["smoke"],
+        seed=7,
+        dirty=False,
+        progress=False,
+    )
+    from asammdf import MDF
+
+    with MDF(str(a)) as ma, MDF(str(b)) as mb:
+        assert np.array_equal(ma.get("VehSpd").samples, mb.get("VehSpd").samples)
+
+
+def test_multi_chunk_extend_preserves_continuity(tmp_path):
+    # smoke プロファイル (chunk_s == duration_s) は append のみで extend を
+    # 通らない — チャンク境界をまたぐ経路 (append→extend) を別途小尺で検証する。
+    profile = gen.Profile(duration_s=4.0, chunk_s=1.0)
+    out = gen.write_mf4(
+        out=tmp_path / "chunks.mf4",
+        profile=profile,
+        seed=3,
+        dirty=False,
+        progress=False,
+    )
+    from asammdf import MDF
+
+    with MDF(str(out)) as mdf:
+        spd = mdf.get("VehSpd")
+        assert (
+            len(spd.timestamps) > 350
+        )  # 10ms レート x 4s 分がチャンク分割で欠落しない
+        assert np.all(np.diff(spd.timestamps) > 0.0)  # dirty=False は常に単調
+        mat = mdf.get("Radar.ObjMatrix")
+        assert mat.samples.shape[0] == len(mdf.get("Radar.Obj[0].dx").timestamps)
+
+
+def test_dirty_injects_nonmonotonic_only_in_vehdyn(tmp_path):
+    profile = gen.Profile(duration_s=4.0, chunk_s=1.0)
+    out = gen.write_mf4(
+        out=tmp_path / "dirty.mf4", profile=profile, seed=11, dirty=True, progress=False
+    )
+    from asammdf import MDF
+
+    with MDF(str(out)) as mdf:
+        veh_spd_ts = mdf.get("VehSpd").timestamps
+        diffs = np.diff(veh_spd_ts)
+        assert np.any(diffs <= 0.0)  # LD-03/04 デモ: 重複/非単調が混入
+        other_ts = mdf.get("EngTrq").timestamps  # dirty 対象外グループは無傷
+        assert np.all(np.diff(other_ts) > 0.0)
