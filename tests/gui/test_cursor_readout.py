@@ -208,3 +208,27 @@ def test_set_readings_after_set_global_hides_header(qtbot: QtBot):
     w.set_readings([CursorReading("csv::vCar", "#1f77b4", 5.0, True)])
     assert w._header.isHidden()  # set_readings が hide() を呼んでいる
     assert w._header_text == ""
+
+
+def test_delta_value_a_shows_label_dy_does_not(qtbot: QtBot):
+    """Delta 表の A 値にラベル併記・Δy には付かない (spec §3.3)."""
+    w = CursorReadout()
+    qtbot.addWidget(w)
+    w.set_delta(
+        0.5,
+        0.75,
+        [
+            DeltaReading(
+                "f::TurnSig",
+                "#1f77b4",
+                1.0,
+                1.0,
+                _stats(10, 20, 5, 3, 100),
+                True,
+                label="LEFT",
+            )
+        ],
+    )
+    joined = " ".join(w.row_texts()[0])
+    assert "1 (LEFT)" in joined
+    assert "+1 (LEFT)" not in joined  # dy 側には付かない

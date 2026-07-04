@@ -460,3 +460,29 @@ def test_cursor_reading_no_label_without_metadata(tmp_path: Path) -> None:
     r = next(r for r in vm.cursor_readings() if "Plain" in r.name)
     assert r.value == 1.0
     assert r.label is None
+
+
+def test_cursor_reading_nan_value_yields_no_label_and_no_crash(tmp_path: Path) -> None:
+    """NaN 隣接補間が返す NaN で readout がクラッシュしない (レビュー critical).
+
+    NaN 隣接値の伝播 (Req 12.11) は正規の補間動作 — round(nan) の
+    ValueError で cursor_readings() 全体が落ちないことを固定する。
+    """
+    session = Session()
+    sig = Signal(
+        name="TurnSig",
+        timestamps=np.array([0.0, 1.0, 2.0, 3.0], dtype=np.float64),
+        values=np.array([0.0, np.nan, 2.0, 1.0], dtype=np.float64),
+        file_format="CSV",
+        bus_type="",
+        source_file="",
+        metadata={"value_labels": {0.0: "OFF", 1.0: "LEFT", 2.0: "RIGHT"}},
+    )
+    sig_key = _register_signal(session, sig, tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(sig_key)
+
+    vm.set_cursor(0.5)  # 線形補間: 0 と NaN の間 → NaN が正規に返る
+
+    r = next(r for r in vm.cursor_readings() if "TurnSig" in r.name)
+    assert r.label is None

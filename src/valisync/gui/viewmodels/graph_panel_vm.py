@@ -13,6 +13,7 @@ LOD pipeline (render_data):
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -86,8 +87,12 @@ class DeltaReading:
 
 
 def _resolve_value_label(sig: Signal | None, value: float | None) -> str | None:
-    """整数に厳密一致し value_labels に載る値のみラベル化 (補間途中に嘘を付けない)。"""
-    if value is None or sig is None or not sig.metadata:
+    """整数に厳密一致し value_labels に載る値のみラベル化 (補間途中に嘘を付けない)。
+
+    NaN/Inf は round() が ValueError/OverflowError を送出する (NaN 隣接補間は
+    正規の動作で NaN を返す) ため、有限性を先に確認する。
+    """
+    if value is None or sig is None or not sig.metadata or not math.isfinite(value):
         return None
     labels = sig.metadata.get("value_labels")
     if not labels:
