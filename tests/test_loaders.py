@@ -387,3 +387,31 @@ def test_mdf4_loader_cancel_raises(tmp_path: Path) -> None:
     )
     with pytest.raises(LoadCancelled):
         Mdf4Loader().load(path, cancel=lambda: True)
+
+
+# ─── mdf4_helpers: 新規ヘルパの roundtrip 前提 (第3弾土台) ────────────────────
+
+
+def test_helper_value2text_roundtrip(tmp_path: Path) -> None:
+    from asammdf import MDF
+
+    from tests.mdf4_helpers import write_mdf4_value2text
+
+    path = write_mdf4_value2text(tmp_path)
+    with MDF(str(path)) as mdf:
+        # 既定 (raw=False) は変換適用済みでテキスト化され conversion は None になる
+        # (asammdf の get() 実測で確認済み) — raw=True で生値+変換テーブルを固定する。
+        sig = mdf.get("TurnSig", raw=True)
+        assert sig.conversion is not None
+        np.testing.assert_array_equal(sig.samples, [0, 1, 2, 1])
+
+
+def test_helper_2d_roundtrip(tmp_path: Path) -> None:
+    from asammdf import MDF
+
+    from tests.mdf4_helpers import write_mdf4_2d
+
+    path = write_mdf4_2d(tmp_path)
+    with MDF(str(path)) as mdf:
+        sig = mdf.get("Mat")
+        assert sig.samples.ndim == 2 and sig.samples.shape[1] == 3
