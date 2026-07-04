@@ -155,7 +155,9 @@ def _extract_metadata(asammdf_sig: Any, raw_conversion: Any = None) -> dict[str,
         meta["channel_group_name"] = getattr(source, "path", "") or ""
         meta["source_bus_type"] = getattr(source, "bus_type", 0)
         meta["source_name"] = getattr(source, "name", "") or ""
-    conversion = getattr(asammdf_sig, "conversion", None)
+    # select() の戻り Signal は conversion が常に None のため、互換キー
+    # conversion_info も生チャンネル側 (raw_conversion) から生成する (spec §3.3)
+    conversion = getattr(asammdf_sig, "conversion", None) or raw_conversion
     if conversion is not None:
         meta["conversion_info"] = str(conversion)
     labels = _extract_value_labels(raw_conversion)

@@ -417,6 +417,8 @@ def test_value_labels_extracted_to_metadata(tmp_path: Path) -> None:
     assert turn.metadata.get("value_labels") == {0.0: "OFF", 1.0: "LEFT", 2.0: "RIGHT"}
     clean = next(s for s in result.signal_group.signals if s.name == "Clean")
     assert "value_labels" not in clean.metadata
+    # conversion_info の互換キーは生チャンネル側 conversion から復元される (spec §3.3)
+    assert "conversion_info" in turn.metadata
 
 
 def test_same_group_signals_share_master(tmp_path: Path) -> None:
