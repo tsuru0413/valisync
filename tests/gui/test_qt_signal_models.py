@@ -81,6 +81,53 @@ def test_data_returns_name_and_unit(qtbot: QtBot, tmp_path: Path) -> None:
     assert model.data(model.index(0, 1), Qt.ItemDataRole.DisplayRole) == "V"
 
 
+def test_model_returns_tooltip_role(qtbot: QtBot) -> None:
+    """SignalTableModel が ToolTipRole で item.tooltip を返す (空なら None)。LD-07."""
+    app_vm = AppViewModel()
+    vm = ChannelBrowserVM(app_vm)
+    model = SignalTableModel(vm)
+
+    import numpy as np
+
+    labeled = Signal(
+        name="k::TurnSig",
+        timestamps=np.array([0.0]),
+        values=np.array([0.0]),
+        file_format="MDF4",
+        bus_type="",
+        source_file="",
+        metadata={"value_labels": {0.0: "OFF", 1.0: "LEFT", 2.0: "RIGHT"}},
+    )
+    plain = Signal(
+        name="k::speed",
+        timestamps=np.array([0.0]),
+        values=np.array([1.0]),
+        file_format="MDF4",
+        bus_type="",
+        source_file="",
+        metadata={"unit": "km/h"},
+    )
+    app_vm.session.group_signals = lambda key: [labeled, plain]
+    app_vm.set_active_file("k")
+
+    turnsig_row = next(
+        row
+        for row in range(model.rowCount(QModelIndex()))
+        if model.data(model.index(row, 0), Qt.ItemDataRole.DisplayRole) == "TurnSig"
+    )
+    speed_row = next(
+        row
+        for row in range(model.rowCount(QModelIndex()))
+        if model.data(model.index(row, 0), Qt.ItemDataRole.DisplayRole) == "speed"
+    )
+
+    assert (
+        model.data(model.index(turnsig_row, 0), Qt.ItemDataRole.ToolTipRole)
+        == "ラベル: 0=OFF, 1=LEFT, 2=RIGHT"
+    )
+    assert model.data(model.index(speed_row, 0), Qt.ItemDataRole.ToolTipRole) is None
+
+
 def test_header_data(qtbot: QtBot) -> None:
     app_vm = AppViewModel()
     vm = ChannelBrowserVM(app_vm)

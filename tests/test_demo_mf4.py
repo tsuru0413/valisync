@@ -194,11 +194,12 @@ def test_dirty_injects_nonmonotonic_in_single_chunk_profile(tmp_path):
         assert np.any(np.diff(veh_spd_ts) <= 0.0)
 
 
-def test_2d_channels_yield_skip_diagnostics_in_valisync(tmp_path):
-    # Finding 2 回帰: 物標行列 (b) パターンは spec の設計目的どおり「2D samples,
-    # skipped」で valisync 側から丸ごと見えなくなるべき — かつ親チャンネルが
-    # 偽データとして化けたり、兄弟チャンネル (ObjMatrix[0..7]) が湧いたりしない
-    # こと (structured-dtype パッキングはこの両方を破っていた)。
+def test_2d_channels_explode_in_valisync(tmp_path):
+    # LD-12 (第3弾): 物標行列 (b) パターンは列展開されて Radar/Cam.ObjMatrix[0..7]
+    # として valisync から見えるようになった — 旧仕様 (2D は丸ごと「skipped」)
+    # は本タスクで置換 (spec §4.2 歴史注記参照)。旧テストが守っていた「親チャン
+    # ネルが偽データとして化けない」不変条件は展開後も変わらず成立する
+    # (親名 "Radar.ObjMatrix"/"Cam.ObjMatrix" 単体は信号として現れない)。
     out = gen.write_mf4(
         out=tmp_path / "s.mf4",
         profile=gen.PROFILES["smoke"],
@@ -211,18 +212,24 @@ def test_2d_channels_yield_skip_diagnostics_in_valisync(tmp_path):
     session = Session()
     outcome = session.load(out)
 
+    names = {sig.name.split("::", 1)[1] for sig in session.group_signals(outcome.key)}
+    for i in range(8):
+        assert f"Radar.ObjMatrix[{i}]" in names
+        assert f"Cam.ObjMatrix[{i}]" in names
+    assert "Radar.ObjMatrix" not in names
+    assert "Cam.ObjMatrix" not in names
+
+    infos = [
+        d for d in outcome.diagnostics if d.level == "info" and "ObjMatrix" in d.message
+    ]
+    assert len(infos) == 2  # Radar/Cam の ObjMatrix 2本とも展開 info
+
     skips = [
         d
         for d in outcome.diagnostics
         if "skipped" in d.message and "ObjMatrix" in d.message
     ]
-    assert len(skips) == 2  # Radar/Cam の ObjMatrix 2本とも skip 警告
-
-    names = {sig.name.split("::", 1)[1] for sig in session.group_signals(outcome.key)}
-    assert "Radar.ObjMatrix" not in names
-    assert "Cam.ObjMatrix" not in names
-    assert not any(n.startswith("Radar.ObjMatrix[") for n in names)
-    assert not any(n.startswith("Cam.ObjMatrix[") for n in names)
+    assert len(skips) == 0  # 展開されるので skip 警告は 0 件
 
 
 def test_turn_sig_survives_load_with_raw_enum_values(tmp_path):
@@ -247,12 +254,20 @@ def test_turn_sig_survives_load_with_raw_enum_values(tmp_path):
     assert "TurnSig" in names
     values = set(np.unique(names["TurnSig"].values).tolist())
     assert values <= {0.0, 1.0, 2.0}
+    turn_sig = names["TurnSig"]
+    # LD-07: 復活させた value2text がラベルとして構造化保持される
+    assert turn_sig.metadata.get("value_labels") == {
+        0.0: "OFF",
+        1.0: "LEFT",
+        2.0: "RIGHT",
+    }
 
 
 def test_valisync_loads_smoke_profile(tmp_path):
     # brief 相当の smoke プロファイル統合確認: 代表信号名の存在 (VehSpd/Radar.Obj[0].dx)
-    # に加え、2D skip 警告は出るが error レベル診断はゼロであること (2D skip の詳細な
-    # 中身は test_2d_channels_yield_skip_diagnostics_in_valisync が既に担保している)。
+    # に加え、(b) 2D チャンネルは LD-12 展開により Radar.ObjMatrix[0] として見える
+    # こと、error レベル診断はゼロであること (詳細な展開契約の中身は
+    # test_2d_channels_explode_in_valisync が既に担保している)。
     out = tmp_path / "v.mf4"
     gen.main(["--out", str(out), "--profile", "smoke", "--seed", "1"])
     from valisync.core.session import Session
@@ -262,8 +277,7 @@ def test_valisync_loads_smoke_profile(tmp_path):
     sigs = session.group_signals(outcome.key)
     names = {s.name.split("::", 1)[1] for s in sigs}
     assert "VehSpd" in names and "Radar.Obj[0].dx" in names
-    # (b) 2D チャンネルは skip され警告が出る (spec §4.2/LD-12 の現状再現)
-    assert any("2D" in d.message or "skipped" in d.message for d in outcome.diagnostics)
+    assert "Radar.ObjMatrix[0]" in names  # (b) 2D チャンネルは展開されて見える (LD-12)
     assert not any(d.level == "error" for d in outcome.diagnostics)
 
 
@@ -338,8 +352,10 @@ def test_clean_multichunk_timestamps_strictly_monotonic(tmp_path):
             assert np.all(d > 0), f"{name}: {int(np.sum(d <= 0))} non-monotonic points"
 
 
-def test_clean_multichunk_load_yields_only_2d_warnings(tmp_path):
-    """クリーン生成(--dirty なし) は valisync ロードで ObjMatrix skip 2件以外の警告を出さない."""
+def test_clean_multichunk_load_yields_only_2d_info(tmp_path):
+    """クリーン生成(--dirty なし) は valisync ロードで警告を一切出さない
+    (ObjMatrix は LD-12 展開により info 診断のみ・第3弾で契約変更 — 旧仕様は
+    skip 警告2件だった)."""
     prof = gen.Profile(duration_s=40.0, chunk_s=10.0)
     out = gen.write_mf4(
         out=tmp_path / "c.mf4", profile=prof, seed=42, dirty=False, progress=False
@@ -348,6 +364,9 @@ def test_clean_multichunk_load_yields_only_2d_warnings(tmp_path):
 
     outcome = Session().load(out)
     warns = [d for d in outcome.diagnostics if d.level == "warning"]
-    assert len(warns) == 2 and all("ObjMatrix" in d.message for d in warns), [
-        d.message for d in warns
+    assert warns == [], [d.message for d in warns]
+
+    infos = [
+        d for d in outcome.diagnostics if d.level == "info" and "ObjMatrix" in d.message
     ]
+    assert len(infos) == 2

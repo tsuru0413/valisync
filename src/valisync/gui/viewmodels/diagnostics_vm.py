@@ -18,7 +18,7 @@ from valisync.gui.viewmodels.observable import Observable
 class DiagnosticEntry:
     """A single diagnostic with its source file and receipt order (seq)."""
 
-    level: str  # "error" | "warning"
+    level: str  # "error" | "warning" | "info"
     message: str
     source: str  # file basename
     signal_name: str | None
@@ -57,7 +57,7 @@ class DiagnosticsViewModel(Observable):
         self._notify("diagnostics")
 
     def entries(self, level: str | None = None) -> list[DiagnosticEntry]:
-        """Return entries, optionally filtered by level ("error"/"warning")."""
+        """Return entries, optionally filtered by level ("error"/"warning"/"info")."""
         if level is None:
             return list(self._entries)
         return [e for e in self._entries if e.level == level]

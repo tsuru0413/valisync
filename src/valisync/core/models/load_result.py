@@ -9,7 +9,7 @@ from valisync.core.models.signal_group import SignalGroup
 class Diagnostic:
     """Single diagnostic message from a load operation."""
 
-    level: str  # "error" | "warning"
+    level: str  # "error" | "warning" | "info"
     message: str
     line_number: int | None = None
     column_number: int | None = None
@@ -17,8 +17,10 @@ class Diagnostic:
     sample_index: int | None = None
 
     def __post_init__(self) -> None:
-        if self.level not in ("error", "warning"):
-            raise ValueError(f"level must be 'error' or 'warning', got {self.level!r}")
+        if self.level not in ("error", "warning", "info"):
+            raise ValueError(
+                f"level must be 'error', 'warning' or 'info', got {self.level!r}"
+            )
 
 
 @dataclass(frozen=True)

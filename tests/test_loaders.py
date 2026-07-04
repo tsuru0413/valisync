@@ -22,9 +22,13 @@ from .mdf4_helpers import (
     ETHERNET,
     NONE,
     write_mdf4,
+    write_mdf4_2d,
     write_mdf4_all_channels_bad,
     write_mdf4_non_finite_ts,
     write_mdf4_non_monotonic,
+    write_mdf4_shared_group,
+    write_mdf4_structured,
+    write_mdf4_value2text,
 )
 
 
@@ -387,3 +391,185 @@ def test_mdf4_loader_cancel_raises(tmp_path: Path) -> None:
     )
     with pytest.raises(LoadCancelled):
         Mdf4Loader().load(path, cancel=lambda: True)
+
+
+# ─── Mdf4Loader: select() ベース読み取りパス (LD-13/LD-10, 第3弾 Task 2) ──────
+
+
+def test_value2text_channel_survives_as_raw(tmp_path: Path) -> None:
+    """LD-13: value2text 付きチャンネルが生値で生存する (現行は消滅=RED)."""
+    path = write_mdf4_value2text(tmp_path)
+    result = Mdf4Loader().load(path)
+    names = {s.name for s in result.signal_group.signals}
+    assert "TurnSig" in names
+    turn = next(s for s in result.signal_group.signals if s.name == "TurnSig")
+    assert np.array_equal(turn.values, [0.0, 1.0, 2.0, 1.0])
+    assert not any(
+        "non-numeric" in d.message and "TurnSig" in d.message
+        for d in result.diagnostics
+    )
+
+
+def test_value_labels_extracted_to_metadata(tmp_path: Path) -> None:
+    """LD-07: TABX 変換表が metadata['value_labels'] に構造化保持される."""
+    result = Mdf4Loader().load(write_mdf4_value2text(tmp_path))
+    turn = next(s for s in result.signal_group.signals if s.name == "TurnSig")
+    assert turn.metadata.get("value_labels") == {0.0: "OFF", 1.0: "LEFT", 2.0: "RIGHT"}
+    clean = next(s for s in result.signal_group.signals if s.name == "Clean")
+    assert "value_labels" not in clean.metadata
+    # conversion_info の互換キーは生チャンネル側 conversion から復元される (spec §3.3)
+    assert "conversion_info" in turn.metadata
+
+
+def test_same_group_signals_share_master(tmp_path: Path) -> None:
+    """LD-10: 同一グループの信号はマスタ時刻軸を共有し read-only (現行は複製=RED)."""
+    path = write_mdf4_shared_group(tmp_path)
+    result = Mdf4Loader().load(path)
+    a = next(s for s in result.signal_group.signals if s.name == "A")
+    b = next(s for s in result.signal_group.signals if s.name == "B")
+    assert np.shares_memory(a.timestamps, b.timestamps)
+    assert not a.timestamps.flags.writeable
+    assert np.array_equal(a.timestamps, b.timestamps)
+
+
+# ─── Mdf4Loader: virtual_groups 走査 (Task 2 レビュー critical) ───────────────
+
+
+def test_remote_master_style_virtual_groups_do_not_kill_load(tmp_path: Path) -> None:
+    """v4.20 remote-master 相当 (follower gi が virtual_groups に無い) でも全滅しない.
+
+    asammdf は v4.20+ の remote-master/column-storage 読込時、follower 物理
+    グループを ``virtual_groups`` のキーに載せない (マスタ側 gi に統合される)。
+    グループ走査を物理グループ数 (``range(len(mdf.groups))``) で回すと、
+    follower の gi で ``included_channels(gi)`` が KeyError → 外側の broad
+    except に飲まれ、正常なグループも含めファイル全体が signal_group=None に
+    なる回帰を防止する (Task 2 レビュー critical)。ここでは実ファイルを
+    remote-master 形式で書き出す代わりに、通常の 2 グループファイルに対して
+    ``MDF.__init__`` 後の ``virtual_groups``/``virtual_groups_map`` を
+    remote-master 相当の形へパッチし、同じ「follower gi が virtual_groups の
+    キーに無い」状態を再現する。
+    """
+    from unittest.mock import patch
+
+    from asammdf import MDF as _MDF
+
+    path = write_mdf4(
+        tmp_path / "remote_master_like.mf4",
+        [
+            {"name": "A", "timestamps": [0.0, 1.0], "values": [1.0, 2.0]},
+            {"name": "B", "timestamps": [0.0, 1.0], "values": [3.0, 4.0]},
+        ],
+    )
+
+    real_init = _MDF.__init__
+
+    def patched_init(self: _MDF, *args: object, **kwargs: object) -> None:
+        real_init(self, *args, **kwargs)  # type: ignore[arg-type]
+        if 1 in self.virtual_groups:
+            vg0 = self.virtual_groups[0]
+            vg0.groups = sorted({*vg0.groups, 1})
+            self.virtual_groups_map[1] = 0
+            del self.virtual_groups[1]
+
+    with patch.object(_MDF, "__init__", patched_init):
+        result = Mdf4Loader().load(path)
+
+    assert result.signal_group is not None
+    names = {s.name for s in result.signal_group.signals}
+    assert {"A", "B"} <= names
+    assert not any(d.level == "error" for d in result.diagnostics)
+
+
+# ─── mdf4_helpers: 新規ヘルパの roundtrip 前提 (第3弾土台) ────────────────────
+
+
+def test_helper_value2text_roundtrip(tmp_path: Path) -> None:
+    from asammdf import MDF
+
+    path = write_mdf4_value2text(tmp_path)
+    with MDF(str(path)) as mdf:
+        # 既定 (raw=False) は変換適用済みでテキスト化され conversion は None になる
+        # (asammdf の get() 実測で確認済み) — raw=True で生値+変換テーブルを固定する。
+        sig = mdf.get("TurnSig", raw=True)
+        assert sig.conversion is not None
+        np.testing.assert_array_equal(sig.samples, [0, 1, 2, 1])
+
+
+def test_helper_2d_roundtrip(tmp_path: Path) -> None:
+    from asammdf import MDF
+
+    path = write_mdf4_2d(tmp_path)
+    with MDF(str(path)) as mdf:
+        sig = mdf.get("Mat")
+        assert sig.samples.ndim == 2 and sig.samples.shape[1] == 3
+
+
+# ─── Mdf4Loader: 多次元/構造化チャンネルの要素展開 (LD-12, 第3弾 Task 3) ──────
+
+
+def test_2d_channel_explodes_into_columns(tmp_path: Path) -> None:
+    """LD-12: 2D (Nx3) が Mat[0..2] の 1D 信号群へ展開され共有マスタを参照する."""
+    result = Mdf4Loader().load(write_mdf4_2d(tmp_path))
+    names = {s.name for s in result.signal_group.signals}
+    assert {"Mat[0]", "Mat[1]", "Mat[2]", "Clean"} <= names
+    m0 = next(s for s in result.signal_group.signals if s.name == "Mat[0]")
+    m2 = next(s for s in result.signal_group.signals if s.name == "Mat[2]")
+    assert np.array_equal(m0.values, [0.0, 10.0, 20.0, 30.0])
+    assert np.array_equal(m2.values, [2.0, 12.0, 22.0, 32.0])
+    assert np.shares_memory(m0.timestamps, m2.timestamps)
+    infos = [d for d in result.diagnostics if d.level == "info" and "Mat" in d.message]
+    assert len(infos) == 1 and "3 本に展開" in infos[0].message
+    assert not any(
+        "skipped" in d.message and "Mat" in d.message for d in result.diagnostics
+    )
+
+
+def test_structured_channel_fields_visible(tmp_path: Path) -> None:
+    """LD-12: 構造化 (x,y) がフィールド単位で見える (Pt.x / Pt.y ないし成分ch)."""
+    result = Mdf4Loader().load(write_mdf4_structured(tmp_path))
+    names = {s.name for s in result.signal_group.signals}
+    # 実装時確認 (Task 1 Task2-Step2 と本タスク Step1 で確定): select() 結果には
+    # 構造化チャンネルの親 (Pt) のみが届き成分 (x/y) は included_channels から
+    # 除外されている — フィールド展開は Pt.x/Pt.y として現れる。
+    xs = [
+        s
+        for s in result.signal_group.signals
+        if np.array_equal(s.values, [1.0, 2.0, 3.0])
+    ]
+    assert xs, f"x 成分が信号として見えない: {sorted(names)}"
+    assert not any(d.level == "error" for d in result.diagnostics)
+
+
+def test_explode_samples_subarray_field_one_level() -> None:
+    """構造化フィールドが (N,k) サブ配列のとき Name.field[i] に1段展開される."""
+    from valisync.core.loaders.mdf4_loader import _explode_samples
+
+    rec = np.zeros(3, dtype=[("mat", "<f8", (2,)), ("s", "<f8")])
+    rec["mat"] = [[1, 2], [3, 4], [5, 6]]
+    rec["s"] = [7, 8, 9]
+    diags: list = []
+    pairs = _explode_samples("Obj", rec, diags)
+    names = [n for n, _ in pairs]
+    assert names == ["Obj.mat[0]", "Obj.mat[1]", "Obj.s"]
+    assert np.array_equal(dict(pairs)["Obj.mat[1]"], [2.0, 4.0, 6.0])
+
+
+def test_explode_samples_over_nested_field_skipped_with_reason() -> None:
+    """ndim>2 のネストフィールドは理由の読める警告で skip・他フィールドは展開継続."""
+    from valisync.core.loaders.mdf4_loader import _explode_samples
+
+    rec = np.zeros(2, dtype=[("deep", "<f8", (2, 2)), ("s", "<f8")])
+    diags: list = []
+    pairs = _explode_samples("Obj", rec, diags)
+    assert [n for n, _ in pairs] == ["Obj.s"]
+    assert any("nested samples, skipped" in d.message for d in diags)
+
+
+def test_explode_samples_plain_3d_skipped_with_reason() -> None:
+    """素の 3D 配列は展開せず理由の読める警告で skip (LD-12 の境界・展開は 2D まで)."""
+    from valisync.core.loaders.mdf4_loader import _explode_samples
+
+    diags: list = []
+    pairs = _explode_samples("Cube", np.zeros((4, 2, 2)), diags)
+    assert pairs == []
+    assert any("has 3D samples (expected 1D), skipped" in d.message for d in diags)

@@ -134,6 +134,9 @@ class SignalTableModel(QAbstractTableModel):
             if col == 1:
                 return item.unit
 
+        if role == Qt.ItemDataRole.ToolTipRole:
+            return item.tooltip or None
+
         return None
 
     def headerData(

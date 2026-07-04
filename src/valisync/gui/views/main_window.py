@@ -162,8 +162,13 @@ class MainWindow(QMainWindow):
         self.diagnostics_vm.add(source, outcome.diagnostics)
         self.app_vm.set_active_file(outcome.key)  # FB-03: fill Channel Browser
         msg = f"{source} を読み込みました"
-        if outcome.diagnostics:
-            msg += f" ・ ⚠ {len(outcome.diagnostics)} 件の診断（Diagnostics を参照）"  # noqa: RUF001
+        # LD-12: info は非アラーム(透明化) - error/warning のみ "⚠" で数える。
+        n_alert = sum(1 for d in outcome.diagnostics if d.level in ("error", "warning"))
+        n_info = len(outcome.diagnostics) - n_alert
+        if n_alert:
+            msg += f" ・ ⚠ {n_alert} 件の診断（Diagnostics を参照）"  # noqa: RUF001
+        elif n_info:
+            msg += f" ・ ℹ {n_info} 件の情報（Diagnostics を参照）"  # noqa: RUF001
         self.statusBar().showMessage(msg)
 
     def _on_load_error(self, path: Path, err: Exception) -> None:

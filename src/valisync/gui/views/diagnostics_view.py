@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 
 from valisync.gui.viewmodels.diagnostics_vm import DiagnosticsViewModel
 
-_LEVEL_ICON = {"error": "⛔", "warning": "⚠"}
+_LEVEL_ICON = {"error": "⛔", "warning": "⚠", "info": "ℹ"}  # noqa: RUF001
 # spec §4.4 column order: レベルアイコン / 時刻 / ソース / メッセージ / 対象.
 # "時刻" is satisfied by DiagnosticEntry.seq (spec §4.3: wall-clock time OR
 # receipt-order sequence number is acceptable) — header kept terse ("#").

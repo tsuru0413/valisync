@@ -338,6 +338,39 @@ def test_on_loaded_records_nonmonotonic_csv_warning(qtbot, tmp_path):
     )
 
 
+def test_on_loaded_status_bar_shows_info_not_alert_for_info_only(qtbot, tmp_path):
+    """LD-12: info-only diagnostics must not be reported as "⚠" alerts (透明化)."""
+    window = _make_window(qtbot)
+    key = window.app_vm.session.load(_write_csv(tmp_path), _csv_format()).key
+    outcome = LoadOutcome(
+        key=key,
+        diagnostics=(
+            Diagnostic(level="info", message="展開1", signal_name="a"),
+            Diagnostic(level="info", message="展開2", signal_name="b"),
+        ),
+    )
+    window._on_loaded(outcome)
+    msg = window.statusBar().currentMessage()
+    assert "ℹ 2 件の情報" in msg  # noqa: RUF001
+    assert "⚠" not in msg
+
+
+def test_on_loaded_status_bar_shows_alert_count_excluding_info(qtbot, tmp_path):
+    """LD-12: alert count must only tally error/warning, not info."""
+    window = _make_window(qtbot)
+    key = window.app_vm.session.load(_write_csv(tmp_path), _csv_format()).key
+    outcome = LoadOutcome(
+        key=key,
+        diagnostics=(
+            Diagnostic(level="warning", message="skip", signal_name="x"),
+            Diagnostic(level="info", message="展開", signal_name="y"),
+        ),
+    )
+    window._on_loaded(outcome)
+    msg = window.statusBar().currentMessage()
+    assert "⚠ 1 件の診断" in msg
+
+
 def test_diagnostics_dock_exists_with_object_name(qtbot):
     window = _make_window(qtbot)
     assert window.diagnostics_dock.objectName() == "diagnostics_dock"

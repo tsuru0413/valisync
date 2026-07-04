@@ -89,6 +89,64 @@ def test_signal_item_contains_unit(tmp_path: Path) -> None:
     assert vm.signals[0].unit == "km/h"
 
 
+def test_signal_item_tooltip_lists_value_labels(tmp_path: Path) -> None:
+    """value_labels 持ち信号の tooltip に『ラベル: 0=OFF, 1=LEFT, 2=RIGHT』(LD-07)."""
+    app_vm = AppViewModel()
+    vm = ChannelBrowserVM(app_vm)
+
+    import numpy as np
+
+    sig = Signal(
+        name="test_key::TurnSig",
+        timestamps=np.array([0.0, 1.0]),
+        values=np.array([0.0, 1.0]),
+        file_format="MDF4",
+        bus_type="",
+        source_file="test.mf4",
+        metadata={"value_labels": {0.0: "OFF", 1.0: "LEFT", 2.0: "RIGHT"}},
+    )
+
+    app_vm.session.group_signals = lambda key: [sig]
+    app_vm.set_active_file("test_key")
+
+    item = next(i for i in vm.signals if i.name == "TurnSig")
+    assert item.tooltip == "ラベル: 0=OFF, 1=LEFT, 2=RIGHT"
+
+
+def test_signal_item_tooltip_truncates_after_8(tmp_path: Path) -> None:
+    """9 件以上は先頭 8 件 + 『… (全 n 件)』(LD-07)."""
+    app_vm = AppViewModel()
+    vm = ChannelBrowserVM(app_vm)
+
+    import numpy as np
+
+    value_labels = {float(i): f"S{i}" for i in range(10)}
+    sig = Signal(
+        name="test_key::Many",
+        timestamps=np.array([0.0, 1.0]),
+        values=np.array([0.0, 1.0]),
+        file_format="MDF4",
+        bus_type="",
+        source_file="test.mf4",
+        metadata={"value_labels": value_labels},
+    )
+
+    app_vm.session.group_signals = lambda key: [sig]
+    app_vm.set_active_file("test_key")
+
+    item = next(i for i in vm.signals if i.name == "Many")
+    assert item.tooltip.endswith("… (全 10 件)")
+    assert "8=S8" not in item.tooltip.split("…")[0]
+
+
+def test_signal_item_tooltip_empty_without_value_labels(tmp_path: Path) -> None:
+    """value_labels が無い信号は tooltip="" (Qt は None を返してツールチップ非表示)."""
+    vm, app_vm, key = _setup_vm(tmp_path)
+    app_vm.set_active_file(key)
+
+    assert all(item.tooltip == "" for item in vm.signals)
+
+
 def test_signals_clears_when_active_file_unset(tmp_path: Path) -> None:
     vm, app_vm, key = _setup_vm(tmp_path)
     app_vm.set_active_file(key)

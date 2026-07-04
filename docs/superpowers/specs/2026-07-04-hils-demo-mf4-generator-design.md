@@ -56,10 +56,10 @@ ADAS ECU の HILS 評価ログ。**CANape で計測**された MDF 4.1 ファイ
 |---|---|---|
 | `XCP_1ms` | 1ms 周期 | ADAS 制御内部値（高速）: `ACC.TargetAccel`・`AEB.TTC`・`LKA.SteerTrqCmd`・制御状態機械ほか **~60ch**（サイズの主要因 — §4.1 の試算と連動。物標の一部属性も含めてよい） |
 | `XCP_10ms` | 10ms 周期 | 物標リスト展開 (a): `Radar.Obj[0..7].{dx,dy,vx,vy,ExistProb}`（40ch）・`Cam.Obj[0..7].{dx,dy,vx,TypeClass}`（32ch）・`Cam.Lane.{C0,C1,Curvature,Quality}`・ACC/AEB 状態系 ~100ch |
-| `XCP_10ms_Struct` | 10ms | **(b) 2D チャンネル 2本**: `Radar.ObjMatrix`・`Cam.ObjMatrix`（各 (N,8) uint8・8物標の dx を列に量子化。実装は非構造化 byte-array 2D＝structured-dtype は Mdf4Loader で ndim==1 に見え skip されず偽データ化するため不採用）— 現行 valisync では「2D samples, skipped」警告になる（意図どおり・LD-12） |
+| `XCP_10ms_Struct` | 10ms | **(b) 2D チャンネル 2本**: `Radar.ObjMatrix`・`Cam.ObjMatrix`（各 (N,8) uint8・8物標の dx を列に量子化。実装は非構造化 byte-array 2D＝structured-dtype は Mdf4Loader で ndim==1 に見え skip されず偽データ化するため不採用）— 現行 valisync では「2D samples, skipped」警告になる（意図どおり・LD-12）→ **第3弾で展開表示に変更**（`Radar.ObjMatrix[0..7]`/`Cam.ObjMatrix[0..7]` として列展開され info 診断のみ・skip 警告 0件。本行の「skipped」記述は歴史 — 詳細は `docs/superpowers/plans/2026-07-05-core-loaders-hardening-r3.md` Task 3） |
 | `VehDyn_10ms` | 10ms＋ジッタ | CAN: `VehSpd`・`YawRate`・`StrAngle`・`WhlSpd_FL/FR/RL/RR`（整数 raw＋線形変換・unit 付き） |
 | `PwrTrq_20ms` | 20ms＋ジッタ | CAN: `EngTrq`・`MotTrq`・`AccelPdl`・`BrkPress` |
-| `BodyInfo_100ms` | 100ms＋ジッタ | CAN: `TurnSig`（enum 生値のみ・ラベルは channel comment に記載。value2text 埋込は §4.4 のとおり見送り＝LD-13 の dead オプション問題でチャンネル消滅するため）・`GearPos`・`DoorState` |
+| `BodyInfo_100ms` | 100ms＋ジッタ | CAN: `TurnSig`（enum 生値＋value2text (TABX) conversion 埋込〔第3弾 LD-13/LD-07 で復活・§4.4〕・ラベルは `metadata['value_labels']` 構造化保持＋channel comment 併記）・`GearPos`・`DoorState` |
 | `Cluster_100ms` | 100ms | ETH: `Cluster.SurrVeh[0..5].{RelX,RelY,Type}`・`Cluster.{ACCIcon,LaneStat,WarnMsg}` |
 
 - source メタ: CAN グループ= bus_type CAN・bus 名 `CAN1`、ETH グループ= bus_type ETHERNET・`ETH1`、XCP はデバイス名 `XCP:HILS_ECU`。
@@ -81,7 +81,7 @@ ADAS ECU の HILS 評価ログ。**CANape で計測**された MDF 4.1 ファイ
 
 - CAN グループ1つに重複タイムスタンプ数十点＋非単調数点 → LD-03/04 診断がドックに出る
 - 値の NaN は `--dirty` に依らずシナリオ（カメラロスト）で常時含む
-- enum 系は常に生値（LD-07 の現状）・ラベルは channel comment に記載（value2text 埋込は現行ローダーの dead オプション問題〔`ignore_value2text_conversions` が `MDF()` に無効〕でチャンネル消滅するため見送り — catalog 記録対象）
+- enum 系は生値で生存し、`TurnSig` は value2text (TABX) conversion 埋込を第3弾（LD-13 解消）で復活 — ラベルは `metadata['value_labels']` に構造化保持（LD-07）＋ channel comment にも維持（人間可読の冗長化）
 
 ### 4.5 生成の技術要件
 
@@ -91,6 +91,8 @@ ADAS ECU の HILS 評価ログ。**CANape で計測**された MDF 4.1 ファイ
 - 依存は既存の asammdf/numpy のみ（dev 依存追加なし）。
 
 ## 5. 検証
+
+> **歴史注記（2026-07-05・第3弾で挙動変更）**: 本節の「2D skip 警告」「LD-10 未対応で重い」は執筆時点の記述。core-loaders-hardening 第3弾で 2D チャンネルは**要素展開＋info 診断**へ、LD-10 は**解消**（hils 3.05 秒/+2.53GB）に変わった。現行の検証内容は `tests/test_demo_mf4.py` と `docs/development.md` を一次情報とする。
 
 - **CI（Layer A・秒級）**: smoke プロファイルを tmp に生成 → `Session.load` → (i) 期待 ch 数・グループ由来の代表信号名（`VehSpd` 等）が存在、(ii) (b) 2D チャンネルの skip 警告が diagnostics に含まれる、(iii) `--dirty` 時に非単調 warning が出る、を assert。
 - **実機確認手順（docs に記載・/run /verify 観測）**:

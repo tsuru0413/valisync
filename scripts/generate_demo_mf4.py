@@ -535,14 +535,24 @@ def _build_groups() -> list[GroupDef]:
             lambda t, rng: turn_sig(t),
             "",
             np.uint8,
-            None,
+            # value2text (TABX) 埋込復活 (第3弾 LD-13/LD-07 で解消): 第2弾
+            # Finding 3 で見送った Mdf4Loader の dead オプション問題
+            # (ignore_value2text_conversions が MDF() に無効でテキスト化され
+            # 「non-numeric, skipped」で消滅) は select() ベースの刷新で
+            # 解消済み — 生値のまま生存し、metadata['value_labels'] にこの
+            # 変換表が構造化保持される。Signal(conversion=dict) は asammdf
+            # 側で from_dict() 相当の変換を内部的に行う (val_N/text_N の
+            # ペア羅列が TABX 変換として解釈される)。
+            {
+                "val_0": 0,
+                "text_0": "OFF",
+                "val_1": 1,
+                "text_1": "LEFT",
+                "val_2": 2,
+                "text_2": "RIGHT",
+            },
             1,
-            # value2text (TABX) 埋込は見送り (Finding 3): Mdf4Loader の
-            # ignore_value2text_conversions は MDF() コンストラクタに効かない
-            # dead オプションで、embed すると iter_channels がテキストを返し
-            # 「non-numeric, skipped」でチャンネルごと消滅する (valisync 側の
-            # 実バグ・catalog 記録対象)。生 int 値のままラベルは comment に記載。
-            "0=OFF, 1=LEFT, 2=RIGHT",
+            "0=OFF, 1=LEFT, 2=RIGHT",  # ラベルは comment にも維持 (人間可読の冗長化)
         ),
         SigDef("GearPos", lambda t, rng: gear_pos(t)),
         SigDef("DoorState", lambda t, rng: door_state(t)),
@@ -633,9 +643,10 @@ def _pack_array_channel(values: np.ndarray) -> np.ndarray:
     レコードバイトサイズを要素1個分しか確保しない既知の asammdf バグで
     後続サンプルがずれる — tests/mdf4_helpers.py の
     write_mdf4_all_channels_bad が LD 第1弾で使ったのと同じ手法)。この結果
-    iter_channels は ndim==2 のまま返し、Mdf4Loader の 2D skip 診断が
-    意図どおり発火する。本チャンネルは valisync 側で丸ごと skip される
-    検証専用データであり物理精度は不要なため、0-255m にクリップ量子化する
+    iter_channels は ndim==2 のまま返し、Mdf4Loader が 2D として認識できる
+    (第2弾時点は skip 診断・core-loaders-hardening 第3弾以降は Name[i] へ
+    要素展開+info 診断)。本チャンネルは 2D 経路の検証専用データであり
+    物理精度は不要なため、0-255m にクリップ量子化する
     (非存在スロットの NaN は 0 に丸める)。
     """
     finite = np.where(np.isfinite(values), values, 0.0)

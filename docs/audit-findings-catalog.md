@@ -112,13 +112,13 @@
 | LD-04 | 🔴 | ✅**解消（PR #39）** CSV は1列の非単調/重複でファイル全体が読み込み失敗 → MDF4 と対称化（受け入れ＋ファイル単位 warning） | `core/loaders/csv_loader.py`（旧 :176） | 1列の乱れで全体が開けない |
 | LD-05 | 🟠 | ✅**解消（PR #39）** チャンネル0本の MDF4 も無言で「成功」 → 「チャンネルが 0 本」warning（R2 の no_channels プレースホルダと接続） | `core/loaders/mdf4_loader.py`（旧 :164） | 開いたのに解析へ進めない |
 | LD-06 | 🟠 | ✅**解消（PR #39）** CSV の `'nan'/'inf'` 文字列が無言採用 → 受け入れ＋列ごとの件数 warning（統計側の防御は AN-01） | `core/loaders/csv_loader.py`（旧 :151） | 下流の統計/補間を Inf が誤誘導 |
-| LD-07 | 🟠 | MDF4 の enum/状態信号がラベルを失い生数値化・文字列(VLSD)は非数値スキップ | `core/loaders/mdf4_loader.py:54` | 状態信号の意味が失われる/消える |
+| LD-07 | 🟠 | ✅**解消（第3弾・PR #43）** MDF4 の enum/状態信号が生値で生存し `Signal.metadata['value_labels']` に変換表を保持（カーソル readout・ChannelBrowser tooltip に併記）。文字列(VLSD)チャンネルは対象外＝従来どおり non-numeric skip（第3弾 spec §5 で明示的にスコープ外・必要になれば別途起票） | `core/loaders/mdf4_loader.py`（旧 :54） | 状態信号の意味が失われる/消える |
 | LD-08 | 🟠 | ✅**解消（PR #39）** CSV 同名ヘッダ列で重複 `Signal.name` を生成 → MDF4 と同一の `name[idx]` 方式で曖昧化＋warning | `core/loaders/csv_loader.py`（旧 :83） | 信号の取り違え |
 | LD-09 | 🟡 | ✅**解消（PR #39）** ヘッダのみ CSV が長さ0の空信号を無言生成 → 成功＋「データ行が 0 行」warning | `core/loaders/csv_loader.py`（旧 :166） | 何も描画されない理由が不明 |
-| LD-10 | 🟡 | 大容量 MDF4 で配列多重コピー（astype＋Signal 再コピー）→ OOM リスク。**実測（2026-07-04・HILS デモ hils 2.01GB/171ch・Win11）: ロード 7.8 秒・プロセスピーク +7.3GB＝ファイルサイズの約 3.6 倍に膨張**（float64 変換＋`copy_master=True`＋read-only コピーの合算。quick 167MB では +0.66GB＝約4倍・概ね同程度） | `core/loaders/mdf4_loader.py:134` | 大きいログでメモリ不足（2GB 級ログで RAM 8GB 占有を確認 — 本番相当ファイルで実害域・第3弾の最優先候補） |
-| LD-11 | 🟡 | 同一ファイル二重読み込みで別グループ増殖（重複検出なし） | `core/loaders/signal_group_manager.py:24` | 重複エントリで混乱 |
-| LD-12 | 🟠 | 多次元/構造化チャンネル（本番の物標配列 (b) パターン）が「2D samples, skipped」で表示不能。HILS デモ mf4（`scripts/generate_demo_mf4.py`）の `Radar.ObjMatrix`/`Cam.ObjMatrix`（uint8 非構造化2D配列で実装 — structured dtype は asammdf 実測で往復破損するため不採用）が再現データ | `core/loaders/mdf4_loader.py:140-150`（`samples.ndim != 1` の 2D skip 分岐） | CANape 計測の物標リストが構造化格納だと丸ごと見えない（LD-07 と統合検討・第3弾） |
-| LD-13 | 🟠 | （新規・今回の実バグ発見）`_READ_OPTIONS` の `ignore_value2text_conversions: True` は `MDF()` コンストラクタには無効な dead オプション（有効なのは `select()`・`iter_groups()`・`to_dataframe()` など DataFrame 系メソッドのみ；`iter_channels` は内部で `select()` を呼ぶが本引数を露出しない）→ value2text conversion 付きチャンネル（DBC デコード済み enum が該当＝本番データ直撃）は `iter_channels` がテキスト配列を返し「non-numeric, skipped」で**チャンネルごと消滅**する | `core/loaders/mdf4_loader.py:56`（`_READ_OPTIONS` 定義）/`:79`（`MDF()` 呼び出し）/`:97`（`iter_channels` 呼び出し・オプション未指定） | enum 信号が診断1行を残して不可視。修正経路は `select()` 直接使用または `iter_groups()` 系への切替（LD-07 と同時対応・第3弾）。発見経緯: HILS デモ mf4 の value2text 埋込テスト（詳細 `.superpowers/sdd/task-2-report.md`） |
+| LD-10 | 🟡 | ✅**解消（第3弾・PR #43）** `select()` ベース刷新＋共有マスタ／ゼロコピー化で大容量 MDF4 の配列多重コピーを解消。**実測 before（2026-07-04・hils 2.01GB/171ch・Win11）: ロード 7.8 秒・ピーク +7.3GB → after（2026-07-05・同ファイル・同環境）: ロード 3.05 秒・ピーク +2.53GB**（quick 0.17GB: before 0.9 秒/+0.66GB → after 0.79 秒/+0.445GB）。受け入れ基準（ピーク増分 ≤+3.0GB・時間 ≤7.8 秒）を充足 | `core/loaders/mdf4_loader.py`（旧 :134） | 大きいログでメモリ不足（2GB 級ログで RAM 8GB 占有を確認 — 本番相当ファイルで実害域） |
+| LD-11 | 🟡 | ✅**仕様と判断（2026-07-05 ユーザー決定）** 同一ファイル二重読み込みで別グループ増殖する現状挙動は仕様として許容する（同一パス再読込は別グループとして扱う）。ファイル更新に追従する再読込操作が必要になれば別途起票する | `core/loaders/signal_group_manager.py:24` | 重複エントリで混乱（仕様として許容） |
+| LD-12 | 🟠 | ✅**解消（第3弾・PR #43）** 多次元/構造化チャンネルを列/フィールド単位（`Name[i]`/`Name.field`）へ展開して表示可能化（列数上限なし・展開時に `info` 診断を emit） | `core/loaders/mdf4_loader.py`（旧 :140-150） | CANape 計測の物標リストが構造化格納だと丸ごと見えない（LD-07 と統合実装） |
+| LD-13 | 🟠 | ✅**解消（第3弾・PR #43）** 読み取りパスを `select(ignore_value2text_conversions=True, copy_master=False)` ベースへ刷新し、value2text conversion 付きチャンネルも生値で生存するように修正 | `core/loaders/mdf4_loader.py`（旧 :56/:79/:97） | enum 信号が診断1行を残して不可視。修正経路は `select()` 直接使用または `iter_groups()` 系への切替（LD-07 と同時対応）。発見経緯: HILS デモ mf4 の value2text 埋込テスト（詳細 `.superpowers/sdd/task-2-report.md`） |
 
 ---
 
