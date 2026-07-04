@@ -28,6 +28,78 @@ def _detect_bus_type(source: Any) -> str:
     return _BUS_TYPE_MAP.get(getattr(source, "bus_type", 0), "")
 
 
+def _explode_samples(
+    base_name: str,
+    samples: np.ndarray,
+    diagnostics: list[Diagnostic],
+) -> list[tuple[str, np.ndarray]]:
+    """多次元/構造化 samples を 1D 列へ展開 (LD-12・列数上限なし=ユーザー決定).
+
+    構造化 dtype (フィールド名を持つ) はフィールドごとに ``Name.field`` へ
+    (select() は構造化チャンネルの親のみを返す — 成分 x/y は
+    included_channels から除外済みで通常経路に乗らない。Task 1/3 の実装時
+    確認で確定 — 「成分併存」分岐は不要)。素の 2D はそのまま列展開。
+    展開不能 (3D 超・ネスト超過) は診断を emit して [] (フィールドごとの部分
+    展開は成功分だけ返す) を返す。
+    """
+    if samples.dtype.names:  # 構造化 dtype: フィールドごとに Name.field
+        out: list[tuple[str, np.ndarray]] = []
+        for field in samples.dtype.names:
+            sub = samples[field]
+            if sub.ndim == 1:
+                out.append((f"{base_name}.{field}", sub))
+            elif sub.ndim == 2:  # サブ配列フィールドは 1 段だけ展開
+                out.extend(
+                    (f"{base_name}.{field}[{i}]", np.ascontiguousarray(sub[:, i]))
+                    for i in range(sub.shape[1])
+                )
+            else:
+                diagnostics.append(
+                    Diagnostic(
+                        level="warning",
+                        message=(
+                            f"Signal '{base_name}.{field}' has {sub.ndim}D nested"
+                            " samples, skipped"
+                        ),
+                    )
+                )
+        if out:
+            diagnostics.append(
+                Diagnostic(
+                    level="info",
+                    message=f"Signal '{base_name}': 構造化チャンネルを {len(out)} 本に展開",
+                    signal_name=base_name,
+                )
+            )
+        return out
+    if samples.ndim == 2:
+        n_cols = samples.shape[1]
+        diagnostics.append(
+            Diagnostic(
+                level="info",
+                message=(
+                    f"Signal '{base_name}': 2D ({samples.shape[0]}x{n_cols}) を"
+                    f" {n_cols} 本に展開"
+                ),
+                signal_name=base_name,
+            )
+        )
+        return [
+            (f"{base_name}[{i}]", np.ascontiguousarray(samples[:, i]))
+            for i in range(n_cols)
+        ]
+    diagnostics.append(
+        Diagnostic(
+            level="warning",
+            message=(
+                f"Signal '{base_name}' has {samples.ndim}D samples"
+                " (expected 1D), skipped"
+            ),
+        )
+    )
+    return []
+
+
 def _extract_metadata(asammdf_sig: Any) -> dict[str, Any]:
     meta: dict[str, Any] = {}
     if asammdf_sig.unit:
@@ -237,56 +309,56 @@ class Mdf4Loader:
                 continue
 
             samples = asig.samples
+            # 多次元/構造化は展開して複数列に、通常 1D は単一要素のペアに正規化
+            # してから同じ astype/警告/Signal 構築ループへ流す (LD-12)。展開後
+            # の各列名は "曖昧化済みベース名から派生" (spec §3.2 — 例 M[0][i]):
+            # signal_name (name[idx] 済み) を _explode_samples の base に渡す。
             if samples.ndim != 1 or samples.dtype.names:
-                # Task 3 で展開に置換 — 本タスクでは現行どおり skip
-                diagnostics.append(
-                    Diagnostic(
-                        level="warning",
-                        message=(
-                            f"Signal '{base_name}' has {samples.ndim}D samples"
-                            " (expected 1D), skipped"
-                        ),
+                pairs = _explode_samples(signal_name, samples, diagnostics)
+            else:
+                pairs = [(signal_name, samples)]
+
+            for out_name, col in pairs:
+                try:
+                    values = col.astype(np.float64, copy=False)
+                except (ValueError, TypeError) as exc:
+                    diagnostics.append(
+                        Diagnostic(
+                            level="warning",
+                            message=(
+                                f"Signal '{out_name}' has non-numeric values,"
+                                f" skipped: {exc}"
+                            ),
+                        )
+                    )
+                    continue
+                values.flags.writeable = False
+
+                n_backward, n_dup = master_diffs_warn or (0, 0)
+                if n_backward or n_dup:
+                    diagnostics.append(
+                        Diagnostic(
+                            level="warning",
+                            message=(
+                                f"Signal '{out_name}': 非単調 {n_backward} 箇所・"
+                                f"重複タイムスタンプ {n_dup} 点"
+                                "（表示/演算は整列ビューで補正）"  # noqa: RUF001
+                            ),
+                            signal_name=out_name,
+                        )
+                    )
+
+                assert (
+                    master is not None
+                )  # unreachable: master_bad already continue'd above
+                signals.append(
+                    Signal(
+                        name=out_name,
+                        timestamps=master,
+                        values=values,
+                        file_format="MDF4",
+                        bus_type=_detect_bus_type(getattr(asig, "source", None)),
+                        source_file=str(resolved_path),
+                        metadata=_extract_metadata(asig),
                     )
                 )
-                continue
-
-            try:
-                values = samples.astype(np.float64, copy=False)
-            except (ValueError, TypeError) as exc:
-                diagnostics.append(
-                    Diagnostic(
-                        level="warning",
-                        message=f"Signal '{base_name}' has non-numeric values, skipped: {exc}",
-                    )
-                )
-                continue
-            values.flags.writeable = False
-
-            n_backward, n_dup = master_diffs_warn or (0, 0)
-            if n_backward or n_dup:
-                diagnostics.append(
-                    Diagnostic(
-                        level="warning",
-                        message=(
-                            f"Signal '{base_name}': 非単調 {n_backward} 箇所・"
-                            f"重複タイムスタンプ {n_dup} 点"
-                            "（表示/演算は整列ビューで補正）"  # noqa: RUF001
-                        ),
-                        signal_name=base_name,
-                    )
-                )
-
-            assert (
-                master is not None
-            )  # unreachable: master_bad already continue'd above
-            signals.append(
-                Signal(
-                    name=signal_name,
-                    timestamps=master,
-                    values=values,
-                    file_format="MDF4",
-                    bus_type=_detect_bus_type(getattr(asig, "source", None)),
-                    source_file=str(resolved_path),
-                    metadata=_extract_metadata(asig),
-                )
-            )

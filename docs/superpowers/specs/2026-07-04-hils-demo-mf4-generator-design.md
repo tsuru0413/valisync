@@ -56,7 +56,7 @@ ADAS ECU の HILS 評価ログ。**CANape で計測**された MDF 4.1 ファイ
 |---|---|---|
 | `XCP_1ms` | 1ms 周期 | ADAS 制御内部値（高速）: `ACC.TargetAccel`・`AEB.TTC`・`LKA.SteerTrqCmd`・制御状態機械ほか **~60ch**（サイズの主要因 — §4.1 の試算と連動。物標の一部属性も含めてよい） |
 | `XCP_10ms` | 10ms 周期 | 物標リスト展開 (a): `Radar.Obj[0..7].{dx,dy,vx,vy,ExistProb}`（40ch）・`Cam.Obj[0..7].{dx,dy,vx,TypeClass}`（32ch）・`Cam.Lane.{C0,C1,Curvature,Quality}`・ACC/AEB 状態系 ~100ch |
-| `XCP_10ms_Struct` | 10ms | **(b) 2D チャンネル 2本**: `Radar.ObjMatrix`・`Cam.ObjMatrix`（各 (N,8) uint8・8物標の dx を列に量子化。実装は非構造化 byte-array 2D＝structured-dtype は Mdf4Loader で ndim==1 に見え skip されず偽データ化するため不採用）— 現行 valisync では「2D samples, skipped」警告になる（意図どおり・LD-12） |
+| `XCP_10ms_Struct` | 10ms | **(b) 2D チャンネル 2本**: `Radar.ObjMatrix`・`Cam.ObjMatrix`（各 (N,8) uint8・8物標の dx を列に量子化。実装は非構造化 byte-array 2D＝structured-dtype は Mdf4Loader で ndim==1 に見え skip されず偽データ化するため不採用）— 現行 valisync では「2D samples, skipped」警告になる（意図どおり・LD-12）→ **第3弾で展開表示に変更**（`Radar.ObjMatrix[0..7]`/`Cam.ObjMatrix[0..7]` として列展開され info 診断のみ・skip 警告 0件。本行の「skipped」記述は歴史 — 詳細は `docs/superpowers/plans/2026-07-05-core-loaders-hardening-r3.md` Task 3） |
 | `VehDyn_10ms` | 10ms＋ジッタ | CAN: `VehSpd`・`YawRate`・`StrAngle`・`WhlSpd_FL/FR/RL/RR`（整数 raw＋線形変換・unit 付き） |
 | `PwrTrq_20ms` | 20ms＋ジッタ | CAN: `EngTrq`・`MotTrq`・`AccelPdl`・`BrkPress` |
 | `BodyInfo_100ms` | 100ms＋ジッタ | CAN: `TurnSig`（enum 生値のみ・ラベルは channel comment に記載。value2text 埋込は §4.4 のとおり見送り＝LD-13 の dead オプション問題でチャンネル消滅するため）・`GearPos`・`DoorState` |

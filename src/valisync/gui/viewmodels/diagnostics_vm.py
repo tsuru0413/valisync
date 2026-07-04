@@ -18,7 +18,7 @@ from valisync.gui.viewmodels.observable import Observable
 class DiagnosticEntry:
     """A single diagnostic with its source file and receipt order (seq)."""
 
-    level: str  # "error" | "warning"
+    level: str  # "error" | "warning" | "info"
     message: str
     source: str  # file basename
     signal_name: str | None

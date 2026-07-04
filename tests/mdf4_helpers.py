@@ -113,16 +113,19 @@ def write_mdf4_non_finite_ts(tmp_path: Path) -> Path:
 def write_mdf4_all_channels_bad(tmp_path: Path) -> Path:
     """Write an MDF4 file whose only channel is unusable, so 0 channels survive.
 
-    A byte-array channel (2D uint8 samples) round-trips through asammdf as
-    ``ch.samples.ndim == 2``, which ``Mdf4Loader`` already skips as non-1D —
-    this exercises the "0 channels" path without needing a corrupt file.
+    Previously used a 2D uint8 byte-array channel (``ndim == 2`` was an
+    unconditional skip). LD-12 (第3弾) now explodes 2D samples into
+    per-column signals instead of skipping them, so that fixture no longer
+    yields an "all bad" file. A byte-string channel (non-numeric dtype)
+    stays genuinely unusable regardless of LD-12 — it survives asammdf's
+    round-trip as 1D but fails the ``astype(float64)`` conversion.
     """
     path = tmp_path / "allbad.mf4"
     mdf = MDF()
     try:
         ts = np.array([0.0, 1.0], dtype=np.float64)
-        vs = np.array([[1, 2, 3, 4], [5, 6, 7, 8]], dtype=np.uint8)
-        sig = ASignal(samples=vs, timestamps=ts, name="raw_bytes")
+        vs = np.array([b"abcd", b"efgh"], dtype="S4")
+        sig = ASignal(samples=vs, timestamps=ts, name="raw_bytes", encoding="latin-1")
         mdf.append([sig])
         mdf.save(path, overwrite=True)
     finally:

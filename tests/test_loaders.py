@@ -27,6 +27,7 @@ from .mdf4_helpers import (
     write_mdf4_non_finite_ts,
     write_mdf4_non_monotonic,
     write_mdf4_shared_group,
+    write_mdf4_structured,
     write_mdf4_value2text,
 )
 
@@ -490,3 +491,39 @@ def test_helper_2d_roundtrip(tmp_path: Path) -> None:
     with MDF(str(path)) as mdf:
         sig = mdf.get("Mat")
         assert sig.samples.ndim == 2 and sig.samples.shape[1] == 3
+
+
+# ─── Mdf4Loader: 多次元/構造化チャンネルの要素展開 (LD-12, 第3弾 Task 3) ──────
+
+
+def test_2d_channel_explodes_into_columns(tmp_path: Path) -> None:
+    """LD-12: 2D (Nx3) が Mat[0..2] の 1D 信号群へ展開され共有マスタを参照する."""
+    result = Mdf4Loader().load(write_mdf4_2d(tmp_path))
+    names = {s.name for s in result.signal_group.signals}
+    assert {"Mat[0]", "Mat[1]", "Mat[2]", "Clean"} <= names
+    m0 = next(s for s in result.signal_group.signals if s.name == "Mat[0]")
+    m2 = next(s for s in result.signal_group.signals if s.name == "Mat[2]")
+    assert np.array_equal(m0.values, [0.0, 10.0, 20.0, 30.0])
+    assert np.array_equal(m2.values, [2.0, 12.0, 22.0, 32.0])
+    assert np.shares_memory(m0.timestamps, m2.timestamps)
+    infos = [d for d in result.diagnostics if d.level == "info" and "Mat" in d.message]
+    assert len(infos) == 1 and "3 本に展開" in infos[0].message
+    assert not any(
+        "skipped" in d.message and "Mat" in d.message for d in result.diagnostics
+    )
+
+
+def test_structured_channel_fields_visible(tmp_path: Path) -> None:
+    """LD-12: 構造化 (x,y) がフィールド単位で見える (Pt.x / Pt.y ないし成分ch)."""
+    result = Mdf4Loader().load(write_mdf4_structured(tmp_path))
+    names = {s.name for s in result.signal_group.signals}
+    # 実装時確認 (Task 1 Task2-Step2 と本タスク Step1 で確定): select() 結果には
+    # 構造化チャンネルの親 (Pt) のみが届き成分 (x/y) は included_channels から
+    # 除外されている — フィールド展開は Pt.x/Pt.y として現れる。
+    xs = [
+        s
+        for s in result.signal_group.signals
+        if np.array_equal(s.values, [1.0, 2.0, 3.0])
+    ]
+    assert xs, f"x 成分が信号として見えない: {sorted(names)}"
+    assert not any(d.level == "error" for d in result.diagnostics)
