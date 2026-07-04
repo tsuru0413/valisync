@@ -25,6 +25,23 @@ class SignalItem:
     unit: str  # Physical unit, e.g. "km/h"
     key: str  # Full namespaced key, e.g. "csv_1::speed"
     visible: bool = True
+    tooltip: str = ""  # value_labels のラベル行 (LD-07・空=ツールチップなし)
+
+
+def _labels_tooltip(metadata: dict[str, Any] | None) -> str:
+    """Render enum value_labels as a tooltip line, e.g. '0=OFF, 1=LEFT, 2=RIGHT'.
+
+    Sorted by value ascending; truncated to the first 8 entries with a
+    '… (全 n 件)' suffix beyond that (spec §3.3, LD-07).
+    """
+    labels = (metadata or {}).get("value_labels")
+    if not labels:
+        return ""
+    items = sorted(labels.items())
+    head = ", ".join(f"{v:g}={t}" for v, t in items[:8])
+    if len(items) > 8:
+        return f"ラベル: {head}, … (全 {len(items)} 件)"
+    return f"ラベル: {head}"
 
 
 class ChannelBrowserVM(Observable):
@@ -78,6 +95,7 @@ class ChannelBrowserVM(Observable):
                     unit=str(unit),
                     key=sig.name,
                     visible=sig.name not in self._hidden,
+                    tooltip=_labels_tooltip(sig.metadata),
                 )
             )
 
