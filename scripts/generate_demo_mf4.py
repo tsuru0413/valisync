@@ -574,13 +574,25 @@ GROUPS: list[GroupDef] = _build_groups()
 def _group_timestamps(
     t0: float, t1: float, rate_s: float, jitter_pct: float, rng: np.random.Generator
 ) -> np.ndarray:
-    """区間 [t0, t1) のタイムスタンプ — 間隔にジッタを加算し cumsum (常に単調)."""
+    """区間 [t0, t1) のタイムスタンプ — 公称グリッド+tick 毎の有界ジッタ.
+
+    間隔 cumsum でジッタを累積させると、累積ドリフト (~rate*j*sqrt(n)) が
+    次チャンクの決定的開始時刻 t0' を追い越して seam で逆行する (実機確認で
+    hils の CAN/ETH 系に非単調警告が混入した根因)。tick 毎の独立オフセットなら
+    |δ| <= j*rate < rate/2 より連続差分 >= rate*(1-2j) > 0 で、チャンク内・
+    チャンク境界とも厳密単調が保証される (バス到着ジッタとしても自然)。
+
+    前提: jitter_pct < 0.5、かつ chunk 長 (t1-t0) は rate_s の整数倍
+    (端数だと前チャンク末尾+ジッタが次チャンク先頭 t0' を追い越し得る —
+    現行の全プロファイル/レート組は整数倍で安全)。
+    """
+    assert 0.0 <= jitter_pct < 0.5, "jitter_pct must be < 0.5 to guarantee monotonicity"
     n = max(int(np.ceil((t1 - t0) / rate_s)), 1)
-    intervals = np.full(n, rate_s, dtype=np.float64)
-    intervals[0] = 0.0  # 先頭は t0 ちょうど (チャンク境界を決定的に保つ)
+    ts = t0 + np.arange(n, dtype=np.float64) * rate_s
     if jitter_pct:
-        intervals[1:] += rng.uniform(-jitter_pct, jitter_pct, n - 1) * rate_s
-    return t0 + np.cumsum(intervals)
+        # 先頭は t0 ちょうど (チャンク境界を決定的に保つ)
+        ts[1:] += rng.uniform(-jitter_pct, jitter_pct, n - 1) * rate_s
+    return ts
 
 
 def _group_source(g: GroupDef) -> Source:
