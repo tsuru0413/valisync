@@ -249,6 +249,39 @@ def test_turn_sig_survives_load_with_raw_enum_values(tmp_path):
     assert values <= {0.0, 1.0, 2.0}
 
 
+def test_valisync_loads_smoke_profile(tmp_path):
+    # brief 相当の smoke プロファイル統合確認: 代表信号名の存在 (VehSpd/Radar.Obj[0].dx)
+    # に加え、2D skip 警告は出るが error レベル診断はゼロであること (2D skip の詳細な
+    # 中身は test_2d_channels_yield_skip_diagnostics_in_valisync が既に担保している)。
+    out = tmp_path / "v.mf4"
+    gen.main(["--out", str(out), "--profile", "smoke", "--seed", "1"])
+    from valisync.core.session import Session
+
+    session = Session()
+    outcome = session.load(out)
+    sigs = session.group_signals(outcome.key)
+    names = {s.name.split("::", 1)[1] for s in sigs}
+    assert "VehSpd" in names and "Radar.Obj[0].dx" in names
+    # (b) 2D チャンネルは skip され警告が出る (spec §4.2/LD-12 の現状再現)
+    assert any("2D" in d.message or "skipped" in d.message for d in outcome.diagnostics)
+    assert not any(d.level == "error" for d in outcome.diagnostics)
+
+
+def test_valisync_dirty_shows_nonmonotonic_warning(tmp_path):
+    # brief 相当: 既存の dirty テストは asammdf/CLI レベルの生タイムスタンプ検証のみ
+    # (test_dirty_injects_non_monotonic 等) — ここでは Session.load を経由し、LD-03
+    # (core/loaders/mdf4_loader.py) が非単調/重複を warning 診断として実際に表面化
+    # させることを確認する。
+    out = tmp_path / "vd.mf4"
+    gen.main(["--out", str(out), "--profile", "smoke", "--seed", "1", "--dirty"])
+    from valisync.core.session import Session
+
+    outcome = Session().load(out)
+    assert any(
+        "非単調" in d.message or "重複" in d.message for d in outcome.diagnostics
+    )
+
+
 def test_cli_smoke_generates_file(tmp_path):
     out = tmp_path / "cli.mf4"
     rc = gen.main(["--out", str(out), "--profile", "smoke", "--seed", "1"])

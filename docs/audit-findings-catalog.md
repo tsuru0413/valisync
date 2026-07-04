@@ -3,7 +3,7 @@
 実ユーザージャーニー（**ファイルを開く → 波形表示 → データ解析**）を対象に実施した2つの監査の全確定所見を、重複統合し ID を付与して管理する台帳。各所見は「**実装済みだが不足**」バケット②の改善サブスペックへ割り当てられており、ロードマップ（[roadmap.md](roadmap.md)）の該当サブスペックから本カタログの ID を参照する。
 
 - **作成**: 2026-07-02
-- **監査方法**: 6次元×2ラウンド（①機能ジャーニー ②UI/UX コントロール）を並列コード精読し、各所見を独立エージェントが実コードで敵対的検証（`CONFIRMED`/`PLAUSIBLE`/`REFUTED`）。計 100+ サブエージェント。raw 87 確定所見 → 重複統合後 **64 正準課題**。
+- **監査方法**: 6次元×2ラウンド（①機能ジャーニー ②UI/UX コントロール）を並列コード精読し、各所見を独立エージェントが実コードで敵対的検証（`CONFIRMED`/`PLAUSIBLE`/`REFUTED`）。計 100+ サブエージェント。raw 87 確定所見 → 重複統合後 **64 正準課題**。加えて本監査後、HILS デモ mf4 ジェネレータ開発（2026-07-04）で LD-12（spec 起票時から想定の 2D skip 再現データ）・LD-13（開発中に発見した実バグ）の2件を補遺として追加し、現在は **66 件**。
 - **凡例**: 重要度 🔴high / 🟠medium / 🟡low。`kind` = BUG(誤動作) / SILENT(サイレント失敗・誤計算) / MISSING_CONTROL / DISCOVERABILITY(発見困難) / FEEDBACK(状態可視化欠如) / PERF / ROBUSTNESS。
 - **注意**: 記載の行番号は監査時点（2026-07-01〜02, main@82c14b9）のもの。着手時に再確認すること。
 
@@ -20,7 +20,7 @@
 | [`gui-feedback-errors`](#ss-feedback--gui-feedback-errors) | エラー/診断/状態フィードバックの可視化 | 10 | 🔴 |
 | [`gui-shell-controls`](#ss-shell--gui-shell-controls) | シェル操作（File メニュー・タブ/パネル/レイアウト管理・エクスポート導線） | 15 | 🔴 |
 | [`gui-plot-analysis-controls`](#ss-plotctl--gui-plot-analysis-controls) | プロット/曲線/軸/カーソルの操作コントロール | 20 | 🟠 |
-| [`core-loaders-hardening`](#ss-loaders--core-loaders-hardening) | ローダー堅牢性・対応形式拡張 | 11 | 🔴 |
+| [`core-loaders-hardening`](#ss-loaders--core-loaders-hardening) | ローダー堅牢性・対応形式拡張 | 13 | 🔴 |
 | [`analysis-correctness`](#ss-analysis--analysis-correctness) | 統計・補間の計算の正しさ | 3 | 🔴 |
 | [`rendering-correctness-perf`](#ss-render--rendering-correctness-perf) | 描画の正しさ・LOD/同期の性能 | 5 | 🟠 |
 
@@ -117,6 +117,8 @@
 | LD-09 | 🟡 | ✅**解消（PR #39）** ヘッダのみ CSV が長さ0の空信号を無言生成 → 成功＋「データ行が 0 行」warning | `core/loaders/csv_loader.py`（旧 :166） | 何も描画されない理由が不明 |
 | LD-10 | 🟡 | 大容量 MDF4 で配列多重コピー（astype＋Signal 再コピー）→ OOM リスク | `core/loaders/mdf4_loader.py:134` | 大きいログでメモリ不足 |
 | LD-11 | 🟡 | 同一ファイル二重読み込みで別グループ増殖（重複検出なし） | `core/loaders/signal_group_manager.py:24` | 重複エントリで混乱 |
+| LD-12 | 🟠 | 多次元/構造化チャンネル（本番の物標配列 (b) パターン）が「2D samples, skipped」で表示不能。HILS デモ mf4（`scripts/generate_demo_mf4.py`）の `Radar.ObjMatrix`/`Cam.ObjMatrix`（uint8 非構造化2D配列で実装 — structured dtype は asammdf 実測で往復破損するため不採用）が再現データ | `core/loaders/mdf4_loader.py:140-150`（`samples.ndim != 1` の 2D skip 分岐） | CANape 計測の物標リストが構造化格納だと丸ごと見えない（LD-07 と統合検討・第3弾） |
+| LD-13 | 🟠 | （新規・今回の実バグ発見）`_READ_OPTIONS` の `ignore_value2text_conversions: True` は `MDF()` コンストラクタには無効な dead オプション（asammdf では `get()`/`iter_channels()` 呼び出し時のみ有効）→ value2text conversion 付きチャンネル（DBC デコード済み enum が該当＝本番データ直撃）は `iter_channels` がテキスト配列を返し「non-numeric, skipped」で**チャンネルごと消滅**する | `core/loaders/mdf4_loader.py:56`（`_READ_OPTIONS` 定義）/`:79`（`MDF()` 呼び出し）/`:97`（`iter_channels` 呼び出し・オプション未指定） | enum 信号が診断1行を残して不可視。LD-07（ラベル生値）と同時対応が自然（第3弾）。発見経緯: HILS デモ mf4 の value2text 埋込テスト（詳細 `.superpowers/sdd/task-2-report.md`） |
 
 ---
 
