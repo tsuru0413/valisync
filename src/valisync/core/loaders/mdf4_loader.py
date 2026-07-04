@@ -95,14 +95,22 @@ class Mdf4Loader:
 
         signals: list[Signal] = []
         diagnostics: list[Diagnostic] = []
+        resolved_path = file_path.resolve()
         try:
             name_total = self._count_names(mdf)
             name_seen: dict[str, int] = {}
-            for gi in range(len(mdf.groups)):
+            # mdf.virtual_groups (物理グループ数ではない) を走査 — v4.20+ の
+            # remote-master/column-storage ファイルでは follower 物理グループの
+            # gi が virtual_groups のキーに乗らない (マスタ側 gi に統合される)。
+            # 物理グループ数で回すと follower gi で included_channels() が
+            # KeyError → 外側の broad except に飲まれファイル全体が全滅する
+            # (Task 2 レビュー critical)。asammdf 公式パターン (iter_channels
+            # 等) と同じ規則。
+            for gi in mdf.virtual_groups:
                 self._load_group(
                     mdf,
                     gi,
-                    file_path,
+                    resolved_path,
                     name_total,
                     name_seen,
                     signals,
@@ -137,7 +145,7 @@ class Mdf4Loader:
 
         signal_group = SignalGroup(
             signals=tuple(signals),
-            source_path=file_path.resolve(),
+            source_path=resolved_path,
             file_format="MDF4",
             loaded_at=datetime.datetime.now(),
         )
@@ -160,9 +168,14 @@ class Mdf4Loader:
         ]
 
     def _count_names(self, mdf: Any) -> dict[str, int]:
-        """重複名 [idx] 曖昧化のための事前カウント (メタデータ走査のみ)."""
+        """重複名 [idx] 曖昧化のための事前カウント (メタデータ走査のみ).
+
+        ``load()`` と同じ理由 (virtual_groups が follower 物理グループを
+        キーに含まないケースがある, Task 2 レビュー critical) で
+        ``mdf.virtual_groups`` を走査する。
+        """
         totals: dict[str, int] = {}
-        for gi in range(len(mdf.groups)):
+        for gi in mdf.virtual_groups:
             for name, _gi, _ci in self._group_entries(mdf, gi):
                 totals[name] = totals.get(name, 0) + 1
         return totals
@@ -171,7 +184,7 @@ class Mdf4Loader:
         self,
         mdf: Any,
         gi: int,
-        file_path: Path,
+        resolved_path: Path,
         name_total: dict[str, int],
         name_seen: dict[str, int],
         signals: list[Signal],
@@ -182,7 +195,7 @@ class Mdf4Loader:
         if not entries:
             return
         if cancel is not None and cancel():
-            raise LoadCancelled(f"load cancelled: {file_path.name}")
+            raise LoadCancelled(f"load cancelled: {resolved_path.name}")
         asigs = mdf.select(entries, **self._SELECT_OPTIONS)
 
         master: np.ndarray | None = None
@@ -190,7 +203,7 @@ class Mdf4Loader:
         master_diffs_warn: tuple[int, int] | None = None  # (非単調, 重複) を1回だけ計算
         for (base_name, _g, _c), asig in zip(entries, asigs, strict=True):
             if cancel is not None and cancel():
-                raise LoadCancelled(f"load cancelled: {file_path.name}")
+                raise LoadCancelled(f"load cancelled: {resolved_path.name}")
             idx = name_seen.get(base_name, 0)
             name_seen[base_name] = idx + 1
             signal_name = (
@@ -273,7 +286,7 @@ class Mdf4Loader:
                     values=values,
                     file_format="MDF4",
                     bus_type=_detect_bus_type(getattr(asig, "source", None)),
-                    source_file=str(file_path.resolve()),
+                    source_file=str(resolved_path),
                     metadata=_extract_metadata(asig),
                 )
             )

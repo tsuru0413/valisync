@@ -420,6 +420,54 @@ def test_same_group_signals_share_master(tmp_path: Path) -> None:
     assert np.array_equal(a.timestamps, b.timestamps)
 
 
+# ─── Mdf4Loader: virtual_groups 走査 (Task 2 レビュー critical) ───────────────
+
+
+def test_remote_master_style_virtual_groups_do_not_kill_load(tmp_path: Path) -> None:
+    """v4.20 remote-master 相当 (follower gi が virtual_groups に無い) でも全滅しない.
+
+    asammdf は v4.20+ の remote-master/column-storage 読込時、follower 物理
+    グループを ``virtual_groups`` のキーに載せない (マスタ側 gi に統合される)。
+    グループ走査を物理グループ数 (``range(len(mdf.groups))``) で回すと、
+    follower の gi で ``included_channels(gi)`` が KeyError → 外側の broad
+    except に飲まれ、正常なグループも含めファイル全体が signal_group=None に
+    なる回帰を防止する (Task 2 レビュー critical)。ここでは実ファイルを
+    remote-master 形式で書き出す代わりに、通常の 2 グループファイルに対して
+    ``MDF.__init__`` 後の ``virtual_groups``/``virtual_groups_map`` を
+    remote-master 相当の形へパッチし、同じ「follower gi が virtual_groups の
+    キーに無い」状態を再現する。
+    """
+    from unittest.mock import patch
+
+    from asammdf import MDF as _MDF
+
+    path = write_mdf4(
+        tmp_path / "remote_master_like.mf4",
+        [
+            {"name": "A", "timestamps": [0.0, 1.0], "values": [1.0, 2.0]},
+            {"name": "B", "timestamps": [0.0, 1.0], "values": [3.0, 4.0]},
+        ],
+    )
+
+    real_init = _MDF.__init__
+
+    def patched_init(self: _MDF, *args: object, **kwargs: object) -> None:
+        real_init(self, *args, **kwargs)  # type: ignore[arg-type]
+        if 1 in self.virtual_groups:
+            vg0 = self.virtual_groups[0]
+            vg0.groups = sorted({*vg0.groups, 1})
+            self.virtual_groups_map[1] = 0
+            del self.virtual_groups[1]
+
+    with patch.object(_MDF, "__init__", patched_init):
+        result = Mdf4Loader().load(path)
+
+    assert result.signal_group is not None
+    names = {s.name for s in result.signal_group.signals}
+    assert {"A", "B"} <= names
+    assert not any(d.level == "error" for d in result.diagnostics)
+
+
 # ─── mdf4_helpers: 新規ヘルパの roundtrip 前提 (第3弾土台) ────────────────────
 
 
