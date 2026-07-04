@@ -57,7 +57,7 @@ class DiagnosticsViewModel(Observable):
         self._notify("diagnostics")
 
     def entries(self, level: str | None = None) -> list[DiagnosticEntry]:
-        """Return entries, optionally filtered by level ("error"/"warning")."""
+        """Return entries, optionally filtered by level ("error"/"warning"/"info")."""
         if level is None:
             return list(self._entries)
         return [e for e in self._entries if e.level == level]

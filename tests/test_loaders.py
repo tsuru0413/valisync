@@ -527,3 +527,28 @@ def test_structured_channel_fields_visible(tmp_path: Path) -> None:
     ]
     assert xs, f"x 成分が信号として見えない: {sorted(names)}"
     assert not any(d.level == "error" for d in result.diagnostics)
+
+
+def test_explode_samples_subarray_field_one_level() -> None:
+    """構造化フィールドが (N,k) サブ配列のとき Name.field[i] に1段展開される."""
+    from valisync.core.loaders.mdf4_loader import _explode_samples
+
+    rec = np.zeros(3, dtype=[("mat", "<f8", (2,)), ("s", "<f8")])
+    rec["mat"] = [[1, 2], [3, 4], [5, 6]]
+    rec["s"] = [7, 8, 9]
+    diags: list = []
+    pairs = _explode_samples("Obj", rec, diags)
+    names = [n for n, _ in pairs]
+    assert names == ["Obj.mat[0]", "Obj.mat[1]", "Obj.s"]
+    assert np.array_equal(dict(pairs)["Obj.mat[1]"], [2.0, 4.0, 6.0])
+
+
+def test_explode_samples_over_nested_field_skipped_with_reason() -> None:
+    """ndim>2 のネストフィールドは理由の読める警告で skip・他フィールドは展開継続."""
+    from valisync.core.loaders.mdf4_loader import _explode_samples
+
+    rec = np.zeros(2, dtype=[("deep", "<f8", (2, 2)), ("s", "<f8")])
+    diags: list = []
+    pairs = _explode_samples("Obj", rec, diags)
+    assert [n for n, _ in pairs] == ["Obj.s"]
+    assert any("nested samples, skipped" in d.message for d in diags)
