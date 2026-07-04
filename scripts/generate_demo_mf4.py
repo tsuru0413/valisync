@@ -48,23 +48,28 @@ def _cycle_t(t: np.ndarray) -> np.ndarray:
 
 
 def veh_spd(t: np.ndarray) -> np.ndarray:
-    """自車速 km/h — 定常 80・減速で 55 まで・復帰で 80 へ (滑らかな折れ線)."""
+    """自車速 km/h — 定常 80・減速で 58 まで (先行車より応答遅れ)・復帰で 80 へ."""
     tc = _cycle_t(t)
-    pts_t = [0.0, 60.0, 120.0, 180.0, 240.0, 300.0]
-    pts_v = [80.0, 80.0, 55.0, 60.0, 60.0, 80.0]
+    pts_t = [0.0, 60.0, 115.0, 125.0, 180.0, 240.0, 300.0]
+    pts_v = [80.0, 80.0, 62.0, 58.0, 60.0, 60.0, 80.0]
     return np.interp(tc, pts_t, pts_v)
 
 
 def lead_dist(t: np.ndarray) -> np.ndarray:
-    """先行車距離 m — 減速で詰まり・カットインで一段近づく."""
+    """先行車距離 m — 減速で急接近 (AEB 発火域) してから復帰・カットインへ.
+
+    120s 到達前 (tc=115) に最接近させ、以降は急速に開ける — カットイン車
+    (dx 最大35m) より先行車が遠い状態を tc=120 まで保つため (物標スロット
+    入替テストとの整合・spec §4.3-3)。
+    """
     tc = _cycle_t(t)
-    pts_t = [0.0, 60.0, 120.0, 125.0, 180.0, 240.0, 300.0]
-    pts_v = [45.0, 45.0, 28.0, 20.0, 26.0, 30.0, 45.0]
+    pts_t = [0.0, 60.0, 100.0, 115.0, 120.0, 125.0, 180.0, 300.0]
+    pts_v = [45.0, 45.0, 25.0, 8.0, 32.0, 34.0, 26.0, 45.0]
     return np.interp(tc, pts_t, pts_v)
 
 
 def ttc(t: np.ndarray) -> np.ndarray:
-    """TTC 秒 — lead_decel 区間で単調減少 (相対速度から粗く算出・下限 1.5s)."""
+    """TTC 秒 — lead_decel 区間で単調減少・AEB 発火域まで下げる (下限 1.5s)."""
     tc = _cycle_t(t)
     base = lead_dist(t) / np.maximum((veh_spd(t) - lead_spd(t)) / 3.6, 0.5)
     return np.clip(np.where(tc < 60.0, 99.0, base), 1.5, 99.0)
@@ -73,8 +78,8 @@ def ttc(t: np.ndarray) -> np.ndarray:
 def lead_spd(t: np.ndarray) -> np.ndarray:
     """先行車速 km/h."""
     tc = _cycle_t(t)
-    pts_t = [0.0, 60.0, 120.0, 180.0, 240.0, 300.0]
-    pts_v = [80.0, 80.0, 50.0, 58.0, 60.0, 80.0]
+    pts_t = [0.0, 60.0, 110.0, 120.0, 180.0, 240.0, 300.0]
+    pts_v = [80.0, 80.0, 45.0, 55.0, 60.0, 60.0, 80.0]
     return np.interp(tc, pts_t, pts_v)
 
 
@@ -92,29 +97,48 @@ def aeb_warn_level(t: np.ndarray) -> np.ndarray:
     return np.where(v < 3.0, 2.0, np.where(v < 6.0, 1.0, 0.0))
 
 
+def _lead_track(t: np.ndarray, attr: str) -> np.ndarray:
+    """先行車の軌跡 (従来 slot0) — カットイン完了後は slot1 に降格する追跡対象."""
+    return {
+        "dx": lead_dist(t),
+        "dy": np.zeros(len(t)),
+        "vx": (lead_spd(t) - veh_spd(t)) / 3.6,
+        "vy": np.zeros(len(t)),
+        "ExistProb": np.full(len(t), 0.98),
+    }[attr]
+
+
+def _cutin_track(t: np.ndarray, attr: str) -> np.ndarray:
+    """カットイン車の軌跡 (従来 slot1) — cutin 区間で隣車線から dy→0 へ."""
+    tc = _cycle_t(t)
+    in_scene = (tc >= 110.0) & (tc < 180.0)
+    dy = np.where(tc < 125.0, np.interp(tc, [110.0, 125.0], [3.5, 0.0]), 0.0)
+    vals = {
+        "dx": np.interp(tc, [110.0, 125.0, 180.0], [35.0, 20.0, 26.0]),
+        "dy": dy,
+        "vx": np.full(len(t), -1.0),
+        "vy": np.where(tc < 125.0, -0.8, 0.0),
+        "ExistProb": np.full(len(t), 0.9),
+    }[attr]
+    return np.where(in_scene, vals, np.nan)  # 非存在スロットは NaN (本番表現)
+
+
 def radar_obj(t: np.ndarray, slot: int, attr: str) -> np.ndarray:
-    """レーダー物標 slot=0..7 の属性 — slot0=先行車・slot1=カットイン車・他は遠方固定."""
+    """レーダー物標 slot=0..7 の属性.
+
+    カットイン完了 (tc=125) でトラック→スロットの割当を入替える (spec §4.3-3):
+    割込み車が先行車スロット (0) を乗っ取り、旧先行車は slot1 に降格する。
+    """
     tc = _cycle_t(t)
     if slot == 0:
-        base = {
-            "dx": lead_dist(t),
-            "dy": np.zeros(len(t)),
-            "vx": (lead_spd(t) - veh_spd(t)) / 3.6,
-            "vy": np.zeros(len(t)),
-            "ExistProb": np.full(len(t), 0.98),
-        }[attr]
-        return base
-    if slot == 1:  # カットイン車: cutin 区間で隣車線から dy→0 へ
-        in_scene = (tc >= 110.0) & (tc < 180.0)
-        dy = np.where(tc < 125.0, np.interp(tc, [110.0, 125.0], [3.5, 0.0]), 0.0)
-        vals = {
-            "dx": np.interp(tc, [110.0, 125.0, 180.0], [35.0, 20.0, 26.0]),
-            "dy": dy,
-            "vx": np.full(len(t), -1.0),
-            "vy": np.where(tc < 125.0, -0.8, 0.0),
-            "ExistProb": np.full(len(t), 0.9),
-        }[attr]
-        return np.where(in_scene, vals, np.nan)  # 非存在スロットは NaN (本番表現)
+        return np.where(tc < 125.0, _lead_track(t, attr), _cutin_track(t, attr))
+    if slot == 1:
+        old_lead = _lead_track(t, attr) + (15.0 if attr == "dx" else 0.0)
+        return np.where(
+            (tc >= 110.0) & (tc < 125.0),
+            _cutin_track(t, attr),
+            np.where((tc >= 125.0) & (tc < 180.0), old_lead, np.nan),
+        )
     # slot 2..7: 遠方の静的物標 (slot ごとに位置をずらす・常時存在)
     offs = float(slot) * 15.0
     return {

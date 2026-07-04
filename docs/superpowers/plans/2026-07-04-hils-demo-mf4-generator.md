@@ -38,7 +38,7 @@
 - Create: `tests/test_demo_mf4.py`（シナリオ単体テスト）
 
 **Interfaces:**
-- Produces（後続タスクが使用）: `PROFILES: dict[str, Profile]`（`Profile(duration_s, chunk_s, xcp1ms_extra_ch)`）。`scenario_phase(t) -> str`（"cruise"/"lead_decel"/"cutin"/"cam_lost"/"recovery"・300s 周期）。各信号関数 `veh_spd(t)`・`ttc(t)`・`brk_press(t)`・`radar_obj(t, slot, attr)`・`cam_obj(t, slot, attr)`（cam_lost 区間は NaN）・`cluster_surr(t, slot, attr)` — いずれも `t: np.ndarray -> np.ndarray`（ベクトル化・決定的）。`add_noise(values, scale, rng)`。
+- Produces（後続タスクが使用）: `PROFILES: dict[str, Profile]`（`Profile(duration_s, chunk_s)`）。`scenario_phase(t) -> str`（"cruise"/"lead_decel"/"cutin"/"cam_lost"/"recovery"・300s 周期）。各信号関数 `veh_spd(t)`・`ttc(t)`・`brk_press(t)`・`radar_obj(t, slot, attr)`・`cam_obj(t, slot, attr)`（cam_lost 区間は NaN）・`cluster_surr(t, slot, attr)` — いずれも `t: np.ndarray -> np.ndarray`（ベクトル化・決定的）。`add_noise(values, scale, rng)`。
 
 - [ ] **Step 1: Write the failing tests**
 
