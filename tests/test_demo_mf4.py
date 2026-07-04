@@ -264,3 +264,21 @@ def test_dirty_injects_non_monotonic(tmp_path):
         spd = mdf.get("VehSpd")
         d = np.diff(spd.timestamps)
         assert np.any(d <= 0)  # 重複または非単調が実在
+
+
+def test_cli_rejects_nonpositive_duration(tmp_path):
+    import pytest
+
+    # duration=0 は SystemExit を送出するべき
+    with pytest.raises(SystemExit):
+        gen.main(
+            ["--out", str(tmp_path / "x.mf4"), "--profile", "smoke", "--duration", "0"]
+        )
+    assert not (tmp_path / "x.mf4").exists()
+
+    # duration=-5 も SystemExit を送出するべき
+    with pytest.raises(SystemExit):
+        gen.main(
+            ["--out", str(tmp_path / "y.mf4"), "--profile", "smoke", "--duration", "-5"]
+        )
+    assert not (tmp_path / "y.mf4").exists()

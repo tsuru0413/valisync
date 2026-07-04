@@ -740,8 +740,15 @@ def main(argv: list[str] | None = None) -> int:
         "--dirty", action="store_true", help="CAN に重複/非単調タイムスタンプを注入"
     )
     a = p.parse_args(argv)
+
+    # validate --duration is positive (prevent ZeroDivisionError in write_mf4 / silent corrupt file on -5)
+    if a.duration is not None and a.duration <= 0:
+        p.error("--duration must be positive")
+
     prof = PROFILES[a.profile]
     if a.duration is not None:
+        # chunk_s > duration を Profile に作らないための整合性維持 —
+        # 境界計算は write_mf4 側でもクランプされる (n_chunks = ceil(...))
         prof = Profile(duration_s=a.duration, chunk_s=min(prof.chunk_s, a.duration))
     out = write_mf4(out=a.out, profile=prof, seed=a.seed, dirty=a.dirty, progress=True)
     print(f"wrote {out} ({out.stat().st_size / 1e9:.2f} GB)")
