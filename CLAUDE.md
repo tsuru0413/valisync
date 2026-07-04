@@ -80,6 +80,10 @@ uv run mypy src/             # 型チェック
 
 GUI 機能・操作を実装するときは **GUI テストレイヤー（Layer A/B 必須・CI / Layer C はローカル `--realgui`）** に従う。詳細: `docs/gui-testing-layers.md`（`docs/workflow.md` の計画・実装フローで必須化）。計画時は `/gui-test-plan`（②実質的な受け入れ要件の設計）、merge 前は `/gui-verify`（①realgui 証拠ゲート）を使う。
 
+## 実機確認用デモデータ (本番相当 mf4)
+
+本番（ADAS HILS・CANape 計測・XCP/CAN/Ethernet 統合）相当の mf4 を生成するツール: `scripts/generate_demo_mf4.py`（`uv run python scripts/generate_demo_mf4.py --profile {hils≈2GB / quick≈170MB / smoke=CI用}`）。プロファイル・シナリオ・実機確認手順・`--dirty`（LD-03 診断デモ）の詳細は `docs/development.md`「デモデータ」節。設計/プランは `docs/superpowers/specs|plans/2026-07-04-hils-demo-mf4-generator*`。生成物は `demo_data/`（gitignore・非コミット）。
+
 ## 開発環境の落とし穴
 
 詳細: `docs/development.md` 末尾参照。
