@@ -22,9 +22,12 @@ from .mdf4_helpers import (
     ETHERNET,
     NONE,
     write_mdf4,
+    write_mdf4_2d,
     write_mdf4_all_channels_bad,
     write_mdf4_non_finite_ts,
     write_mdf4_non_monotonic,
+    write_mdf4_shared_group,
+    write_mdf4_value2text,
 )
 
 
@@ -389,13 +392,39 @@ def test_mdf4_loader_cancel_raises(tmp_path: Path) -> None:
         Mdf4Loader().load(path, cancel=lambda: True)
 
 
+# ─── Mdf4Loader: select() ベース読み取りパス (LD-13/LD-10, 第3弾 Task 2) ──────
+
+
+def test_value2text_channel_survives_as_raw(tmp_path: Path) -> None:
+    """LD-13: value2text 付きチャンネルが生値で生存する (現行は消滅=RED)."""
+    path = write_mdf4_value2text(tmp_path)
+    result = Mdf4Loader().load(path)
+    names = {s.name for s in result.signal_group.signals}
+    assert "TurnSig" in names
+    turn = next(s for s in result.signal_group.signals if s.name == "TurnSig")
+    assert np.array_equal(turn.values, [0.0, 1.0, 2.0, 1.0])
+    assert not any(
+        "non-numeric" in d.message and "TurnSig" in d.message
+        for d in result.diagnostics
+    )
+
+
+def test_same_group_signals_share_master(tmp_path: Path) -> None:
+    """LD-10: 同一グループの信号はマスタ時刻軸を共有し read-only (現行は複製=RED)."""
+    path = write_mdf4_shared_group(tmp_path)
+    result = Mdf4Loader().load(path)
+    a = next(s for s in result.signal_group.signals if s.name == "A")
+    b = next(s for s in result.signal_group.signals if s.name == "B")
+    assert np.shares_memory(a.timestamps, b.timestamps)
+    assert not a.timestamps.flags.writeable
+    assert np.array_equal(a.timestamps, b.timestamps)
+
+
 # ─── mdf4_helpers: 新規ヘルパの roundtrip 前提 (第3弾土台) ────────────────────
 
 
 def test_helper_value2text_roundtrip(tmp_path: Path) -> None:
     from asammdf import MDF
-
-    from tests.mdf4_helpers import write_mdf4_value2text
 
     path = write_mdf4_value2text(tmp_path)
     with MDF(str(path)) as mdf:
@@ -408,8 +437,6 @@ def test_helper_value2text_roundtrip(tmp_path: Path) -> None:
 
 def test_helper_2d_roundtrip(tmp_path: Path) -> None:
     from asammdf import MDF
-
-    from tests.mdf4_helpers import write_mdf4_2d
 
     path = write_mdf4_2d(tmp_path)
     with MDF(str(path)) as mdf:
