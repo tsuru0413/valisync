@@ -118,7 +118,7 @@
 | LD-10 | 🟡 | 大容量 MDF4 で配列多重コピー（astype＋Signal 再コピー）→ OOM リスク | `core/loaders/mdf4_loader.py:134` | 大きいログでメモリ不足 |
 | LD-11 | 🟡 | 同一ファイル二重読み込みで別グループ増殖（重複検出なし） | `core/loaders/signal_group_manager.py:24` | 重複エントリで混乱 |
 | LD-12 | 🟠 | 多次元/構造化チャンネル（本番の物標配列 (b) パターン）が「2D samples, skipped」で表示不能。HILS デモ mf4（`scripts/generate_demo_mf4.py`）の `Radar.ObjMatrix`/`Cam.ObjMatrix`（uint8 非構造化2D配列で実装 — structured dtype は asammdf 実測で往復破損するため不採用）が再現データ | `core/loaders/mdf4_loader.py:140-150`（`samples.ndim != 1` の 2D skip 分岐） | CANape 計測の物標リストが構造化格納だと丸ごと見えない（LD-07 と統合検討・第3弾） |
-| LD-13 | 🟠 | （新規・今回の実バグ発見）`_READ_OPTIONS` の `ignore_value2text_conversions: True` は `MDF()` コンストラクタには無効な dead オプション（asammdf では `get()`/`iter_channels()` 呼び出し時のみ有効）→ value2text conversion 付きチャンネル（DBC デコード済み enum が該当＝本番データ直撃）は `iter_channels` がテキスト配列を返し「non-numeric, skipped」で**チャンネルごと消滅**する | `core/loaders/mdf4_loader.py:56`（`_READ_OPTIONS` 定義）/`:79`（`MDF()` 呼び出し）/`:97`（`iter_channels` 呼び出し・オプション未指定） | enum 信号が診断1行を残して不可視。LD-07（ラベル生値）と同時対応が自然（第3弾）。発見経緯: HILS デモ mf4 の value2text 埋込テスト（詳細 `.superpowers/sdd/task-2-report.md`） |
+| LD-13 | 🟠 | （新規・今回の実バグ発見）`_READ_OPTIONS` の `ignore_value2text_conversions: True` は `MDF()` コンストラクタには無効な dead オプション（有効なのは `select()`・`iter_groups()`・`to_dataframe()` など DataFrame 系メソッドのみ；`iter_channels` は内部で `select()` を呼ぶが本引数を露出しない）→ value2text conversion 付きチャンネル（DBC デコード済み enum が該当＝本番データ直撃）は `iter_channels` がテキスト配列を返し「non-numeric, skipped」で**チャンネルごと消滅**する | `core/loaders/mdf4_loader.py:56`（`_READ_OPTIONS` 定義）/`:79`（`MDF()` 呼び出し）/`:97`（`iter_channels` 呼び出し・オプション未指定） | enum 信号が診断1行を残して不可視。修正経路は `select()` 直接使用または `iter_groups()` 系への切替（LD-07 と同時対応・第3弾）。発見経緯: HILS デモ mf4 の value2text 埋込テスト（詳細 `.superpowers/sdd/task-2-report.md`） |
 
 ---
 
