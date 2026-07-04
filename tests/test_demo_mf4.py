@@ -174,3 +174,76 @@ def test_dirty_injects_nonmonotonic_only_in_vehdyn(tmp_path):
         assert np.any(diffs <= 0.0)  # LD-03/04 デモ: 重複/非単調が混入
         other_ts = mdf.get("EngTrq").timestamps  # dirty 対象外グループは無傷
         assert np.all(np.diff(other_ts) > 0.0)
+
+
+def test_dirty_injects_nonmonotonic_in_single_chunk_profile(tmp_path):
+    # Finding 1 回帰: smoke は chunk_s == duration_s のため ci==0 の append 分岐
+    # しか通らない。_inject_dirty がローカル名 ts のみ書き換えて Signal.timestamps
+    # (sigs 内) に伝播しないと、この経路では dirty=True が no-op になっていた。
+    out = gen.write_mf4(
+        out=tmp_path / "dirty_smoke.mf4",
+        profile=gen.PROFILES["smoke"],
+        seed=5,
+        dirty=True,
+        progress=False,
+    )
+    from asammdf import MDF
+
+    with MDF(str(out)) as mdf:
+        veh_spd_ts = mdf.get("VehSpd").timestamps
+        assert np.any(np.diff(veh_spd_ts) <= 0.0)
+
+
+def test_2d_channels_yield_skip_diagnostics_in_valisync(tmp_path):
+    # Finding 2 回帰: 物標行列 (b) パターンは spec の設計目的どおり「2D samples,
+    # skipped」で valisync 側から丸ごと見えなくなるべき — かつ親チャンネルが
+    # 偽データとして化けたり、兄弟チャンネル (ObjMatrix[0..7]) が湧いたりしない
+    # こと (structured-dtype パッキングはこの両方を破っていた)。
+    out = gen.write_mf4(
+        out=tmp_path / "s.mf4",
+        profile=gen.PROFILES["smoke"],
+        seed=1,
+        dirty=False,
+        progress=False,
+    )
+    from valisync.core.session import Session
+
+    session = Session()
+    outcome = session.load(out)
+
+    skips = [
+        d
+        for d in outcome.diagnostics
+        if "skipped" in d.message and "ObjMatrix" in d.message
+    ]
+    assert len(skips) == 2  # Radar/Cam の ObjMatrix 2本とも skip 警告
+
+    names = {sig.name.split("::", 1)[1] for sig in session.group_signals(outcome.key)}
+    assert "Radar.ObjMatrix" not in names
+    assert "Cam.ObjMatrix" not in names
+    assert not any(n.startswith("Radar.ObjMatrix[") for n in names)
+    assert not any(n.startswith("Cam.ObjMatrix[") for n in names)
+
+
+def test_turn_sig_survives_load_with_raw_enum_values(tmp_path):
+    # Finding 3 回帰: value2text (TABX) conversion を埋め込むと、
+    # Mdf4Loader の ignore_value2text_conversions が MDF() コンストラクタには
+    # 効かない dead オプションのため iter_channels がテキストを返し、
+    # 「non-numeric, skipped」でチャンネルごと消滅していた。
+    out = gen.write_mf4(
+        out=tmp_path / "turnsig.mf4",
+        profile=gen.PROFILES["smoke"],
+        seed=2,
+        dirty=False,
+        progress=False,
+    )
+    from valisync.core.session import Session
+
+    session = Session()
+    outcome = session.load(out)
+    names = {
+        sig.name.split("::", 1)[1]: sig for sig in session.group_signals(outcome.key)
+    }
+    assert "TurnSig" in names
+    values = set(np.unique(names["TurnSig"].values).tolist())
+    assert values <= {0.0, 1.0, 2.0}

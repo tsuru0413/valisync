@@ -81,7 +81,7 @@ ADAS ECU の HILS 評価ログ。**CANape で計測**された MDF 4.1 ファイ
 
 - CAN グループ1つに重複タイムスタンプ数十点＋非単調数点 → LD-03/04 診断がドックに出る
 - 値の NaN は `--dirty` に依らずシナリオ（カメラロスト）で常時含む
-- enum 系は常に生値（LD-07 の現状）・conversion ブロックは埋め込む（将来のラベル対応データ）
+- enum 系は常に生値（LD-07 の現状）・ラベルは channel comment に記載（value2text 埋込は現行ローダーの dead オプション問題〔`ignore_value2text_conversions` が `MDF()` に無効〕でチャンネル消滅するため見送り — catalog 記録対象）
 
 ### 4.5 生成の技術要件
 

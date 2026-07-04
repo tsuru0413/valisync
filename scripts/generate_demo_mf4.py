@@ -352,6 +352,7 @@ class SigDef:
     dtype: type = np.float64
     conv: dict[str, object] | None = None
     ndim: int = 1  # >1 の場合 fn は (N, ndim) の 2D 配列を返す (配列チャンネル)
+    comment: str = ""  # value2text の代替となるラベル注記等 (Finding 3)
 
 
 @dataclass(frozen=True)
@@ -457,8 +458,9 @@ def _build_groups() -> list[GroupDef]:
     ]
 
     xcp_10ms_struct = [
-        SigDef("Radar.ObjMatrix", _radar_obj_matrix, "m", np.float64, None, 8),
-        SigDef("Cam.ObjMatrix", _cam_obj_matrix, "m", np.float64, None, 8),
+        # dtype は uint8 (格納時の実表現・_pack_array_channel で量子化).
+        SigDef("Radar.ObjMatrix", _radar_obj_matrix, "m", np.uint8, None, 8),
+        SigDef("Cam.ObjMatrix", _cam_obj_matrix, "m", np.uint8, None, 8),
     ]
 
     veh_dyn = [
@@ -532,15 +534,14 @@ def _build_groups() -> list[GroupDef]:
             lambda t, rng: turn_sig(t),
             "",
             np.uint8,
-            {
-                "val_0": 0.0,
-                "text_0": "OFF",
-                "val_1": 1.0,
-                "text_1": "LEFT",
-                "val_2": 2.0,
-                "text_2": "RIGHT",
-                "default_addr": "",
-            },
+            None,
+            1,
+            # value2text (TABX) 埋込は見送り (Finding 3): Mdf4Loader の
+            # ignore_value2text_conversions は MDF() コンストラクタに効かない
+            # dead オプションで、embed すると iter_channels がテキストを返し
+            # 「non-numeric, skipped」でチャンネルごと消滅する (valisync 側の
+            # 実バグ・catalog 記録対象)。生 int 値のままラベルは comment に記載。
+            "0=OFF, 1=LEFT, 2=RIGHT",
         ),
         SigDef("GearPos", lambda t, rng: gear_pos(t)),
         SigDef("DoorState", lambda t, rng: door_state(t)),
@@ -603,33 +604,43 @@ def _group_source(g: GroupDef) -> Source:
     )
 
 
-def _pack_array_channel(name: str, values: np.ndarray, dtype: type) -> np.ndarray:
-    """(N, k) の平配列 → チャンネルと同名の単一フィールドを持つ構造化配列.
+def _pack_array_channel(values: np.ndarray) -> np.ndarray:
+    """(N, k) の物理値 (m) → uint8 の byte-array 2D 配列 (0-255 にクリップ量子化).
 
-    asammdf 8.8.11 は非構造化 dtype の 2D ndarray を渡すと配列チャンネルの
-    レコードバイトサイズを 1 要素分しか確保せず後続サンプルを誤読み込みする
-    (実機確認済みバグ)。フィールド名をチャンネル名と一致させた構造化配列に
-    包むと SIGNAL_TYPE_ARRAY 経路 (CA ブロック付き) で正しく書ける。
+    Finding 2 (review): 構造化 dtype (単一フィールドの subarray) でパッキング
+    すると、asammdf 8.8.11 の iter_channels がこの配列を ndim==1 の
+    structured array として返し、Mdf4Loader の 2D skip 判定を素通りしてしまう
+    — さらに読み戻し時に (i) 親チャンネルが列0だけの偽データとして化け、
+    (ii) 存在しない兄弟チャンネル ObjMatrix[0..7] が8本湧く (実機確認済み)。
+    これは spec の設計目的 (本番 (b) パターンの「2D samples, skipped」再現)
+    の真逆になる。
+
+    itemsize==1 (uint8) の非構造化 byte-array 表現のみ shape (N, k) のまま
+    正しく書け・読み戻ることを実機確認した (itemsize>1 の float64/int16 等は
+    レコードバイトサイズを要素1個分しか確保しない既知の asammdf バグで
+    後続サンプルがずれる — tests/mdf4_helpers.py の
+    write_mdf4_all_channels_bad が LD 第1弾で使ったのと同じ手法)。この結果
+    iter_channels は ndim==2 のまま返し、Mdf4Loader の 2D skip 診断が
+    意図どおり発火する。本チャンネルは valisync 側で丸ごと skip される
+    検証専用データであり物理精度は不要なため、0-255m にクリップ量子化する
+    (非存在スロットの NaN は 0 に丸める)。
     """
-    dt = np.dtype([(name, dtype, (values.shape[1],))])
-    packed = np.zeros(values.shape[0], dtype=dt)
-    packed[name] = values.astype(dtype)
-    return packed
+    finite = np.where(np.isfinite(values), values, 0.0)
+    return np.clip(finite, 0.0, 255.0).astype(np.uint8)
 
 
 def build_group_signals(
     g: GroupDef, t0: float, t1: float, seed: int, chunk_idx: int
 ) -> tuple[np.ndarray, list[Signal]]:
     """区間 [t0, t1) のタイムスタンプ + グループ内 Signal 群を生成."""
-    group_id = GROUPS.index(g)
-    rng = np.random.default_rng(seed * 1000 + group_id * 100 + chunk_idx)
+    rng = np.random.default_rng(seed * 1000 + g.group_id * 100 + chunk_idx)
     ts = _group_timestamps(t0, t1, g.rate_s, g.jitter_pct, rng)
 
     sigs: list[Signal] = []
     for sd in g.signals:
         values = sd.fn(ts, rng)
         if sd.ndim > 1:
-            samples = _pack_array_channel(sd.name, values, sd.dtype)
+            samples = _pack_array_channel(values)
         elif sd.conv is not None and "a" in sd.conv:
             a = float(sd.conv["a"])  # type: ignore[arg-type]
             b = float(sd.conv.get("b", 0.0))  # type: ignore[union-attr]
@@ -651,6 +662,7 @@ def build_group_signals(
                 name=sd.name,
                 unit=sd.unit,
                 conversion=sd.conv,
+                comment=sd.comment,
             )
         )
     return ts, sigs
@@ -692,6 +704,12 @@ def write_mf4(
             ts, sigs = build_group_signals(g, t0, t1, seed, ci)
             if dirty and g.name == "VehDyn_10ms":
                 ts = _inject_dirty(ts, seed, ci)
+                # Finding 1 (review): ts の再束縛だけでは sigs 内の各 Signal
+                # (クリーンな master をコピー保持) に伝播しない — ci==0 の
+                # append はそちらを見るため、伝播しないと --dirty が
+                # 単一チャンク経路 (smoke 等) で no-op になる。
+                for s in sigs:
+                    s.timestamps = ts
             if ci == 0:
                 mdf.append(
                     sigs,
