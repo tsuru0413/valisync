@@ -247,3 +247,20 @@ def test_turn_sig_survives_load_with_raw_enum_values(tmp_path):
     assert "TurnSig" in names
     values = set(np.unique(names["TurnSig"].values).tolist())
     assert values <= {0.0, 1.0, 2.0}
+
+
+def test_cli_smoke_generates_file(tmp_path):
+    out = tmp_path / "cli.mf4"
+    rc = gen.main(["--out", str(out), "--profile", "smoke", "--seed", "1"])
+    assert rc == 0 and out.exists() and out.stat().st_size > 100_000
+
+
+def test_dirty_injects_non_monotonic(tmp_path):
+    out = tmp_path / "d.mf4"
+    gen.main(["--out", str(out), "--profile", "smoke", "--seed", "1", "--dirty"])
+    from asammdf import MDF
+
+    with MDF(str(out)) as mdf:
+        spd = mdf.get("VehSpd")
+        d = np.diff(spd.timestamps)
+        assert np.any(d <= 0)  # 重複または非単調が実在

@@ -6,6 +6,7 @@ spec: docs/superpowers/specs/2026-07-04-hils-demo-mf4-generator-design.md
 
 from __future__ import annotations
 
+import argparse
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -724,3 +725,28 @@ def write_mf4(
     mdf.save(str(out), overwrite=True)
     mdf.close()
     return out
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI エントリポイント — プロファイル・seed・dirty フラグでジェネレーション."""
+    p = argparse.ArgumentParser(description="HILS デモ mf4 ジェネレータ")
+    p.add_argument("--out", type=Path, default=Path("demo_data/hils_demo.mf4"))
+    p.add_argument("--profile", choices=sorted(PROFILES), default="hils")
+    p.add_argument(
+        "--duration", type=float, default=None, help="秒(プロファイル既定の上書き)"
+    )
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument(
+        "--dirty", action="store_true", help="CAN に重複/非単調タイムスタンプを注入"
+    )
+    a = p.parse_args(argv)
+    prof = PROFILES[a.profile]
+    if a.duration is not None:
+        prof = Profile(duration_s=a.duration, chunk_s=min(prof.chunk_s, a.duration))
+    out = write_mf4(out=a.out, profile=prof, seed=a.seed, dirty=a.dirty, progress=True)
+    print(f"wrote {out} ({out.stat().st_size / 1e9:.2f} GB)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
