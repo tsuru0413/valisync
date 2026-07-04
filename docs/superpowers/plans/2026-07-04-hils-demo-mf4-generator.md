@@ -19,6 +19,7 @@
 - T2 Finding: `TurnSig` は value2text 埋込を**見送り**、生値＋channel comment ラベル化（LD-13 の dead オプション問題）。プラン step-3 の「value2text conversion 埋込」は無効化済み。
 - T1 Finding: シナリオ数値を再調整し AEB 警報を実発火（最小 TTC 2.4s）・物標スロット入替を実装。
 - 付随発見: valisync 実バグ **LD-13**（`ignore_value2text_conversions` が `MDF()` に無効）を catalog 起票。
+- **マージ後 followup（実機確認で発見・修正済み）**: プラン Task 2 の「ジッタは間隔に加算し cumsum（常に単調）」は**チャンク境界で誤り** — 累積ドリフトが次チャンクの決定的 t0 を追い越し seam で逆行（クリーン hils に非単調警告14件が混入）。`_group_timestamps` を**公称グリッド＋tick 毎の有界ジッタ**（|δ|≤j×rate<rate/2 で厳密単調を保証）へ修正。LD-10 ロード実測（hils 2.01GB→7.8s/+7.3GB）も catalog へ追記。
 
 ## Global Constraints
 

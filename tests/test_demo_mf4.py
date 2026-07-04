@@ -315,3 +315,35 @@ def test_cli_rejects_nonpositive_duration(tmp_path):
             ["--out", str(tmp_path / "y.mf4"), "--profile", "smoke", "--duration", "-5"]
         )
     assert not (tmp_path / "y.mf4").exists()
+
+
+def test_clean_multichunk_timestamps_strictly_monotonic(tmp_path):
+    """チャンク境界のジッタ累積ドリフトで seam 逆行が起きない(実機確認で発見した生成バグ)."""
+    prof = gen.Profile(
+        duration_s=120.0, chunk_s=10.0
+    )  # 11 seam・seed 42 で旧実装は VehSpd が逆行
+    out = gen.write_mf4(
+        out=tmp_path / "m.mf4", profile=prof, seed=42, dirty=False, progress=False
+    )
+    from asammdf import MDF
+
+    with MDF(str(out)) as mdf:
+        for name in ("VehSpd", "EngTrq", "TurnSig", "AEB.TTC"):
+            ts = mdf.get(name).timestamps
+            d = np.diff(ts)
+            assert np.all(d > 0), f"{name}: {int(np.sum(d <= 0))} non-monotonic points"
+
+
+def test_clean_multichunk_load_yields_only_2d_warnings(tmp_path):
+    """クリーン生成(--dirty なし) は valisync ロードで ObjMatrix skip 2件以外の警告を出さない."""
+    prof = gen.Profile(duration_s=40.0, chunk_s=10.0)
+    out = gen.write_mf4(
+        out=tmp_path / "c.mf4", profile=prof, seed=42, dirty=False, progress=False
+    )
+    from valisync.core.session import Session
+
+    outcome = Session().load(out)
+    warns = [d for d in outcome.diagnostics if d.level == "warning"]
+    assert len(warns) == 2 and all("ObjMatrix" in d.message for d in warns), [
+        d.message for d in warns
+    ]
