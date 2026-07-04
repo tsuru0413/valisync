@@ -100,7 +100,48 @@ def _explode_samples(
     return []
 
 
-def _extract_metadata(asammdf_sig: Any) -> dict[str, Any]:
+def _extract_value_labels(conversion: Any) -> dict[float, str] | None:
+    """value2text (TABX) の値→ラベル表を抽出。取れなければ None (生値で続行).
+
+    ``select()`` の戻り Signal は conversion が常に None (ignore_value2text の
+    真偽に依らず・Task 2 で実測確認) — 呼び出し元は select を経ない生チャンネル
+    (``mdf.groups[gi].channels[ci].conversion``) を渡す。
+
+    ChannelConversion の val_N/text_N は動的属性 (asammdf 内部表現・ソース
+    確認: .venv/Lib/site-packages/asammdf/blocks/v4_blocks.py の TABX 読込/
+    構築コード) — val_i は ``conversion.val_i`` (float)、対応テキストは
+    ``conversion.referenced_blocks["text_i"]`` (ファイル読込時は
+    decode=False で bytes、from_dict 経由の in-memory 構築時も utf-8
+    encode 済み bytes)。RTABX (範囲変換) は val_i を持たず lower_i/upper_i を
+    使うため、この走査は自然に対象外になる (値ラベルは離散値の概念であり
+    範囲には適用しない)。
+    """
+    if conversion is None:
+        return None
+    referenced_blocks = getattr(conversion, "referenced_blocks", None)
+    if not referenced_blocks:
+        return None
+    try:
+        labels: dict[float, str] = {}
+        i = 0
+        while hasattr(conversion, f"val_{i}") and f"text_{i}" in referenced_blocks:
+            val = getattr(conversion, f"val_{i}")
+            text = referenced_blocks[f"text_{i}"]
+            if isinstance(text, bytes):
+                try:
+                    text = text.decode("utf-8")
+                except UnicodeDecodeError:
+                    text = text.decode("latin-1")
+            if not isinstance(text, str):
+                break  # ネストした ChannelConversion 等 (default 系) は対象外
+            labels[float(val)] = text
+            i += 1
+        return labels or None
+    except Exception:
+        return None  # 抽出失敗はチャンネル生存を妨げない (spec §3.3)
+
+
+def _extract_metadata(asammdf_sig: Any, raw_conversion: Any = None) -> dict[str, Any]:
     meta: dict[str, Any] = {}
     if asammdf_sig.unit:
         meta["unit"] = asammdf_sig.unit
@@ -117,6 +158,9 @@ def _extract_metadata(asammdf_sig: Any) -> dict[str, Any]:
     conversion = getattr(asammdf_sig, "conversion", None)
     if conversion is not None:
         meta["conversion_info"] = str(conversion)
+    labels = _extract_value_labels(raw_conversion)
+    if labels:
+        meta["value_labels"] = labels
     return meta
 
 
@@ -309,14 +353,24 @@ class Mdf4Loader:
                 continue
 
             samples = asig.samples
+            exploded = samples.ndim != 1 or bool(samples.dtype.names)
             # 多次元/構造化は展開して複数列に、通常 1D は単一要素のペアに正規化
             # してから同じ astype/警告/Signal 構築ループへ流す (LD-12)。展開後
             # の各列名は "曖昧化済みベース名から派生" (spec §3.2 — 例 M[0][i]):
             # signal_name (name[idx] 済み) を _explode_samples の base に渡す。
-            if samples.ndim != 1 or samples.dtype.names:
+            if exploded:
                 pairs = _explode_samples(signal_name, samples, diagnostics)
             else:
                 pairs = [(signal_name, samples)]
+
+            # value_labels (value2text) は 1D 通常チャンネルのみ継承する —
+            # value2text はスカラー enum の概念で、展開後の列 (2D/構造化の
+            # 各成分) には意味を持たない (LD-07 spec 注記)。select() の戻り
+            # asig.conversion は常に None (Task 2 実測) なので生チャンネル
+            # (mdf.groups[gi].channels[ci]) から取得する。
+            raw_conversion = (
+                None if exploded else mdf.groups[_g].channels[_c].conversion
+            )
 
             for out_name, col in pairs:
                 try:
@@ -359,6 +413,6 @@ class Mdf4Loader:
                         file_format="MDF4",
                         bus_type=_detect_bus_type(getattr(asig, "source", None)),
                         source_file=str(resolved_path),
-                        metadata=_extract_metadata(asig),
+                        metadata=_extract_metadata(asig, raw_conversion),
                     )
                 )

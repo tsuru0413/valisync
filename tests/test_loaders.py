@@ -410,6 +410,15 @@ def test_value2text_channel_survives_as_raw(tmp_path: Path) -> None:
     )
 
 
+def test_value_labels_extracted_to_metadata(tmp_path: Path) -> None:
+    """LD-07: TABX 変換表が metadata['value_labels'] に構造化保持される."""
+    result = Mdf4Loader().load(write_mdf4_value2text(tmp_path))
+    turn = next(s for s in result.signal_group.signals if s.name == "TurnSig")
+    assert turn.metadata.get("value_labels") == {0.0: "OFF", 1.0: "LEFT", 2.0: "RIGHT"}
+    clean = next(s for s in result.signal_group.signals if s.name == "Clean")
+    assert "value_labels" not in clean.metadata
+
+
 def test_same_group_signals_share_master(tmp_path: Path) -> None:
     """LD-10: 同一グループの信号はマスタ時刻軸を共有し read-only (現行は複製=RED)."""
     path = write_mdf4_shared_group(tmp_path)

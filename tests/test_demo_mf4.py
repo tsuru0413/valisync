@@ -254,6 +254,13 @@ def test_turn_sig_survives_load_with_raw_enum_values(tmp_path):
     assert "TurnSig" in names
     values = set(np.unique(names["TurnSig"].values).tolist())
     assert values <= {0.0, 1.0, 2.0}
+    turn_sig = names["TurnSig"]
+    # LD-07: 復活させた value2text がラベルとして構造化保持される
+    assert turn_sig.metadata.get("value_labels") == {
+        0.0: "OFF",
+        1.0: "LEFT",
+        2.0: "RIGHT",
+    }
 
 
 def test_valisync_loads_smoke_profile(tmp_path):
