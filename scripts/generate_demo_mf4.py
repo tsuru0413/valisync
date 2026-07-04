@@ -581,7 +581,12 @@ def _group_timestamps(
     hils の CAN/ETH 系に非単調警告が混入した根因)。tick 毎の独立オフセットなら
     |δ| <= j*rate < rate/2 より連続差分 >= rate*(1-2j) > 0 で、チャンク内・
     チャンク境界とも厳密単調が保証される (バス到着ジッタとしても自然)。
+
+    前提: jitter_pct < 0.5、かつ chunk 長 (t1-t0) は rate_s の整数倍
+    (端数だと前チャンク末尾+ジッタが次チャンク先頭 t0' を追い越し得る —
+    現行の全プロファイル/レート組は整数倍で安全)。
     """
+    assert 0.0 <= jitter_pct < 0.5, "jitter_pct must be < 0.5 to guarantee monotonicity"
     n = max(int(np.ceil((t1 - t0) / rate_s)), 1)
     ts = t0 + np.arange(n, dtype=np.float64) * rate_s
     if jitter_pct:

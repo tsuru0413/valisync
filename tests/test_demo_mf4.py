@@ -318,7 +318,11 @@ def test_cli_rejects_nonpositive_duration(tmp_path):
 
 
 def test_clean_multichunk_timestamps_strictly_monotonic(tmp_path):
-    """チャンク境界のジッタ累積ドリフトで seam 逆行が起きない(実機確認で発見した生成バグ)."""
+    """チャンク境界のジッタ累積ドリフトで seam 逆行が起きない(実機確認で発見した生成バグ).
+
+    AEB.TTC は無ジッタグループ(XCP_1ms)の健全性コントロール — バグの対象は
+    ジッタあり群(VehSpd/EngTrq/TurnSig)のみ。
+    """
     prof = gen.Profile(
         duration_s=120.0, chunk_s=10.0
     )  # 11 seam・seed 42 で旧実装は VehSpd が逆行
