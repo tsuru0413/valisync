@@ -92,6 +92,8 @@ ADAS ECU の HILS 評価ログ。**CANape で計測**された MDF 4.1 ファイ
 
 ## 5. 検証
 
+> **歴史注記（2026-07-05・第3弾で挙動変更）**: 本節の「2D skip 警告」「LD-10 未対応で重い」は執筆時点の記述。core-loaders-hardening 第3弾で 2D チャンネルは**要素展開＋info 診断**へ、LD-10 は**解消**（hils 3.05 秒/+2.53GB）に変わった。現行の検証内容は `tests/test_demo_mf4.py` と `docs/development.md` を一次情報とする。
+
 - **CI（Layer A・秒級）**: smoke プロファイルを tmp に生成 → `Session.load` → (i) 期待 ch 数・グループ由来の代表信号名（`VehSpd` 等）が存在、(ii) (b) 2D チャンネルの skip 警告が diagnostics に含まれる、(iii) `--dirty` 時に非単調 warning が出る、を assert。
 - **実機確認手順（docs に記載・/run /verify 観測）**:
   1. `uv run python scripts/generate_demo_mf4.py --profile quick` → `uv run valisync` で D&D → 物標・車速・メーター系のプロット/カーソル/統計を確認（Diagnostics に 2D skip 警告が出ること）

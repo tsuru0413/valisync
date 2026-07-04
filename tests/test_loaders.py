@@ -563,3 +563,13 @@ def test_explode_samples_over_nested_field_skipped_with_reason() -> None:
     pairs = _explode_samples("Obj", rec, diags)
     assert [n for n, _ in pairs] == ["Obj.s"]
     assert any("nested samples, skipped" in d.message for d in diags)
+
+
+def test_explode_samples_plain_3d_skipped_with_reason() -> None:
+    """素の 3D 配列は展開せず理由の読める警告で skip (LD-12 の境界・展開は 2D まで)."""
+    from valisync.core.loaders.mdf4_loader import _explode_samples
+
+    diags: list = []
+    pairs = _explode_samples("Cube", np.zeros((4, 2, 2)), diags)
+    assert pairs == []
+    assert any("has 3D samples (expected 1D), skipped" in d.message for d in diags)
