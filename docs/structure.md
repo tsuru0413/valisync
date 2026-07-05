@@ -32,7 +32,8 @@ valisync/
 │       │   │   └── interpolator.py        # Interpolator, InterpolationMethod
 │       │   ├── statistics/
 │       │   │   ├── __init__.py
-│       │   │   └── range_stats.py         # RangeStatistics, StatisticsResult
+│       │   │   ├── range_stats.py         # RangeStatistics, StatisticsResult
+│       │   │   └── range_stat_index.py    # RangeStatIndex（平方分割・範囲統計 O(√n)）
 │       │   ├── downsampler/
 │       │   │   ├── __init__.py
 │       │   │   └── downsampler.py         # Downsampler (min-max algorithm)
