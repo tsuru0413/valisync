@@ -150,7 +150,7 @@ class TestDrawing:
 
 
 class TestEmptySignal:
-    def test_empty_window_keeps_curve_without_points(
+    def test_empty_window_keeps_curve_registered(
         self, qtbot: QtBot, tmp_path: Path
     ) -> None:
         session, _ = _loaded_session(tmp_path)
@@ -163,8 +163,9 @@ class TestEmptySignal:
 
         assert key in view.curve_keys()  # type: ignore[attr-defined]  # curve still registered
         x, _y = view.curve_xy(key)  # type: ignore[attr-defined]
-        # pyqtgraph represents an empty curve as None (no points drawn).
-        assert x is None or len(x) == 0
+        # RN-01: 境界サンプルが1点描かれ得るが、窓 [1e9, 1e9+1] 内には無い (可視域外)。
+        xs = [] if x is None else list(x)
+        assert all(not (1.0e9 <= xv <= 1.0e9 + 1.0) for xv in xs)
 
 
 # ─── Drag-and-drop sink (R12.4) ────────────────────────────────────────────────

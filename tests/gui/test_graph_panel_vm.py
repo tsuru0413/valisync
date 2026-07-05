@@ -570,8 +570,8 @@ def test_render_data_zoom_reduces_points(tmp_path: Path) -> None:
     assert zoomed_count <= full_count
 
 
-def test_render_data_timestamps_within_x_range(tmp_path: Path) -> None:
-    """Returned timestamps lie within the requested x_range (searchsorted)."""
+def test_render_data_includes_boundary_samples(tmp_path: Path) -> None:
+    """RN-01: 描画スライスは窓の外側に隣接サンプルを1点ずつ含む (窓を横切る線分用)."""
     n_rows = 200
     session, _ = _loaded_session(tmp_path, n_rows=n_rows)
     vm = GraphPanelVM(session)
@@ -583,10 +583,10 @@ def test_render_data_timestamps_within_x_range(tmp_path: Path) -> None:
     x_hi = float(ts[50])
     vm.set_x_range(x_lo, x_hi)
 
-    curves = vm.render_data()
-    if len(curves[0].timestamps) > 0:
-        assert float(curves[0].timestamps[0]) >= x_lo - 1e-12
-        assert float(curves[0].timestamps[-1]) <= x_hi + 1e-12
+    out = vm.render_data()[0].timestamps.tolist()
+    # 窓内 (ts[10]..ts[50]) と左右1点ずつ (ts[9], ts[51])
+    assert out[0] == pytest.approx(float(ts[9]))
+    assert out[-1] == pytest.approx(float(ts[51]))
 
 
 def test_render_data_non_monotonic_signal_yields_monotonic_curve(
@@ -639,8 +639,8 @@ def test_reset_x_sorts_non_monotonic_signal_to_sorted_endpoints(
     assert vm.x_range == (0.0, 2.0)
 
 
-def test_render_data_empty_range_yields_empty_curve(tmp_path: Path) -> None:
-    """x_range fully outside data → empty arrays but curve still present (legend)."""
+def test_render_data_range_beyond_data_keeps_legend(tmp_path: Path) -> None:
+    """x_range が完全にデータ外 → 凡例は残り、窓内サンプルは無い (RN-01: 境界1点は可視域外)."""
     session, _ = _loaded_session(tmp_path, n_rows=50)
     vm = GraphPanelVM(session)
     sig = session.signals()[0]
@@ -648,13 +648,15 @@ def test_render_data_empty_range_yields_empty_curve(tmp_path: Path) -> None:
 
     # Set x_range far beyond data end
     ts = sig.timestamps
-    vm.set_x_range(float(ts[-1]) + 100.0, float(ts[-1]) + 200.0)
+    win_lo = float(ts[-1]) + 100.0
+    vm.set_x_range(win_lo, float(ts[-1]) + 200.0)
 
     curves = vm.render_data()
 
     assert len(curves) == 1  # legend entry still present
-    assert len(curves[0].timestamps) == 0
-    assert len(curves[0].values) == 0
+    # RN-01: 終端の境界サンプルが1点含まれ得るが、窓内 (win_lo 以降) には何も無い
+    in_window = [t for t in curves[0].timestamps.tolist() if t >= win_lo]
+    assert in_window == []
 
 
 # ─── render_data: cache ───────────────────────────────────────────────────────
@@ -1136,3 +1138,107 @@ def test_set_visible_stats_notifies_delta() -> None:
     vm.subscribe(events.append)
     vm.set_visible_stats({"mean"})
     assert "delta" in events
+
+
+# ─── RN-01: 疎信号のズーム消失 (X 窓スライスの境界サンプル取り込み) ──────────────
+
+
+def _sparse_sig(name: str = "sparse") -> Signal:
+    """t=0,100,200 の疎信号 (値も 0,100,200)."""
+    return Signal(
+        name=name,
+        timestamps=np.array([0.0, 100.0, 200.0], dtype=np.float64),
+        values=np.array([0.0, 100.0, 200.0], dtype=np.float64),
+        file_format="CSV",
+        bus_type="",
+        source_file="",
+    )
+
+
+def test_rn01_sparse_signal_visible_when_zoomed_between_samples(
+    tmp_path: Path,
+) -> None:
+    """窓内にサンプルが無くても窓を横切る線分の端点が含まれる (RN-01)."""
+    session = Session()
+    key = _register_signal(session, _sparse_sig(), tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    vm.set_x_range(40.0, 60.0)  # サンプルの無い窓へズーム
+    curves = vm.render_data()
+    ts = curves[0].timestamps
+    # 境界2点 (t=0 と t=100) が含まれ、線分 0->100 が [40,60] を横切って描ける
+    assert 0.0 in ts.tolist() and 100.0 in ts.tolist()
+
+
+def test_rn01_window_after_signal_end_no_fabricated_line(tmp_path: Path) -> None:
+    """信号終端より後の窓は境界1点のみ (可視域外・外挿の捏造なし) (RN-01)."""
+    session = Session()
+    key = _register_signal(session, _sparse_sig(), tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    vm.set_x_range(300.0, 400.0)  # 信号は t<=200
+    ts = vm.render_data()[0].timestamps
+    assert ts.tolist() == [200.0]  # 終端の1点のみ (可視域外でクリップ)
+
+
+def test_rn01_full_view_unchanged(tmp_path: Path) -> None:
+    """全体表示 (x_range=None 相当) では全サンプルが出る (回帰) (RN-01)."""
+    session = Session()
+    key = _register_signal(session, _sparse_sig(), tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)  # auto-fit で [0,200]
+    ts = vm.render_data()[0].timestamps
+    assert ts.tolist() == [0.0, 100.0, 200.0]
+
+
+# ─── RN-02: 別時間域の追加信号が窓外で無表示 (自動フィットの和集合拡張) ──────────
+
+
+def _ranged_sig(name: str, t0: float, t1: float) -> Signal:
+    """[t0, t1] の 2 点信号 (別時間域の比較用)."""
+    return Signal(
+        name=name,
+        timestamps=np.array([t0, t1], dtype=np.float64),
+        values=np.array([1.0, 2.0], dtype=np.float64),
+        file_format="CSV",
+        bus_type="",
+        source_file="",
+    )
+
+
+def test_rn02_second_signal_expands_range_in_auto_mode(tmp_path: Path) -> None:
+    """自動フィット中は別時間域の2本目追加で x_range が和集合へ拡張 (RN-02)."""
+    session = Session()
+    a = _register_signal(session, _ranged_sig("A", 0.0, 100.0), tmp_path)
+    b = _register_signal(session, _ranged_sig("B", 500.0, 600.0), tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(a)
+    assert vm.x_range == (0.0, 100.0) and vm._x_range_is_auto is True
+    vm.add_signal(b)
+    assert vm.x_range == (0.0, 600.0)  # 和集合 — B が窓外に消えない
+
+
+def test_rn02_manual_zoom_is_respected(tmp_path: Path) -> None:
+    """手動ズーム後は追加で範囲を触らない (RN-02・ユーザー決定=何もしない)."""
+    session = Session()
+    a = _register_signal(session, _ranged_sig("A", 0.0, 100.0), tmp_path)
+    c = _register_signal(session, _ranged_sig("C", 500.0, 600.0), tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(a)
+    vm.set_x_range(40.0, 60.0)  # 手動ズーム
+    assert vm._x_range_is_auto is False
+    vm.add_signal(c)
+    assert vm.x_range == (40.0, 60.0)  # ズーム尊重・拡張しない
+
+
+def test_rn02_reset_x_returns_to_auto(tmp_path: Path) -> None:
+    """reset_x は union フィットして auto へ復帰 (RN-02)."""
+    session = Session()
+    a = _register_signal(session, _ranged_sig("A", 0.0, 100.0), tmp_path)
+    b = _register_signal(session, _ranged_sig("B", 500.0, 600.0), tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(a)
+    vm.set_x_range(40.0, 60.0)  # manual
+    vm.add_signal(b)  # manual なので拡張しない
+    vm.reset_x()
+    assert vm.x_range == (0.0, 600.0) and vm._x_range_is_auto is True
