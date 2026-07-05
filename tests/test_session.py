@@ -262,6 +262,21 @@ def test_load_without_cancel_is_unchanged(tmp_path):
     assert outcome.key == "csv_1"
 
 
+def test_session_load_passes_confirm_expansion(tmp_path):
+    """Session.load が confirm_expansion を MDF4 ローダーへ委譲する (LD-14)."""
+    from .mdf4_helpers import write_mdf4_wide_2d
+
+    called: list[int] = []
+
+    def confirm(req) -> set[int]:
+        called.append(len(req.channels))
+        return set()
+
+    session = Session()
+    session.load(write_mdf4_wide_2d(tmp_path, cols=1025), confirm_expansion=confirm)
+    assert called == [1]  # Wide 1 件が確認に回った
+
+
 # ─── SourceInfo (FB-10 tooltip data) ─────────────────────────────────────────
 
 

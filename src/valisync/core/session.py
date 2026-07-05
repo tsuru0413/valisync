@@ -11,7 +11,12 @@ from valisync.core.export.csv_exporter import CsvExporter
 from valisync.core.formula.engine import FormulaEngine
 from valisync.core.interpolation.interpolator import InterpolationMethod, Interpolator
 from valisync.core.loaders.csv_loader import CsvLoader
-from valisync.core.loaders.mdf4_loader import Mdf4Loader
+from valisync.core.loaders.mdf4_loader import (
+    ConfirmExpansion,
+    ExpansionRequest,
+    Mdf4Loader,
+    OversizedChannel,
+)
 from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR, SignalGroupManager
 from valisync.core.models import FormatDefinition, Signal
 from valisync.core.models.load_result import Diagnostic, LoadCancelled
@@ -19,10 +24,13 @@ from valisync.core.statistics.range_stats import RangeStatistics, StatisticsResu
 from valisync.core.sync.synchronizer import TimeSynchronizer
 
 __all__ = [
+    "ConfirmExpansion",
+    "ExpansionRequest",
     "LoadCancelled",
     "LoadError",
     "LoadManyResult",
     "LoadOutcome",
+    "OversizedChannel",
     "RemovalResult",
     "Session",
     "SourceInfo",
@@ -124,6 +132,7 @@ class Session:
         file_path: Path,
         format_def: FormatDefinition | None = None,
         cancel: Callable[[], bool] | None = None,
+        confirm_expansion: ConfirmExpansion | None = None,
     ) -> LoadOutcome:
         """Load a file and return the group key plus any loader diagnostics.
 
@@ -131,7 +140,9 @@ class Session:
         the loader reports failure. ``cancel`` is a cooperative callback the
         loader polls at checkpoints; when it returns True the loader raises
         LoadCancelled and no group is registered (FB-04 — user-initiated, not
-        an error).
+        an error). ``confirm_expansion`` は多次元チャンネルの展開列数が上限を
+        超えるとき MDF4 ローダーから呼ばれ、展開するチャンネルの選択を返す
+        コールバック (LD-14・CSV では無視)。
         """
         file_path = Path(file_path)
         if self._csv_loader.supports(file_path):
@@ -139,7 +150,9 @@ class Session:
                 raise ValueError("CSV files require a FormatDefinition")
             result = self._csv_loader.load(file_path, format_def, cancel=cancel)
         elif self._mdf4_loader.supports(file_path):
-            result = self._mdf4_loader.load(file_path, cancel=cancel)
+            result = self._mdf4_loader.load(
+                file_path, cancel=cancel, confirm_expansion=confirm_expansion
+            )
         else:
             raise ValueError(f"no loader supports file: {file_path}")
 
