@@ -93,3 +93,22 @@ def test_range_stats_non_monotonic_uses_keep_last() -> None:
     assert result.count == 3
     assert result.max == 4.0
     assert result.mean == pytest.approx((1.0 + 3.0 + 4.0) / 3)
+
+
+def test_range_with_nan_and_inf_uses_finite_only() -> None:
+    """範囲内に NaN/Inf を含んでも有限値のみで統計・count は有限数 (AN-01)."""
+    sig = _sig([0.0, 1.0, 2.0, 3.0, 4.0], [10.0, math.nan, math.inf, 20.0, 30.0])
+    res = RangeStatistics().compute(sig, 0.0, 4.0)
+    assert res.count == 3  # 有限は 10, 20, 30
+    assert res.mean == 20.0
+    assert res.max == 30.0
+    assert res.min == 10.0
+    assert math.isfinite(res.std)
+
+
+def test_range_all_non_finite_yields_nan_zero_count() -> None:
+    """範囲内が全て非有限なら count=0・全 NaN (AN-01)."""
+    sig = _sig([0.0, 1.0], [math.nan, math.inf])
+    res = RangeStatistics().compute(sig, 0.0, 1.0)
+    assert res.count == 0
+    assert math.isnan(res.mean) and math.isnan(res.std)

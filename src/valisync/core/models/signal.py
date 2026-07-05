@@ -82,6 +82,39 @@ class Signal:
         object.__setattr__(self, "_sorted_view_cache", cache)
         return cache
 
+    def finite_view(self) -> tuple[np.ndarray, np.ndarray]:
+        """Finite-valued view for read-out and statistics (AN-01/02/03).
+
+        Builds on ``sorted_view()`` and drops samples whose *value* is
+        non-finite (NaN or +/-Inf), so cursor read-out and range statistics
+        operate on real data only. All-finite signals get the sorted arrays
+        back untouched (zero-copy). Cached; the computation is idempotent so
+        racing initialisations are harmless. Timestamps are already finite by
+        load-time guarantee (LD-03), so only values are filtered.
+        """
+        cache = getattr(self, "_finite_view_cache", None)
+        if cache is not None:
+            return cache
+        # namespaced ラッパーは元 Signal に委譲し、非有限スキャンを元で1回だけ
+        # 走らせる (render/カーソルのホットパスで毎回作り直されるラッパー対策)
+        delegate = getattr(self, "_sorted_view_delegate", None)
+        if delegate is not None:
+            cache = delegate.finite_view()
+            object.__setattr__(self, "_finite_view_cache", cache)
+            return cache
+        ts, vs = self.sorted_view()
+        if len(vs) == 0 or bool(np.all(np.isfinite(vs))):
+            cache = (ts, vs)  # zero-copy fast path
+        else:
+            mask = np.isfinite(vs)
+            ts_f = ts[mask]
+            vs_f = vs[mask]
+            ts_f.flags.writeable = False
+            vs_f.flags.writeable = False
+            cache = (ts_f, vs_f)
+        object.__setattr__(self, "_finite_view_cache", cache)
+        return cache
+
     @property
     def is_monotonic(self) -> bool:
         """True when the sorted view is the raw arrays (zero-copy fast path)."""

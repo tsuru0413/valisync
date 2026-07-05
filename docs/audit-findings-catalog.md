@@ -129,9 +129,9 @@
 
 | ID | 重要度 | 課題 | 場所 | ユーザー影響 |
 |---|---|---|---|---|
-| AN-01 | 🔴 | 範囲統計が範囲内に NaN/Inf を1点でも含むと mean/max/min/std を全て NaN/Inf にし、count は非ゼロのまま（`np.mean/max/min/std` 使用） | `core/statistics/range_stats.py:47-58` | 9999/10000 が有効でも統計が全て `nan`。R17 範囲統計が誤誘導 |
-| AN-02 | 🟡 | 線形補間は隣接サンプルの片方でも NaN なら NaN を返す | `core/interpolation/interpolator.py:56` | 無効サンプル散在で読み取りが広範囲で `nan` |
-| AN-03 | 🟡 | <2サンプル信号はカーソルを正確に合わせても常に「範囲外」 | `core/interpolation/interpolator.py:37` | 単一サンプル信号の値が読めない |
+| AN-01 | 🔴 | ✅**解消** 範囲統計を `Signal.finite_view()`（値が非有限のサンプルを除いた時系列ビュー）で算出。有限値のみで mean/max/min/std を計算し `count` は範囲内の有限サンプル数。NaN/Inf を一律 `np.isfinite` で除外。範囲内が全て非有限なら count=0・全 NaN | `core/statistics/range_stats.py:44`・`core/models/signal.py` `finite_view` | 9999/10000 が有効でも統計が全て `nan`。R17 範囲統計が誤誘導 |
+| AN-02 | 🟡 | ✅**解消** 補間を `finite_view()` へ切替 — NaN/Inf サンプルを欠測として除外し、前後の有限サンプル間で補間（LINEAR/ZOH/NEAREST いずれも有限基準）。散在 NaN でもカーソル値が読める | `core/interpolation/interpolator.py:33`・`signal.py` `finite_view` | 無効サンプル散在で読み取りが広範囲で `nan` |
+| AN-03 | 🟡 | ✅**解消** 単一有限サンプルは ZOH 前方保持（`t≥ts0` で値・`t<ts0` は None）。方式に依らず保持 | `core/interpolation/interpolator.py:41` | 単一サンプル信号の値が読めない |
 
 ---
 

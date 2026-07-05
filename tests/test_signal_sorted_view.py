@@ -79,3 +79,49 @@ def test_sorted_view_arrays_are_readonly():
     ts, vs = _sig([0.0, 2.0, 1.0], [1.0, 2.0, 3.0]).sorted_view()
     assert not ts.flags.writeable
     assert not vs.flags.writeable
+
+
+# ─── finite_view (AN-01/02/03 共通土台) ──────────────────────────────────────
+
+
+def test_finite_view_all_finite_is_zero_copy() -> None:
+    """全値有限なら sorted_view の配列をそのまま返す (zero-copy)."""
+    sig = _sig([0.0, 1.0, 2.0], [1.0, 2.0, 3.0])
+    sv = sig.sorted_view()
+    fv = sig.finite_view()
+    assert fv[0] is sv[0] and fv[1] is sv[1]
+
+
+def test_finite_view_drops_nan_and_inf() -> None:
+    """NaN/Inf の値を持つサンプルを除去し時刻と値が対応する."""
+    sig = _sig([0.0, 1.0, 2.0, 3.0], [1.0, np.nan, np.inf, 4.0])
+    ts, vs = sig.finite_view()
+    assert ts.tolist() == [0.0, 3.0]
+    assert vs.tolist() == [1.0, 4.0]
+
+
+def test_finite_view_all_non_finite_is_empty() -> None:
+    """全値が非有限なら空ビュー."""
+    ts, vs = _sig([0.0, 1.0], [np.nan, np.inf]).finite_view()
+    assert ts.tolist() == [] and vs.tolist() == []
+
+
+def test_finite_view_cached() -> None:
+    """2 回目の呼び出しは同一オブジェクト (キャッシュ)."""
+    sig = _sig([0.0, 1.0], [np.nan, 2.0])
+    first = sig.finite_view()
+    assert sig.finite_view()[0] is first[0]
+
+
+def test_finite_view_readonly_when_filtered() -> None:
+    """フィルタ発生時の配列は read-only."""
+    ts, vs = _sig([0.0, 1.0], [np.nan, 2.0]).finite_view()
+    assert not ts.flags.writeable and not vs.flags.writeable
+
+
+def test_finite_view_delegate_shared_with_namespaced_wrapper() -> None:
+    """_sorted_view_delegate を持つラッパーは元 Signal の finite_view を共有."""
+    orig = _sig([0.0, 1.0, 2.0], [1.0, np.nan, 3.0])
+    wrapper = _sig([0.0, 1.0, 2.0], [1.0, np.nan, 3.0])
+    object.__setattr__(wrapper, "_sorted_view_delegate", orig)
+    assert wrapper.finite_view()[0] is orig.finite_view()[0]

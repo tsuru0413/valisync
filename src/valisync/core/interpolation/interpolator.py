@@ -24,19 +24,25 @@ class Interpolator:
     ) -> float | None:
         """Return the interpolated value of *signal* at time *t*.
 
-        Returns ``None`` when the signal has fewer than 2 samples (Req 12.10)
-        or when *t* is outside the signal's timestamp range (Req 12.7).
-        Returns ``float('nan')`` when adjacent samples contain NaN (Req 12.11).
-        Returns the exact sample value without interpolation when *t* matches a
-        timestamp exactly (Req 12.8).
+        Reads on ``finite_view()``: samples whose value is non-finite (NaN/Inf)
+        are treated as missing and excluded, so interpolation happens between
+        the surrounding finite samples (AN-02). Returns ``None`` when there are
+        no finite samples, or when *t* is outside the finite range (Req 12.7).
+        A single finite sample holds forward (ZOH): its value for ``t >= ts0``
+        and ``None`` before it (AN-03). Returns the exact sample value when *t*
+        matches a timestamp exactly (Req 12.8).
         """
-        ts, vs = signal.sorted_view()
+        ts, vs = signal.finite_view()
+        n = len(ts)
 
-        # Req 12.10: insufficient samples
-        if len(ts) < 2:
+        if n == 0:
             return None
+        # AN-03: 単一サンプルは ZOH 前方保持 (t>=ts0 で値・t<ts0 は None)。
+        # 方式に依らず保持 — 1 点では補間対象がないため。
+        if n == 1:
+            return float(vs[0]) if t >= ts[0] else None
 
-        # Req 12.7: out of range
+        # Req 12.7: 複数サンプルの範囲外は None (右端範囲外は本増分では据え置き)
         if t < ts[0] or t > ts[-1]:
             return None
 
@@ -47,13 +53,11 @@ class Interpolator:
             return float(vs[idx])
 
         # t is strictly between ts[idx-1] and ts[idx] (idx >= 1 guaranteed
-        # because t > ts[0] after the exact-match check above).
+        # because t > ts[0] after the exact-match check above). Both endpoints
+        # are finite (finite_view removed non-finite values — AN-02).
         lo, hi = idx - 1, idx
 
         if method is InterpolationMethod.LINEAR:
-            # Req 12.11: NaN adjacent values propagate
-            if np.isnan(vs[lo]) or np.isnan(vs[hi]):
-                return float("nan")
             alpha = (t - ts[lo]) / (ts[hi] - ts[lo])
             return float(vs[lo] + alpha * (vs[hi] - vs[lo]))
 
