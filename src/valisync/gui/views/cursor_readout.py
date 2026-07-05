@@ -86,6 +86,9 @@ class CursorReadout(QWidget):
         self._drag_offset: QPoint | None = (
             None  # for click-drag repositioning within parent
         )
+        # ユーザーが readout をドラッグ移動したか。GraphPanelView は True の間は
+        # プロット矩形への自動再配置を抑止する(ユーザー配置を尊重・PC-21)。
+        self._user_moved: bool = False
 
         # R16/R17 state
         self._visible_stats: set[str] = set(_STAT_COLS)
@@ -198,6 +201,14 @@ class CursorReadout(QWidget):
         (A値, Δy, and any visible stat columns), not just the first value.
         """
         return list(self._rows)
+
+    def was_user_moved(self) -> bool:
+        """True once the user has drag-repositioned the readout (PC-21)."""
+        return self._user_moved
+
+    def reset_user_moved(self) -> None:
+        """Clear the user-moved flag so the readout re-anchors to the plot rect."""
+        self._user_moved = False
 
     # ── Column-selection menu ──────────────────────────────────────────────────
 
@@ -332,6 +343,7 @@ class CursorReadout(QWidget):
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._drag_offset is not None:
             self.move(self.pos() + event.position().toPoint() - self._drag_offset)
+            self._user_moved = True
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
