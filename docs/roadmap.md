@@ -86,16 +86,16 @@ gantt
 | `valisync-gui-views` | R9, R10, R11 | 未着手 | ① | Table / 棒グラフ / コンタープロット |
 | `valisync-gui-script` | R20 | 未着手 | ① | Python Script Console（スクリプティング統合） |
 
-**② 改善サブスペック（実装済みだが不足）** — 一次情報源: [audit-findings-catalog.md](audit-findings-catalog.md)（実ユーザージャーニー監査で確定した 64 課題・補遺 LD-12/LD-13 で計 66 課題を割当）
+**② 改善サブスペック（実装済みだが不足）** — 一次情報源: [audit-findings-catalog.md](audit-findings-catalog.md)（実ユーザージャーニー監査で確定した 64 課題・補遺 LD-12/LD-13 で 66 課題・ユーザー実機発見 2026-07-05 で PC-21/PC-22/RN-06 追加し計 69 課題を割当）
 
 | 改善サブスペック | 主眼 | 件数 | 優先 | 代表課題（catalog ID） |
 |------|------|------|------|------|
 | `gui-feedback-errors` | エラー/診断/状態フィードバックの可視化 — **完了: 第1弾（PR #37）＋第2弾（PR #38）で FB-01〜10 全10課題解消** | 10 | ✅完了 | FB-01 全ロード失敗が無言・FB-02 Session が skip 診断を破棄（→全て解消） |
 | `gui-shell-controls` | シェル操作（File メニュー・タブ/パネル/レイアウト管理・エクスポート導線） | 15 | 🔴高 | SH-01 File>Open 無し・SH-03 エクスポート導線無し・SH-12 ドックトグルボタン |
-| `gui-plot-analysis-controls` | プロット/曲線/軸/カーソルの操作コントロール | 20 | 🟠中 | PC-01 曲線管理コントロール無し・PC-03 オフセット操作が隠れ・PC-11 単位無し |
+| `gui-plot-analysis-controls` | プロット/曲線/軸/カーソルの操作コントロール | 22 | 🟠中 | PC-01 曲線管理コントロール無し・PC-03 オフセット操作が隠れ・PC-11 単位無し・PC-21 readout 崩れ・PC-13/14/22 軸/カーソル形状（実機発見） |
 | `core-loaders-hardening` | ローダー堅牢性・対応形式拡張 — **完了: 第1弾（TS 堅牢化 LD-03/04/05/06/08/09・PR #39）＋第3弾（LD-07/10/12/13・LD-11 仕様判断・PR #43）＋LD-14（ndim≥3 多段展開＋1024 ガード）＋第2弾（開く経路 LD-01 CSV 自動検出＋確認ダイアログ・LD-02 .mdf/.dat 受理＋MdfLoader リネーム）で全 LD 解消** | 14 | ✅完了 | 全 LD-01〜14 解消（第2弾: LD-01 CSV 開ける・LD-02 .mdf/.dat 受理） |
 | `analysis-correctness` | 統計・補間の計算の正しさ — **完了: AN-01/02/03 を `Signal.finite_view()` 共通土台で解消** | 3 | ✅完了 | AN-01 範囲統計の NaN 汚染（→有限のみ集計）・AN-02 補間の NaN 伝播（→有限間補間）・AN-03 単一サンプル読み取り（→ZOH 前方保持） |
-| `rendering-correctness-perf` | 描画の正しさ・LOD/同期の性能 — **描画の正しさ2件（RN-01/RN-02）解消済み**。残り RN-03/04/05（性能・Y 軸退化） | 5 | 🟠中 | RN-01/RN-02 解消。残り RN-03 リサイズ毎 LOD 再計算・RN-04 X 同期の重さ・RN-05 定数信号の零幅 Y 軸 |
+| `rendering-correctness-perf` | 描画の正しさ・LOD/同期の性能 — **描画の正しさ2件（RN-01/RN-02）解消済み**。残り RN-03/04/05（性能・Y 軸退化）＋RN-06（カーソル移動の統計計算・実機発見） | 6 | 🟠中 | RN-01/RN-02 解消。残り RN-03 リサイズ毎 LOD 再計算・RN-04 X 同期の重さ・RN-05 定数信号の零幅 Y 軸・RN-06 カーソル移動時の統計計算が重い |
 
 > ②の着手起点は `gui-feedback-errors`（FB-01/FB-02）。サイレント失敗連鎖の元を断つと、`core-loaders-hardening`・`gui-shell-controls` の欠陥が「気づける」ようになる。各改善サブスペックも着手時に `brainstorming` → `writing-plans` から始め、catalog の ID を要件参照点に使う。
 >
