@@ -21,6 +21,7 @@ from .mdf4_helpers import (
     CAN,
     ETHERNET,
     NONE,
+    write_mdf3,
     write_mdf4,
     write_mdf4_2d,
     write_mdf4_all_channels_bad,
@@ -320,6 +321,73 @@ def test_mdf4_supports_suffix() -> None:
     assert MdfLoader().supports(Path("a.mf4")) is True
     assert MdfLoader().supports(Path("a.MF4")) is True
     assert MdfLoader().supports(Path("a.csv")) is False
+
+
+# ─── MdfLoader: .mdf/.dat 受理と版横断読み取り (LD-02) ─────────────────────────
+
+
+def test_mdf_supports_mdf_and_dat_suffixes() -> None:
+    """supports() は .mf4/.mdf/.dat を受理し .csv を拒否 (LD-02)."""
+    loader = MdfLoader()
+    assert loader.supports(Path("a.mf4")) is True
+    assert loader.supports(Path("a.MDF")) is True  # 大小無視
+    assert loader.supports(Path("a.dat")) is True
+    assert loader.supports(Path("a.csv")) is False
+
+
+def test_mdf3_file_loads_and_labels_version(tmp_path: Path) -> None:
+    """MDF3 実ファイルが既存 select() 経路で読め、file_format が MDF3 になる (LD-02)."""
+    result = MdfLoader().load(write_mdf3(tmp_path))
+    assert result.signal_group is not None
+    names = [s.name for s in result.signal_group.signals]
+    assert any("Sine3x" in n for n in names)
+    assert result.signal_group.file_format == "MDF3"
+
+
+def test_mf4_file_format_stays_mdf4(tmp_path: Path) -> None:
+    """.mf4 の file_format は MDF4 のまま (版正確化の無回帰) (LD-02)."""
+    path = write_mdf4(
+        tmp_path / "v4.mf4",
+        [
+            {
+                "name": "s",
+                "timestamps": [0.0, 1.0],
+                "values": [1.0, 2.0],
+                "bus_type": CAN,
+            }
+        ],
+    )
+    result = MdfLoader().load(path)
+    assert result.signal_group is not None
+    assert result.signal_group.file_format == "MDF4"
+
+
+def test_dat_renamed_mdf4_loads(tmp_path: Path) -> None:
+    """MDF4 中身を .dat 拡張子にしても開ける (LD-02・拡張子で拒否しない)."""
+    src = write_mdf4(
+        tmp_path / "src.mf4",
+        [
+            {
+                "name": "sig",
+                "timestamps": [0.0, 1.0],
+                "values": [1.0, 2.0],
+                "bus_type": CAN,
+            }
+        ],
+    )
+    dat = tmp_path / "renamed.dat"
+    dat.write_bytes(src.read_bytes())
+    result = MdfLoader().load(dat)
+    assert result.signal_group is not None
+
+
+def test_non_mdf_dat_reports_diagnostic_not_crash(tmp_path: Path) -> None:
+    """非MDF の .dat はクラッシュせず error 診断を返す (LD-02)."""
+    dat = tmp_path / "garbage.dat"
+    dat.write_bytes(b"this is not an MDF file\n" * 8)
+    result = MdfLoader().load(dat)
+    assert result.signal_group is None
+    assert any(d.level == "error" for d in result.diagnostics)
 
 
 # ─── MdfLoader: error cases ──────────────────────────────────────────────────

@@ -197,9 +197,18 @@ class MdfLoader:
         "ignore_value2text_conversions": True,
         "copy_master": False,
     }
+    # LD-02: MDF 3.x/4.x を版横断で受理。版判定は asammdf の内容自動判別に委任。
+    # 非MDF/破損 (誤ラベルの .dat 等) は load() の try/except で error 診断化する。
+    _SUPPORTED_SUFFIXES: ClassVar[frozenset[str]] = frozenset({".mf4", ".mdf", ".dat"})
 
     def supports(self, file_path: Path) -> bool:
-        return file_path.suffix.lower() == ".mf4"
+        return file_path.suffix.lower() in self._SUPPORTED_SUFFIXES
+
+    @staticmethod
+    def _format_label(mdf: Any) -> str:
+        """MDF の版から file_format ラベルを決める (v4→MDF4 / それ以外→MDF3・LD-02)。"""
+        version = str(getattr(mdf, "version", "4"))
+        return "MDF4" if version.startswith("4") else "MDF3"
 
     def _scan_oversized(
         self,
@@ -261,6 +270,8 @@ class MdfLoader:
         signals: list[Signal] = []
         diagnostics: list[Diagnostic] = []
         resolved_path = file_path.resolve()
+        # mdf.close() 後は版が読めない恐れがあるため、ここで確定させる (LD-02)。
+        format_label = self._format_label(mdf)
         try:
             # 本読み前に展開列数をスキャンし、1024 超は確認 (無ければ全スキップ)。
             # 承認されなかった超過チャンネルは skip_keys で本読み entries からも
@@ -339,7 +350,7 @@ class MdfLoader:
         signal_group = SignalGroup(
             signals=tuple(signals),
             source_path=resolved_path,
-            file_format="MDF4",
+            file_format=format_label,
             loaded_at=datetime.datetime.now(),
         )
         return LoadResult(signal_group=signal_group, diagnostics=tuple(diagnostics))
@@ -492,7 +503,9 @@ class MdfLoader:
                         name=out_name,
                         timestamps=master,
                         values=values,
-                        file_format="MDF4",
+                        file_format=self._format_label(
+                            mdf
+                        ),  # LD-02: 版に応じ MDF3/MDF4
                         bus_type=_detect_bus_type(getattr(asig, "source", None)),
                         source_file=str(resolved_path),
                         metadata=_extract_metadata(asig, raw_conversion),

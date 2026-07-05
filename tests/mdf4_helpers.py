@@ -258,3 +258,18 @@ def write_mdf4_structured(tmp_path: Path) -> Path:
     finally:
         mdf.close()
     return path
+
+
+def write_mdf3(tmp_path: Path, version: str = "3.30") -> Path:
+    """asammdf で MDF 3.x 実ファイルを書き出す (LD-02 の版横断読み取り検証用)."""
+    t = np.arange(0.0, 5.0, 0.1, dtype=np.float64)
+    mdf = MDF(version=version)
+    try:
+        mdf.append(
+            [ASignal(samples=np.sin(t).astype(np.float64), timestamps=t, name="Sine3x")]
+        )
+        path = tmp_path / "signal_mdf3.mdf"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
