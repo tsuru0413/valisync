@@ -58,6 +58,7 @@ from valisync.gui.adapters.qt_signal_models import (
     encode_axis_move,
 )
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+from valisync.gui.views.cursor_shapes import CursorKind, cursor
 
 # ─── Axis interaction zones (R9.1 / R10.1) ────────────────────────────────────
 
@@ -235,15 +236,18 @@ def reset_scene_drag_state(scene: Any) -> None:
     scene.lastHoverEvent = None
 
 
-def cursor_for_zone(zone: str) -> Qt.CursorShape:
-    """Map a zone to the hover cursor that hints its gesture (R9.7 / R10.7).
+def cursor_for_zone(zone: str) -> CursorKind:
+    """Map a zone to the hover cursor kind that hints its gesture (PC-14).
 
-    Y zones fall through to ArrowCursor: _AlignedAxisItem owns the Y hover
-    cursor (Task 6); the widget must not impose a competing SizeVerCursor.
+    X inner = range-select zoom (custom horizontal zoom bracket), X outer = pan
+    (SizeHor). Y zones fall through to ARROW: _AlignedAxisItem owns the Y hover
+    cursor, so the widget must not impose a competing cursor there.
     """
-    if zone in (ZONE_X_INNER, ZONE_X_OUTER):
-        return Qt.CursorShape.SizeHorCursor
-    return Qt.CursorShape.ArrowCursor
+    if zone == ZONE_X_INNER:
+        return CursorKind.ZOOM_H
+    if zone == ZONE_X_OUTER:
+        return CursorKind.PAN_H
+    return CursorKind.ARROW
 
 
 class _AlignedAxisItem(pg.AxisItem):
@@ -1636,7 +1640,9 @@ class GraphPanelView(QWidget):
             pos_in_panel = self.plot_widget.viewport().mapTo(
                 self, event.position().toPoint()
             )
-            self.setCursor(cursor_for_zone(self._zone_at(QPointF(pos_in_panel))))
+            self.setCursor(
+                cursor(cursor_for_zone(self._zone_at(QPointF(pos_in_panel))))
+            )
         return super().eventFilter(watched, event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -1645,7 +1651,7 @@ class GraphPanelView(QWidget):
             super().mouseMoveEvent(event)
             return
         if self._drag_zone is None:
-            self.setCursor(cursor_for_zone(self._zone_at(event.position())))
+            self.setCursor(cursor(cursor_for_zone(self._zone_at(event.position()))))
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:

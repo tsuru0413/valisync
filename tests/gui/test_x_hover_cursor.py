@@ -64,35 +64,33 @@ def _hover(view: GraphPanelView, viewport_pos: QPointF) -> None:
 # ─── Tests ────────────────────────────────────────────────────────────────────
 
 
-def test_x_strip_hover_sets_sizehor_cursor(qtbot: QtBot) -> None:
-    """Layer B: viewport hover over X strip → SizeHorCursor via eventFilter.
+def test_x_inner_hover_sets_zoom_cursor(qtbot: QtBot) -> None:
+    """Layer B: viewport hover over X inner (zoom) strip → custom zoom cursor (PC-14).
 
     Coordinate path:
       X-axis strip sceneBoundingRect → inner-zone centre (sy = 25% into strip)
       → plot_widget.mapFromScene → viewport-local QPointF
       → sendEvent(viewport, MouseMove, NoButton)
-      → GraphPanelView.eventFilter intercepts (after fix)
+      → GraphPanelView.eventFilter intercepts
       → viewport.mapTo(self, ...) → panel coords
       → _zone_at → ZONE_X_INNER
-      → setCursor(SizeHorCursor).
+      → setCursor(cursor(ZOOM_H)) = custom BitmapCursor.
 
-    RED before fix: no eventFilter → GraphPanelView.mouseMoveEvent not reached
-    → cursor stays ArrowCursor.
-    GREEN after fix: eventFilter sets SizeHorCursor.
+    PC-14: X inner=zoom now uses the custom horizontal zoom bracket (BitmapCursor),
+    distinct from X outer=pan (SizeHor).
     """
     view = _setup_panel(qtbot)
 
     strip = view._x_axis.sceneBoundingRect()
     sx = strip.x() + strip.width() * 0.5
-    sy = strip.y() + strip.height() * 0.25  # top half → ZONE_X_INNER
+    sy = strip.y() + strip.height() * 0.25  # top half → ZONE_X_INNER (zoom)
     viewport_pos = QPointF(view.plot_widget.mapFromScene(QPointF(sx, sy)))
 
     _hover(view, viewport_pos)
 
-    assert view.cursor().shape() == Qt.CursorShape.SizeHorCursor, (
-        f"Expected SizeHorCursor after hovering X strip; got {view.cursor().shape()}. "
-        "Fix: install self.plot_widget.viewport().installEventFilter(self) in "
-        "GraphPanelView.__init__ and add the eventFilter override."
+    assert view.cursor().shape() == Qt.CursorShape.BitmapCursor, (
+        f"Expected custom zoom BitmapCursor after hovering X inner; "
+        f"got {view.cursor().shape()}."
     )
 
 

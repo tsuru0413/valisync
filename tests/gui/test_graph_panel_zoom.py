@@ -19,12 +19,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QRectF
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.session import Session
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+from valisync.gui.views.cursor_shapes import CursorKind
 from valisync.gui.views.graph_panel_view import (
     ZONE_NONE,
     ZONE_PLOT,
@@ -130,13 +131,14 @@ class TestZones:
         assert self._z(10.0, 145.0) == ZONE_NONE
 
     def test_cursor_shapes(self) -> None:
-        assert cursor_for_zone(ZONE_X_INNER) == Qt.CursorShape.SizeHorCursor
-        assert cursor_for_zone(ZONE_X_OUTER) == Qt.CursorShape.SizeHorCursor
-        # Y zones return ArrowCursor: widget no longer imposes a Y cursor.
+        # PC-14: X inner=zoom(custom horizontal bracket) / outer=pan(SizeHor).
+        assert cursor_for_zone(ZONE_X_INNER) == CursorKind.ZOOM_H
+        assert cursor_for_zone(ZONE_X_OUTER) == CursorKind.PAN_H
+        # Y zones return ARROW: widget no longer imposes a Y cursor.
         # _AlignedAxisItem owns the Y hover cursor (Task 8).
-        assert cursor_for_zone(ZONE_Y_INNER) == Qt.CursorShape.ArrowCursor
-        assert cursor_for_zone(ZONE_Y_OUTER) == Qt.CursorShape.ArrowCursor
-        assert cursor_for_zone(ZONE_PLOT) == Qt.CursorShape.ArrowCursor
+        assert cursor_for_zone(ZONE_Y_INNER) == CursorKind.ARROW
+        assert cursor_for_zone(ZONE_Y_OUTER) == CursorKind.ARROW
+        assert cursor_for_zone(ZONE_PLOT) == CursorKind.ARROW
 
 
 # ─── Drag gestures → VM range (X only; Y moved to _AlignedAxisItem) ────────────
