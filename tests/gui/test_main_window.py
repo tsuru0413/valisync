@@ -547,14 +547,17 @@ def test_load_file_wires_cancel_event_and_adapter(qtbot, monkeypatch, tmp_path):
     # (欠けるとハードキャンセルが無音で無効化される - 本タスクの肝の配線ガード)
     seen = {}
 
-    def fake_load(path, fmt, cancel=None):
+    def fake_load(path, fmt, cancel=None, confirm_expansion=None):
         seen["cancel"] = cancel
+        seen["confirm"] = confirm_expansion
         raise RuntimeError("stop before real load")
 
     monkeypatch.setattr(window.app_vm.session, "load", fake_load)
     with contextlib.suppress(RuntimeError):
         captured["load_callable"]()
     assert seen["cancel"] == event.is_set  # 同一 Event の bound method
+    # confirm_expansion に confirmer.confirm を渡すこと (LD-14 の展開確認配線ガード)
+    assert seen["confirm"] == window._expansion_confirmer.confirm
 
     # on_discard 本体(手遅れ完走の巻き戻し)が正しい key/force で remove_group
     # を呼ぶこと — 「callable であること」だけでは中身の配線ミスを拾えない

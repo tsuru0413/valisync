@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -10,6 +11,28 @@ from asammdf import MDF
 
 from valisync.core.models import Diagnostic, LoadResult, Signal, SignalGroup
 from valisync.core.models.load_result import LoadCancelled
+
+EXPANSION_COLUMN_LIMIT = 1024  # per-channel の展開後リーフ列数の上限 (LD-14)
+
+
+@dataclass(frozen=True)
+class OversizedChannel:
+    """展開列数が上限を超えるチャンネル (確認ダイアログ提示用)."""
+
+    name: str
+    column_count: int
+
+
+@dataclass(frozen=True)
+class ExpansionRequest:
+    """上限超チャンネルの集約 — confirm_expansion コールバックへ渡す."""
+
+    channels: tuple[OversizedChannel, ...]
+
+
+# confirm_expansion(request) -> 展開する channels のインデックス集合。
+# 返らなかったインデックスはスキップ。空集合は全スキップ。
+ConfirmExpansion = Callable[[ExpansionRequest], set[int]]
 
 # Maps asammdf BusType int values to Signal.bus_type strings.
 # asammdf v4_constants.BusType: CAN=2, ETHERNET=7.
@@ -28,76 +51,65 @@ def _detect_bus_type(source: Any) -> str:
     return _BUS_TYPE_MAP.get(getattr(source, "bus_type", 0), "")
 
 
+def _flatten(name: str, arr: np.ndarray) -> list[tuple[str, np.ndarray]]:
+    """samples (axis 0 = サンプル) を 1D 列へ再帰フラット展開する (LD-14).
+
+    構造化 dtype はフィールドごとに ``Name.field`` へ、多次元配列は先頭の
+    非サンプル軸を ``Name[i]`` で 1 段ずつ剥がして 1D になるまで再帰する。
+    リーフでのみ連続化し中間スライスのコピーを避ける。
+    """
+    if arr.dtype.names:  # 構造化: フィールドごとに再帰
+        out: list[tuple[str, np.ndarray]] = []
+        for field in arr.dtype.names:
+            out.extend(_flatten(f"{name}.{field}", arr[field]))
+        return out
+    if arr.ndim <= 1:  # リーフ
+        return [(name, np.ascontiguousarray(arr))]
+    return [
+        pair
+        for i in range(arr.shape[1])
+        for pair in _flatten(f"{name}[{i}]", arr[:, i])
+    ]
+
+
+def _leaf_column_count(arr: np.ndarray) -> int:
+    """arr を _flatten したときのリーフ列数 (1 レコードの samples でも可・LD-14).
+
+    ``_flatten`` と同じ規則: 構造化はフィールド再帰合算、多次元は非サンプル軸
+    (shape[1:]) の積。プローブ (record_count=1) と本読みで shape[1:] は一致する
+    ため 1 レコードから正確な展開列数が得られる。
+    """
+    if arr.dtype.names:
+        return sum(_leaf_column_count(arr[f]) for f in arr.dtype.names)
+    if arr.ndim <= 1:
+        return 1
+    return int(np.prod(arr.shape[1:]))
+
+
 def _explode_samples(
     base_name: str,
     samples: np.ndarray,
     diagnostics: list[Diagnostic],
 ) -> list[tuple[str, np.ndarray]]:
-    """多次元/構造化 samples を 1D 列へ展開 (LD-12・列数上限なし=ユーザー決定).
+    """多次元/構造化 samples を 1D 列へ多段展開 (LD-14).
 
-    構造化 dtype (フィールド名を持つ) はフィールドごとに ``Name.field`` へ
-    (select() は構造化チャンネルの親のみを返す — 成分 x/y は
-    included_channels から除外済みで通常経路に乗らない。Task 1/3 の実装時
-    確認で確定 — 「成分併存」分岐は不要)。素の 2D はそのまま列展開。
-    展開不能 (3D 超・ネスト超過) は診断を emit して [] (フィールドごとの部分
-    展開は成功分だけ返す) を返す。
+    ``_flatten`` に一本化。展開できたら透明化のため info 診断を 1 件 emit する。
+    展開不能な列 (0 幅など) は自然に空リストになる。
     """
-    if samples.dtype.names:  # 構造化 dtype: フィールドごとに Name.field
-        out: list[tuple[str, np.ndarray]] = []
-        for field in samples.dtype.names:
-            sub = samples[field]
-            if sub.ndim == 1:
-                out.append((f"{base_name}.{field}", sub))
-            elif sub.ndim == 2:  # サブ配列フィールドは 1 段だけ展開
-                out.extend(
-                    (f"{base_name}.{field}[{i}]", np.ascontiguousarray(sub[:, i]))
-                    for i in range(sub.shape[1])
-                )
-            else:
-                diagnostics.append(
-                    Diagnostic(
-                        level="warning",
-                        message=(
-                            f"Signal '{base_name}.{field}' has {sub.ndim}D nested"
-                            " samples, skipped"
-                        ),
-                    )
-                )
-        if out:
-            diagnostics.append(
-                Diagnostic(
-                    level="info",
-                    message=f"Signal '{base_name}': 構造化チャンネルを {len(out)} 本に展開",
-                    signal_name=base_name,
-                )
-            )
-        return out
-    if samples.ndim == 2:
-        n_cols = samples.shape[1]
+    pairs = _flatten(base_name, samples)
+    if pairs:
+        if samples.dtype.names:
+            shape_desc = "構造化チャンネル"
+        else:
+            shape_desc = "x".join(str(d) for d in samples.shape[1:]) + " 配列"
         diagnostics.append(
             Diagnostic(
                 level="info",
-                message=(
-                    f"Signal '{base_name}': 2D ({samples.shape[0]}x{n_cols}) を"
-                    f" {n_cols} 本に展開"
-                ),
+                message=f"Signal '{base_name}': {shape_desc}を {len(pairs)} 本に展開",
                 signal_name=base_name,
             )
         )
-        return [
-            (f"{base_name}[{i}]", np.ascontiguousarray(samples[:, i]))
-            for i in range(n_cols)
-        ]
-    diagnostics.append(
-        Diagnostic(
-            level="warning",
-            message=(
-                f"Signal '{base_name}' has {samples.ndim}D samples"
-                " (expected 1D), skipped"
-            ),
-        )
-    )
-    return []
+    return pairs
 
 
 def _extract_value_labels(conversion: Any) -> dict[float, str] | None:
@@ -178,14 +190,49 @@ class Mdf4Loader:
         "ignore_value2text_conversions": True,
         "copy_master": False,  # マスタ複製の排除 (LD-10)
     }
+    # 形状スキャン専用: 1 レコードだけ raw で読む (変換不要・形状は変換非依存)。
+    _PROBE_OPTIONS: ClassVar[dict[str, Any]] = {
+        "record_count": 1,
+        "raw": True,
+        "ignore_value2text_conversions": True,
+        "copy_master": False,
+    }
 
     def supports(self, file_path: Path) -> bool:
         return file_path.suffix.lower() == ".mf4"
+
+    def _scan_oversized(
+        self,
+        mdf: Any,
+        cancel: Callable[[], bool] | None,
+    ) -> tuple[list[OversizedChannel], list[tuple[int, int]]]:
+        """本読み前に各チャンネルの展開列数を 1 レコードプローブで算出する (LD-14).
+
+        1024 超のチャンネルを集約して返す。呼び出しはグループ単位 (仮想グループ数
+        ぶん) の極小読みで済む。戻り値は表示用 OversizedChannel 列と、対応する
+        (物理gi, ci) キー列 (本読みでの除外照合用) の並列リスト。
+        """
+        oversized: list[OversizedChannel] = []
+        keys: list[tuple[int, int]] = []
+        for gi in mdf.virtual_groups:
+            if cancel is not None and cancel():
+                raise LoadCancelled("load cancelled during expansion scan")
+            entries = self._group_entries(mdf, gi)
+            if not entries:
+                continue
+            probes = mdf.select(entries, **self._PROBE_OPTIONS)
+            for (name, phys_gi, ci), probe in zip(entries, probes, strict=True):
+                cols = _leaf_column_count(probe.samples)
+                if cols > EXPANSION_COLUMN_LIMIT:
+                    oversized.append(OversizedChannel(name=name, column_count=cols))
+                    keys.append((phys_gi, ci))
+        return oversized, keys
 
     def load(
         self,
         file_path: Path,
         cancel: Callable[[], bool] | None = None,
+        confirm_expansion: ConfirmExpansion | None = None,
     ) -> LoadResult:
         if not file_path.exists() or not file_path.is_file():
             return LoadResult(
@@ -215,6 +262,33 @@ class Mdf4Loader:
         diagnostics: list[Diagnostic] = []
         resolved_path = file_path.resolve()
         try:
+            # 本読み前に展開列数をスキャンし、1024 超は確認 (無ければ全スキップ)。
+            # 承認されなかった超過チャンネルは skip_keys で本読み entries からも
+            # 除外する (本読みすらしない = メモリ/時間も節約・LD-14)。
+            oversized, over_keys = self._scan_oversized(mdf, cancel)
+            skip_keys: set[tuple[int, int]] = set()
+            if oversized:
+                if confirm_expansion is not None:
+                    chosen = confirm_expansion(
+                        ExpansionRequest(channels=tuple(oversized))
+                    )
+                else:
+                    chosen = set()  # ヘッドレス: 確認できないので全スキップ (安全側)
+                skip_keys = {key for i, key in enumerate(over_keys) if i not in chosen}
+                for i, key in enumerate(over_keys):
+                    if key in skip_keys:
+                        diagnostics.append(
+                            Diagnostic(
+                                level="warning",
+                                message=(
+                                    f"Signal '{oversized[i].name}': 展開列数 "
+                                    f"{oversized[i].column_count} が上限 "
+                                    f"{EXPANSION_COLUMN_LIMIT} を超えるためスキップ"
+                                ),
+                                signal_name=oversized[i].name,
+                            )
+                        )
+
             name_total = self._count_names(mdf)
             name_seen: dict[str, int] = {}
             # mdf.virtual_groups (物理グループ数ではない) を走査 — v4.20+ の
@@ -234,6 +308,7 @@ class Mdf4Loader:
                     signals,
                     diagnostics,
                     cancel,
+                    skip_keys,
                 )
         except LoadCancelled:
             # Must not be swallowed by the broad except below (LoadCancelled is
@@ -308,8 +383,13 @@ class Mdf4Loader:
         signals: list[Signal],
         diagnostics: list[Diagnostic],
         cancel: Callable[[], bool] | None,
+        skip_keys: set[tuple[int, int]],
     ) -> None:
-        entries = self._group_entries(mdf, gi)
+        # skip_keys の (gi, ci) は上限超で展開しないと決まったチャンネル — 本読み
+        # entries から外し select にも渡さない (LD-14)。
+        entries = [
+            e for e in self._group_entries(mdf, gi) if (e[1], e[2]) not in skip_keys
+        ]
         if not entries:
             return
         if cancel is not None and cancel():
