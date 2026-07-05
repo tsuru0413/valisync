@@ -1,8 +1,9 @@
 """Unit tests for Interpolator (Task 10.4).
 
 Covers the three methods plus the edge cases from Requirements 12.7 (out of
-range → None), 12.8 (exact match), 12.10 (insufficient samples → None) and
-12.11 (NaN-adjacent → NaN).
+range → None) and 12.8 (exact match). AN-02/03 update the former 12.10/12.11
+behaviours: NaN samples are excluded (interpolate across the gap between
+finite neighbours) and a single finite sample holds forward (ZOH).
 """
 
 from __future__ import annotations
@@ -70,16 +71,35 @@ def test_out_of_range_returns_none(method: InterpolationMethod, t: float) -> Non
 
 
 @pytest.mark.parametrize("method", list(InterpolationMethod))
-def test_insufficient_samples_returns_none(method: InterpolationMethod) -> None:
+def test_single_sample_zoh_forward_hold(method: InterpolationMethod) -> None:
+    """単一サンプルは t>=ts0 で値を保持・t<ts0 は None (AN-03・方式非依存)."""
     sig = _sig([5.0], [1.0])
-    assert Interpolator().interpolate(sig, 5.0, method) is None
+    interp = Interpolator()
+    assert interp.interpolate(sig, 5.0, method) == 1.0  # 厳密一致
+    assert interp.interpolate(sig, 9.0, method) == 1.0  # 前方保持 (ZOH)
+    assert interp.interpolate(sig, 4.0, method) is None  # サンプル以前
 
 
-def test_linear_nan_adjacent_propagates() -> None:
-    left_nan = _sig([0.0, 10.0], [math.nan, 100.0])
-    right_nan = _sig([0.0, 10.0], [0.0, math.nan])
-    assert math.isnan(Interpolator().interpolate(left_nan, 5.0, LINEAR))  # type: ignore[arg-type]
-    assert math.isnan(Interpolator().interpolate(right_nan, 5.0, LINEAR))  # type: ignore[arg-type]
+def test_all_non_finite_signal_returns_none() -> None:
+    """全値が非有限の信号は有限サンプル0で None (AN-02/03)."""
+    sig = _sig([0.0, 1.0], [math.nan, math.inf])
+    assert Interpolator().interpolate(sig, 0.5, LINEAR) is None
+
+
+def test_linear_interpolates_across_nan_gap() -> None:
+    """NaN サンプルを欠測として除外し前後の有限サンプル間で線形補間 (AN-02)."""
+    sig = _sig([0.0, 5.0, 10.0], [0.0, math.nan, 100.0])
+    # 有限は (0,0) と (10,100) → t=5 は線形で 50
+    assert Interpolator().interpolate(sig, 5.0, LINEAR) == 50.0
+
+
+def test_nan_adjacent_now_uses_finite_neighbors() -> None:
+    """2 サンプルの片方が NaN → 有限は1点 → ZOH 前方保持で解釈 (AN-02+03)."""
+    interp = Interpolator()
+    left_nan = _sig([0.0, 10.0], [math.nan, 100.0])  # 有限は (10,100) のみ
+    right_nan = _sig([0.0, 10.0], [0.0, math.nan])  # 有限は (0,0) のみ
+    assert interp.interpolate(left_nan, 5.0, LINEAR) is None  # t=5 < 10
+    assert interp.interpolate(right_nan, 5.0, LINEAR) == 0.0  # t=5 >= 0 保持
 
 
 def test_interpolate_non_monotonic_input_matches_sorted() -> None:
