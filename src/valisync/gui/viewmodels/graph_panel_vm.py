@@ -613,11 +613,15 @@ class GraphPanelVM(Observable):
                     x_lo = float(ts[0])
                     x_hi = float(ts[-1])
 
-            # Slice to visible window using searchsorted on monotonic timestamps
+            # Slice to visible window using searchsorted on monotonic timestamps.
+            # RN-01: 窓外の隣接サンプルを左右1点ずつ含め、窓内にサンプルが無くても
+            # 窓を横切る線分が描けるようにする (疎信号のズーム消失を防ぐ)。
             lo_idx = int(np.searchsorted(ts, x_lo, side="left"))
             hi_idx = int(np.searchsorted(ts, x_hi, side="right"))
-            ts_slice = ts[lo_idx:hi_idx]
-            vs_slice = vs[lo_idx:hi_idx]
+            lo_ext = max(0, lo_idx - 1)
+            hi_ext = min(len(ts), hi_idx + 1)
+            ts_slice = ts[lo_ext:hi_ext]
+            vs_slice = vs[lo_ext:hi_ext]
 
             if len(ts_slice) == 0:
                 # Empty slice — legend entry still included
