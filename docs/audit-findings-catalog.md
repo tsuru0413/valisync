@@ -117,8 +117,9 @@
 | LD-09 | 🟡 | ✅**解消（PR #39）** ヘッダのみ CSV が長さ0の空信号を無言生成 → 成功＋「データ行が 0 行」warning | `core/loaders/csv_loader.py`（旧 :166） | 何も描画されない理由が不明 |
 | LD-10 | 🟡 | ✅**解消（第3弾・PR #43）** `select()` ベース刷新＋共有マスタ／ゼロコピー化で大容量 MDF4 の配列多重コピーを解消。**実測 before（2026-07-04・hils 2.01GB/171ch・Win11）: ロード 7.8 秒・ピーク +7.3GB → after（2026-07-05・同ファイル・同環境）: ロード 3.05 秒・ピーク +2.53GB**（quick 0.17GB: before 0.9 秒/+0.66GB → after 0.79 秒/+0.445GB）。受け入れ基準（ピーク増分 ≤+3.0GB・時間 ≤7.8 秒）を充足 | `core/loaders/mdf4_loader.py`（旧 :134） | 大きいログでメモリ不足（2GB 級ログで RAM 8GB 占有を確認 — 本番相当ファイルで実害域） |
 | LD-11 | 🟡 | ✅**仕様と判断（2026-07-05 ユーザー決定）** 同一ファイル二重読み込みで別グループ増殖する現状挙動は仕様として許容する（同一パス再読込は別グループとして扱う）。ファイル更新に追従する再読込操作が必要になれば別途起票する | `core/loaders/signal_group_manager.py:24` | 重複エントリで混乱（仕様として許容） |
-| LD-12 | 🟠 | ✅**解消（第3弾・PR #43）** 多次元/構造化チャンネルを列/フィールド単位（`Name[i]`/`Name.field`）へ展開して表示可能化（列数上限なし・展開時に `info` 診断を emit） | `core/loaders/mdf4_loader.py`（旧 :140-150） | CANape 計測の物標リストが構造化格納だと丸ごと見えない（LD-07 と統合実装） |
+| LD-12 | 🟠 | ✅**解消（第3弾・PR #43）** 多次元/構造化チャンネルを列/フィールド単位（`Name[i]`/`Name.field`）へ展開して表示可能化（展開時に `info` 診断を emit）。**LD-14 で改訂**: 「列数上限なし」を per-channel 1024 列ガードへ変更（1024 以下は自動展開のまま・超過はユーザー確認で展開/スキップ） | `core/loaders/mdf4_loader.py`（旧 :140-150） | CANape 計測の物標リストが構造化格納だと丸ごと見えない（LD-07 と統合実装） |
 | LD-13 | 🟠 | ✅**解消（第3弾・PR #43）** 読み取りパスを `select(ignore_value2text_conversions=True, copy_master=False)` ベースへ刷新し、value2text conversion 付きチャンネルも生値で生存するように修正 | `core/loaders/mdf4_loader.py`（旧 :56/:79/:97） | enum 信号が診断1行を残して不可視。修正経路は `select()` 直接使用または `iter_groups()` 系への切替（LD-07 と同時対応）。発見経緯: HILS デモ mf4 の value2text 埋込テスト（詳細 `.superpowers/sdd/task-2-report.md`） |
+| LD-14 | 🟠 | ✅**解消（LD-14）** `_explode_samples` を任意 ndim の多段フラット展開（`Name[i][j]…`）へ再帰化し、3D 以上の物標行列も展開可能に。併せて per-channel の展開列数が 1024 を超えるチャンネルは、本読み前の 1 レコードプローブで検出し GUI ポップアップ（チェックボックス一覧）で展開/スキップを選択（ヘッドレスは全スキップ＋警告）。承認されない超過は本読み entries からも除外（メモリ/時間も節約） | `core/loaders/mdf4_loader.py` `_flatten`/`_scan_oversized`・`gui/views/expansion_dialog.py`・`gui/workers/expansion_confirmer.py` | ndim≥3 の物標行列が消失／深い展開の列爆発が無制御（LD-12 の後続・「iter_channels は ndim≥3 に対応できているか」の検討で確定） |
 
 ---
 
