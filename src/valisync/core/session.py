@@ -162,6 +162,10 @@ class Session:
         key = self._groups.add(result.signal_group)
         return LoadOutcome(key=key, diagnostics=result.diagnostics)
 
+    def is_csv(self, file_path: Path) -> bool:
+        """*file_path* が CSV ローダー対象かを返す (GUI の開く経路分岐用・LD-01)。"""
+        return self._csv_loader.supports(Path(file_path))
+
     def load_many(
         self, specs: list[tuple[Path, FormatDefinition | None]]
     ) -> LoadManyResult:
