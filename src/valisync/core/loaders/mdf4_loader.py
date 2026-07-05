@@ -28,76 +28,65 @@ def _detect_bus_type(source: Any) -> str:
     return _BUS_TYPE_MAP.get(getattr(source, "bus_type", 0), "")
 
 
+def _flatten(name: str, arr: np.ndarray) -> list[tuple[str, np.ndarray]]:
+    """samples (axis 0 = サンプル) を 1D 列へ再帰フラット展開する (LD-14).
+
+    構造化 dtype はフィールドごとに ``Name.field`` へ、多次元配列は先頭の
+    非サンプル軸を ``Name[i]`` で 1 段ずつ剥がして 1D になるまで再帰する。
+    リーフでのみ連続化し中間スライスのコピーを避ける。
+    """
+    if arr.dtype.names:  # 構造化: フィールドごとに再帰
+        out: list[tuple[str, np.ndarray]] = []
+        for field in arr.dtype.names:
+            out.extend(_flatten(f"{name}.{field}", arr[field]))
+        return out
+    if arr.ndim <= 1:  # リーフ
+        return [(name, np.ascontiguousarray(arr))]
+    return [
+        pair
+        for i in range(arr.shape[1])
+        for pair in _flatten(f"{name}[{i}]", arr[:, i])
+    ]
+
+
+def _leaf_column_count(arr: np.ndarray) -> int:
+    """arr を _flatten したときのリーフ列数 (1 レコードの samples でも可・LD-14).
+
+    ``_flatten`` と同じ規則: 構造化はフィールド再帰合算、多次元は非サンプル軸
+    (shape[1:]) の積。プローブ (record_count=1) と本読みで shape[1:] は一致する
+    ため 1 レコードから正確な展開列数が得られる。
+    """
+    if arr.dtype.names:
+        return sum(_leaf_column_count(arr[f]) for f in arr.dtype.names)
+    if arr.ndim <= 1:
+        return 1
+    return int(np.prod(arr.shape[1:]))
+
+
 def _explode_samples(
     base_name: str,
     samples: np.ndarray,
     diagnostics: list[Diagnostic],
 ) -> list[tuple[str, np.ndarray]]:
-    """多次元/構造化 samples を 1D 列へ展開 (LD-12・列数上限なし=ユーザー決定).
+    """多次元/構造化 samples を 1D 列へ多段展開 (LD-14).
 
-    構造化 dtype (フィールド名を持つ) はフィールドごとに ``Name.field`` へ
-    (select() は構造化チャンネルの親のみを返す — 成分 x/y は
-    included_channels から除外済みで通常経路に乗らない。Task 1/3 の実装時
-    確認で確定 — 「成分併存」分岐は不要)。素の 2D はそのまま列展開。
-    展開不能 (3D 超・ネスト超過) は診断を emit して [] (フィールドごとの部分
-    展開は成功分だけ返す) を返す。
+    ``_flatten`` に一本化。展開できたら透明化のため info 診断を 1 件 emit する。
+    展開不能な列 (0 幅など) は自然に空リストになる。
     """
-    if samples.dtype.names:  # 構造化 dtype: フィールドごとに Name.field
-        out: list[tuple[str, np.ndarray]] = []
-        for field in samples.dtype.names:
-            sub = samples[field]
-            if sub.ndim == 1:
-                out.append((f"{base_name}.{field}", sub))
-            elif sub.ndim == 2:  # サブ配列フィールドは 1 段だけ展開
-                out.extend(
-                    (f"{base_name}.{field}[{i}]", np.ascontiguousarray(sub[:, i]))
-                    for i in range(sub.shape[1])
-                )
-            else:
-                diagnostics.append(
-                    Diagnostic(
-                        level="warning",
-                        message=(
-                            f"Signal '{base_name}.{field}' has {sub.ndim}D nested"
-                            " samples, skipped"
-                        ),
-                    )
-                )
-        if out:
-            diagnostics.append(
-                Diagnostic(
-                    level="info",
-                    message=f"Signal '{base_name}': 構造化チャンネルを {len(out)} 本に展開",
-                    signal_name=base_name,
-                )
-            )
-        return out
-    if samples.ndim == 2:
-        n_cols = samples.shape[1]
+    pairs = _flatten(base_name, samples)
+    if pairs:
+        if samples.dtype.names:
+            shape_desc = "構造化チャンネル"
+        else:
+            shape_desc = "x".join(str(d) for d in samples.shape[1:]) + " 配列"
         diagnostics.append(
             Diagnostic(
                 level="info",
-                message=(
-                    f"Signal '{base_name}': 2D ({samples.shape[0]}x{n_cols}) を"
-                    f" {n_cols} 本に展開"
-                ),
+                message=f"Signal '{base_name}': {shape_desc}を {len(pairs)} 本に展開",
                 signal_name=base_name,
             )
         )
-        return [
-            (f"{base_name}[{i}]", np.ascontiguousarray(samples[:, i]))
-            for i in range(n_cols)
-        ]
-    diagnostics.append(
-        Diagnostic(
-            level="warning",
-            message=(
-                f"Signal '{base_name}' has {samples.ndim}D samples"
-                " (expected 1D), skipped"
-            ),
-        )
-    )
-    return []
+    return pairs
 
 
 def _extract_value_labels(conversion: Any) -> dict[float, str] | None:

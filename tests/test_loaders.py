@@ -540,6 +540,25 @@ def test_structured_channel_fields_visible(tmp_path: Path) -> None:
     assert not any(d.level == "error" for d in result.diagnostics)
 
 
+def test_leaf_column_count_matches_flatten() -> None:
+    """任意形状で _leaf_column_count は _flatten のリーフ数と一致する (LD-14)."""
+    from valisync.core.loaders.mdf4_loader import _flatten, _leaf_column_count
+
+    cases = [
+        np.zeros(3),  # 1D scalar -> 1
+        np.zeros((3, 4)),  # 2D -> 4
+        np.zeros((3, 2, 5)),  # 3D -> 10
+        np.zeros((2, 2, 2, 3)),  # 4D -> 12
+        np.zeros(3, dtype=[("x", "<f8"), ("y", "<f8", (4,))]),  # struct -> 1+4=5
+    ]
+    for arr in cases:
+        assert _leaf_column_count(arr) == len(_flatten("x", arr))
+
+    assert _leaf_column_count(np.zeros((3, 4))) == 4
+    assert _leaf_column_count(np.zeros((3, 2, 5))) == 10
+    assert _leaf_column_count(np.zeros(3)) == 1
+
+
 def test_explode_samples_subarray_field_one_level() -> None:
     """構造化フィールドが (N,k) サブ配列のとき Name.field[i] に1段展開される."""
     from valisync.core.loaders.mdf4_loader import _explode_samples
@@ -554,22 +573,38 @@ def test_explode_samples_subarray_field_one_level() -> None:
     assert np.array_equal(dict(pairs)["Obj.mat[1]"], [2.0, 4.0, 6.0])
 
 
-def test_explode_samples_over_nested_field_skipped_with_reason() -> None:
-    """ndim>2 のネストフィールドは理由の読める警告で skip・他フィールドは展開継続."""
+def test_explode_samples_over_nested_field_expands() -> None:
+    """ndim>2 のネストフィールドは Name.field[i][j] へ多段展開される (LD-14)."""
     from valisync.core.loaders.mdf4_loader import _explode_samples
 
     rec = np.zeros(2, dtype=[("deep", "<f8", (2, 2)), ("s", "<f8")])
+    rec["deep"] = np.arange(2 * 2 * 2).reshape(2, 2, 2)
+    rec["s"] = [7.0, 8.0]
     diags: list = []
     pairs = _explode_samples("Obj", rec, diags)
-    assert [n for n, _ in pairs] == ["Obj.s"]
-    assert any("nested samples, skipped" in d.message for d in diags)
+    assert [n for n, _ in pairs] == [
+        "Obj.deep[0][0]",
+        "Obj.deep[0][1]",
+        "Obj.deep[1][0]",
+        "Obj.deep[1][1]",
+        "Obj.s",
+    ]
+    # deep[1][1] = rec["deep"][:, 1, 1] = [3, 7]
+    assert np.array_equal(dict(pairs)["Obj.deep[1][1]"], [3.0, 7.0])
 
 
-def test_explode_samples_plain_3d_skipped_with_reason() -> None:
-    """素の 3D 配列は展開せず理由の読める警告で skip (LD-12 の境界・展開は 2D まで)."""
+def test_explode_samples_plain_3d_expands() -> None:
+    """素の 3D 配列は Cube[i][j] へ多段展開される (LD-14・従来は skip だった)."""
     from valisync.core.loaders.mdf4_loader import _explode_samples
 
+    arr = np.arange(4 * 2 * 2).reshape(4, 2, 2).astype(np.float64)
     diags: list = []
-    pairs = _explode_samples("Cube", np.zeros((4, 2, 2)), diags)
-    assert pairs == []
-    assert any("has 3D samples (expected 1D), skipped" in d.message for d in diags)
+    pairs = _explode_samples("Cube", arr, diags)
+    assert [n for n, _ in pairs] == [
+        "Cube[0][0]",
+        "Cube[0][1]",
+        "Cube[1][0]",
+        "Cube[1][1]",
+    ]
+    assert np.array_equal(dict(pairs)["Cube[1][1]"], arr[:, 1, 1])
+    assert any("本に展開" in d.message for d in diags)
