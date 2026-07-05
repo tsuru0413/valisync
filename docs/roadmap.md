@@ -94,7 +94,7 @@ gantt
 | `gui-shell-controls` | シェル操作（File メニュー・タブ/パネル/レイアウト管理・エクスポート導線） | 15 | 🔴高 | SH-01 File>Open 無し・SH-03 エクスポート導線無し・SH-12 ドックトグルボタン |
 | `gui-plot-analysis-controls` | プロット/曲線/軸/カーソルの操作コントロール | 20 | 🟠中 | PC-01 曲線管理コントロール無し・PC-03 オフセット操作が隠れ・PC-11 単位無し |
 | `core-loaders-hardening` | ローダー堅牢性・対応形式拡張 — **第1弾（TS 堅牢化: LD-03/04/05/06/08/09・PR #39）＋第3弾（LD-07/10/12/13 解消・LD-11 仕様判断・PR #43）＋LD-14（ndim≥3 多段展開＋1024 ガード）実装済み。残りは第2弾（LD-01/02・開く経路）のみ** | 14 | 🔴高 | LD-01 CSV 開けず・LD-02 .mf4 限定（残り第2弾） |
-| `analysis-correctness` | 統計・補間の計算の正しさ | 3 | 🔴高（正しさ） | AN-01 範囲統計の NaN 汚染（count>0 なのに全 nan） |
+| `analysis-correctness` | 統計・補間の計算の正しさ — **完了: AN-01/02/03 を `Signal.finite_view()` 共通土台で解消** | 3 | ✅完了 | AN-01 範囲統計の NaN 汚染（→有限のみ集計）・AN-02 補間の NaN 伝播（→有限間補間）・AN-03 単一サンプル読み取り（→ZOH 前方保持） |
 | `rendering-correctness-perf` | 描画の正しさ・LOD/同期の性能 | 5 | 🟠中 | RN-01 ズーム時の疎信号消失（境界サンプル） |
 
 > ②の着手起点は `gui-feedback-errors`（FB-01/FB-02）。サイレント失敗連鎖の元を断つと、`core-loaders-hardening`・`gui-shell-controls` の欠陥が「気づける」ようになる。各改善サブスペックも着手時に `brainstorming` → `writing-plans` から始め、catalog の ID を要件参照点に使う。
@@ -104,6 +104,8 @@ gantt
 > **`core-loaders-hardening` 第1弾（TS 堅牢化）は PR #39 で実装済み**: `Signal` の厳密単調検証を撤廃し「記録どおり保持＋整列ビュー `sorted_view()`（keep-last・zero-copy fast path）」へ転換、全消費経路を切替え、ローダーは異常を検出診断（LD-03/04/05/06/08/09 解消）。spec: [2026-07-03-core-loaders-hardening-design.md](superpowers/specs/2026-07-03-core-loaders-hardening-design.md)。
 >
 > **第3弾（LD-07/10/12/13 解消・LD-11 仕様判断）実装済み（PR #43）**: MDF4 読み取りパスを `select(ignore_value2text_conversions=True, copy_master=False)` ベースに刷新し、LD-13（value2text 付きチャンネルの enum 消滅）と LD-10（配列多重コピーによるメモリ膨張。実測 hils 2.01GB: before 7.8 秒/+7.3GB → after 3.05 秒/+2.53GB、受け入れ基準 ≤+3.0GB／≤7.8 秒を充足）を解消。LD-12（多次元/構造化チャンネルの列/フィールド展開・上限なし）と LD-07（value2text を `metadata['value_labels']` に保持しカーソル readout・ChannelBrowser tooltip に併記）を実装。LD-11（同一ファイル二重読み込みの別グループ増殖）は 2026-07-05 ユーザー決定によりリポジトリの仕様として許容（再読込操作は必要になれば別途起票）。spec: [2026-07-05-core-loaders-hardening-r3-design.md](superpowers/specs/2026-07-05-core-loaders-hardening-r3-design.md)。**LD-10 の次段（将来課題）**: 現状はコピー排除まで＝全信号をロード時に一括実体化（データ実体1コピー分・hils 2GB で +2.53GB）。さらに削減が必要になったら遅延ロード/メモリマップ（Signal/Session の契約変更を伴う大改修）を別増分として検討。**LD-14（ndim≥3 多段展開＋1024 ガード）実装済み**: `_explode_samples` を任意 ndim の再帰フラット展開（`Name[i][j]…`）へ一般化し 3D 以上の物標行列も展開可能に。per-channel の展開列数が 1024 を超えるチャンネルは本読み前の 1 レコードプローブ（`select(record_count=1)`）で検出し、GUI ポップアップ（チェックボックス一覧・ワーカー→GUI スレッド marshal）で展開/スキップを選択（ヘッドレスは全スキップ＋警告）。承認されない超過は本読み entries から除外しメモリ/時間も節約。LD-12 の「列数上限なし」を改訂。spec: [2026-07-05-ld14-ndim-flatten-design.md](superpowers/specs/2026-07-05-ld14-ndim-flatten-design.md)。**残りは第2弾（開く経路 LD-01 CSV ピッカー〔SH-01 連携〕・LD-02 拡張子）のみ**。次の候補は `gui-shell-controls` または LD 第2弾。
+>
+> **`analysis-correctness`（AN-01/02/03）完了**: 統計・補間のサイレント誤計算を、値が非有限のサンプルを除いた共通ビュー `Signal.finite_view()`（`sorted_view` と同型のキャッシュ＋zero-copy fast path＋delegate）で解消。AN-01=範囲統計を有限値のみで算出し `count` を範囲内の有限数に／AN-02=補間で NaN を欠測として除外し前後の有限サンプル間で補間／AN-03=単一有限サンプルは ZOH 前方保持（`t≥ts0` で値・`t<ts0` は None）。描画（RN クラスタ）は不変更で責務分離。spec: [2026-07-05-analysis-correctness-design.md](superpowers/specs/2026-07-05-analysis-correctness-design.md)／plan: [2026-07-05-analysis-correctness.md](superpowers/plans/2026-07-05-analysis-correctness.md)。
 
 **境界判断**:
 - **LOD（R21）は MVP に統合**（当初は独立 spec 案）。静的DSはズームイン時に生データ細部・スパイクが見えず ADAS 解析に不十分なため、viewport 連動の動的DSを最初から導入し実用精度を確保
