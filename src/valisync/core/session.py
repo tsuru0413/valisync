@@ -11,10 +11,10 @@ from valisync.core.export.csv_exporter import CsvExporter
 from valisync.core.formula.engine import FormulaEngine
 from valisync.core.interpolation.interpolator import InterpolationMethod, Interpolator
 from valisync.core.loaders.csv_loader import CsvLoader
-from valisync.core.loaders.mdf4_loader import (
+from valisync.core.loaders.mdf_loader import (
     ConfirmExpansion,
     ExpansionRequest,
-    Mdf4Loader,
+    MdfLoader,
     OversizedChannel,
 )
 from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR, SignalGroupManager
@@ -118,7 +118,7 @@ class Session:
     def __init__(self) -> None:
         self._groups = SignalGroupManager()
         self._csv_loader = CsvLoader()
-        self._mdf4_loader = Mdf4Loader()
+        self._mdf_loader = MdfLoader()
         self._formula = FormulaEngine()
         self._synchronizer = TimeSynchronizer()
         self._interpolator = Interpolator()
@@ -149,8 +149,8 @@ class Session:
             if format_def is None:
                 raise ValueError("CSV files require a FormatDefinition")
             result = self._csv_loader.load(file_path, format_def, cancel=cancel)
-        elif self._mdf4_loader.supports(file_path):
-            result = self._mdf4_loader.load(
+        elif self._mdf_loader.supports(file_path):
+            result = self._mdf_loader.load(
                 file_path, cancel=cancel, confirm_expansion=confirm_expansion
             )
         else:

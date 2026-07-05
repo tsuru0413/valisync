@@ -2,7 +2,7 @@
 
 Property 6: MDF4 Signal round-trip — for any valid signal data on any protocol
             (CAN / XCP / Ethernet), writing via asammdf and re-reading through
-            Mdf4Loader reproduces every timestamp, value and bus type.
+            MdfLoader reproduces every timestamp, value and bus type.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis.extra.numpy import arrays
 
-from valisync.core.loaders.mdf4_loader import Mdf4Loader
+from valisync.core.loaders.mdf_loader import MdfLoader
 
 from .conftest import finite_floats, monotonic_timestamps
 from .mdf4_helpers import CAN, ETHERNET, NONE, write_mdf4
@@ -59,7 +59,7 @@ def test_mdf4_signal_roundtrip(
 
     with tempfile.TemporaryDirectory() as d:
         path = write_mdf4(Path(d) / "rt.mf4", channels)
-        result = Mdf4Loader().load(path)
+        result = MdfLoader().load(path)
 
     assert result.signal_group is not None
     by_name = {s.name: s for s in result.signal_group.signals}

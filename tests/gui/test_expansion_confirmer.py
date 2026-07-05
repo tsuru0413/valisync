@@ -4,7 +4,7 @@ import threading
 
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
-from valisync.core.loaders.mdf4_loader import ExpansionRequest, OversizedChannel
+from valisync.core.loaders.mdf_loader import ExpansionRequest, OversizedChannel
 from valisync.gui.views.expansion_dialog import ExpansionDialog
 from valisync.gui.workers.expansion_confirmer import ExpansionConfirmer
 

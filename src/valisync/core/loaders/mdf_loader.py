@@ -178,8 +178,8 @@ def _extract_metadata(asammdf_sig: Any, raw_conversion: Any = None) -> dict[str,
     return meta
 
 
-class Mdf4Loader:
-    """MDF4 file loader using asammdf. Reads all channel groups in one pass."""
+class MdfLoader:
+    """MDF (3.x / 4.x) file loader using asammdf. Reads all channel groups in one pass."""
 
     _READ_OPTIONS: ClassVar[dict[str, Any]] = {
         "time_from_zero": False,
@@ -253,7 +253,7 @@ class Mdf4Loader:
                 diagnostics=(
                     Diagnostic(
                         level="error",
-                        message=f"Failed to parse MDF4 '{file_path.name}': {exc}",
+                        message=f"Failed to parse MDF '{file_path.name}': {exc}",
                     ),
                 ),
             )
