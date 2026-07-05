@@ -77,8 +77,9 @@ def test_clearing_cursor_hides_line_and_readout(qtbot: QtBot, tmp_path: Path) ->
 def test_readout_position_preserved_on_cursor_update(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
-    """Readout snaps to (8,8) only on first show; subsequent cursor syncs must not
-    reset a user-dragged position.  Clearing and re-setting the cursor resets to (8,8).
+    """Readout anchors to the plot-area top-left only on first show; subsequent
+    cursor syncs must not reset a moved position. Clearing and re-setting the
+    cursor re-anchors to the plot area on re-appearance (PC-21).
     """
     vm = _vm_with_signal(tmp_path)
     view = GraphPanelView(vm)
@@ -87,28 +88,27 @@ def test_readout_position_preserved_on_cursor_update(
     view.show()
     qtbot.waitExposed(view)
 
-    # First cursor placement — readout should appear at (8,8).
+    # First cursor placement — readout anchors to the plot-area top-left + margin.
     vm.set_cursor(0.5)
     assert view.readout_visible()
-    assert view._readout.pos().x() == 8
-    assert view._readout.pos().y() == 8
+    anchor = view._plot_area_top_left()
+    assert anchor is not None
+    assert view._readout.pos() == QPoint(anchor.x() + 8, anchor.y() + 8)
 
-    # Simulate a user drag by moving the readout to a different position.
-    view._readout.move(100, 50)
-    assert view._readout.pos().x() == 100
-
-    # Update cursor to a new value (readout stays visible) — position must NOT snap back.
+    # Move the readout elsewhere; a cursor-only update must NOT snap it back.
+    view._readout.move(200, 120)
+    assert view._readout.pos().x() == 200
     vm.set_cursor(0.7)
-    assert view._readout.pos().x() == 100
-    assert view._readout.pos().y() == 50
+    assert view._readout.pos() == QPoint(200, 120)
 
-    # Clear cursor and set again — readout must return to (8,8) on re-appearance.
+    # Clear cursor and set again — readout re-anchors to the plot area.
     vm.set_cursor(None)
     assert not view.readout_visible()
     vm.set_cursor(0.3)
     assert view.readout_visible()
-    assert view._readout.pos().x() == 8
-    assert view._readout.pos().y() == 8
+    anchor2 = view._plot_area_top_left()
+    assert anchor2 is not None
+    assert view._readout.pos() == QPoint(anchor2.x() + 8, anchor2.y() + 8)
 
 
 def test_legend_item_removed(qtbot: QtBot, tmp_path: Path) -> None:
