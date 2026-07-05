@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from valisync.core.statistics.range_stat_index import RangeStatIndex
 
 
 @dataclass(frozen=True)
@@ -113,6 +116,30 @@ class Signal:
             vs_f.flags.writeable = False
             cache = (ts_f, vs_f)
         object.__setattr__(self, "_finite_view_cache", cache)
+        return cache
+
+    def range_stat_index(self) -> RangeStatIndex:
+        """Sqrt-decomposition index over finite_view for O(sqrt n) range statistics.
+
+        Built lazily on first query and cached; racing initialisations are
+        harmless (idempotent). namespaced ラッパーは finite_view と同じく
+        ``_sorted_view_delegate`` 経由で元 Signal のインデックスを共有し、
+        カーソルドラッグのホットパスで毎回作り直されるラッパーでも構築は1回。
+        """
+        cache = getattr(self, "_range_stat_index_cache", None)
+        if cache is not None:
+            return cache
+        # 循環 import 回避のためメソッド内 import(statistics -> models(Signal))。
+        from valisync.core.statistics.range_stat_index import RangeStatIndex
+
+        delegate = getattr(self, "_sorted_view_delegate", None)
+        if delegate is not None:
+            cache = delegate.range_stat_index()
+            object.__setattr__(self, "_range_stat_index_cache", cache)
+            return cache
+        ts, vs = self.finite_view()
+        cache = RangeStatIndex(ts, vs)
+        object.__setattr__(self, "_range_stat_index_cache", cache)
         return cache
 
     @property
