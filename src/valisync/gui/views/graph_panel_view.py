@@ -304,12 +304,13 @@ class _AlignedAxisItem(pg.AxisItem):
 
     # ── Task 5: cursor mapping + active/hover frame ────────────────────────────
 
-    def cursor_for_local(self, lx: float, ly: float, h: float) -> Qt.CursorShape:
-        """Return the hover cursor for item-local point (lx, ly) on a spine of height h.
+    def cursor_for_local(self, lx: float, ly: float, h: float) -> CursorKind:
+        """Return the hover cursor kind for item-local point (lx, ly) on a spine of height h.
 
         Pure (h is passed explicitly, not read from geometry) so it is headless-
         testable without a scene.  Delegates zone classification to the module-
-        level ``classify_axis_zone`` and maps each zone to a cursor shape.
+        level ``classify_axis_zone``; zoom/pan use the unified custom vertical
+        bracket / SizeVer to match the X axis scheme (PC-13).
         """
         z = classify_axis_zone(
             lx,
@@ -322,11 +323,11 @@ class _AlignedAxisItem(pg.AxisItem):
             tol=self.TOL,
         )
         return {
-            AXZONE_GRIP_TOP: Qt.CursorShape.SizeVerCursor,
-            AXZONE_GRIP_BOTTOM: Qt.CursorShape.SizeVerCursor,
-            AXZONE_FRAME: Qt.CursorShape.SizeAllCursor,
-            AXZONE_ZOOM: Qt.CursorShape.CrossCursor,
-            AXZONE_PAN: Qt.CursorShape.OpenHandCursor,
+            AXZONE_GRIP_TOP: CursorKind.RESIZE_V,
+            AXZONE_GRIP_BOTTOM: CursorKind.RESIZE_V,
+            AXZONE_FRAME: CursorKind.MOVE,
+            AXZONE_ZOOM: CursorKind.ZOOM_V,
+            AXZONE_PAN: CursorKind.PAN_V,
         }[z]
 
     def _is_active_or_hover(self) -> bool:
@@ -355,10 +356,13 @@ class _AlignedAxisItem(pg.AxisItem):
         if self._vm_axis_index == view._active_axis_index:
             p = ev.pos()
             self.setCursor(
-                self.cursor_for_local(p.x(), p.y(), self.boundingRect().height())
+                cursor(
+                    self.cursor_for_local(p.x(), p.y(), self.boundingRect().height())
+                )
             )
         else:
-            self.unsetCursor()
+            # 非アクティブ軸: 「クリックで活性化」を示す(操作は活性化必須・PC-13)。
+            self.setCursor(cursor(CursorKind.ACTIVATE))
 
     def hoverLeaveEvent(self, ev: Any) -> None:
         """Clear hover state and reset cursor when the mouse leaves the spine."""
