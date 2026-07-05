@@ -115,3 +115,24 @@ def test_range_on_block_boundaries():
         )
         assert res.min == float(np.min(in_range))
         assert res.max == float(np.max(in_range))
+
+
+def test_compute_delegates_to_index():
+    from valisync.core.models import Signal
+    from valisync.core.statistics import RangeStatistics
+
+    ts = np.arange(2000, dtype=np.float64)
+    vs = np.cos(ts * 0.02).astype(np.float64)
+    s = Signal(
+        name="s",
+        timestamps=ts,
+        values=vs,
+        file_format="Derived",
+        bus_type="",
+        source_file="",
+    )
+    a, b = 3.0, 1500.0
+    res = RangeStatistics().compute(s, a, b)
+    idx = s.range_stat_index().query(a, b)
+    assert res.count == idx.count and res.mean == idx.mean and res.std == idx.std
+    assert res.min == idx.min and res.max == idx.max
