@@ -232,6 +232,7 @@ class Mdf4Loader:
         self,
         file_path: Path,
         cancel: Callable[[], bool] | None = None,
+        confirm_expansion: ConfirmExpansion | None = None,
     ) -> LoadResult:
         if not file_path.exists() or not file_path.is_file():
             return LoadResult(
@@ -261,6 +262,33 @@ class Mdf4Loader:
         diagnostics: list[Diagnostic] = []
         resolved_path = file_path.resolve()
         try:
+            # 本読み前に展開列数をスキャンし、1024 超は確認 (無ければ全スキップ)。
+            # 承認されなかった超過チャンネルは skip_keys で本読み entries からも
+            # 除外する (本読みすらしない = メモリ/時間も節約・LD-14)。
+            oversized, over_keys = self._scan_oversized(mdf, cancel)
+            skip_keys: set[tuple[int, int]] = set()
+            if oversized:
+                if confirm_expansion is not None:
+                    chosen = confirm_expansion(
+                        ExpansionRequest(channels=tuple(oversized))
+                    )
+                else:
+                    chosen = set()  # ヘッドレス: 確認できないので全スキップ (安全側)
+                skip_keys = {key for i, key in enumerate(over_keys) if i not in chosen}
+                for i, key in enumerate(over_keys):
+                    if key in skip_keys:
+                        diagnostics.append(
+                            Diagnostic(
+                                level="warning",
+                                message=(
+                                    f"Signal '{oversized[i].name}': 展開列数 "
+                                    f"{oversized[i].column_count} が上限 "
+                                    f"{EXPANSION_COLUMN_LIMIT} を超えるためスキップ"
+                                ),
+                                signal_name=oversized[i].name,
+                            )
+                        )
+
             name_total = self._count_names(mdf)
             name_seen: dict[str, int] = {}
             # mdf.virtual_groups (物理グループ数ではない) を走査 — v4.20+ の
@@ -280,6 +308,7 @@ class Mdf4Loader:
                     signals,
                     diagnostics,
                     cancel,
+                    skip_keys,
                 )
         except LoadCancelled:
             # Must not be swallowed by the broad except below (LoadCancelled is
@@ -354,8 +383,13 @@ class Mdf4Loader:
         signals: list[Signal],
         diagnostics: list[Diagnostic],
         cancel: Callable[[], bool] | None,
+        skip_keys: set[tuple[int, int]],
     ) -> None:
-        entries = self._group_entries(mdf, gi)
+        # skip_keys の (gi, ci) は上限超で展開しないと決まったチャンネル — 本読み
+        # entries から外し select にも渡さない (LD-14)。
+        entries = [
+            e for e in self._group_entries(mdf, gi) if (e[1], e[2]) not in skip_keys
+        ]
         if not entries:
             return
         if cancel is not None and cancel():

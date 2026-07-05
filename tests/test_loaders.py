@@ -622,3 +622,44 @@ def test_scan_oversized_flags_wide_channel(tmp_path: Path) -> None:
     assert [o.name for o in oversized] == ["Wide"]
     assert oversized[0].column_count == 1025
     assert len(keys) == 1  # (gi, ci) キーが 1 件
+
+
+def test_oversized_expands_only_when_confirmed(tmp_path: Path) -> None:
+    """confirm_expansion が選んだ超過チャンネルのみ展開される (LD-14)."""
+    from valisync.core.loaders.mdf4_loader import ExpansionRequest
+
+    path = write_mdf4_wide_2d(tmp_path, cols=1025)
+
+    seen: list[ExpansionRequest] = []
+
+    def confirm(req: ExpansionRequest) -> set[int]:
+        seen.append(req)
+        return {0}  # Wide を展開する
+
+    result = Mdf4Loader().load(path, confirm_expansion=confirm)
+    names = {s.name for s in result.signal_group.signals}
+    assert "Clean" in names
+    assert "Wide[0]" in names and "Wide[1024]" in names  # 1025 列 (0..1024)
+    assert len(seen) == 1 and seen[0].channels[0].name == "Wide"
+
+
+def test_oversized_skipped_when_declined(tmp_path: Path) -> None:
+    """空集合を返すと超過チャンネルはスキップ・警告診断が出る・他は生存 (LD-14)."""
+    path = write_mdf4_wide_2d(tmp_path, cols=1025)
+    result = Mdf4Loader().load(path, confirm_expansion=lambda req: set())
+    names = {s.name for s in result.signal_group.signals}
+    assert "Clean" in names
+    assert not any(n.startswith("Wide") for n in names)
+    warns = [
+        d for d in result.diagnostics if d.level == "warning" and "Wide" in d.message
+    ]
+    assert len(warns) == 1 and "1024" in warns[0].message
+
+
+def test_oversized_skipped_headless_without_callback(tmp_path: Path) -> None:
+    """コールバック不在 (ヘッドレス) は超過を全スキップ+警告 (LD-14 既定)."""
+    path = write_mdf4_wide_2d(tmp_path, cols=1025)
+    result = Mdf4Loader().load(path)  # confirm_expansion 無し
+    names = {s.name for s in result.signal_group.signals}
+    assert "Clean" in names and not any(n.startswith("Wide") for n in names)
+    assert any(d.level == "warning" and "Wide" in d.message for d in result.diagnostics)
