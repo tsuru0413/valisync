@@ -3,7 +3,7 @@
 実ユーザージャーニー（**ファイルを開く → 波形表示 → データ解析**）を対象に実施した2つの監査の全確定所見を、重複統合し ID を付与して管理する台帳。各所見は「**実装済みだが不足**」バケット②の改善サブスペックへ割り当てられており、ロードマップ（[roadmap.md](roadmap.md)）の該当サブスペックから本カタログの ID を参照する。
 
 - **作成**: 2026-07-02
-- **監査方法**: 6次元×2ラウンド（①機能ジャーニー ②UI/UX コントロール）を並列コード精読し、各所見を独立エージェントが実コードで敵対的検証（`CONFIRMED`/`PLAUSIBLE`/`REFUTED`）。計 100+ サブエージェント。raw 87 確定所見 → 重複統合後 **64 正準課題**。加えて本監査後、HILS デモ mf4 ジェネレータ開発（2026-07-04）で LD-12（spec 起票時から想定の 2D skip 再現データ）・LD-13（開発中に発見した実バグ）の2件を補遺として追加し、現在は **66 件**。
+- **監査方法**: 6次元×2ラウンド（①機能ジャーニー ②UI/UX コントロール）を並列コード精読し、各所見を独立エージェントが実コードで敵対的検証（`CONFIRMED`/`PLAUSIBLE`/`REFUTED`）。計 100+ サブエージェント。raw 87 確定所見 → 重複統合後 **64 正準課題**。加えて本監査後、HILS デモ mf4 ジェネレータ開発（2026-07-04）で LD-12（spec 起票時から想定の 2D skip 再現データ）・LD-13（開発中に発見した実バグ）の2件を補遺として追加し、**66 件**。さらに 2026-07-05、ユーザーが実機 GUI 操作で発見した5課題を実コードで解析し、3件を新規（PC-21 CursorReadout のレイアウトずれ・PC-22 カーソル線ホバーのポインタ形状・RN-06 カーソル移動時の統計計算の重さ）として追加、2件を既存 PC-13/PC-14 の具体要件（軸ゾーン別カーソル形状）として反映し、現在は **69 件**。
 - **凡例**: 重要度 🔴high / 🟠medium / 🟡low。`kind` = BUG(誤動作) / SILENT(サイレント失敗・誤計算) / MISSING_CONTROL / DISCOVERABILITY(発見困難) / FEEDBACK(状態可視化欠如) / PERF / ROBUSTNESS。
 - **注意**: 記載の行番号は監査時点（2026-07-01〜02, main@82c14b9）のもの。着手時に再確認すること。
 
@@ -19,10 +19,10 @@
 |---|---|---|---|
 | [`gui-feedback-errors`](#ss-feedback--gui-feedback-errors) | エラー/診断/状態フィードバックの可視化 | 10 | 🔴 |
 | [`gui-shell-controls`](#ss-shell--gui-shell-controls) | シェル操作（File メニュー・タブ/パネル/レイアウト管理・エクスポート導線） | 15 | 🔴 |
-| [`gui-plot-analysis-controls`](#ss-plotctl--gui-plot-analysis-controls) | プロット/曲線/軸/カーソルの操作コントロール | 20 | 🟠 |
+| [`gui-plot-analysis-controls`](#ss-plotctl--gui-plot-analysis-controls) | プロット/曲線/軸/カーソルの操作コントロール | 22 | 🟠 |
 | [`core-loaders-hardening`](#ss-loaders--core-loaders-hardening) | ローダー堅牢性・対応形式拡張 | 13 | 🔴 |
 | [`analysis-correctness`](#ss-analysis--analysis-correctness) | 統計・補間の計算の正しさ | 3 | 🔴 |
-| [`rendering-correctness-perf`](#ss-render--rendering-correctness-perf) | 描画の正しさ・LOD/同期の性能 | 5 | 🟠 |
+| [`rendering-correctness-perf`](#ss-render--rendering-correctness-perf) | 描画の正しさ・LOD/同期の性能 | 6 | 🟠 |
 
 **横断テーマ（最重要）**: 「**サイレント失敗の連鎖**」。`_on_load_error=pass`（FB-01）＋ `Session.load` が成功時の診断を破棄（FB-02）することで、CSV 非対応・拡張子制限・チャンネル skip・空ファイル等の多くの欠陥が一箇所で無言化される。FB-01/FB-02 の解消が LD-01〜05・SH-03 の可視化を一気に前進させるため、**着手順の起点**とする。
 
@@ -89,14 +89,16 @@
 | PC-10 | 🟠 | 読み取り値のコピー/エクスポート手段なし | `gui/views/cursor_readout.py:264` | 計測値を持ち出せない |
 | PC-11 | 🟠 | 読み取り表に単位が一切なし（Signal/readout モデルに単位フィールドなし） | `gui/views/cursor_readout.py:131` | km/h か m/s か °C か区別不能 |
 | PC-12 | 🟠 | 統計列選択メニュー（列▾）が孤立・どこからも呼ばれない（`build_column_menu`） | `gui/views/cursor_readout.py:182` | 実装済みの列切替が使えない |
-| PC-13 | 🟠 | Y軸ジェスチャは事前クリック活性化が必須だがヒント/フィードバックなし | `gui/views/graph_panel_view.py:476` | 軸操作の前提が伝わらない |
-| PC-14 | 🟠 | X軸 内側=ズーム/外側=パンの境界が不可視・両ゾーン同一カーソル・プロット領域に X パン/ズームなしで左ドラッグがオフセット誤発火 | `graph_panel_view.py:244,1581` | ズーム/パン操作が予測不能・誤操作 |
+| PC-13 | 🟠 | Y軸ジェスチャは事前クリック活性化が必須だがヒント/フィードバックなし。**（ユーザー実機要望 2026-07-05）** Y軸ゾーン別カーソルは既に差別化済み（`cursor_for_local:303-326`＝GRIP:SizeVer/FRAME:SizeAll/ZOOM:Cross/PAN:OpenHand）だが `hoverMoveEvent:351-357` の**アクティブ軸ゲートで非アクティブ軸は `unsetCursor`** → 常時効かせるにはゲート緩和が必要。X（PC-14）と流儀統一も検討 | `gui/views/graph_panel_view.py:476`・`_AlignedAxisItem.cursor_for_local:303-326`・`hoverMoveEvent:351-357` | 軸操作の前提が伝わらない |
+| PC-14 | 🟠 | X軸 内側=ズーム/外側=パンの境界が不可視・両ゾーン同一カーソル・プロット領域に X パン/ズームなしで左ドラッグがオフセット誤発火。**（ユーザー実機要望 2026-07-05）** 根因: `cursor_for_zone:244-245` が ZONE_X_INNER(zoom)/ZONE_X_OUTER(pan) 双方に `SizeHorCursor` を返し区別不能。要望=パン[←→]（≒`SizeHorCursor`）／ズーム[\|→←\|]。**Qt 標準に「水平拡縮」形状は無い** → `SplitHCursor` 近似か `QCursor(QPixmap)` カスタム。Y（PC-13）と一括で「軸ゾーン別カーソル形状」として設計 | `graph_panel_view.py:244-246,1581,1609,1618` | ズーム/パン操作が予測不能・誤操作 |
 | PC-15 | 🟠 | グリッド/対数軸/軸反転などの表示オプションなし | `gui/views/graph_panel_view.py:1005` | 解析に必要な軸表現ができない |
 | PC-16 | 🟡 | 読み取り値が固定4桁 `:.4g` で精密読み取り不可 | `gui/views/cursor_readout.py:24` | 微小差を読めない |
 | PC-17 | 🟡 | 計測オーバーレイのクリア/閉じる導線が弱く無効化理由の提示もなし | `gui/views/graph_panel_view.py:1799` | 計測を片付けにくい |
 | PC-18 | 🟡 | CursorReadout の移動アフォーダンス/曲線操作の入口がなし | `gui/views/cursor_readout.py:264` | 移動できると気づけない |
 | PC-19 | 🟡 | チャンネルのツールチップ（単位/ソース/サンプル数）が皆無 | `gui/adapters/qt_signal_models.py:131` | 信号の素性を確認できない |
 | PC-20 | 🟡 | 並べ替え/グルーピング/折りたたみなし（多数信号を部分一致フィルタのみで捌く） | `gui/views/channel_browser_view.py:48` | 大量信号を捌けない |
+| PC-21 | 🟠 | **（ユーザー実機発見 2026-07-05・BUG）** CursorReadout（読み取り表）が他操作後にレイアウト崩れ・プロットからずれて表示。根因: readout は plot_widget と兄弟の**レイアウト非管理オーバーレイ**で、初回表示時に一度だけ `move(8,8)`（`_readout_placed` ガード）→ 以後プロット矩形に追従しない。軸/カラム追加で `_reconcile_axes` が `_Y_AXIS_FIXED_WIDTH=72px` ガターを確保しプロット原点が右へずれても readout は widget (8,8) 固定でガター上に残る。パネル縮小リサイズ後も未再配置 | `gui/views/graph_panel_view.py:719,1166-1171`・`_reconcile_axes:885,970-991` | 計測値表示が崩れ、読み取りへの信頼を損なう |
+| PC-22 | 🟡 | **（ユーザー実機要望 2026-07-05・DISCOVERABILITY）** カーソル縦線ホバー時に色ハイライト（pyqtgraph 既定 hoverPen）は出るが**マウスポインタ形状が変わらない**（矢印のまま）。ドラッグ可能を示す形状（`SizeHorCursor` 等）を足したい。差し込み: `_make_cursor_line:1116-1128` で生成直後に `line.setCursor(...)`（色変化と厳密同期させるなら InfiniteLine subclass で `hoverEvent` オーバーライド） | `gui/views/graph_panel_view.py:1116-1128,712,715` | カーソルを動かせると気づけない |
 
 ---
 
@@ -146,6 +148,7 @@
 | RN-03 | 🟡 | リサイズ毎に全曲線 LOD 再計算（キャッシュ全破棄） | `gui/views/graph_panel_view.py:1760` | 高さ変更だけで無駄に再計算 |
 | RN-04 | 🟡 | X 同期が全パネルへ扇状展開・UI スレッドで同期的に全 LOD 再計算 | `gui/viewmodels/graph_area_vm.py:247` | 多パネルで同期操作が重い |
 | RN-05 | 🟡 | 定数信号が零幅 `y_range=(v,v)` で Y 軸目盛り退化 | `gui/viewmodels/y_axis_vm.py:49` | 定数信号の軸が情報を持たない |
+| RN-06 | 🟠 | **（ユーザー実機発見 2026-07-05・PERF）** カーソルドラッグ移動が重くスムーズに更新されない（更新自体は維持したい）。根因: `InfiniteLine.sigPositionChanged` がドラッグ中の移動ごとに発火 → `set_cursor` → **A カーソルは全兄弟パネルへブロードキャスト**（`propagate_cursor:252`）→ 各パネルで**可視全信号を毎フレーム `interpolate`**（Global）／さらに **`compute_statistics` を範囲全区間で毎フレーム**（Delta）→ `cursor_readout._rebuild` で**全 QLabel 破棄再生成**。throttle/debounce/差分更新は皆無。方向: ドラッグ中は QTimer で coalesce（最終値必ず反映）＋ Delta の範囲統計は間引き／readout は `setText` 差分更新 | `graph_panel_view.py:1127,1175-1183,1138`・`graph_panel_vm.py:747-774,822-871`・`cursor_readout.py:236-274`・`graph_area_vm.py:252` | カーソル計測のスムーズさが損なわれ主要操作が重い |
 
 ---
 
