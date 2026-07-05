@@ -95,7 +95,7 @@ gantt
 | `gui-plot-analysis-controls` | プロット/曲線/軸/カーソルの操作コントロール | 20 | 🟠中 | PC-01 曲線管理コントロール無し・PC-03 オフセット操作が隠れ・PC-11 単位無し |
 | `core-loaders-hardening` | ローダー堅牢性・対応形式拡張 — **第1弾（TS 堅牢化: LD-03/04/05/06/08/09・PR #39）＋第3弾（LD-07/10/12/13 解消・LD-11 仕様判断・PR #43）＋LD-14（ndim≥3 多段展開＋1024 ガード）実装済み。残りは第2弾（LD-01/02・開く経路）のみ** | 14 | 🔴高 | LD-01 CSV 開けず・LD-02 .mf4 限定（残り第2弾） |
 | `analysis-correctness` | 統計・補間の計算の正しさ — **完了: AN-01/02/03 を `Signal.finite_view()` 共通土台で解消** | 3 | ✅完了 | AN-01 範囲統計の NaN 汚染（→有限のみ集計）・AN-02 補間の NaN 伝播（→有限間補間）・AN-03 単一サンプル読み取り（→ZOH 前方保持） |
-| `rendering-correctness-perf` | 描画の正しさ・LOD/同期の性能 | 5 | 🟠中 | RN-01 ズーム時の疎信号消失（境界サンプル） |
+| `rendering-correctness-perf` | 描画の正しさ・LOD/同期の性能 — **描画の正しさ2件（RN-01/RN-02）解消済み**。残り RN-03/04/05（性能・Y 軸退化） | 5 | 🟠中 | RN-01/RN-02 解消。残り RN-03 リサイズ毎 LOD 再計算・RN-04 X 同期の重さ・RN-05 定数信号の零幅 Y 軸 |
 
 > ②の着手起点は `gui-feedback-errors`（FB-01/FB-02）。サイレント失敗連鎖の元を断つと、`core-loaders-hardening`・`gui-shell-controls` の欠陥が「気づける」ようになる。各改善サブスペックも着手時に `brainstorming` → `writing-plans` から始め、catalog の ID を要件参照点に使う。
 >
@@ -106,6 +106,8 @@ gantt
 > **第3弾（LD-07/10/12/13 解消・LD-11 仕様判断）実装済み（PR #43）**: MDF4 読み取りパスを `select(ignore_value2text_conversions=True, copy_master=False)` ベースに刷新し、LD-13（value2text 付きチャンネルの enum 消滅）と LD-10（配列多重コピーによるメモリ膨張。実測 hils 2.01GB: before 7.8 秒/+7.3GB → after 3.05 秒/+2.53GB、受け入れ基準 ≤+3.0GB／≤7.8 秒を充足）を解消。LD-12（多次元/構造化チャンネルの列/フィールド展開・上限なし）と LD-07（value2text を `metadata['value_labels']` に保持しカーソル readout・ChannelBrowser tooltip に併記）を実装。LD-11（同一ファイル二重読み込みの別グループ増殖）は 2026-07-05 ユーザー決定によりリポジトリの仕様として許容（再読込操作は必要になれば別途起票）。spec: [2026-07-05-core-loaders-hardening-r3-design.md](superpowers/specs/2026-07-05-core-loaders-hardening-r3-design.md)。**LD-10 の次段（将来課題）**: 現状はコピー排除まで＝全信号をロード時に一括実体化（データ実体1コピー分・hils 2GB で +2.53GB）。さらに削減が必要になったら遅延ロード/メモリマップ（Signal/Session の契約変更を伴う大改修）を別増分として検討。**LD-14（ndim≥3 多段展開＋1024 ガード）実装済み**: `_explode_samples` を任意 ndim の再帰フラット展開（`Name[i][j]…`）へ一般化し 3D 以上の物標行列も展開可能に。per-channel の展開列数が 1024 を超えるチャンネルは本読み前の 1 レコードプローブ（`select(record_count=1)`）で検出し、GUI ポップアップ（チェックボックス一覧・ワーカー→GUI スレッド marshal）で展開/スキップを選択（ヘッドレスは全スキップ＋警告）。承認されない超過は本読み entries から除外しメモリ/時間も節約。LD-12 の「列数上限なし」を改訂。spec: [2026-07-05-ld14-ndim-flatten-design.md](superpowers/specs/2026-07-05-ld14-ndim-flatten-design.md)。**残りは第2弾（開く経路 LD-01 CSV ピッカー〔SH-01 連携〕・LD-02 拡張子）のみ**。次の候補は `gui-shell-controls` または LD 第2弾。
 >
 > **`analysis-correctness`（AN-01/02/03）完了**: 統計・補間のサイレント誤計算を、値が非有限のサンプルを除いた共通ビュー `Signal.finite_view()`（`sorted_view` と同型のキャッシュ＋zero-copy fast path＋delegate）で解消。AN-01=範囲統計を有限値のみで算出し `count` を範囲内の有限数に／AN-02=補間で NaN を欠測として除外し前後の有限サンプル間で補間／AN-03=単一有限サンプルは ZOH 前方保持（`t≥ts0` で値・`t<ts0` は None）。描画（RN クラスタ）は不変更で責務分離。spec: [2026-07-05-analysis-correctness-design.md](superpowers/specs/2026-07-05-analysis-correctness-design.md)／plan: [2026-07-05-analysis-correctness.md](superpowers/plans/2026-07-05-analysis-correctness.md)。
+>
+> **`rendering-correctness`（RN-01/RN-02）完了**: 描画のサイレントなデータ欠落を解消。RN-01=X 窓スライスを窓外の隣接サンプル1点ずつまで拡張し、窓内にサンプルが無くても窓を横切る線分を描く（疎信号のズーム消失を解消・窓が信号域外なら境界1点は可視域外でクリップ＝外挿の捏造なし）。RN-02=`_x_range_is_auto` フラグで「自動フィット中は追加信号のたび x_range を全信号の時間和集合へ拡張・手動ズーム後は尊重（Reset X が受け皿）」を実現し、別時間域の2本目信号が窓外で無表示になる問題を解消。X 同期は `set_x_range` 経由で手動追従。残りは RN-03/04/05（性能・Y 軸退化）。spec: [2026-07-05-rendering-correctness-design.md](superpowers/specs/2026-07-05-rendering-correctness-design.md)／plan: [2026-07-05-rendering-correctness.md](superpowers/plans/2026-07-05-rendering-correctness.md)。
 
 **境界判断**:
 - **LOD（R21）は MVP に統合**（当初は独立 spec 案）。静的DSはズームイン時に生データ細部・スパイクが見えず ADAS 解析に不十分なため、viewport 連動の動的DSを最初から導入し実用精度を確保
