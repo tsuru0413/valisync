@@ -223,6 +223,27 @@ def write_mdf4_2d(tmp_path: Path) -> Path:
     return path
 
 
+def write_mdf4_wide_2d(tmp_path: Path, cols: int = 1025) -> Path:
+    """幅 cols の 2D uint8 チャンネル (上限 1024 超) + 通常チャンネル — LD-14 用.
+
+    3D は asammdf public write で round-trip 不可なので、per-channel 1024 ガードの
+    end-to-end 検証は幅広 2D (列数 > 1024) で行う。列 i の 0 行目 = i%256。
+    """
+    ts = np.array([0.0, 0.1, 0.2], dtype=np.float64)
+    mat = np.tile(np.arange(cols, dtype=np.uint8), (3, 1))  # (3, cols)
+    mdf = MDF()
+    try:
+        mdf.append([ASignal(samples=mat, timestamps=ts, name="Wide")])
+        mdf.append(
+            [ASignal(samples=np.array([1.0, 2.0, 3.0]), timestamps=ts, name="Clean")]
+        )
+        path = tmp_path / "wide2d.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
 def write_mdf4_structured(tmp_path: Path) -> Path:
     """構造化 dtype (x,y) チャンネル — フィールド展開検証用."""
     ts = np.array([0.0, 0.1, 0.2])

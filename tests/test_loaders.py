@@ -29,6 +29,7 @@ from .mdf4_helpers import (
     write_mdf4_shared_group,
     write_mdf4_structured,
     write_mdf4_value2text,
+    write_mdf4_wide_2d,
 )
 
 
@@ -608,3 +609,16 @@ def test_explode_samples_plain_3d_expands() -> None:
     ]
     assert np.array_equal(dict(pairs)["Cube[1][1]"], arr[:, 1, 1])
     assert any("本に展開" in d.message for d in diags)
+
+
+def test_scan_oversized_flags_wide_channel(tmp_path: Path) -> None:
+    """1 レコードプローブで 1024 超チャンネルのみ検出する (LD-14)."""
+    from asammdf import MDF
+
+    path = write_mdf4_wide_2d(tmp_path, cols=1025)
+    loader = Mdf4Loader()
+    with MDF(str(path)) as mdf:
+        oversized, keys = loader._scan_oversized(mdf, None)
+    assert [o.name for o in oversized] == ["Wide"]
+    assert oversized[0].column_count == 1025
+    assert len(keys) == 1  # (gi, ci) キーが 1 件

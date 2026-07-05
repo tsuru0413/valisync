@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -10,6 +11,28 @@ from asammdf import MDF
 
 from valisync.core.models import Diagnostic, LoadResult, Signal, SignalGroup
 from valisync.core.models.load_result import LoadCancelled
+
+EXPANSION_COLUMN_LIMIT = 1024  # per-channel の展開後リーフ列数の上限 (LD-14)
+
+
+@dataclass(frozen=True)
+class OversizedChannel:
+    """展開列数が上限を超えるチャンネル (確認ダイアログ提示用)."""
+
+    name: str
+    column_count: int
+
+
+@dataclass(frozen=True)
+class ExpansionRequest:
+    """上限超チャンネルの集約 — confirm_expansion コールバックへ渡す."""
+
+    channels: tuple[OversizedChannel, ...]
+
+
+# confirm_expansion(request) -> 展開する channels のインデックス集合。
+# 返らなかったインデックスはスキップ。空集合は全スキップ。
+ConfirmExpansion = Callable[[ExpansionRequest], set[int]]
 
 # Maps asammdf BusType int values to Signal.bus_type strings.
 # asammdf v4_constants.BusType: CAN=2, ETHERNET=7.
@@ -167,9 +190,43 @@ class Mdf4Loader:
         "ignore_value2text_conversions": True,
         "copy_master": False,  # マスタ複製の排除 (LD-10)
     }
+    # 形状スキャン専用: 1 レコードだけ raw で読む (変換不要・形状は変換非依存)。
+    _PROBE_OPTIONS: ClassVar[dict[str, Any]] = {
+        "record_count": 1,
+        "raw": True,
+        "ignore_value2text_conversions": True,
+        "copy_master": False,
+    }
 
     def supports(self, file_path: Path) -> bool:
         return file_path.suffix.lower() == ".mf4"
+
+    def _scan_oversized(
+        self,
+        mdf: Any,
+        cancel: Callable[[], bool] | None,
+    ) -> tuple[list[OversizedChannel], list[tuple[int, int]]]:
+        """本読み前に各チャンネルの展開列数を 1 レコードプローブで算出する (LD-14).
+
+        1024 超のチャンネルを集約して返す。呼び出しはグループ単位 (仮想グループ数
+        ぶん) の極小読みで済む。戻り値は表示用 OversizedChannel 列と、対応する
+        (物理gi, ci) キー列 (本読みでの除外照合用) の並列リスト。
+        """
+        oversized: list[OversizedChannel] = []
+        keys: list[tuple[int, int]] = []
+        for gi in mdf.virtual_groups:
+            if cancel is not None and cancel():
+                raise LoadCancelled("load cancelled during expansion scan")
+            entries = self._group_entries(mdf, gi)
+            if not entries:
+                continue
+            probes = mdf.select(entries, **self._PROBE_OPTIONS)
+            for (name, phys_gi, ci), probe in zip(entries, probes, strict=True):
+                cols = _leaf_column_count(probe.samples)
+                if cols > EXPANSION_COLUMN_LIMIT:
+                    oversized.append(OversizedChannel(name=name, column_count=cols))
+                    keys.append((phys_gi, ci))
+        return oversized, keys
 
     def load(
         self,
