@@ -34,6 +34,7 @@ from valisync.gui.views.data_explorer_view import DataExplorerView
 from valisync.gui.views.diagnostics_view import DiagnosticsView
 from valisync.gui.views.file_browser_view import FileBrowserView
 from valisync.gui.views.graph_area_view import GraphAreaView
+from valisync.gui.workers.expansion_confirmer import ExpansionConfirmer
 from valisync.gui.workers.load_worker import LoadController
 
 _ORG = "ValiSync"
@@ -68,6 +69,8 @@ class MainWindow(QMainWindow):
         self.graph_area_view = GraphAreaView(self.graph_area_vm)
         self.busy_overlay = BusyOverlay(self)
         self._load_controller = LoadController(parent=self)
+        # GUI スレッド所属 — ワーカーからの展開確認をモーダルへ marshal (LD-14)。
+        self._expansion_confirmer = ExpansionConfirmer(self)
         self.busy_overlay.cancel_requested.connect(self._load_controller.cancel_active)
         self.data_explorer: DataExplorerView | None = None
 
@@ -145,7 +148,12 @@ class MainWindow(QMainWindow):
             session.remove_group(outcome.key, force=True)
 
         self._load_controller.submit(
-            lambda: session.load(target, None, cancel=cancel_event.is_set),
+            lambda: session.load(
+                target,
+                None,
+                cancel=cancel_event.is_set,
+                confirm_expansion=self._expansion_confirmer.confirm,
+            ),
             busy=self.busy_overlay,
             cancel_event=cancel_event,
             label=target.name,
