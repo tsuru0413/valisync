@@ -1189,3 +1189,56 @@ def test_rn01_full_view_unchanged(tmp_path: Path) -> None:
     vm.add_signal(key)  # auto-fit で [0,200]
     ts = vm.render_data()[0].timestamps
     assert ts.tolist() == [0.0, 100.0, 200.0]
+
+
+# ─── RN-02: 別時間域の追加信号が窓外で無表示 (自動フィットの和集合拡張) ──────────
+
+
+def _ranged_sig(name: str, t0: float, t1: float) -> Signal:
+    """[t0, t1] の 2 点信号 (別時間域の比較用)."""
+    return Signal(
+        name=name,
+        timestamps=np.array([t0, t1], dtype=np.float64),
+        values=np.array([1.0, 2.0], dtype=np.float64),
+        file_format="CSV",
+        bus_type="",
+        source_file="",
+    )
+
+
+def test_rn02_second_signal_expands_range_in_auto_mode(tmp_path: Path) -> None:
+    """自動フィット中は別時間域の2本目追加で x_range が和集合へ拡張 (RN-02)."""
+    session = Session()
+    a = _register_signal(session, _ranged_sig("A", 0.0, 100.0), tmp_path)
+    b = _register_signal(session, _ranged_sig("B", 500.0, 600.0), tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(a)
+    assert vm.x_range == (0.0, 100.0) and vm._x_range_is_auto is True
+    vm.add_signal(b)
+    assert vm.x_range == (0.0, 600.0)  # 和集合 — B が窓外に消えない
+
+
+def test_rn02_manual_zoom_is_respected(tmp_path: Path) -> None:
+    """手動ズーム後は追加で範囲を触らない (RN-02・ユーザー決定=何もしない)."""
+    session = Session()
+    a = _register_signal(session, _ranged_sig("A", 0.0, 100.0), tmp_path)
+    c = _register_signal(session, _ranged_sig("C", 500.0, 600.0), tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(a)
+    vm.set_x_range(40.0, 60.0)  # 手動ズーム
+    assert vm._x_range_is_auto is False
+    vm.add_signal(c)
+    assert vm.x_range == (40.0, 60.0)  # ズーム尊重・拡張しない
+
+
+def test_rn02_reset_x_returns_to_auto(tmp_path: Path) -> None:
+    """reset_x は union フィットして auto へ復帰 (RN-02)."""
+    session = Session()
+    a = _register_signal(session, _ranged_sig("A", 0.0, 100.0), tmp_path)
+    b = _register_signal(session, _ranged_sig("B", 500.0, 600.0), tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(a)
+    vm.set_x_range(40.0, 60.0)  # manual
+    vm.add_signal(b)  # manual なので拡張しない
+    vm.reset_x()
+    assert vm.x_range == (0.0, 600.0) and vm._x_range_is_auto is True

@@ -127,6 +127,10 @@ class GraphPanelVM(Observable):
         self._session = session
         self._plotted: list[_PlottedEntry] = []
         self.x_range: tuple[float, float] | None = None
+        # RN-02: x_range が「自動フィット由来」か「手動ズーム由来」かを区別する。
+        # None チェックだけだと初回オートフィット後の非 None を手動と誤認し、
+        # 別時間域の2本目信号が窓外で無表示になる。
+        self._x_range_is_auto: bool = True
         self._column_count: int = 2
         self._axes: list[YAxisVM] = [YAxisVM(column=self._column_count - 1)]
         self.panel_width_px: int = 800
@@ -485,6 +489,7 @@ class GraphPanelVM(Observable):
     def set_x_range(self, lo: float, hi: float) -> None:
         """Set the horizontal view range and invalidate the render cache."""
         self.x_range = (lo, hi)
+        self._x_range_is_auto = False  # RN-02: 手動ズーム/パン/同期由来は auto を外す
         self._invalidate_cache()
         self._notify("range")
 
@@ -518,6 +523,7 @@ class GraphPanelVM(Observable):
         # Clear to None when nothing is fittable so a later add_signal can
         # auto-fit instead of being clipped to a stale window.
         self.x_range = (lo, hi) if lo is not None and hi is not None else None
+        self._x_range_is_auto = True  # RN-02: 明示リセットで自動フィットへ復帰
         self._invalidate_cache()
         self._notify("range")
 
@@ -929,7 +935,10 @@ class GraphPanelVM(Observable):
         """
         sig_map = self._signal_map()
 
-        if self.x_range is None:
+        # RN-02: None のときだけでなく auto のとき常に全信号の和集合へフィット。
+        # 初回オートフィット後も auto のままなら、別時間域の追加信号で範囲が広がり
+        # 窓外の無表示を防ぐ。手動ズーム後 (auto=False) は尊重して触らない。
+        if self._x_range_is_auto:
             x_lo: float | None = None
             x_hi: float | None = None
             for entry in self._plotted:
