@@ -31,8 +31,10 @@ class RangeStatistics:
         """Return statistics for samples where t_start ≤ timestamp ≤ t_end.
 
         Raises ValueError when t_start or t_end is NaN/Inf (Req 13.6) or when
-        t_start > t_end (Req 13.5). When the range contains no samples, all
-        float statistics are NaN and count is 0 (Req 13.4).
+        t_start > t_end (Req 13.5). Non-finite (NaN/Inf) *values* in range are
+        excluded via ``finite_view()``; ``count`` is the number of finite
+        samples in range (AN-01). When the range holds no finite samples
+        (empty or all non-finite), all float statistics are NaN and count is 0.
         """
         if not math.isfinite(t_start):
             raise ValueError(f"t_start must be finite, got {t_start!r}")
@@ -41,7 +43,7 @@ class RangeStatistics:
         if t_start > t_end:
             raise ValueError(f"t_start must be ≤ t_end, got {t_start!r} > {t_end!r}")
 
-        ts, vs = signal.sorted_view()
+        ts, vs = signal.finite_view()
 
         in_range = vs[(ts >= t_start) & (ts <= t_end)]
 
