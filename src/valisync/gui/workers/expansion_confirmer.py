@@ -14,7 +14,7 @@ from typing import cast
 
 from PySide6.QtCore import QObject, Qt, Signal, Slot
 
-from valisync.core.loaders.mdf4_loader import ExpansionRequest
+from valisync.core.loaders.mdf_loader import ExpansionRequest
 from valisync.gui.views.expansion_dialog import ExpansionDialog
 
 _Payload = tuple[ExpansionRequest, dict[str, set[int]], threading.Event]

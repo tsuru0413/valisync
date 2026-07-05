@@ -154,7 +154,7 @@ def test_placeholder_no_match_includes_query_and_recovers(
 def test_no_channels_placeholder_shown_after_refresh(
     qtbot: QtBot, tmp_path: Path, monkeypatch
 ) -> None:
-    # mdf4_loader は全チャンネル skip 時に 0ch グループを登録し得る
+    # mdf_loader は全チャンネル skip 時に 0ch グループを登録し得る
     # (production 到達可能・catalog LD-05) — この経路が View まで通しで
     # プレースホルダに落ちることを確認する(VM 単体では View の
     # QStackedWidget 切替配線までは検証できない)。

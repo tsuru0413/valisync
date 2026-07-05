@@ -16,8 +16,9 @@ valisync/
 │       │   ├── loaders/
 │       │   │   ├── __init__.py
 │       │   │   ├── base.py                # SignalLoader Protocol
-│       │   │   ├── mdf4_loader.py         # MDF4 unified (CAN/XCP/Ethernet)
+│       │   │   ├── mdf_loader.py          # MDF 3.x/4.x unified (CAN/XCP/Ethernet)
 │       │   │   ├── csv_loader.py          # CSV (FormatDefinition-based)
+│       │   │   ├── csv_format_detector.py # CSV 先頭行→FormatDefinition 自動検出 (LD-01)
 │       │   │   └── format_def_manager.py  # FormatDefinition CRUD + JSON persistence
 │       │   ├── sync/
 │       │   │   ├── __init__.py
@@ -82,7 +83,7 @@ valisync/
 
 - Test files: `test_<module>.py` for unit tests, `test_pbt_<topic>.py` for property-based tests
 - Models: one file per domain concept (`signal.py`, `signal_group.py`, `format_def.py`)
-- Loaders: one file per format (`mdf4_loader.py`, `csv_loader.py`)
+- Loaders: one file per format (`mdf_loader.py`, `csv_loader.py`)
 - Protocol interfaces: defined in `base.py` within each module directory
 
 ## Module Boundaries

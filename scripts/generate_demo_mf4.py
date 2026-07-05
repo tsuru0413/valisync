@@ -536,7 +536,7 @@ def _build_groups() -> list[GroupDef]:
             "",
             np.uint8,
             # value2text (TABX) 埋込復活 (第3弾 LD-13/LD-07 で解消): 第2弾
-            # Finding 3 で見送った Mdf4Loader の dead オプション問題
+            # Finding 3 で見送った MdfLoader の dead オプション問題
             # (ignore_value2text_conversions が MDF() に無効でテキスト化され
             # 「non-numeric, skipped」で消滅) は select() ベースの刷新で
             # 解消済み — 生値のまま生存し、metadata['value_labels'] にこの
@@ -606,7 +606,7 @@ def _group_timestamps(
 
 
 def _group_source(g: GroupDef) -> Source:
-    """グループの acq_source — CAN/Ethernet は mdf4_loader._BUS_TYPE_MAP に整合させる."""
+    """グループの acq_source — CAN/Ethernet は mdf_loader._BUS_TYPE_MAP に整合させる."""
     if g.bus is None:
         return Source(
             name="XCP:HILS_ECU",
@@ -632,7 +632,7 @@ def _pack_array_channel(values: np.ndarray) -> np.ndarray:
 
     Finding 2 (review): 構造化 dtype (単一フィールドの subarray) でパッキング
     すると、asammdf 8.8.11 の iter_channels がこの配列を ndim==1 の
-    structured array として返し、Mdf4Loader の 2D skip 判定を素通りしてしまう
+    structured array として返し、MdfLoader の 2D skip 判定を素通りしてしまう
     — さらに読み戻し時に (i) 親チャンネルが列0だけの偽データとして化け、
     (ii) 存在しない兄弟チャンネル ObjMatrix[0..7] が8本湧く (実機確認済み)。
     これは spec の設計目的 (本番 (b) パターンの「2D samples, skipped」再現)
@@ -643,7 +643,7 @@ def _pack_array_channel(values: np.ndarray) -> np.ndarray:
     レコードバイトサイズを要素1個分しか確保しない既知の asammdf バグで
     後続サンプルがずれる — tests/mdf4_helpers.py の
     write_mdf4_all_channels_bad が LD 第1弾で使ったのと同じ手法)。この結果
-    iter_channels は ndim==2 のまま返し、Mdf4Loader が 2D として認識できる
+    iter_channels は ndim==2 のまま返し、MdfLoader が 2D として認識できる
     (第2弾時点は skip 診断・core-loaders-hardening 第3弾以降は Name[i] へ
     要素展開+info 診断)。本チャンネルは 2D 経路の検証専用データであり
     物理精度は不要なため、0-255m にクリップ量子化する

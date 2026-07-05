@@ -336,3 +336,11 @@ def test_namespaced_wrappers_share_sorted_view_cache(tmp_path):
 
     assert sigs_a[0] is not sigs_b[0]  # ラッパーは毎回新規生成される(前提)
     assert sigs_a[0].sorted_view()[0] is sigs_b[0].sorted_view()[0]  # キャッシュ共有
+
+
+def test_session_is_csv_true_for_csv_false_for_mdf() -> None:
+    """is_csv は CSV ローダー対象かを返す (GUI 開く経路分岐用・LD-01)。"""
+    s = Session()
+    assert s.is_csv(Path("a.csv")) is True
+    assert s.is_csv(Path("a.CSV")) is True
+    assert s.is_csv(Path("a.mf4")) is False

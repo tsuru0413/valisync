@@ -571,3 +571,68 @@ def test_load_file_wires_cancel_event_and_adapter(qtbot, monkeypatch, tmp_path):
     )
     kw["on_discard"](types.SimpleNamespace(key="csv_9"))
     assert calls == [("csv_9", True)]
+
+
+# ─── CSV プリフライト配線 (LD-01) ─────────────────────────────────────────────
+
+
+def test_load_file_csv_uses_resolver_format(qtbot, monkeypatch, tmp_path):
+    """CSV は _csv_format_resolver が返す FormatDefinition で session.load される (LD-01)."""
+    import contextlib
+
+    window = _make_window(qtbot)
+    fmt = _csv_format()
+    window._csv_format_resolver = lambda p: fmt  # ダイアログを差し替え
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        window._load_controller,
+        "submit",
+        lambda load_callable, **kw: captured.update(cb=load_callable, kw=kw),
+    )
+    window._load_file(_write_csv(tmp_path))
+
+    seen: dict = {}
+
+    def fake_load(path, f, cancel=None, confirm_expansion=None):
+        seen["fmt"] = f
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(window.app_vm.session, "load", fake_load)
+    with contextlib.suppress(RuntimeError):
+        captured["cb"]()
+    assert seen["fmt"] is fmt
+
+
+def test_load_file_csv_cancel_aborts_without_submit(qtbot, monkeypatch, tmp_path):
+    """resolver が None (ダイアログキャンセル) ならロードせず _on_load_cancelled (LD-01)."""
+    window = _make_window(qtbot)
+    window._csv_format_resolver = lambda p: None
+
+    submits: list = []
+    monkeypatch.setattr(
+        window._load_controller, "submit", lambda *a, **k: submits.append(a)
+    )
+    cancelled: list = []
+    monkeypatch.setattr(window, "_on_load_cancelled", lambda p: cancelled.append(p))
+    window._load_file(_write_csv(tmp_path))
+
+    assert submits == []
+    assert len(cancelled) == 1
+
+
+def test_load_file_mdf_skips_resolver(qtbot, monkeypatch, tmp_path):
+    """MDF は resolver を通らず format_def=None で submit (LD-01 無回帰)."""
+    window = _make_window(qtbot)
+    called: list = []
+    window._csv_format_resolver = lambda p: called.append(p)
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        window._load_controller,
+        "submit",
+        lambda load_callable, **kw: captured.update(cb=load_callable),
+    )
+    window._load_file(tmp_path / "x.mf4")
+    assert called == []  # CSV 判定を通らない
+    assert "cb" in captured  # submit された

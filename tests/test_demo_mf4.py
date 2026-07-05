@@ -234,7 +234,7 @@ def test_2d_channels_explode_in_valisync(tmp_path):
 
 def test_turn_sig_survives_load_with_raw_enum_values(tmp_path):
     # Finding 3 回帰: value2text (TABX) conversion を埋め込むと、
-    # Mdf4Loader の ignore_value2text_conversions が MDF() コンストラクタには
+    # MdfLoader の ignore_value2text_conversions が MDF() コンストラクタには
     # 効かない dead オプションのため iter_channels がテキストを返し、
     # 「non-numeric, skipped」でチャンネルごと消滅していた。
     out = gen.write_mf4(
@@ -284,7 +284,7 @@ def test_valisync_loads_smoke_profile(tmp_path):
 def test_valisync_dirty_shows_nonmonotonic_warning(tmp_path):
     # brief 相当: 既存の dirty テストは asammdf/CLI レベルの生タイムスタンプ検証のみ
     # (test_dirty_injects_non_monotonic 等) — ここでは Session.load を経由し、LD-03
-    # (core/loaders/mdf4_loader.py) が非単調/重複を warning 診断として実際に表面化
+    # (core/loaders/mdf_loader.py) が非単調/重複を warning 診断として実際に表面化
     # させることを確認する。
     out = tmp_path / "vd.mf4"
     gen.main(["--out", str(out), "--profile", "smoke", "--seed", "1", "--dirty"])

@@ -108,8 +108,8 @@
 
 | ID | 重要度 | 課題 | 場所 | ユーザー影響 |
 |---|---|---|---|---|
-| LD-01 | 🔴 | CSV を GUI から開けず無言失敗（format picker 未実装＋`format_def=None` ハードコード＋Session が `ValueError` 送出） | `main_window.py:124`, `core/session.py:84`（UI 側は SH-01 と連携） | 主要フォーマット CSV が完全な行き止まり |
-| LD-02 | 🔴 | MDF ローダーが `.mf4` 拡張子限定 — `.mdf`/`.dat` は `supports()`=False で黙って失敗 | `core/loaders/mdf4_loader.py:57` | 実務で多い測定ファイルが開けない |
+| LD-01 | 🔴 | ✅**解消（第2弾）** CSV を `CsvFormatDetector`（先頭行から区切り/ヘッダ/単位行/時間列/信号列を推定・時間単位は既定 sec＋確認）＋`CsvFormatDialog`（確認/微調整・区切りライブ再分割・不変条件で OK 無効化）で開けるように。`main_window._load_file` の CSV プリフライトから `format_resolver`（注入可能）で解決し `session.load(path, fmt)`。キャンセルは中止（エラー無し） | `core/loaders/csv_format_detector.py`・`gui/views/csv_format_dialog.py`・`main_window._load_file`・`session.is_csv` | 主要フォーマット CSV が完全な行き止まり |
+| LD-02 | 🔴 | ✅**解消（第2弾）** `MdfLoader`（旧 `Mdf4Loader` をリネーム置換・`mdf_loader.py`）の `supports()` を `.mf4/.mdf/.dat` へ拡張、版判定は asammdf の内容自動判別に委任。MDF3 実ファイルは既存 `select()` 経路でそのまま読め、`file_format` は版に応じ MDF3/MDF4 へ正確化。非MDF/破損は既存 try/except で診断化（クラッシュなし） | `core/loaders/mdf_loader.py` `supports`/`_format_label` | 実務で多い測定ファイルが開けない |
 | LD-03 | 🔴 | ✅**解消（PR #39）** MDF4 の非単調/重複タイムスタンプ ch が厳密検証で丸ごと skip → 記録どおり受け入れ＋「非単調 N 箇所・重複 M 点」warning（演算/描画は `Signal.sorted_view()` 整列ビュー・重複は keep-last） | `core/loaders/mdf4_loader.py`（旧 :156） | CAN/イベント駆動ログの信号が無言で欠落 |
 | LD-04 | 🔴 | ✅**解消（PR #39）** CSV は1列の非単調/重複でファイル全体が読み込み失敗 → MDF4 と対称化（受け入れ＋ファイル単位 warning） | `core/loaders/csv_loader.py`（旧 :176） | 1列の乱れで全体が開けない |
 | LD-05 | 🟠 | ✅**解消（PR #39）** チャンネル0本の MDF4 も無言で「成功」 → 「チャンネルが 0 本」warning（R2 の no_channels プレースホルダと接続） | `core/loaders/mdf4_loader.py`（旧 :164） | 開いたのに解析へ進めない |

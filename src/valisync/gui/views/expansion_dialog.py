@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from valisync.core.loaders.mdf4_loader import EXPANSION_COLUMN_LIMIT, ExpansionRequest
+from valisync.core.loaders.mdf_loader import EXPANSION_COLUMN_LIMIT, ExpansionRequest
 
 
 class ExpansionDialog(QDialog):

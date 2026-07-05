@@ -1,4 +1,4 @@
-"""Unit tests for CsvLoader and Mdf4Loader (Task 10.1).
+"""Unit tests for CsvLoader and MdfLoader (Task 10.1).
 
 Covers the happy path plus the error cases from Requirements 1.4/1.6/1.7/1.8
 (MDF4) and 2.5/2.6/2.8 (CSV): missing file, corrupt/invalid format, non-numeric
@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from valisync.core.loaders.csv_loader import CsvLoader
-from valisync.core.loaders.mdf4_loader import Mdf4Loader
+from valisync.core.loaders.mdf_loader import MdfLoader
 from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.session import LoadCancelled
 
@@ -21,6 +21,7 @@ from .mdf4_helpers import (
     CAN,
     ETHERNET,
     NONE,
+    write_mdf3,
     write_mdf4,
     write_mdf4_2d,
     write_mdf4_all_channels_bad,
@@ -249,7 +250,7 @@ def test_csv_loader_cancel_checked_per_1000_rows(tmp_path: Path) -> None:
     assert 2 <= len(calls) <= 5  # 行数比例で毎行呼ばれていないこと
 
 
-# ─── Mdf4Loader: happy path ───────────────────────────────────────────────────
+# ─── MdfLoader: happy path ───────────────────────────────────────────────────
 
 
 def test_mdf4_basic_load_bus_type_detection(tmp_path: Path) -> None:
@@ -279,7 +280,7 @@ def test_mdf4_basic_load_bus_type_detection(tmp_path: Path) -> None:
             },
         ],
     )
-    result = Mdf4Loader().load(path)
+    result = MdfLoader().load(path)
 
     assert result.signal_group is not None
     by_name = {s.name: s for s in result.signal_group.signals}
@@ -299,7 +300,7 @@ def test_mdf4_duplicate_names_disambiguated(tmp_path: Path) -> None:
             {"name": "sig", "timestamps": ts, "values": [3.0, 4.0], "bus_type": CAN},
         ],
     )
-    result = Mdf4Loader().load(path)
+    result = MdfLoader().load(path)
 
     assert result.signal_group is not None
     names = {s.name for s in result.signal_group.signals}
@@ -311,22 +312,89 @@ def test_mdf4_multiple_channel_groups_all_loaded(tmp_path: Path) -> None:
         tmp_path / "multi.mf4",
         [{"name": f"ch{i}", "bus_type": CAN} for i in range(5)],
     )
-    result = Mdf4Loader().load(path)
+    result = MdfLoader().load(path)
     assert result.signal_group is not None
     assert len(result.signal_group.signals) == 5
 
 
 def test_mdf4_supports_suffix() -> None:
-    assert Mdf4Loader().supports(Path("a.mf4")) is True
-    assert Mdf4Loader().supports(Path("a.MF4")) is True
-    assert Mdf4Loader().supports(Path("a.csv")) is False
+    assert MdfLoader().supports(Path("a.mf4")) is True
+    assert MdfLoader().supports(Path("a.MF4")) is True
+    assert MdfLoader().supports(Path("a.csv")) is False
 
 
-# ─── Mdf4Loader: error cases ──────────────────────────────────────────────────
+# ─── MdfLoader: .mdf/.dat 受理と版横断読み取り (LD-02) ─────────────────────────
+
+
+def test_mdf_supports_mdf_and_dat_suffixes() -> None:
+    """supports() は .mf4/.mdf/.dat を受理し .csv を拒否 (LD-02)."""
+    loader = MdfLoader()
+    assert loader.supports(Path("a.mf4")) is True
+    assert loader.supports(Path("a.MDF")) is True  # 大小無視
+    assert loader.supports(Path("a.dat")) is True
+    assert loader.supports(Path("a.csv")) is False
+
+
+def test_mdf3_file_loads_and_labels_version(tmp_path: Path) -> None:
+    """MDF3 実ファイルが既存 select() 経路で読め、file_format が MDF3 になる (LD-02)."""
+    result = MdfLoader().load(write_mdf3(tmp_path))
+    assert result.signal_group is not None
+    names = [s.name for s in result.signal_group.signals]
+    assert any("Sine3x" in n for n in names)
+    assert result.signal_group.file_format == "MDF3"
+
+
+def test_mf4_file_format_stays_mdf4(tmp_path: Path) -> None:
+    """.mf4 の file_format は MDF4 のまま (版正確化の無回帰) (LD-02)."""
+    path = write_mdf4(
+        tmp_path / "v4.mf4",
+        [
+            {
+                "name": "s",
+                "timestamps": [0.0, 1.0],
+                "values": [1.0, 2.0],
+                "bus_type": CAN,
+            }
+        ],
+    )
+    result = MdfLoader().load(path)
+    assert result.signal_group is not None
+    assert result.signal_group.file_format == "MDF4"
+
+
+def test_dat_renamed_mdf4_loads(tmp_path: Path) -> None:
+    """MDF4 中身を .dat 拡張子にしても開ける (LD-02・拡張子で拒否しない)."""
+    src = write_mdf4(
+        tmp_path / "src.mf4",
+        [
+            {
+                "name": "sig",
+                "timestamps": [0.0, 1.0],
+                "values": [1.0, 2.0],
+                "bus_type": CAN,
+            }
+        ],
+    )
+    dat = tmp_path / "renamed.dat"
+    dat.write_bytes(src.read_bytes())
+    result = MdfLoader().load(dat)
+    assert result.signal_group is not None
+
+
+def test_non_mdf_dat_reports_diagnostic_not_crash(tmp_path: Path) -> None:
+    """非MDF の .dat はクラッシュせず error 診断を返す (LD-02)."""
+    dat = tmp_path / "garbage.dat"
+    dat.write_bytes(b"this is not an MDF file\n" * 8)
+    result = MdfLoader().load(dat)
+    assert result.signal_group is None
+    assert any(d.level == "error" for d in result.diagnostics)
+
+
+# ─── MdfLoader: error cases ──────────────────────────────────────────────────
 
 
 def test_mdf4_file_not_found(tmp_path: Path) -> None:
-    result = Mdf4Loader().load(tmp_path / "missing.mf4")
+    result = MdfLoader().load(tmp_path / "missing.mf4")
     assert result.signal_group is None
     assert result.diagnostics[0].level == "error"
 
@@ -334,17 +402,17 @@ def test_mdf4_file_not_found(tmp_path: Path) -> None:
 def test_mdf4_corrupt_file(tmp_path: Path) -> None:
     path = tmp_path / "corrupt.mf4"
     path.write_bytes(b"this is not a valid MDF4 file" * 10)
-    result = Mdf4Loader().load(path)
+    result = MdfLoader().load(path)
     assert result.signal_group is None
     assert result.diagnostics[0].level == "error"
 
 
-# ─── Mdf4Loader: 非単調/0ch 診断 (LD-03/05) ───────────────────────────────────
+# ─── MdfLoader: 非単調/0ch 診断 (LD-03/05) ───────────────────────────────────
 
 
 def test_mdf4_non_monotonic_channel_is_accepted_with_warning(tmp_path: Path) -> None:
     path = write_mdf4_non_monotonic(tmp_path)
-    result = Mdf4Loader().load(path)
+    result = MdfLoader().load(path)
     assert result.signal_group is not None
     names = [s.name for s in result.signal_group.signals]
     assert "messy" in names  # 旧実装では skip されていた
@@ -358,7 +426,7 @@ def test_mdf4_non_finite_ts_channel_is_skipped_with_error(tmp_path: Path) -> Non
     """A NaN-timestamp channel is skipped with an error diagnostic (spec §7);
     the sibling clean channel still loads."""
     path = write_mdf4_non_finite_ts(tmp_path)
-    result = Mdf4Loader().load(path)
+    result = MdfLoader().load(path)
     assert result.signal_group is not None
     names = [s.name for s in result.signal_group.signals]
     assert "broken" not in names
@@ -369,16 +437,16 @@ def test_mdf4_non_finite_ts_channel_is_skipped_with_error(tmp_path: Path) -> Non
 
 def test_mdf4_zero_channels_emits_warning(tmp_path: Path) -> None:
     path = write_mdf4_all_channels_bad(tmp_path)
-    result = Mdf4Loader().load(path)
+    result = MdfLoader().load(path)
     assert result.signal_group is not None
     assert len(result.signal_group.signals) == 0
     assert any("0 本" in d.message for d in result.diagnostics)
 
 
-# ─── Mdf4Loader: cooperative cancel (FB-04 hard side) ─────────────────────────
+# ─── MdfLoader: cooperative cancel (FB-04 hard side) ─────────────────────────
 
 
-def test_mdf4_loader_cancel_raises(tmp_path: Path) -> None:
+def test_mdf_loader_cancel_raises(tmp_path: Path) -> None:
     path = write_mdf4(
         tmp_path / "x.mf4",
         [
@@ -391,16 +459,16 @@ def test_mdf4_loader_cancel_raises(tmp_path: Path) -> None:
         ],
     )
     with pytest.raises(LoadCancelled):
-        Mdf4Loader().load(path, cancel=lambda: True)
+        MdfLoader().load(path, cancel=lambda: True)
 
 
-# ─── Mdf4Loader: select() ベース読み取りパス (LD-13/LD-10, 第3弾 Task 2) ──────
+# ─── MdfLoader: select() ベース読み取りパス (LD-13/LD-10, 第3弾 Task 2) ──────
 
 
 def test_value2text_channel_survives_as_raw(tmp_path: Path) -> None:
     """LD-13: value2text 付きチャンネルが生値で生存する (現行は消滅=RED)."""
     path = write_mdf4_value2text(tmp_path)
-    result = Mdf4Loader().load(path)
+    result = MdfLoader().load(path)
     names = {s.name for s in result.signal_group.signals}
     assert "TurnSig" in names
     turn = next(s for s in result.signal_group.signals if s.name == "TurnSig")
@@ -413,7 +481,7 @@ def test_value2text_channel_survives_as_raw(tmp_path: Path) -> None:
 
 def test_value_labels_extracted_to_metadata(tmp_path: Path) -> None:
     """LD-07: TABX 変換表が metadata['value_labels'] に構造化保持される."""
-    result = Mdf4Loader().load(write_mdf4_value2text(tmp_path))
+    result = MdfLoader().load(write_mdf4_value2text(tmp_path))
     turn = next(s for s in result.signal_group.signals if s.name == "TurnSig")
     assert turn.metadata.get("value_labels") == {0.0: "OFF", 1.0: "LEFT", 2.0: "RIGHT"}
     clean = next(s for s in result.signal_group.signals if s.name == "Clean")
@@ -425,7 +493,7 @@ def test_value_labels_extracted_to_metadata(tmp_path: Path) -> None:
 def test_same_group_signals_share_master(tmp_path: Path) -> None:
     """LD-10: 同一グループの信号はマスタ時刻軸を共有し read-only (現行は複製=RED)."""
     path = write_mdf4_shared_group(tmp_path)
-    result = Mdf4Loader().load(path)
+    result = MdfLoader().load(path)
     a = next(s for s in result.signal_group.signals if s.name == "A")
     b = next(s for s in result.signal_group.signals if s.name == "B")
     assert np.shares_memory(a.timestamps, b.timestamps)
@@ -433,7 +501,7 @@ def test_same_group_signals_share_master(tmp_path: Path) -> None:
     assert np.array_equal(a.timestamps, b.timestamps)
 
 
-# ─── Mdf4Loader: virtual_groups 走査 (Task 2 レビュー critical) ───────────────
+# ─── MdfLoader: virtual_groups 走査 (Task 2 レビュー critical) ───────────────
 
 
 def test_remote_master_style_virtual_groups_do_not_kill_load(tmp_path: Path) -> None:
@@ -473,7 +541,7 @@ def test_remote_master_style_virtual_groups_do_not_kill_load(tmp_path: Path) -> 
             del self.virtual_groups[1]
 
     with patch.object(_MDF, "__init__", patched_init):
-        result = Mdf4Loader().load(path)
+        result = MdfLoader().load(path)
 
     assert result.signal_group is not None
     names = {s.name for s in result.signal_group.signals}
@@ -505,12 +573,12 @@ def test_helper_2d_roundtrip(tmp_path: Path) -> None:
         assert sig.samples.ndim == 2 and sig.samples.shape[1] == 3
 
 
-# ─── Mdf4Loader: 多次元/構造化チャンネルの要素展開 (LD-12, 第3弾 Task 3) ──────
+# ─── MdfLoader: 多次元/構造化チャンネルの要素展開 (LD-12, 第3弾 Task 3) ──────
 
 
 def test_2d_channel_explodes_into_columns(tmp_path: Path) -> None:
     """LD-12: 2D (Nx3) が Mat[0..2] の 1D 信号群へ展開され共有マスタを参照する."""
-    result = Mdf4Loader().load(write_mdf4_2d(tmp_path))
+    result = MdfLoader().load(write_mdf4_2d(tmp_path))
     names = {s.name for s in result.signal_group.signals}
     assert {"Mat[0]", "Mat[1]", "Mat[2]", "Clean"} <= names
     m0 = next(s for s in result.signal_group.signals if s.name == "Mat[0]")
@@ -527,7 +595,7 @@ def test_2d_channel_explodes_into_columns(tmp_path: Path) -> None:
 
 def test_structured_channel_fields_visible(tmp_path: Path) -> None:
     """LD-12: 構造化 (x,y) がフィールド単位で見える (Pt.x / Pt.y ないし成分ch)."""
-    result = Mdf4Loader().load(write_mdf4_structured(tmp_path))
+    result = MdfLoader().load(write_mdf4_structured(tmp_path))
     names = {s.name for s in result.signal_group.signals}
     # 実装時確認 (Task 1 Task2-Step2 と本タスク Step1 で確定): select() 結果には
     # 構造化チャンネルの親 (Pt) のみが届き成分 (x/y) は included_channels から
@@ -543,7 +611,7 @@ def test_structured_channel_fields_visible(tmp_path: Path) -> None:
 
 def test_leaf_column_count_matches_flatten() -> None:
     """任意形状で _leaf_column_count は _flatten のリーフ数と一致する (LD-14)."""
-    from valisync.core.loaders.mdf4_loader import _flatten, _leaf_column_count
+    from valisync.core.loaders.mdf_loader import _flatten, _leaf_column_count
 
     cases = [
         np.zeros(3),  # 1D scalar -> 1
@@ -562,7 +630,7 @@ def test_leaf_column_count_matches_flatten() -> None:
 
 def test_explode_samples_subarray_field_one_level() -> None:
     """構造化フィールドが (N,k) サブ配列のとき Name.field[i] に1段展開される."""
-    from valisync.core.loaders.mdf4_loader import _explode_samples
+    from valisync.core.loaders.mdf_loader import _explode_samples
 
     rec = np.zeros(3, dtype=[("mat", "<f8", (2,)), ("s", "<f8")])
     rec["mat"] = [[1, 2], [3, 4], [5, 6]]
@@ -576,7 +644,7 @@ def test_explode_samples_subarray_field_one_level() -> None:
 
 def test_explode_samples_over_nested_field_expands() -> None:
     """ndim>2 のネストフィールドは Name.field[i][j] へ多段展開される (LD-14)."""
-    from valisync.core.loaders.mdf4_loader import _explode_samples
+    from valisync.core.loaders.mdf_loader import _explode_samples
 
     rec = np.zeros(2, dtype=[("deep", "<f8", (2, 2)), ("s", "<f8")])
     rec["deep"] = np.arange(2 * 2 * 2).reshape(2, 2, 2)
@@ -596,7 +664,7 @@ def test_explode_samples_over_nested_field_expands() -> None:
 
 def test_explode_samples_plain_3d_expands() -> None:
     """素の 3D 配列は Cube[i][j] へ多段展開される (LD-14・従来は skip だった)."""
-    from valisync.core.loaders.mdf4_loader import _explode_samples
+    from valisync.core.loaders.mdf_loader import _explode_samples
 
     arr = np.arange(4 * 2 * 2).reshape(4, 2, 2).astype(np.float64)
     diags: list = []
@@ -616,7 +684,7 @@ def test_scan_oversized_flags_wide_channel(tmp_path: Path) -> None:
     from asammdf import MDF
 
     path = write_mdf4_wide_2d(tmp_path, cols=1025)
-    loader = Mdf4Loader()
+    loader = MdfLoader()
     with MDF(str(path)) as mdf:
         oversized, keys = loader._scan_oversized(mdf, None)
     assert [o.name for o in oversized] == ["Wide"]
@@ -626,7 +694,7 @@ def test_scan_oversized_flags_wide_channel(tmp_path: Path) -> None:
 
 def test_oversized_expands_only_when_confirmed(tmp_path: Path) -> None:
     """confirm_expansion が選んだ超過チャンネルのみ展開される (LD-14)."""
-    from valisync.core.loaders.mdf4_loader import ExpansionRequest
+    from valisync.core.loaders.mdf_loader import ExpansionRequest
 
     path = write_mdf4_wide_2d(tmp_path, cols=1025)
 
@@ -636,7 +704,7 @@ def test_oversized_expands_only_when_confirmed(tmp_path: Path) -> None:
         seen.append(req)
         return {0}  # Wide を展開する
 
-    result = Mdf4Loader().load(path, confirm_expansion=confirm)
+    result = MdfLoader().load(path, confirm_expansion=confirm)
     names = {s.name for s in result.signal_group.signals}
     assert "Clean" in names
     assert "Wide[0]" in names and "Wide[1024]" in names  # 1025 列 (0..1024)
@@ -646,7 +714,7 @@ def test_oversized_expands_only_when_confirmed(tmp_path: Path) -> None:
 def test_oversized_skipped_when_declined(tmp_path: Path) -> None:
     """空集合を返すと超過チャンネルはスキップ・警告診断が出る・他は生存 (LD-14)."""
     path = write_mdf4_wide_2d(tmp_path, cols=1025)
-    result = Mdf4Loader().load(path, confirm_expansion=lambda req: set())
+    result = MdfLoader().load(path, confirm_expansion=lambda req: set())
     names = {s.name for s in result.signal_group.signals}
     assert "Clean" in names
     assert not any(n.startswith("Wide") for n in names)
@@ -659,7 +727,7 @@ def test_oversized_skipped_when_declined(tmp_path: Path) -> None:
 def test_oversized_skipped_headless_without_callback(tmp_path: Path) -> None:
     """コールバック不在 (ヘッドレス) は超過を全スキップ+警告 (LD-14 既定)."""
     path = write_mdf4_wide_2d(tmp_path, cols=1025)
-    result = Mdf4Loader().load(path)  # confirm_expansion 無し
+    result = MdfLoader().load(path)  # confirm_expansion 無し
     names = {s.name for s in result.signal_group.signals}
     assert "Clean" in names and not any(n.startswith("Wide") for n in names)
     assert any(d.level == "warning" and "Wide" in d.message for d in result.diagnostics)

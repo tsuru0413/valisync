@@ -16,12 +16,15 @@ collaborators and connects their signals.
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import QDockWidget, QMainWindow, QMessageBox, QToolBar
 
+from valisync.core.loaders.csv_format_detector import CsvFormatDetector
+from valisync.core.models.format_def import FormatDefinition
 from valisync.core.session import LoadOutcome
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
@@ -30,6 +33,7 @@ from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 from valisync.gui.views.busy_overlay import BusyOverlay
 from valisync.gui.views.channel_browser_view import ChannelBrowserView
+from valisync.gui.views.csv_format_dialog import CsvFormatDialog
 from valisync.gui.views.data_explorer_view import DataExplorerView
 from valisync.gui.views.diagnostics_view import DiagnosticsView
 from valisync.gui.views.file_browser_view import FileBrowserView
@@ -71,6 +75,10 @@ class MainWindow(QMainWindow):
         self._load_controller = LoadController(parent=self)
         # GUI スレッド所属 — ワーカーからの展開確認をモーダルへ marshal (LD-14)。
         self._expansion_confirmer = ExpansionConfirmer(self)
+        # LD-01: CSV フォーマット解決 (検出して確認ダイアログ)。テストで差し替え可能。
+        self._csv_format_resolver: Callable[[Path], FormatDefinition | None] = (
+            self._default_csv_format_resolver
+        )
         self.busy_overlay.cancel_requested.connect(self._load_controller.cancel_active)
         self.data_explorer: DataExplorerView | None = None
 
@@ -137,9 +145,16 @@ class MainWindow(QMainWindow):
     # ─── Load pipeline ─────────────────────────────────────────────────────────
 
     def _load_file(self, path: str | Path) -> None:
-        """Load *path* off-thread (MDF4; CSV needs a format picker, deferred)."""
+        """Load *path* off-thread. CSV は事前にフォーマットを解決する (LD-01)。"""
         session = self.app_vm.session
         target = Path(path)
+        if session.is_csv(target):
+            fmt = self._csv_format_resolver(target)
+            if fmt is None:
+                self._on_load_cancelled(target)  # ダイアログキャンセル=中止(エラー無し)
+                return
+        else:
+            fmt = None  # MDF は従来どおりフォーマット不要
         cancel_event = threading.Event()  # 所有=ここ・セット権=controller(spec §4.1)
 
         def _discard(outcome: LoadOutcome) -> None:
@@ -150,7 +165,7 @@ class MainWindow(QMainWindow):
         self._load_controller.submit(
             lambda: session.load(
                 target,
-                None,
+                fmt,
                 cancel=cancel_event.is_set,
                 confirm_expansion=self._expansion_confirmer.confirm,
             ),
@@ -162,6 +177,11 @@ class MainWindow(QMainWindow):
             on_cancelled=lambda: self._on_load_cancelled(target),
             on_discard=_discard,
         )
+
+    def _default_csv_format_resolver(self, path: Path) -> FormatDefinition | None:
+        """既定の CSV フォーマット解決: 自動検出 → 確認ダイアログ (LD-01)。"""
+        detected = CsvFormatDetector().detect(path)
+        return CsvFormatDialog.ask(detected, parent=self)
 
     def _on_loaded(self, outcome: LoadOutcome) -> None:
         # GUI thread; register, surface diagnostics, activate, update status.
