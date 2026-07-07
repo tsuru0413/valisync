@@ -59,7 +59,7 @@
 | SH-04 | 🟠 | タブを閉じる UI が無い（`remove_tab` 到達不能） | `gui/views/graph_area_view.py:179` | 増えたタブを整理できない |
 | SH-05 | 🟠 | キーボードショートカット/アクセラレータが皆無 | `gui/views/main_window.py:104` | 反復操作が遅い |
 | SH-06 | 🟠 | パネルの追加/削除が右クリック限定・可視ボタンなし | `gui/views/graph_panel_view.py:1776` | パネル分割の発見が困難 |
-| SH-07 | ✅解消 | **✅解消（2026-07-08・増分1a）: File Browser Open ボタン（選択ファイルをアクティブパネルへ追加）を実装。** 〔元課題〕File Browser にファイルを開く/追加する操作が無い（空リストから前進不能） | `gui/views/file_browser_view.py:34` | File Browser 単体で作業を始められない |
+| SH-07 | ✅解消 | **✅解消（2026-07-08・増分1a）: File Browser ヘッダの開くボタン（ヘッダの開くボタン→open_requested→open_file で File>Open と同じファイル選択ダイアログを開き、空リストの手詰まりを解消）を実装。** 〔元課題〕File Browser にファイルを開く/追加する操作が無い（空リストから前進不能） | `gui/views/file_browser_view.py:34` | File Browser 単体で作業を始められない |
 | SH-08 | 🟠 | 読み込み済みファイル削除が右クリック限定・確認/取り消しなし | `gui/views/file_browser_view.py:60,63` | 誤操作で即消える |
 | SH-09 | 🟠 | データソース永続化が実アプリで無効（毎回消える。`sources_file` 未指定） | `gui/views/data_explorer_view.py:128`（Phase3 persistence と重複領域） | 毎回フォルダ再登録 |
 | SH-10 | 🟠 | 登録データソース一覧が UI に無く複数ソース切替不可 | `gui/views/data_explorer_view.py:137` | 複数フォルダを扱えない |

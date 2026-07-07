@@ -26,10 +26,15 @@ def test_ctrl_o_triggers_open(qtbot: QtBot, monkeypatch) -> None:
     from valisync.gui.viewmodels.app_viewmodel import AppViewModel
     from valisync.gui.views.main_window import MainWindow
 
+    fired: list[int] = []
+    # Patch the CLASS before constructing: __init__ connects the Open QAction to
+    # self.open_file, binding the method at connect() time. An instance-level
+    # patch applied after construction would not change what the connected action
+    # invokes, and the real open_file opens a modal QFileDialog that would hang
+    # the run.
+    monkeypatch.setattr(MainWindow, "open_file", lambda self, *a: fired.append(1))
     mw = MainWindow(AppViewModel())
     qtbot.addWidget(mw)
-    fired: list[int] = []
-    monkeypatch.setattr(mw, "open_file", lambda *a: fired.append(1))
     mw.show()
     qtbot.waitExposed(mw)
     QApplication.processEvents()
