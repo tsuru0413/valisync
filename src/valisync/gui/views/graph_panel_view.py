@@ -1136,6 +1136,8 @@ class GraphPanelView(QWidget):
         line = pg.InfiniteLine(angle=90, movable=True, pen=pen)
         line.setVisible(False)
         line.setZValue(10)
+        # PC-22: 水平ドラッグ可のアフォーダンス(色ハイライトに加えポインタ形状も変える)。
+        line.setCursor(cursor(CursorKind.DRAG_H))
         if self._view_boxes:
             self._view_boxes[0].addItem(line, ignoreBounds=True)
         line.sigPositionChanged.connect(on_dragged)
@@ -1607,6 +1609,18 @@ class GraphPanelView(QWidget):
 
     # ─── Mouse handlers — X zoom/pan + R14 offset drag ──────────────────────────
 
+    def _hover_cursor(self, pos: QPointF) -> CursorKind:
+        """Hover cursor kind for a panel-local point.
+
+        Plot area over an offset-draggable curve -> DRAG_H (SizeHor) so the
+        offset gesture is discoverable and not a surprise; otherwise the X-zone
+        cursor. Y zones are owned by _AlignedAxisItem (ARROW here).
+        """
+        zone = self._zone_at(pos)
+        if zone == ZONE_PLOT and self._curve_at(pos) is not None:
+            return CursorKind.DRAG_H
+        return cursor_for_zone(zone)
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         # Only the left button drives X zoom/pan; right-click opens the context
         # menu and must not start a drag gesture.  Y zoom/pan is owned by
@@ -1644,9 +1658,7 @@ class GraphPanelView(QWidget):
             pos_in_panel = self.plot_widget.viewport().mapTo(
                 self, event.position().toPoint()
             )
-            self.setCursor(
-                cursor(cursor_for_zone(self._zone_at(QPointF(pos_in_panel))))
-            )
+            self.setCursor(cursor(self._hover_cursor(QPointF(pos_in_panel))))
         return super().eventFilter(watched, event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -1655,7 +1667,7 @@ class GraphPanelView(QWidget):
             super().mouseMoveEvent(event)
             return
         if self._drag_zone is None:
-            self.setCursor(cursor(cursor_for_zone(self._zone_at(event.position()))))
+            self.setCursor(cursor(self._hover_cursor(event.position())))
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
