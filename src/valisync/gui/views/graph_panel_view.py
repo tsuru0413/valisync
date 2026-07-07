@@ -25,7 +25,7 @@ from typing import Any
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -864,6 +864,12 @@ class GraphPanelView(QWidget):
             )
             self._y_axes[i].setGeometry(strip)
 
+        # 幾何変化(軸/カラム追加・リサイズ)後も readout をプロット矩形へ追従させる。
+        # _reposition_readout 内で was_user_moved を尊重。init 中の最初の refresh は
+        # _readout 未生成なので getattr ガードで skip する。
+        if getattr(self, "_readout_placed", False) and not self._readout.isHidden():
+            self._reposition_readout()
+
     def _axis_placement(self) -> list[tuple[int, int, int]]:
         """Map each VM axis to ``(vm_index, column, rank*2)``.
 
@@ -1135,6 +1141,30 @@ class GraphPanelView(QWidget):
             if hasattr(self, name)
         ]
 
+    def _plot_area_top_left(self) -> QPoint | None:
+        """プロット描画領域(master ViewBox)の左上を GraphPanelView 座標で返す。
+
+        レイアウト未確定(ViewBox 無し)や破棄済み C++ オブジェクトなら None。
+        """
+        if not self._view_boxes:
+            return None
+        try:
+            scene_tl = self._view_boxes[0].sceneBoundingRect().topLeft()
+            view_pt = self.plot_widget.mapFromScene(scene_tl)
+            global_pt = self.plot_widget.viewport().mapToGlobal(view_pt)
+            return self.mapFromGlobal(global_pt)
+        except RuntimeError:
+            return None
+
+    def _reposition_readout(self) -> None:
+        """readout をプロット矩形左上+マージンへ移動(ユーザードラッグ位置は尊重・PC-21)。"""
+        if self._readout.was_user_moved():
+            return
+        tl = self._plot_area_top_left()
+        if tl is None:
+            return
+        self._readout.move(tl.x() + 8, tl.y() + 8)
+
     def _sync_cursor_from_vm(self) -> None:
         """Reflect A/B cursor + readout from full VM state."""
         t = self.vm.cursor_t
@@ -1143,6 +1173,7 @@ class GraphPanelView(QWidget):
             self._cursor_line_b.setVisible(False)
             self._readout.setVisible(False)
             self._readout_placed = False
+            self._readout.reset_user_moved()
             return
         self._suppress_cursor_signal = True
         try:
@@ -1164,10 +1195,9 @@ class GraphPanelView(QWidget):
             self._cursor_line_b.setVisible(False)
             self._readout.set_global(t, self.vm.cursor_readings())
         if not self._readout_placed:
-            # Only on the first show (hidden→visible transition) snap to corner.
-            # Subsequent syncs while the readout stays visible must not disturb
-            # a user-dragged position.
-            self._readout.move(8, 8)
+            # 初回表示時にプロット矩形左上へ配置(以降のカーソル同期では
+            # ユーザーがドラッグ移動した位置を乱さない)。
+            self._reposition_readout()
             self._readout_placed = True
         self._readout.setVisible(True)
         self._readout.raise_()

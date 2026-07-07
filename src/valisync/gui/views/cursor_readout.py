@@ -75,9 +75,20 @@ class CursorReadout(QWidget):
         outer.addLayout(self._grid)
 
         self._rows: list[tuple[str, str]] = []
+        # 差分更新用: 構造(列見出し+各行 name/セル数)が不変なら QLabel を再利用し
+        # setText で値だけ更新する(毎移動の全 deleteLater/再生成を回避・RN-06)。
+        self._value_labels: list[list[QLabel]] = []
+        self._swatch_labels: list[QLabel] = []
+        self._row_colors: list[str] = []
+        self._layout_sig: tuple[tuple[str, ...], tuple[tuple[str, int], ...]] | None = (
+            None
+        )
         self._drag_offset: QPoint | None = (
             None  # for click-drag repositioning within parent
         )
+        # ユーザーが readout をドラッグ移動したか。GraphPanelView は True の間は
+        # プロット矩形への自動再配置を抑止する(ユーザー配置を尊重・PC-21)。
+        self._user_moved: bool = False
 
         # R16/R17 state
         self._visible_stats: set[str] = set(_STAT_COLS)
@@ -191,6 +202,14 @@ class CursorReadout(QWidget):
         """
         return list(self._rows)
 
+    def was_user_moved(self) -> bool:
+        """True once the user has drag-repositioned the readout (PC-21)."""
+        return self._user_moved
+
+    def reset_user_moved(self) -> None:
+        """Clear the user-moved flag so the readout re-anchors to the plot rect."""
+        self._user_moved = False
+
     # ── Column-selection menu ──────────────────────────────────────────────────
 
     def build_column_menu(self) -> QMenu:
@@ -238,7 +257,23 @@ class CursorReadout(QWidget):
         col_headers: list[str],
         rows: list[tuple[str, str, list[str]]],
     ) -> None:
-        """(Re)build the grid: optional column-header row + one data row per signal."""
+        """構造不変なら差分更新、構造が変わったら全再構築(RN-06)。"""
+        sig = (
+            tuple(col_headers),
+            tuple((name, len(cells)) for name, _color, cells in rows),
+        )
+        if sig == self._layout_sig and len(rows) == len(self._value_labels):
+            self._update_in_place(rows)
+        else:
+            self._full_rebuild(col_headers, rows, sig)
+
+    def _full_rebuild(
+        self,
+        col_headers: list[str],
+        rows: list[tuple[str, str, list[str]]],
+        sig: tuple[tuple[str, ...], tuple[tuple[str, int], ...]],
+    ) -> None:
+        """全 QLabel を破棄・再生成し、差分更新用の参照を記録する。"""
         while self._grid.count():
             item = self._grid.takeAt(0)
             if item is not None:
@@ -246,6 +281,9 @@ class CursorReadout(QWidget):
                 if w is not None:
                     w.deleteLater()
         self._rows = []
+        self._value_labels = []
+        self._swatch_labels = []
+        self._row_colors = []
         r0 = 0
         if col_headers:
             # 列見出し — swatch(col0)・name(col1) の上は空白、データ列(col2+) に col_headers を配置
@@ -266,11 +304,33 @@ class CursorReadout(QWidget):
             swatch.setPixmap(pix)
             self._grid.addWidget(swatch, r0 + i, 0)
             self._grid.addWidget(QLabel(name), r0 + i, 1)
+            vlabels: list[QLabel] = []
             for c, text in enumerate(cells):
                 v = QLabel(text)
                 v.setAlignment(Qt.AlignmentFlag.AlignRight)
                 self._grid.addWidget(v, r0 + i, 2 + c)
+                vlabels.append(v)
+            self._value_labels.append(vlabels)
+            self._swatch_labels.append(swatch)
+            self._row_colors.append(color)
             self._rows.append((name, " ".join(cells)))
+        self._layout_sig = sig
+        self.adjustSize()
+
+    def _update_in_place(
+        self,
+        rows: list[tuple[str, str, list[str]]],
+    ) -> None:
+        """既存 QLabel を setText で差分更新(色変化時のみ swatch を差し替え)。"""
+        for i, (name, color, cells) in enumerate(rows):
+            for c, text in enumerate(cells):
+                self._value_labels[i][c].setText(text)
+            if self._row_colors[i] != color:
+                pix = QPixmap(10, 10)
+                pix.fill(QColor(color))
+                self._swatch_labels[i].setPixmap(pix)
+                self._row_colors[i] = color
+            self._rows[i] = (name, " ".join(cells))
         self.adjustSize()
 
     # ── Drag to reposition within the parent plot (R15: フロート表は移動可) ────
@@ -283,6 +343,7 @@ class CursorReadout(QWidget):
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._drag_offset is not None:
             self.move(self.pos() + event.position().toPoint() - self._drag_offset)
+            self._user_moved = True
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
