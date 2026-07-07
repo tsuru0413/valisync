@@ -24,5 +24,10 @@ def _isolate_qsettings(request, monkeypatch):
     test_app = f"test-{abs(hash(request.node.nodeid)) & 0xFFFFFFFF:08x}"
     monkeypatch.setattr(mw, "_ORG", test_org)
     monkeypatch.setattr(mw, "_APP", test_app)
+
+    import valisync.gui.views.recent_files as rf
+
+    monkeypatch.setattr(rf, "_ORG", test_org)
+    monkeypatch.setattr(rf, "_APP", test_app)
     yield
     QSettings(test_org, test_app).clear()

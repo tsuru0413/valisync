@@ -41,6 +41,7 @@ def _write_csv(dir_path: Path) -> Path:
 def test_starts_on_welcome(qtbot: QtBot, tmp_path: Path) -> None:
     mw = _mw(qtbot, tmp_path)
     assert mw.showing_welcome() is True
+    assert mw.centralWidget() is mw.central_stack
 
 
 def test_first_load_swaps_to_graph_and_unload_keeps_it(

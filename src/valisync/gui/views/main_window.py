@@ -218,7 +218,7 @@ class MainWindow(QMainWindow):
             busy=self.busy_overlay,
             cancel_event=cancel_event,
             label=target.name,
-            on_success=self._on_loaded,
+            on_success=lambda outcome: self._on_loaded(outcome, target),
             on_error=lambda err: self._on_load_error(target, err),
             on_cancelled=lambda: self._on_load_cancelled(target),
             on_discard=_discard,
@@ -229,7 +229,7 @@ class MainWindow(QMainWindow):
         detected = CsvFormatDetector().detect(path)
         return CsvFormatDialog.ask(detected, parent=self)
 
-    def _on_loaded(self, outcome: LoadOutcome) -> None:
+    def _on_loaded(self, outcome: LoadOutcome, source_path: Path | None = None) -> None:
         # GUI thread; register, surface diagnostics, activate, update status.
         self.app_vm.register_loaded(outcome.key)
         source = self.app_vm.session.source_name(outcome.key)
@@ -244,10 +244,13 @@ class MainWindow(QMainWindow):
         elif n_info:
             msg += f" ・ ℹ {n_info} 件の情報（Diagnostics を参照）"  # noqa: RUF001
         self.statusBar().showMessage(msg)
-        # SH-01: 読み込み成功を Recent に記録し UI へ反映
-        self.recent_files.add(source)
-        self._rebuild_recent_menu()
-        self.welcome_view.refresh()
+        # SH-01: Recent には再開可能な絶対パスを保存する。表示用の source は
+        # basename(source_name) だが、それを保存すると Path.exists() の剪定で
+        # 消えるため、実際に開いたパス(source_path)を使う。
+        if source_path is not None:
+            self.recent_files.add(str(source_path))
+            self._rebuild_recent_menu()
+            self.welcome_view.refresh()
 
     def _on_load_error(self, path: Path, err: Exception) -> None:
         # FB-01: never silent — record + modal + status.

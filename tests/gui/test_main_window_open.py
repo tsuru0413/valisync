@@ -47,16 +47,19 @@ def test_open_file_dialog_selection_loads(
     assert called == [str(tmp_path / "run.mf4")]
 
 
-def test_loaded_updates_recent(qtbot: QtBot, tmp_path: Path) -> None:
+def test_loaded_records_full_resolvable_path_in_recent(
+    qtbot: QtBot, tmp_path: Path, monkeypatch
+) -> None:
     mw = _mw(qtbot, tmp_path)
-    p = tmp_path / "run.mf4"
-    p.write_bytes(b"x")
+    full = tmp_path / "sub" / "run.mf4"  # has a directory component
+    # display message uses source_name (basename); Recent must use the full path
+    monkeypatch.setattr(mw.app_vm.session, "source_name", lambda k: full.name)
 
-    # _on_loaded は LoadOutcome を受ける。source_name をスタブし、Recent 追加のみ検証。
     class _Outcome:
         key = "mf4_1"
         diagnostics = ()
 
-    mw.app_vm.session.source_name = lambda k: str(p)  # type: ignore[assignment]
-    mw._on_loaded(_Outcome())  # type: ignore[arg-type]
-    assert str(p) in mw.recent_files.items()
+    mw._on_loaded(_Outcome(), source_path=full)  # type: ignore[arg-type]
+    items = mw.recent_files.items()
+    assert str(full) in items  # full resolvable path stored
+    assert full.name not in items  # NOT the bare basename (guards SH-01 regression)
