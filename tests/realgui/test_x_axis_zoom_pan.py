@@ -270,14 +270,16 @@ def test_x_outer_drag_pans(qtbot: QtBot, tmp_path) -> None:
 # ─── M13: X-axis strip hover cursor (RED-first) ──────────────────────────────
 
 
-def test_x_strip_hover_shows_sizehor_cursor(qtbot: QtBot, tmp_path) -> None:
-    """M13 (RED-first): hovering the X-axis strip sets SizeHorCursor on the parent.
+def test_x_inner_hover_shows_zoom_cursor(qtbot: QtBot, tmp_path) -> None:
+    """PC-14 (Layer C): hovering the X-axis INNER strip sets the custom zoom cursor.
 
-    API verification (confirmed via graph_panel_view.py):
-      cursor_for_zone(ZONE_X_INNER | ZONE_X_OUTER) → Qt.CursorShape.SizeHorCursor
-        (graph_panel_view.py:244-245).
-      GraphPanelView.mouseMoveEvent calls self.setCursor(cursor_for_zone(...))
-        at line 1588 when _drag_zone is None (no button pressed).
+    API verification (confirmed via graph_panel_view.py / cursor_shapes.py):
+      cursor_for_zone(ZONE_X_INNER) → CursorKind.ZOOM_H; cursor(ZOOM_H) is a
+      QPixmap-based QCursor whose .shape() is Qt.CursorShape.BitmapCursor (the
+      custom horizontal zoom bracket). X OUTER=pan stays SizeHor (Layer B covers
+      the pair in tests/gui/test_x_hover_cursor.py).
+      GraphPanelView.mouseMoveEvent / eventFilter call
+        self.setCursor(cursor(self._hover_cursor(pos))) when _drag_zone is None.
       Accessor: view.cursor().shape() — the GraphPanelView WIDGET cursor (QWidget),
         NOT axis.cursor() (which is the AxisItem scene cursor used by Y hover tests).
 
@@ -301,8 +303,9 @@ def test_x_strip_hover_shows_sizehor_cursor(qtbot: QtBot, tmp_path) -> None:
           forward a re-mapped QMouseEvent to self.mouseMoveEvent(...)
 
     honest RED (if gate is unexpectedly GREEN — hover reaches parent):
-      Comment out ``self.setCursor(cursor_for_zone(self._zone_at(event.position())))``
-      at graph_panel_view.py:1588 → cursor stays Arrow → assertion flips RED.
+      Comment out ``self.setCursor(cursor(self._hover_cursor(event.position())))``
+      in GraphPanelView.mouseMoveEvent/eventFilter → cursor stays Arrow →
+      assertion flips RED.
     """
     skip_unless_real_display()
 
@@ -338,28 +341,28 @@ def test_x_strip_hover_shows_sizehor_cursor(qtbot: QtBot, tmp_path) -> None:
             str(tmp_path / "x_strip_hover.png")
         )
 
-    assert view.cursor().shape() == Qt.CursorShape.SizeHorCursor, (
-        f"Hovering X strip (ZONE_X_INNER) did not set SizeHorCursor: "
-        f"got {view.cursor().shape()}. "
-        "RED-first expected: GraphPanelView.mouseMoveEvent not reached when "
-        "hovering over child plot_widget (QGraphicsView fills entire panel). "
-        "Production fix: viewport eventFilter forwarding no-button MouseMove to "
-        "GraphPanelView.mouseMoveEvent (~graph_panel_view.py line 687)."
+    assert view.cursor().shape() == Qt.CursorShape.BitmapCursor, (
+        f"Hovering X inner strip (ZONE_X_INNER=zoom) did not set the custom zoom "
+        f"BitmapCursor: got {view.cursor().shape()}. "
+        "PC-14: cursor_for_zone(ZONE_X_INNER)=ZOOM_H, cursor(ZOOM_H) is a "
+        "QPixmap-based cursor (shape()==BitmapCursor). If Arrow: the viewport "
+        "eventFilter is not forwarding the no-button hover to _hover_cursor."
     )
 
 
-def test_plot_zone_hover_shows_arrow_cursor(qtbot: QtBot, tmp_path) -> None:
-    """M13-companion: hovering the plot zone shows ArrowCursor.
+def test_empty_plot_zone_hover_shows_arrow_cursor(
+    qtbot: QtBot, tmp_path, monkeypatch
+) -> None:
+    """M13-companion: hovering an EMPTY (curve-free) plot zone shows ArrowCursor.
 
-    cursor_for_zone(ZONE_PLOT) returns ArrowCursor (graph_panel_view.py:246).
+    cursor_for_zone(ZONE_PLOT) returns CursorKind.ARROW. This test validates the
+    RESET path: moving from the X inner strip (custom zoom cursor) back into a
+    curve-free plot area returns to ArrowCursor. `_curve_at` is stubbed to None so
+    the plot point is deterministically curve-free — over a curve the plot area
+    now intentionally shows the offset-drag affordance (SizeHor, PC-14/誤発火),
+    tested at Layer B in tests/gui/test_plot_offset_cursor.py.
 
-    In RED-first state (no viewport-eventFilter fix), setCursor is never called for
-    either zone and view.cursor() stays at the default ArrowCursor — this assertion
-    passes trivially.  After the production fix, this test validates the RESET path:
-    moving from the X strip (SizeHorCursor) back into the plot area (ArrowCursor)
-    correctly calls setCursor(ArrowCursor) when ZONE_PLOT is reached.
-
-    Hover approach: sweep onto the X strip first (to exercise SizeHor if fixed),
+    Hover approach: sweep onto the X strip first (custom zoom cursor if fixed),
     then sweep into the plot center; assert ArrowCursor on view.cursor().
     """
     skip_unless_real_display()
@@ -368,8 +371,9 @@ def test_plot_zone_hover_shows_arrow_cursor(qtbot: QtBot, tmp_path) -> None:
     from PySide6.QtWidgets import QApplication
 
     view = _single_panel(qtbot)
+    monkeypatch.setattr(view, "_curve_at", lambda pos: None)  # 空プロット領域
 
-    # Step 1: sweep onto X strip (SizeHor if fix is active; no-op in RED state).
+    # Step 1: sweep onto X strip (custom zoom cursor if fix is active).
     strip = view._x_axis.sceneBoundingRect()
     sx = strip.x() + strip.width() * 0.5
     sy_x = strip.y() + strip.height() * 0.25

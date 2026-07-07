@@ -64,60 +64,57 @@ def _hover(view: GraphPanelView, viewport_pos: QPointF) -> None:
 # ─── Tests ────────────────────────────────────────────────────────────────────
 
 
-def test_x_strip_hover_sets_sizehor_cursor(qtbot: QtBot) -> None:
-    """Layer B: viewport hover over X strip → SizeHorCursor via eventFilter.
+def test_x_inner_hover_sets_zoom_cursor(qtbot: QtBot) -> None:
+    """Layer B: viewport hover over X inner (zoom) strip → custom zoom cursor (PC-14).
 
     Coordinate path:
       X-axis strip sceneBoundingRect → inner-zone centre (sy = 25% into strip)
       → plot_widget.mapFromScene → viewport-local QPointF
       → sendEvent(viewport, MouseMove, NoButton)
-      → GraphPanelView.eventFilter intercepts (after fix)
+      → GraphPanelView.eventFilter intercepts
       → viewport.mapTo(self, ...) → panel coords
       → _zone_at → ZONE_X_INNER
-      → setCursor(SizeHorCursor).
+      → setCursor(cursor(ZOOM_H)) = custom BitmapCursor.
 
-    RED before fix: no eventFilter → GraphPanelView.mouseMoveEvent not reached
-    → cursor stays ArrowCursor.
-    GREEN after fix: eventFilter sets SizeHorCursor.
+    PC-14: X inner=zoom now uses the custom horizontal zoom bracket (BitmapCursor),
+    distinct from X outer=pan (SizeHor).
     """
     view = _setup_panel(qtbot)
 
     strip = view._x_axis.sceneBoundingRect()
     sx = strip.x() + strip.width() * 0.5
-    sy = strip.y() + strip.height() * 0.25  # top half → ZONE_X_INNER
+    sy = strip.y() + strip.height() * 0.25  # top half → ZONE_X_INNER (zoom)
     viewport_pos = QPointF(view.plot_widget.mapFromScene(QPointF(sx, sy)))
 
     _hover(view, viewport_pos)
 
-    assert view.cursor().shape() == Qt.CursorShape.SizeHorCursor, (
-        f"Expected SizeHorCursor after hovering X strip; got {view.cursor().shape()}. "
-        "Fix: install self.plot_widget.viewport().installEventFilter(self) in "
-        "GraphPanelView.__init__ and add the eventFilter override."
+    assert view.cursor().shape() == Qt.CursorShape.BitmapCursor, (
+        f"Expected custom zoom BitmapCursor after hovering X inner; "
+        f"got {view.cursor().shape()}."
     )
 
 
-def test_plot_zone_hover_resets_to_arrow_cursor(qtbot: QtBot) -> None:
-    """Layer B: viewport hover over plot zone → ArrowCursor via eventFilter.
+def test_empty_plot_zone_hover_resets_to_arrow_cursor(
+    qtbot: QtBot, monkeypatch
+) -> None:
+    """Layer B: viewport hover over an *empty* plot zone → ArrowCursor via eventFilter.
 
-    After the X-strip hover sets SizeHorCursor, moving into the plot area must
-    call cursor_for_zone(ZONE_PLOT) = ArrowCursor and reset the widget cursor.
-
-    This validates the zone-mapping reset path and guards against a sticky
-    SizeHorCursor when the user moves back into the plot.
-
-    In RED-first state (no eventFilter), both hovers leave the cursor at the
-    default ArrowCursor, so this assertion passes trivially.  Its value is
-    post-fix reset validation.
+    After the X-inner hover sets the zoom cursor, moving into a plot area with no
+    curve underneath must reset to ArrowCursor. `_curve_at` is stubbed to None so
+    the point is deterministically curve-free — over a curve the plot area now
+    intentionally shows the offset-drag affordance (SizeHor), tested separately in
+    test_plot_offset_cursor.py.
     """
     view = _setup_panel(qtbot)
+    monkeypatch.setattr(view, "_curve_at", lambda pos: None)  # 空プロット領域
 
-    # Step 1: hover X strip (sets SizeHorCursor once fix is active).
+    # Step 1: hover X inner strip (sets the custom zoom cursor).
     strip = view._x_axis.sceneBoundingRect()
     sx = strip.x() + strip.width() * 0.5
     sy = strip.y() + strip.height() * 0.25
     _hover(view, QPointF(view.plot_widget.mapFromScene(QPointF(sx, sy))))
 
-    # Step 2: hover plot centre → expect ArrowCursor.
+    # Step 2: hover plot centre (curve-free) → expect ArrowCursor.
     vb = view._view_boxes[0]
     plot_rect = vb.sceneBoundingRect()
     px = plot_rect.x() + plot_rect.width() * 0.5
@@ -125,7 +122,6 @@ def test_plot_zone_hover_resets_to_arrow_cursor(qtbot: QtBot) -> None:
     _hover(view, QPointF(view.plot_widget.mapFromScene(QPointF(px, py))))
 
     assert view.cursor().shape() == Qt.CursorShape.ArrowCursor, (
-        f"Expected ArrowCursor after hovering plot zone; got {view.cursor().shape()}. "
-        "Zone mapping may be off: panel coords produced by viewport.mapTo(self, ...) "
-        "should match what _zone_at expects."
+        f"Expected ArrowCursor after hovering empty plot zone; "
+        f"got {view.cursor().shape()}."
     )

@@ -26,6 +26,7 @@ from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from tests.gui._panel_factory import make_two_axis_panel
+from valisync.gui.views.cursor_shapes import CursorKind
 from valisync.gui.views.graph_panel_view import (
     GraphPanelView,
     _AlignedAxisItem,
@@ -259,21 +260,19 @@ class _HoverEvent:
 
 
 def test_cursor_resize_move_zoom_pan() -> None:
-    """Layer A: cursor_for_local maps each AXZONE_* to the correct Qt cursor shape.
+    """Layer A: cursor_for_local maps each AXZONE_* to the correct CursorKind.
 
     Uses a bare axis (w=60, h=120 explicit) so no scene geometry is needed.
-    Coordinates chosen so each zone is hit according to classify_axis_zone:
-      - (30, 2)   → GRIP_TOP  (centred-x ≤ half+tol, y ≤ grip_h+tol) → SizeVer
-      - (2, 60)   → FRAME     (lx ≤ frame)                            → SizeAll
-      - (45, 60)  → ZOOM      (lx ≥ w/2, not border/grip)            → Cross
-      - (15, 60)  → PAN       (lx < w/2, not border/grip)            → OpenHand
+    Coordinates chosen so each zone is hit according to classify_axis_zone.
+    PC-13: zoom/pan unified with the X scheme — ZOOM_V (custom vertical bracket)
+    and PAN_V (SizeVer); grip=RESIZE_V, frame=MOVE.
     """
     it = _bare_axis()
     h = 120.0
-    assert it.cursor_for_local(30.0, 2.0, h) == Qt.CursorShape.SizeVerCursor
-    assert it.cursor_for_local(2.0, 60.0, h) == Qt.CursorShape.SizeAllCursor
-    assert it.cursor_for_local(45.0, 60.0, h) == Qt.CursorShape.CrossCursor
-    assert it.cursor_for_local(15.0, 60.0, h) == Qt.CursorShape.OpenHandCursor
+    assert it.cursor_for_local(30.0, 2.0, h) == CursorKind.RESIZE_V  # grip
+    assert it.cursor_for_local(2.0, 60.0, h) == CursorKind.MOVE  # frame
+    assert it.cursor_for_local(45.0, 60.0, h) == CursorKind.ZOOM_V  # zoom (inner=right)
+    assert it.cursor_for_local(15.0, 60.0, h) == CursorKind.PAN_V  # pan (outer=left)
 
 
 # ─── Layer A: hover axis state (Task 5) ───────────────────────────────────────

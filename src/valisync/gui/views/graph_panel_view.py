@@ -58,6 +58,7 @@ from valisync.gui.adapters.qt_signal_models import (
     encode_axis_move,
 )
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+from valisync.gui.views.cursor_shapes import CursorKind, cursor
 
 # ─── Axis interaction zones (R9.1 / R10.1) ────────────────────────────────────
 
@@ -235,15 +236,18 @@ def reset_scene_drag_state(scene: Any) -> None:
     scene.lastHoverEvent = None
 
 
-def cursor_for_zone(zone: str) -> Qt.CursorShape:
-    """Map a zone to the hover cursor that hints its gesture (R9.7 / R10.7).
+def cursor_for_zone(zone: str) -> CursorKind:
+    """Map a zone to the hover cursor kind that hints its gesture (PC-14).
 
-    Y zones fall through to ArrowCursor: _AlignedAxisItem owns the Y hover
-    cursor (Task 6); the widget must not impose a competing SizeVerCursor.
+    X inner = range-select zoom (custom horizontal zoom bracket), X outer = pan
+    (SizeHor). Y zones fall through to ARROW: _AlignedAxisItem owns the Y hover
+    cursor, so the widget must not impose a competing cursor there.
     """
-    if zone in (ZONE_X_INNER, ZONE_X_OUTER):
-        return Qt.CursorShape.SizeHorCursor
-    return Qt.CursorShape.ArrowCursor
+    if zone == ZONE_X_INNER:
+        return CursorKind.ZOOM_H
+    if zone == ZONE_X_OUTER:
+        return CursorKind.PAN_H
+    return CursorKind.ARROW
 
 
 class _AlignedAxisItem(pg.AxisItem):
@@ -300,12 +304,13 @@ class _AlignedAxisItem(pg.AxisItem):
 
     # ── Task 5: cursor mapping + active/hover frame ────────────────────────────
 
-    def cursor_for_local(self, lx: float, ly: float, h: float) -> Qt.CursorShape:
-        """Return the hover cursor for item-local point (lx, ly) on a spine of height h.
+    def cursor_for_local(self, lx: float, ly: float, h: float) -> CursorKind:
+        """Return the hover cursor kind for item-local point (lx, ly) on a spine of height h.
 
         Pure (h is passed explicitly, not read from geometry) so it is headless-
         testable without a scene.  Delegates zone classification to the module-
-        level ``classify_axis_zone`` and maps each zone to a cursor shape.
+        level ``classify_axis_zone``; zoom/pan use the unified custom vertical
+        bracket / SizeVer to match the X axis scheme (PC-13).
         """
         z = classify_axis_zone(
             lx,
@@ -318,11 +323,11 @@ class _AlignedAxisItem(pg.AxisItem):
             tol=self.TOL,
         )
         return {
-            AXZONE_GRIP_TOP: Qt.CursorShape.SizeVerCursor,
-            AXZONE_GRIP_BOTTOM: Qt.CursorShape.SizeVerCursor,
-            AXZONE_FRAME: Qt.CursorShape.SizeAllCursor,
-            AXZONE_ZOOM: Qt.CursorShape.CrossCursor,
-            AXZONE_PAN: Qt.CursorShape.OpenHandCursor,
+            AXZONE_GRIP_TOP: CursorKind.RESIZE_V,
+            AXZONE_GRIP_BOTTOM: CursorKind.RESIZE_V,
+            AXZONE_FRAME: CursorKind.MOVE,
+            AXZONE_ZOOM: CursorKind.ZOOM_V,
+            AXZONE_PAN: CursorKind.PAN_V,
         }[z]
 
     def _is_active_or_hover(self) -> bool:
@@ -351,10 +356,13 @@ class _AlignedAxisItem(pg.AxisItem):
         if self._vm_axis_index == view._active_axis_index:
             p = ev.pos()
             self.setCursor(
-                self.cursor_for_local(p.x(), p.y(), self.boundingRect().height())
+                cursor(
+                    self.cursor_for_local(p.x(), p.y(), self.boundingRect().height())
+                )
             )
         else:
-            self.unsetCursor()
+            # 非アクティブ軸: 「クリックで活性化」を示す(操作は活性化必須・PC-13)。
+            self.setCursor(cursor(CursorKind.ACTIVATE))
 
     def hoverLeaveEvent(self, ev: Any) -> None:
         """Clear hover state and reset cursor when the mouse leaves the spine."""
@@ -1128,6 +1136,8 @@ class GraphPanelView(QWidget):
         line = pg.InfiniteLine(angle=90, movable=True, pen=pen)
         line.setVisible(False)
         line.setZValue(10)
+        # PC-22: 水平ドラッグ可のアフォーダンス(色ハイライトに加えポインタ形状も変える)。
+        line.setCursor(cursor(CursorKind.DRAG_H))
         if self._view_boxes:
             self._view_boxes[0].addItem(line, ignoreBounds=True)
         line.sigPositionChanged.connect(on_dragged)
@@ -1599,6 +1609,18 @@ class GraphPanelView(QWidget):
 
     # ─── Mouse handlers — X zoom/pan + R14 offset drag ──────────────────────────
 
+    def _hover_cursor(self, pos: QPointF) -> CursorKind:
+        """Hover cursor kind for a panel-local point.
+
+        Plot area over an offset-draggable curve -> DRAG_H (SizeHor) so the
+        offset gesture is discoverable and not a surprise; otherwise the X-zone
+        cursor. Y zones are owned by _AlignedAxisItem (ARROW here).
+        """
+        zone = self._zone_at(pos)
+        if zone == ZONE_PLOT and self._curve_at(pos) is not None:
+            return CursorKind.DRAG_H
+        return cursor_for_zone(zone)
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         # Only the left button drives X zoom/pan; right-click opens the context
         # menu and must not start a drag gesture.  Y zoom/pan is owned by
@@ -1636,7 +1658,7 @@ class GraphPanelView(QWidget):
             pos_in_panel = self.plot_widget.viewport().mapTo(
                 self, event.position().toPoint()
             )
-            self.setCursor(cursor_for_zone(self._zone_at(QPointF(pos_in_panel))))
+            self.setCursor(cursor(self._hover_cursor(QPointF(pos_in_panel))))
         return super().eventFilter(watched, event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -1645,7 +1667,7 @@ class GraphPanelView(QWidget):
             super().mouseMoveEvent(event)
             return
         if self._drag_zone is None:
-            self.setCursor(cursor_for_zone(self._zone_at(event.position())))
+            self.setCursor(cursor(self._hover_cursor(event.position())))
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
