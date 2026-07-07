@@ -27,7 +27,7 @@
 
 | ファイル | 責務 | 種別 |
 |---|---|---|
-| `src/valisync/gui/viewmodels/recent_files.py` | Recent Files MRU（QSettings 永続化・追加/列挙/存在剪定） | 新規 |
+| `src/valisync/gui/views/recent_files.py` | Recent Files MRU（QSettings 永続化・追加/列挙/存在剪定） | 新規 |
 | `src/valisync/gui/views/shell_actions.py` | QAction レジストリ（open / open_folder / export）＋メニュー/ツールバー構築ヘルパ | 新規 |
 | `src/valisync/gui/views/welcome_view.py` | Welcome 空状態（CTA・ドロップヒント・Recent リスト）・`open_requested` シグナル | 新規 |
 | `src/valisync/gui/views/file_browser_view.py` | Open ボタン付きヘッダ行＋`open_requested` シグナル追加 | 変更 |
@@ -42,7 +42,7 @@
 ## Task 1: RecentFiles（MRU・QSettings）
 
 **Files:**
-- Create: `src/valisync/gui/viewmodels/recent_files.py`
+- Create: `src/valisync/gui/views/recent_files.py`
 - Test: `tests/gui/test_recent_files.py`
 
 **Interfaces:**
@@ -65,7 +65,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings
 
-from valisync.gui.viewmodels.recent_files import RecentFiles
+from valisync.gui.views.recent_files import RecentFiles
 
 
 def _settings(tmp_path: Path) -> QSettings:
@@ -99,12 +99,12 @@ def test_existing_filters_missing(tmp_path: Path) -> None:
 - [ ] **Step 2: 失敗を確認**
 
 Run: `uv run pytest tests/gui/test_recent_files.py -q`
-Expected: FAIL（`ModuleNotFoundError: valisync.gui.viewmodels.recent_files`）
+Expected: FAIL（`ModuleNotFoundError: valisync.gui.views.recent_files`）
 
 - [ ] **Step 3: 最小実装**
 
 ```python
-# src/valisync/gui/viewmodels/recent_files.py
+# src/valisync/gui/views/recent_files.py
 """Recent Files MRU (SH-01). QSettings-backed; no Qt widgets."""
 
 from __future__ import annotations
@@ -158,10 +158,10 @@ Expected: PASS（3 passed）
 - [ ] **Step 5: ゲート＋コミット**
 
 ```bash
-uv run ruff check src/valisync/gui/viewmodels/recent_files.py tests/gui/test_recent_files.py; echo "exit: ${PIPESTATUS[0]}"
-uv run ruff format src/valisync/gui/viewmodels/recent_files.py tests/gui/test_recent_files.py
-uv run mypy src/valisync/gui/viewmodels/recent_files.py
-git add src/valisync/gui/viewmodels/recent_files.py tests/gui/test_recent_files.py
+uv run ruff check src/valisync/gui/views/recent_files.py tests/gui/test_recent_files.py; echo "exit: ${PIPESTATUS[0]}"
+uv run ruff format src/valisync/gui/views/recent_files.py tests/gui/test_recent_files.py
+uv run mypy src/valisync/gui/views/recent_files.py
+git add src/valisync/gui/views/recent_files.py tests/gui/test_recent_files.py
 git commit -m "feat(gui): RecentFiles MRU（QSettings 永続化・存在剪定・SH-01）"
 ```
 
@@ -326,7 +326,7 @@ from pathlib import Path
 from PySide6.QtCore import QSettings
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
-from valisync.gui.viewmodels.recent_files import RecentFiles
+from valisync.gui.views.recent_files import RecentFiles
 from valisync.gui.views.welcome_view import WelcomeView
 
 
@@ -384,7 +384,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from valisync.gui.viewmodels.recent_files import RecentFiles
+from valisync.gui.views.recent_files import RecentFiles
 
 
 class WelcomeView(QWidget):
@@ -645,7 +645,7 @@ Expected: FAIL（`showing_welcome` なし / 中央が stack でない）
 ```python
 # import 追加
 from PySide6.QtWidgets import QDockWidget, QMainWindow, QMessageBox, QStackedWidget, QToolBar
-from valisync.gui.viewmodels.recent_files import RecentFiles
+from valisync.gui.views.recent_files import RecentFiles
 from valisync.gui.views.welcome_view import WelcomeView
 ```
 

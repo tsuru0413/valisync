@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings
 
-from valisync.gui.viewmodels.recent_files import RecentFiles
+from valisync.gui.views.recent_files import RecentFiles
 
 
 def _settings(tmp_path: Path) -> QSettings:
@@ -21,9 +21,12 @@ def test_add_prepends_dedups_and_caps(tmp_path: Path) -> None:
 
 
 def test_persists_across_instances(tmp_path: Path) -> None:
-    s = _settings(tmp_path)
-    RecentFiles(settings=s).add("x.mf4")
-    assert RecentFiles(settings=s).items() == ["x.mf4"]
+    path = str(tmp_path / "recent.ini")
+    s1 = QSettings(path, QSettings.Format.IniFormat)
+    RecentFiles(settings=s1).add("x.mf4")
+    s1.sync()  # flush to disk
+    s2 = QSettings(path, QSettings.Format.IniFormat)  # independent instance
+    assert RecentFiles(settings=s2).items() == ["x.mf4"]
 
 
 def test_existing_filters_missing(tmp_path: Path) -> None:
@@ -33,3 +36,10 @@ def test_existing_filters_missing(tmp_path: Path) -> None:
     rf.add(str(real))
     rf.add(str(tmp_path / "gone.csv"))
     assert rf.existing() == [str(real)]
+
+
+def test_clear_removes_all(tmp_path: Path) -> None:
+    rf = RecentFiles(settings=_settings(tmp_path))
+    rf.add("a.mf4")
+    rf.clear()
+    assert rf.items() == []

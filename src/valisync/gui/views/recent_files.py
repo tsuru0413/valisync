@@ -1,4 +1,4 @@
-"""Recent Files MRU (SH-01). QSettings-backed; no Qt widgets."""
+"""RecentFiles MRU (SH-01). View-layer QSettings-backed store (no widget)."""
 
 from __future__ import annotations
 
