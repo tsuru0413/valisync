@@ -261,11 +261,12 @@ def test_cursor_changes_per_zone(qtbot: QtBot) -> None:
                 break
         return axis.cursor().shape()
 
-    # grip (top-centre) → SizeVer ; frame (left border, mid) → SizeAll ;
-    # inner/right interior → Cross ; outer/left interior → OpenHand.
-    # Interior points keep a wide margin from the frame border so small input-to-scene
-    # rounding (1.25 DPI) cannot flip the classified zone.
+    # PC-13 unified Y cursors: grip (top-centre) → RESIZE_V (SizeVer) ;
+    # frame (left border, mid) → MOVE (SizeAll) ; inner/right interior → ZOOM_V
+    # (custom vertical zoom bracket = BitmapCursor) ; outer/left interior → PAN_V
+    # (SizeVer). Interior points keep a wide margin from the frame border so small
+    # input-to-scene rounding (1.25 DPI) cannot flip the classified zone.
     assert hover_shape(w / 2.0, 4) == Qt.CursorShape.SizeVerCursor
     assert hover_shape(2, h / 2.0) == Qt.CursorShape.SizeAllCursor
-    assert hover_shape(w * 0.7, h / 2.0) == Qt.CursorShape.CrossCursor
-    assert hover_shape(w * 0.25, h / 2.0) == Qt.CursorShape.OpenHandCursor
+    assert hover_shape(w * 0.7, h / 2.0) == Qt.CursorShape.BitmapCursor
+    assert hover_shape(w * 0.25, h / 2.0) == Qt.CursorShape.SizeVerCursor
