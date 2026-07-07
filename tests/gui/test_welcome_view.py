@@ -55,3 +55,47 @@ def test_refresh_with_no_recent_files_shows_no_rows(
     qtbot.addWidget(view)
     view.refresh()
     assert view._recent_box.count() == 0
+
+
+def test_drop_emits_open_requested_per_file(qtbot: QtBot, tmp_path: Path) -> None:
+    from PySide6.QtCore import QMimeData, QPointF, Qt, QUrl
+    from PySide6.QtGui import QDropEvent
+
+    a = tmp_path / "a.mf4"
+    a.write_bytes(b"x")
+    view = WelcomeView(_recent(tmp_path))
+    qtbot.addWidget(view)
+    got: list[object] = []
+    view.open_requested.connect(got.append)
+
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(a))])
+    ev = QDropEvent(
+        QPointF(5.0, 5.0),
+        Qt.DropAction.CopyAction,
+        mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    view.dropEvent(ev)
+    assert [Path(p) for p in got] == [a]  # dropped file routed to open_requested
+
+
+def test_drop_without_urls_emits_nothing(qtbot: QtBot, tmp_path: Path) -> None:
+    from PySide6.QtCore import QMimeData, QPointF, Qt
+    from PySide6.QtGui import QDropEvent
+
+    view = WelcomeView(_recent(tmp_path))
+    qtbot.addWidget(view)
+    got: list[object] = []
+    view.open_requested.connect(got.append)
+    mime = QMimeData()  # keep alive: QDropEvent only borrows it
+    ev = QDropEvent(
+        QPointF(5.0, 5.0),
+        Qt.DropAction.CopyAction,
+        mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    view.dropEvent(ev)
+    assert got == []

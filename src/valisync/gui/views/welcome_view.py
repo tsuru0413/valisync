@@ -9,6 +9,7 @@ open_requested(path) for a recent entry; MainWindow performs the actual load.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
 from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
@@ -24,6 +25,7 @@ class WelcomeView(QWidget):
 
     def __init__(self, recent: RecentFiles, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setAcceptDrops(True)
         self._recent = recent
 
         title = QLabel("計測ファイルを開く")
@@ -64,3 +66,30 @@ class WelcomeView(QWidget):
             btn.setFlat(True)
             btn.clicked.connect(lambda _=False, p=path: self._emit_recent(p))
             self._recent_box.addWidget(btn)
+
+    # ─── OS file drop → open pipeline (spec 4.2) ───────────────────────────────
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        # spec 4.2: Welcome 上のドロップも open_requested に集約する
+        # (起動時は GraphAreaView が隠れており、その drop 経路は届かないため)
+        mime = event.mimeData()
+        if not mime.hasUrls():
+            event.ignore()
+            return
+        for url in mime.urls():
+            local = url.toLocalFile()
+            if local:
+                self.open_requested.emit(local)
+        event.acceptProposedAction()
