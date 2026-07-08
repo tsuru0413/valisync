@@ -30,6 +30,8 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QCheckBox,
     QSplitter,
+    QStyle,
+    QTabBar,
     QTabWidget,
     QToolButton,
     QVBoxLayout,
@@ -88,6 +90,10 @@ class GraphAreaView(QWidget):
         self._new_tab_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self._new_tab_shortcut.activated.connect(lambda: self.add_tab())
 
+        # SH-04: タブを閉じる。最後の1枚の抑制は _rebuild で per-tab に行う。
+        self.tabs.setTabsClosable(True)
+        self.tabs.tabCloseRequested.connect(self.remove_tab)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.sync_checkbox)
@@ -134,6 +140,16 @@ class GraphAreaView(QWidget):
                     )
                     splitter.addWidget(widget)
                 self.tabs.addTab(splitter, tab.name)
+            # SH-04: 最後の1枚は閉じさせない (remove_tab も ValueError を握るが、
+            # ボタン自体を消して操作不能を明示)。close ボタン位置はスタイル依存。
+            if self.tabs.count() == 1:
+                bar = self.tabs.tabBar()
+                pos = QTabBar.ButtonPosition(
+                    bar.style().styleHint(
+                        QStyle.StyleHint.SH_TabBar_CloseButtonPosition, None, bar
+                    )
+                )
+                bar.setTabButton(0, pos, None)
             self.tabs.setCurrentIndex(self.vm.active_tab_index)
         finally:
             self._syncing = False
