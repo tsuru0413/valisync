@@ -1242,3 +1242,50 @@ def test_rn02_reset_x_returns_to_auto(tmp_path: Path) -> None:
     vm.add_signal(b)  # manual なので拡張しない
     vm.reset_x()
     assert vm.x_range == (0.0, 600.0) and vm._x_range_is_auto is True
+
+
+def test_entry_id_is_monotonic_and_unique(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=2)
+    k0, k1 = [s.name for s in session.signals()][:2]
+    vm = GraphPanelVM(session)
+    vm.add_signal(k0)
+    vm.add_signal(k1)
+    ids = [e["entry_id"] for e in vm.inspect()["plotted_signals"]]
+    assert ids == [0, 1]  # monotonic, in add order
+
+
+def test_same_signal_key_gets_distinct_entry_ids(tmp_path: Path) -> None:
+    # Same signal_key plotted on 2 axes must be tracked as distinct entries.
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    key = next(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)  # axis 0
+    vm.create_new_axis(key)  # separate axis
+    entries = vm.inspect()["plotted_signals"]
+    assert len(entries) == 2
+    assert entries[0]["entry_id"] != entries[1]["entry_id"]
+    assert entries[0]["signal_key"] == entries[1]["signal_key"] == key
+
+
+def test_signal_key_and_axis_reverse_lookup(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    key = next(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    vm.create_new_axis(key)
+    e0, e1 = vm.inspect()["plotted_signals"]
+    assert vm.signal_key_for_entry(e0["entry_id"]) == key
+    assert vm.axis_of_entry(e1["entry_id"]) == e1["axis_index"]
+    assert vm.signal_key_for_entry(999) is None
+    assert vm.axis_of_entry(999) is None
+
+
+def test_render_data_carries_entry_id(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    key = next(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    vm.create_new_axis(key)
+    curves = vm.render_data()
+    plotted_ids = {e["entry_id"] for e in vm.inspect()["plotted_signals"]}
+    assert {c.entry_id for c in curves} == plotted_ids

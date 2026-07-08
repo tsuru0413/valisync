@@ -60,6 +60,7 @@ class RenderCurve:
     timestamps: np.ndarray  # float64, already LOD-reduced if applicable
     values: np.ndarray  # float64, same length as timestamps
     axis_index: int = 0  # Added for multi-axis support
+    entry_id: int = 0  # stable curve id (View internal key, per-entry op targeting)
 
 
 @dataclass
@@ -111,6 +112,8 @@ class _PlottedEntry:
     color: str
     visible: bool = True
     axis_index: int = 0
+    # monotonic stable id, distinguishes entries sharing a signal_key
+    entry_id: int = 0
 
 
 class GraphPanelVM(Observable):
@@ -126,6 +129,7 @@ class GraphPanelVM(Observable):
         super().__init__()
         self._session = session
         self._plotted: list[_PlottedEntry] = []
+        self._next_entry_id: int = 0  # monotonic id issued on each add
         self.x_range: tuple[float, float] | None = None
         # RN-02: x_range が「自動フィット由来」か「手動ズーム由来」かを区別する。
         # None チェックだけだと初回オートフィット後の非 None を手動と誤認し、
@@ -205,8 +209,15 @@ class GraphPanelVM(Observable):
     def add_signal_to_axis(self, signal_key: str, axis_index: int) -> None:
         """Add *signal_key* to a specific axis."""
         color = _PALETTE[len(self._plotted) % len(_PALETTE)]
+        entry_id = self._next_entry_id
+        self._next_entry_id += 1
         self._plotted.append(
-            _PlottedEntry(signal_key=signal_key, color=color, axis_index=axis_index)
+            _PlottedEntry(
+                signal_key=signal_key,
+                color=color,
+                axis_index=axis_index,
+                entry_id=entry_id,
+            )
         )
 
         # Propagate unit + representative name from signal to axis.
@@ -611,6 +622,8 @@ class GraphPanelVM(Observable):
                         color=entry.color,
                         timestamps=np.empty(0, dtype=np.float64),
                         values=np.empty(0, dtype=np.float64),
+                        axis_index=entry.axis_index,
+                        entry_id=entry.entry_id,
                     )
                 )
                 continue
@@ -646,6 +659,7 @@ class GraphPanelVM(Observable):
                         timestamps=np.empty(0, dtype=np.float64),
                         values=np.empty(0, dtype=np.float64),
                         axis_index=entry.axis_index,
+                        entry_id=entry.entry_id,
                     )
                 )
                 continue
@@ -680,6 +694,7 @@ class GraphPanelVM(Observable):
                     timestamps=out_ts,
                     values=out_vs,
                     axis_index=entry.axis_index,
+                    entry_id=entry.entry_id,
                 )
             )
 
@@ -878,6 +893,20 @@ class GraphPanelVM(Observable):
             )
         return out
 
+    def signal_key_for_entry(self, entry_id: int) -> str | None:
+        """Return the signal_key of the entry with *entry_id* (None if absent)."""
+        for e in self._plotted:
+            if e.entry_id == entry_id:
+                return e.signal_key
+        return None
+
+    def axis_of_entry(self, entry_id: int) -> int | None:
+        """Return the axis_index of the entry with *entry_id* (None if absent)."""
+        for e in self._plotted:
+            if e.entry_id == entry_id:
+                return e.axis_index
+        return None
+
     # ─── Introspection ────────────────────────────────────────────────────────
 
     def inspect(self) -> dict[str, Any]:
@@ -892,6 +921,7 @@ class GraphPanelVM(Observable):
                     "color": e.color,
                     "visible": e.visible,
                     "axis_index": e.axis_index,
+                    "entry_id": e.entry_id,
                 }
                 for e in self._plotted
             ],
