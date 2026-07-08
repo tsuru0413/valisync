@@ -58,16 +58,16 @@
 | SH-03 | ✅解消 | **✅解消（2026-07-08・増分1b）: Export CSV ダイアログ（File>Export…・Ctrl+E・ツールバー）＝ファイル別信号ツリー・初期選択=プロット中・統合タイムライン・フルオプション（区切り/小数/単位行/精度）・オフスレッド書出（BusyOverlay・失敗時モーダル）。CsvExporter を CsvExportOptions で拡張（既定は現行一致）。** 〔元課題〕CSV エクスポート/成果書き出しの導線が GUI に無い（`Session.export_csv` 到達不能） | `gui/views/main_window.py:96` | 解析結果を持ち出せない（ジャーニーの出口欠如） |
 | SH-04 | ✅解消 | **✅解消（2026-07-08・増分2a）: setTabsClosable＋tabCloseRequested→remove_tab。最後の1枚は close ボタン抑制。** タブを閉じる UI が無い（`remove_tab` 到達不能） | `gui/views/graph_area_view.py:179` | 増えたタブを整理できない |
 | SH-05 | 🟠 | キーボードショートカット/アクセラレータが皆無 | `gui/views/main_window.py:104` | 反復操作が遅い |
-| SH-06 | 🟠 | パネルの追加/削除が右クリック限定・可視ボタンなし | `gui/views/graph_panel_view.py:1776` | パネル分割の発見が困難 |
+| SH-06 | ✅解消 | **✅解消（2026-07-08・増分2b）: パネル chrome 行に「+」/「×」QToolButton を追加し add_panel_requested/remove_panel_requested に配線。set_removable が「×」を連動 disable。右クリックメニュー併存。** 〔元課題〕パネルの追加/削除が右クリック限定・可視ボタンなし | `gui/views/graph_panel_view.py:1776` | パネル分割の発見が困難 |
 | SH-07 | ✅解消 | **✅解消（2026-07-08・増分1a）: File Browser ヘッダの開くボタン（ヘッダの開くボタン→open_requested→open_file で File>Open と同じファイル選択ダイアログを開き、空リストの手詰まりを解消）を実装。** 〔元課題〕File Browser にファイルを開く/追加する操作が無い（空リストから前進不能） | `gui/views/file_browser_view.py:34` | File Browser 単体で作業を始められない |
-| SH-08 | 🟠 | 読み込み済みファイル削除が右クリック限定・確認/取り消しなし | `gui/views/file_browser_view.py:60,63` | 誤操作で即消える |
+| SH-08 | ✅解消 | **✅解消（2026-07-08・増分2b）: 削除前に QMessageBox.question 確認（注入フック _confirm_fn）＋ヘッダに「閉じる」ボタン。メニュー「Remove File」も確認経由。** 〔元課題〕読み込み済みファイル削除が右クリック限定・確認/取り消しなし | `gui/views/file_browser_view.py:60,63` | 誤操作で即消える |
 | SH-09 | 🟠 | データソース永続化が実アプリで無効（毎回消える。`sources_file` 未指定） | `gui/views/data_explorer_view.py:128`（Phase3 persistence と重複領域） | 毎回フォルダ再登録 |
-| SH-10 | 🟠 | 登録データソース一覧が UI に無く複数ソース切替不可 | `gui/views/data_explorer_view.py:137` | 複数フォルダを扱えない |
+| SH-10 | ✅解消 | **✅解消（2026-07-08・増分2b）: DataExplorer に登録ソース QListWidget（splitter で tree と並置）。選択で tree root 切替。** 〔元課題〕登録データソース一覧が UI に無く複数ソース切替不可 | `gui/views/data_explorer_view.py:137` | 複数フォルダを扱えない |
 | SH-11 | 🟡 | レイアウトを既定に戻す「Reset Layout」が無い（乱れたドック配置から復帰不能） | `gui/views/main_window.py:164`（既知の永続化 footgun と関連） | 崩れた配置を戻せない |
 | SH-12 | 🟡 | ドック表示トグルが View メニュー限定（ツールバー/タイトルバー導線なし） | `gui/views/main_window.py:96` | ★ユーザー指摘：ドック表示切り替えボタンが無い |
 | SH-13 | ✅解消 | **✅解消（2026-07-08・増分2a）: tabBarDoubleClicked→インライン QLineEdit エディタ→rename_tab（1-32字・範囲外は編集継続）。** タブ名リネーム UI が無い（`rename_tab` 到達不能・Tab N 固定） | `gui/views/graph_area_view.py:183` | タブを識別できない |
 | SH-14 | 🟡 | ツールバーにアイコン/ツールチップなし・Help/About/バージョンなし | `gui/views/main_window.py:104` | 機能の意味が伝わらない |
-| SH-15 | 🟡 | Remove Source が不可視の「現在ルート」に作用し、右クリック削除と操作モデルが不一致・no-op フィードバックなし | `gui/views/data_explorer_view.py:105` | 何が消えるか予測できない |
+| SH-15 | ✅解消 | **✅解消（2026-07-08・増分2b）: Remove Source が不可視ルートでなく選択リスト項目に作用。未選択は statusBar フィードバック。** 〔元課題〕Remove Source が不可視の「現在ルート」に作用し、右クリック削除と操作モデルが不一致・no-op フィードバックなし | `gui/views/data_explorer_view.py:105` | 何が消えるか予測できない |
 
 ---
 

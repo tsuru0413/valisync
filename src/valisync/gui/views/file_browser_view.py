@@ -5,6 +5,7 @@ Binds to FileBrowserVM and FileListModel.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QPoint, Qt, Signal
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListView,
     QMenu,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
@@ -36,9 +38,15 @@ class FileBrowserView(QWidget):
 
     open_requested = Signal()
 
-    def __init__(self, vm: FileBrowserVM) -> None:
+    def __init__(
+        self,
+        vm: FileBrowserVM,
+        *,
+        confirm_fn: Callable[[str], bool] | None = None,
+    ) -> None:
         super().__init__()
         self._vm = vm
+        self._confirm_fn: Callable[[str], bool] = confirm_fn or self._default_confirm
         self.model = FileListModel(vm, self)
 
         # UI Setup
@@ -65,9 +73,14 @@ class FileBrowserView(QWidget):
         self.open_button = QPushButton("開く...")
         self.open_button.setObjectName("file_browser_open")
         self.open_button.clicked.connect(self.open_requested)
+        self.close_button = QPushButton("閉じる")
+        self.close_button.setObjectName("file_browser_close")
+        self.close_button.setToolTip("選択中のファイルを閉じる")
+        self.close_button.clicked.connect(self._close_selected)
         header = QHBoxLayout()
         header.addWidget(self.open_button)
         header.addStretch(1)
+        header.addWidget(self.close_button)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -95,10 +108,34 @@ class FileBrowserView(QWidget):
             self._vm.select_file(-1)
 
     def build_context_menu(self, row: int) -> QMenu:
-        """Single-action menu ('Remove File') wired to unload list *row*."""
+        """Single-action menu ('Remove File') — confirms before unloading list *row*."""
         menu = QMenu(self)
-        menu.addAction("Remove File").triggered.connect(lambda *_: self._vm.unload(row))
+        menu.addAction("Remove File").triggered.connect(
+            lambda *_: self._confirm_and_unload(row)
+        )
         return menu
+
+    def _default_confirm(self, filename: str) -> bool:
+        reply = QMessageBox.question(
+            self,
+            "ファイルを閉じる",
+            f"{filename} を閉じますか? プロット中の信号も消えます。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
+    def _confirm_and_unload(self, row: int) -> None:
+        files = self._vm.files
+        if row < 0 or row >= len(files):
+            return
+        if self._confirm_fn(files[row]):
+            self._vm.unload(row)
+
+    def _close_selected(self) -> None:
+        index = self.list_view.currentIndex()
+        if index.isValid():
+            self._confirm_and_unload(index.row())
 
     def _show_context_menu(self, pos: QPoint) -> None:
         """Show the 'Remove File' menu for the row at *pos* (viewport coords).
