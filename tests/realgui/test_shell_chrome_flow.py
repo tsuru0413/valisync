@@ -20,30 +20,8 @@ from tests.realgui._realgui_input import LDOWN, LUP, at, skip_unless_real_displa
 
 pytestmark = pytest.mark.realgui
 
-
-@pytest.fixture(autouse=True)
-def _isolate_qsettings_realgui(request, monkeypatch):  # type: ignore[no-untyped-def]
-    """realgui MainWindow の save/restore を per-test 固有キーへ隔離。
-
-    tests/gui/conftest.py の隔離は tests/realgui/ に効かないため、ここで再現する。
-    これが無いと (1) MainWindow の closeEvent->save_state が実 ValiSync 設定
-    (ウィンドウ最大化/ドック可視状態) を書き換え、(2) あるテストが隠したドック
-    状態が次テストの _restore_state に漏れて汚染する。offscreen は設定しない
-    (realgui は実ディスプレイ必須)。
-    """
-    from PySide6.QtCore import QSettings
-
-    import valisync.gui.views.main_window as mw
-    import valisync.gui.views.recent_files as rf
-
-    test_org = "ValiSync-Test"
-    test_app = f"realgui-{abs(hash(request.node.nodeid)) & 0xFFFFFFFF:08x}"
-    monkeypatch.setattr(mw, "_ORG", test_org)
-    monkeypatch.setattr(mw, "_APP", test_app)
-    monkeypatch.setattr(rf, "_ORG", test_org)
-    monkeypatch.setattr(rf, "_APP", test_app)
-    yield
-    QSettings(test_org, test_app).clear()
+# QSettings 隔離 (実 ValiSync 設定汚染/テスト間漏れ防止) は tests/realgui/conftest.py の
+# autouse fixture が全 realgui テストへ横断適用する。
 
 
 def _shown_mw(qtbot: QtBot, tmp_path: Path):  # type: ignore[no-untyped-def]
