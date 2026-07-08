@@ -6,7 +6,16 @@ Displays signals for the currently active file in AppViewModel.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QItemSelection, QMimeData, QPoint, Qt, Signal
+from PySide6.QtCore import (
+    QEvent,
+    QItemSelection,
+    QMimeData,
+    QObject,
+    QPoint,
+    Qt,
+    Signal,
+)
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -103,6 +112,12 @@ class ChannelBrowserView(QWidget):
         self.tree.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
 
+        # PC-04: 最短追加操作。activated はダブルクリック専用 (Enter は eventFilter が
+        # 消費して単発 emit を保証 -- Windows では activated も Enter で発火するため、
+        # 両配線だと 1 打鍵で二重追加になる。spec §6 二重発火ガード)。
+        self.tree.activated.connect(lambda _index: self._emit_add_selected())
+        self.tree.installEventFilter(self)
+
         # The VM outlives this widget; drop the subscription when the C++ object
         # is destroyed so a later notify never calls into a deleted view.
         unsubscribe = self._vm.subscribe(self._on_vm_change)
@@ -168,6 +183,23 @@ class ChannelBrowserView(QWidget):
         keys = self.selected_signal_keys()
         if keys:
             self.add_to_panel_requested.emit(keys)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Consume Return/Enter on the tree so activated cannot also fire it.
+
+        QAbstractItemView.activated fires on Enter as well as double-click on
+        Windows; without consuming the key here, a single key press would
+        emit add_to_panel_requested twice (spec §6 二重発火ガード).
+        """
+        if (
+            watched is self.tree
+            and isinstance(event, QKeyEvent)
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+        ):
+            self._emit_add_selected()
+            return True  # consumed: do not propagate to QAbstractItemView.activated
+        return super().eventFilter(watched, event)
 
     # ─── Context menu (R14.1) ──────────────────────────────────────────────────
 

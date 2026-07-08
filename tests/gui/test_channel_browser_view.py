@@ -211,3 +211,59 @@ def test_add_button_click_emits_selected_keys(qtbot: QtBot, tmp_path: Path) -> N
 
     assert emitted == [view.selected_signal_keys()]
     assert emitted[0]  # 空 emit でない
+
+
+# ─── Double-click / Enter (PC-04) ────────────────────────────────────────────
+# 二重発火ガード: Windows では QAbstractItemView.activated が Enter でも発火
+# するため、tree.activated (dblclick 用) と eventFilter (Return/Enter 用) を
+# 両方配線すると 1 打鍵で 2 回 emit しうる。eventFilter が消費して防ぐ (spec §6)。
+
+
+def test_enter_emits_add_exactly_once(qtbot: QtBot, tmp_path: Path) -> None:
+    """二重発火ガード: Windows では activated も Enter で発火する ── 1 回だけ emit。"""
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    view = _make_view(qtbot, vm)
+    emitted: list[list[str]] = []
+    view.add_to_panel_requested.connect(emitted.append)
+    _select(view, 0)
+
+    view.tree.setFocus()
+    qtbot.keyClick(view.tree, Qt.Key.Key_Return)
+
+    assert len(emitted) == 1
+
+
+def test_enter_without_selection_does_not_emit(qtbot: QtBot, tmp_path: Path) -> None:
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    view = _make_view(qtbot, vm)
+    emitted: list[list[str]] = []
+    view.add_to_panel_requested.connect(emitted.append)
+
+    view.tree.setFocus()
+    qtbot.keyClick(view.tree, Qt.Key.Key_Return)
+
+    assert emitted == []
+
+
+def test_double_click_emits_add(qtbot: QtBot, tmp_path: Path) -> None:
+    """Layer B dblclick: fresh itemview は warm-up click 前置が必須 (memory)。"""
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    view = _make_view(qtbot, vm)
+    emitted: list[list[str]] = []
+    view.add_to_panel_requested.connect(emitted.append)
+
+    index = view.model.index(0, 0)
+    qtbot.waitUntil(lambda: view.tree.visualRect(index).height() > 0)
+    rect_center = view.tree.visualRect(index).center()
+
+    # warm-up (sabotage 検証: warm-up 単独では emit されないことを確認してから dblclick)
+    qtbot.mouseClick(view.tree.viewport(), Qt.MouseButton.LeftButton, pos=rect_center)
+    assert emitted == []  # warm-up が自力発火しない証明 (false-green 防止)
+
+    qtbot.mouseDClick(view.tree.viewport(), Qt.MouseButton.LeftButton, pos=rect_center)
+
+    assert len(emitted) == 1
+    assert emitted[0] == view.selected_signal_keys()
