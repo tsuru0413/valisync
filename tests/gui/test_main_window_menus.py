@@ -8,7 +8,9 @@ from valisync.gui.views.main_window import MainWindow
 
 
 def _menu_titles(mw: MainWindow) -> list[str]:
-    return [a.text() for a in mw.menuBar().actions()]
+    # mnemonic マーカ (&) を除いた論理タイトルで比較。mnemonic 付与自体は
+    # test_shell_chrome.py::test_menu_titles_have_mnemonics が担保する。
+    return [a.text().replace("&", "") for a in mw.menuBar().actions()]
 
 
 def test_menubar_has_file_view_analyze_help(qtbot: QtBot) -> None:
