@@ -225,6 +225,14 @@ class GraphPanelVM(Observable):
         self._invalidate_cache()
         self._notify("signals")
 
+    def plotted_signal_keys(self) -> list[str]:
+        """Return plotted signal keys in add order, without duplicates.
+
+        Deduplicates using dict.fromkeys to preserve insertion order while
+        removing duplicates. Used by the Export dialog for initial selection.
+        """
+        return list(dict.fromkeys(e.signal_key for e in self._plotted))
+
     def overwrite_axis(self, signal_key: str, axis_index: int) -> None:
         """Replace all signals on *axis_index* with *signal_key*.
 
