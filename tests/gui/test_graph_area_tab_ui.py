@@ -115,3 +115,16 @@ def test_rename_invalid_length_keeps_editor_open(qtbot: QtBot) -> None:
     view._rename_editor.committed.emit("x" * 33)  # 32 字超
     assert view.vm.tabs()[0].name == "Tab 1"  # 変更されない
     assert view._rename_editor is not None  # 編集継続
+
+
+def test_rename_double_commit_is_single_shot(qtbot: QtBot) -> None:
+    # Focus loss re-entrancy で committed が2回飛んでも、例外なし・editor 破棄・
+    # VM 名は一度だけ設定される (二重 rename/_rebuild を防ぐ単発ガードの回帰)。
+    view = _make_area(qtbot)
+    view._begin_rename(0)
+    editor = view._rename_editor
+    assert editor is not None
+    editor.committed.emit("単発確認")
+    editor.committed.emit("単発確認")  # 再入相当の2回目は no-op であるべき
+    assert view.vm.tabs()[0].name == "単発確認"
+    assert view._rename_editor is None

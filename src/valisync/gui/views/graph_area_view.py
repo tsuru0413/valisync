@@ -266,12 +266,14 @@ class GraphAreaView(QWidget):
         self._rename_editor = editor
 
     def _finish_rename(self, index: int, text: str) -> None:
+        # Focus loss re-entrancy で二重呼出しされるため、editor 破棄済みなら単発化。
+        if self._rename_editor is None:
+            return
         # 範囲外は editor を残して修正させる (赤枠でフィードバック)。
         if not (1 <= len(text) <= 32):
-            if self._rename_editor is not None:
-                self._rename_editor.setStyleSheet("border: 1px solid #c0392b;")
+            self._rename_editor.setStyleSheet("border: 1px solid #c0392b;")
             return
-        self._discard_rename_editor()
+        self._discard_rename_editor()  # 先に _rename_editor=None にする
         self.rename_tab(index, text)  # VM 反映 -> _rebuild
 
     def _discard_rename_editor(self) -> None:
