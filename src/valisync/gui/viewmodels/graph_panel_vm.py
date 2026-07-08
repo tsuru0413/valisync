@@ -508,6 +508,55 @@ class GraphPanelVM(Observable):
         self._invalidate_cache()
         self._notify("signals")
 
+    def toggle_entry_visibility(self, entry_id: int) -> None:
+        """Flip the visibility of the entry with *entry_id* (entry-addressed)."""
+        for e in self._plotted:
+            if e.entry_id == entry_id:
+                e.visible = not e.visible
+                break
+        self._invalidate_cache()
+        self._notify("signals")
+
+    def set_color(self, entry_id: int, color: str) -> None:
+        """Set the colour of the entry with *entry_id* and bust the render cache.
+
+        Colour is intentionally NOT part of _make_cache_key, so the cache must be
+        invalidated here or render_data would return the stale-coloured curve.
+        """
+        for e in self._plotted:
+            if e.entry_id == entry_id:
+                e.color = color
+                break
+        self._invalidate_cache()
+        self._notify("signals")
+
+    def remove_entry(self, entry_id: int) -> None:
+        """Remove the entry with *entry_id* and reconcile axes (entry-addressed).
+
+        Mirrors remove_signal but targets one entry: survivors keep their
+        heights, the vacated axis band stays blank, and the panel collapses to a
+        placeholder only when the last entry is removed (via _compact_axes).
+        """
+        self._plotted = [e for e in self._plotted if e.entry_id != entry_id]
+        self._compact_axes()
+        self._invalidate_cache()
+        self._notify("signals")
+
+    def toggle_axis_visibility(self, axis_index: int) -> None:
+        """Flip visibility of all entries on *axis_index* (H fallback, DP5).
+
+        If any entry on the axis is visible, hide them all; otherwise show them
+        all. No-op when the axis has no entries.
+        """
+        on_axis = [e for e in self._plotted if e.axis_index == axis_index]
+        if not on_axis:
+            return
+        any_visible = any(e.visible for e in on_axis)
+        for e in on_axis:
+            e.visible = not any_visible
+        self._invalidate_cache()
+        self._notify("signals")
+
     # ─── Range management ────────────────────────────────────────────────────
 
     def set_x_range(self, lo: float, hi: float) -> None:

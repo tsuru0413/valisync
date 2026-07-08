@@ -1360,3 +1360,80 @@ def test_insert_axis_renumbers_entry_ids_to_dest_vm(tmp_path: Path) -> None:
 
     ids = [e["entry_id"] for e in dst.inspect()["plotted_signals"]]
     assert len(ids) == len(set(ids))  # all distinct — no collision
+
+
+def test_toggle_entry_visibility_targets_only_that_entry(tmp_path: Path) -> None:
+    # 同一 signal_key の 2 エントリのうち片方だけを不可視にできる (先頭一致の曖昧さを解消)
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    key = next(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    vm.create_new_axis(key)
+    e0, e1 = vm.inspect()["plotted_signals"]
+    vm.toggle_entry_visibility(e1["entry_id"])
+    vis = {e["entry_id"]: e["visible"] for e in vm.inspect()["plotted_signals"]}
+    assert vis[e0["entry_id"]] is True
+    assert vis[e1["entry_id"]] is False
+
+
+def test_set_color_changes_only_target_and_busts_cache(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    key = next(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    eid = vm.inspect()["plotted_signals"][0]["entry_id"]
+    vm.render_data()  # prime cache
+    vm.set_color(eid, "#123456")
+    # 色は cache_key に含まれない → invalidate されていないと古い色が返る
+    curves = vm.render_data()
+    assert curves[0].color == "#123456"
+    assert vm.inspect()["plotted_signals"][0]["color"] == "#123456"
+
+
+def test_remove_entry_removes_only_that_entry(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    key = next(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    vm.create_new_axis(key)
+    e0, e1 = vm.inspect()["plotted_signals"]
+    vm.remove_entry(e0["entry_id"])
+    remaining = vm.inspect()["plotted_signals"]
+    assert len(remaining) == 1
+    assert remaining[0]["entry_id"] == e1["entry_id"]
+
+
+def test_toggle_axis_visibility_flips_all_on_axis(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=2)
+    k0, k1 = [s.name for s in session.signals()][:2]
+    vm = GraphPanelVM(session)
+    vm.add_signal(k0)  # axis 0
+    vm.add_signal(k1)  # axis 0 (同 axis)
+    # 1 本でも可視 → 全非表示
+    vm.toggle_axis_visibility(0)
+    assert all(not e["visible"] for e in vm.inspect()["plotted_signals"])
+    # 全非表示 → 全表示
+    vm.toggle_axis_visibility(0)
+    assert all(e["visible"] for e in vm.inspect()["plotted_signals"])
+
+
+def test_toggle_axis_visibility_empty_axis_is_noop(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    key = next(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    vm.toggle_axis_visibility(5)  # 存在しない axis
+    assert vm.inspect()["plotted_signals"][0]["visible"] is True
+
+
+def test_entry_ops_notify_signals(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    key = next(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    eid = vm.inspect()["plotted_signals"][0]["entry_id"]
+    changes: list[str] = []
+    vm.subscribe(changes.append)
+    vm.toggle_entry_visibility(eid)
+    vm.set_color(eid, "#abcdef")
+    assert changes == ["signals", "signals"]
