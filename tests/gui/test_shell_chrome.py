@@ -61,3 +61,19 @@ def test_toolbar_toggle_hides_dock(qtbot: QtBot, tmp_path: Path) -> None:
     assert mw.file_dock.isVisible()
     toggle.trigger()  # ツールバーボタンと同一 action
     assert not mw.file_dock.isVisible()
+
+
+def test_reset_layout_restores_default_dock_area(qtbot: QtBot, tmp_path: Path) -> None:
+    from PySide6.QtCore import Qt
+
+    mw = _mw(qtbot, tmp_path)
+    # 構築直後の area は _restore_state(実レジストリ)依存なのでアサートしない。
+    mw.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, mw.file_dock)
+    assert mw.dockWidgetArea(mw.file_dock) == Qt.DockWidgetArea.LeftDockWidgetArea
+    mw._reset_layout()
+    assert mw.dockWidgetArea(mw.file_dock) == Qt.DockWidgetArea.RightDockWidgetArea
+
+
+def test_reset_layout_action_in_view_menu(qtbot: QtBot, tmp_path: Path) -> None:
+    mw = _mw(qtbot, tmp_path)
+    assert mw.action_reset_layout.text() == "Reset Layout"

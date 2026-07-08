@@ -162,6 +162,9 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.file_dock.toggleViewAction())
         view_menu.addAction(self.channel_dock.toggleViewAction())
         view_menu.addAction(self.diagnostics_dock.toggleViewAction())
+        view_menu.addSeparator()
+        self.action_reset_layout = view_menu.addAction("Reset Layout")
+        self.action_reset_layout.triggered.connect(self._reset_layout)
 
         self.menuBar().addMenu("&Analyze")  # 増分2 で中身
         help_menu = self.menuBar().addMenu("&Help")
@@ -194,6 +197,8 @@ class MainWindow(QMainWindow):
         self._app_unsubscribe = self.app_vm.subscribe(self._on_app_change)
 
         self._rebuild_recent_menu()
+        # SH-11: 永続状態で上書きされる前の既定配置を捕捉 (Reset Layout 用)。
+        self._default_state = self.saveState()
         self._restore_state()
 
     # ─── Load pipeline ─────────────────────────────────────────────────────────
@@ -465,3 +470,7 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(geometry)
         if state:
             self.restoreState(state)
+
+    def _reset_layout(self) -> None:
+        """Restore the default dock/toolbar arrangement captured at startup (SH-11)."""
+        self.restoreState(self._default_state)
