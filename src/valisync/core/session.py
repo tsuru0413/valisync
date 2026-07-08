@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from valisync.core.downsampler.downsampler import Downsampler
-from valisync.core.export.csv_exporter import CsvExporter
+from valisync.core.export.csv_exporter import CsvExporter, CsvExportOptions
 from valisync.core.formula.engine import FormulaEngine
 from valisync.core.interpolation.interpolator import InterpolationMethod, Interpolator
 from valisync.core.loaders.csv_loader import CsvLoader
@@ -285,8 +285,9 @@ class Session:
         signals: list[Signal],
         output_path: Path,
         use_unified_timeline: bool = False,
+        options: CsvExportOptions | None = None,
     ) -> None:
-        self._exporter.export(signals, output_path, use_unified_timeline)
+        self._exporter.export(signals, output_path, use_unified_timeline, options)
 
     def unified_timeline_signals(
         self,

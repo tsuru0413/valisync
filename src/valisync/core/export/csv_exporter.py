@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -10,19 +11,44 @@ from valisync.core.models import Signal
 
 #: Header name for the leading timestamp column (Req 7.3).
 _TIMESTAMP_HEADER = "timestamp"
+#: 単位行を出力するときのタイムスタンプ列の単位（コアは秒に正規化済み）。
+_TIMESTAMP_UNIT = "s"
 
 
-def _fmt(value: float) -> str:
-    """Round-trippable float formatting (recovers the exact float64 on re-parse)."""
-    return repr(float(value))
+@dataclass(frozen=True)
+class CsvExportOptions:
+    """CSV 書式オプション。既定は現行挙動（round-trip・カンマ・単位行なし）。"""
+
+    delimiter: str = ","
+    decimal: str = "."
+    unit_row: bool = False
+    precision: int | None = None
+
+    def __post_init__(self) -> None:
+        # 区切りと小数点が同一だと CSV が曖昧になる（ダイアログでも防ぐが核でも拒否）。
+        if self.delimiter == self.decimal:
+            raise ValueError("delimiter と decimal に同じ文字は使えません")
+        if self.precision is not None and self.precision < 0:
+            raise ValueError("precision は 0 以上または None")
+
+
+def _fmt(value: float, options: CsvExportOptions) -> str:
+    """値を書式化。precision=None は round-trip（repr）、指定時は固定小数桁。"""
+    if options.precision is None:
+        s = repr(float(value))  # 再パースで float64 を厳密復元
+    else:
+        s = f"{float(value):.{options.precision}f}"
+    if options.decimal != ".":
+        s = s.replace(".", options.decimal)
+    return s
 
 
 class CsvExporter:
     """CSV exporter. Writes Signal data as a single CSV file.
 
     Columns are the timestamp (first) followed by one column per Signal value
-    (Req 7.2, 7.3). Writing is atomic: output is staged in a temporary file and
-    renamed into place, so a failure never leaves a partial file (Req 7.7).
+    (Req 7.2, 7.3). Writing is atomic (Req 7.7). Formatting is governed by
+    :class:`CsvExportOptions`; the default reproduces the original behavior.
     """
 
     def export(
@@ -30,48 +56,50 @@ class CsvExporter:
         signals: list[Signal],
         output_path: Path,
         use_unified_timeline: bool = False,
+        options: CsvExportOptions | None = None,
     ) -> None:
+        opts = options if options is not None else CsvExportOptions()
         if use_unified_timeline:
-            rows = self._rows_unified_timeline(signals)
+            rows = self._rows_unified_timeline(signals, opts)
         else:
-            rows = self._rows_shared_timeline(signals)
+            rows = self._rows_shared_timeline(signals, opts)
         self._atomic_write(Path(output_path), rows)
 
-    def _rows_unified_timeline(self, signals: list[Signal]) -> list[str]:
-        """Align all signals onto the sorted union of their timestamps (Req 7.4).
-
-        A signal that has no sample at a given unified timestamp yields an empty
-        cell (no interpolation).
-        """
+    def _header_rows(self, signals: list[Signal], opts: CsvExportOptions) -> list[str]:
+        """ヘッダ行（＋ unit_row 指定時は単位行）を返す。"""
         names = [s.name for s in signals]
-        header = ",".join([_TIMESTAMP_HEADER, *names])
-
-        views = [s.sorted_view() for s in signals]
-        unified = np.unique(np.concatenate([ts for ts, _vs in views]))
-        # Per-signal lookup from exact timestamp to value (keep-last 済みで一意).
-        lookups = [dict(zip(ts.tolist(), vs.tolist(), strict=True)) for ts, vs in views]
-
-        lines = [header]
-        for ts in unified.tolist():
-            cells = [_fmt(ts)]
-            cells.extend(_fmt(lk[ts]) if ts in lk else "" for lk in lookups)
-            lines.append(",".join(cells))
+        lines = [opts.delimiter.join([_TIMESTAMP_HEADER, *names])]
+        if opts.unit_row:
+            units = [s.metadata.get("unit", "") for s in signals]
+            lines.append(opts.delimiter.join([_TIMESTAMP_UNIT, *units]))
         return lines
 
-    def _rows_shared_timeline(self, signals: list[Signal]) -> list[str]:
+    def _rows_unified_timeline(
+        self, signals: list[Signal], opts: CsvExportOptions
+    ) -> list[str]:
+        """Align all signals onto the sorted union of their timestamps (Req 7.4)."""
+        views = [s.sorted_view() for s in signals]
+        unified = np.unique(np.concatenate([ts for ts, _vs in views]))
+        lookups = [dict(zip(ts.tolist(), vs.tolist(), strict=True)) for ts, vs in views]
+
+        lines = self._header_rows(signals, opts)
+        for ts in unified.tolist():
+            cells = [_fmt(ts, opts)]
+            cells.extend(_fmt(lk[ts], opts) if ts in lk else "" for lk in lookups)
+            lines.append(opts.delimiter.join(cells))
+        return lines
+
+    def _rows_shared_timeline(
+        self, signals: list[Signal], opts: CsvExportOptions
+    ) -> list[str]:
         """Build CSV lines assuming all signals share one timestamp axis."""
-        names = [s.name for s in signals]
-        header = ",".join([_TIMESTAMP_HEADER, *names])
-        # 共有軸前提: 各信号の ts は等値(loader が同一リストから構築・
-        # __post_init__ でコピーされ別オブジェクト)。決定的な stable argsort
-        # により、値が等しい配列を独立にソートしても keep 判定が同一 index になる
         timestamps = signals[0].sorted_view()[0]
         sorted_values = [s.sorted_view()[1] for s in signals]
-        lines = [header]
+        lines = self._header_rows(signals, opts)
         for i in range(len(timestamps)):
-            cells = [_fmt(timestamps[i])]
-            cells.extend(_fmt(vs[i]) for vs in sorted_values)
-            lines.append(",".join(cells))
+            cells = [_fmt(timestamps[i], opts)]
+            cells.extend(_fmt(vs[i], opts) for vs in sorted_values)
+            lines.append(opts.delimiter.join(cells))
         return lines
 
     def _atomic_write(self, output_path: Path, lines: list[str]) -> None:
