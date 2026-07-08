@@ -130,3 +130,65 @@ def test_axis_right_click_does_not_activate_panel(
     ev = _ClickEvent(Qt.MouseButton.RightButton)
     axis_item.mouseClickEvent(ev)
     assert not emitted
+
+
+# ─── Task 4: アクティブ枠 overlay + 軽量通知経路 ────────────────────────────
+
+
+def test_active_frame_follows_vm_state(
+    qtbot: QtBot, area_with_two_panels: tuple[GraphAreaView, GraphAreaVM]
+) -> None:
+    area, vm = area_with_two_panels
+    first = area.tabs.widget(0).widget(0)  # type: ignore[attr-defined]
+    second = area.tabs.widget(0).widget(1)  # type: ignore[attr-defined]
+    # add_panel の自動アクティブで panel 1 がアクティブ
+    assert second._active_frame.isVisible()
+    assert not first._active_frame.isVisible()
+    vm.set_active_panel(0, 0)
+    assert first._active_frame.isVisible()
+    assert not second._active_frame.isVisible()
+
+
+def test_single_panel_shows_frame(qtbot: QtBot, session: Session) -> None:
+    """DP15: パネル1枚でも枠は出す (一貫性)。"""
+    vm = GraphAreaVM(AppViewModel(session))
+    area = GraphAreaView(vm, panel_factory=lambda p: GraphPanelView(p))
+    qtbot.addWidget(area)
+    area.show()
+    qtbot.waitExposed(area)
+    only = area.tabs.widget(0).widget(0)  # type: ignore[attr-defined]
+    assert only._active_frame.isVisible()
+
+
+def test_frame_does_not_shift_plot_origin(
+    qtbot: QtBot, area_with_two_panels: tuple[GraphAreaView, GraphAreaVM]
+) -> None:
+    """honest-RED: 枠はレイアウト行でなく overlay (memory: 27px hit-test 破壊の再発防止)。"""
+    area, _vm = area_with_two_panels
+    second = area.tabs.widget(0).widget(1)  # type: ignore[attr-defined]
+    assert second._active_frame.isVisible()
+    assert second.plot_widget.pos().x() == 0
+    assert second.plot_widget.pos().y() == 0
+
+
+def test_activation_does_not_rebuild_widgets(
+    qtbot: QtBot, area_with_two_panels: tuple[GraphAreaView, GraphAreaVM]
+) -> None:
+    """ "active_panel" 通知は軽量経路 — widget を破棄/再生成しない (参照保持で is 比較)。"""
+    area, vm = area_with_two_panels
+    first_before = area.tabs.widget(0).widget(0)  # type: ignore[attr-defined]
+    second_before = area.tabs.widget(0).widget(1)  # type: ignore[attr-defined]
+    vm.set_active_panel(0, 0)
+    assert area.tabs.widget(0).widget(0) is first_before  # type: ignore[attr-defined]
+    assert area.tabs.widget(0).widget(1) is second_before  # type: ignore[attr-defined]
+
+
+def test_frame_reapplied_after_rebuild(
+    qtbot: QtBot, area_with_two_panels: tuple[GraphAreaView, GraphAreaVM]
+) -> None:
+    area, vm = area_with_two_panels
+    vm.set_active_panel(0, 0)
+    vm.add_panel(0)  # "panels" -> _rebuild, 新パネル (index 2) が自動アクティブ
+    third = area.tabs.widget(0).widget(2)  # type: ignore[attr-defined]
+    assert third._active_frame.isVisible()
+    assert not area.tabs.widget(0).widget(0)._active_frame.isVisible()  # type: ignore[attr-defined]

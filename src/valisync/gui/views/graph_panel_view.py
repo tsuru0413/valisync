@@ -41,6 +41,7 @@ from PySide6.QtGui import (
     QResizeEvent,
 )
 from PySide6.QtWidgets import (
+    QFrame,
     QGraphicsLineItem,
     QGraphicsRectItem,
     QGraphicsWidget,
@@ -753,6 +754,19 @@ class GraphPanelView(QWidget):
         # chrome は plot_widget の上に浮かせる (レイアウト非参加で plot を原点に保つ)。
         self._panel_chrome.raise_()
         self._position_panel_chrome()
+
+        # PC-07: アクティブパネル枠。chrome と同じく overlay (レイアウト非参加) で
+        # plot_widget を原点 (0,0) に保つ。WA_TransparentForMouseEvents で
+        # ゾーン hit-test に一切干渉しない。色はアクティブ軸 amber (#f59e0b) と同系。
+        self._active_frame = QFrame(self)
+        self._active_frame.setObjectName("active_panel_frame")
+        self._active_frame.setStyleSheet(
+            "#active_panel_frame {"
+            " border: 1px solid #f59e0b; border-radius: 2px; background: transparent; }"
+        )
+        self._active_frame.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._active_frame.setGeometry(self.rect())
+        self._active_frame.setVisible(False)
 
         unsubscribe = self.vm.subscribe(self._on_vm_change)
         self._unsubscribe = unsubscribe
@@ -1864,6 +1878,7 @@ class GraphPanelView(QWidget):
         super().resizeEvent(event)
         self.vm.set_panel_width(max(1, event.size().width()))  # notifies → refresh()
         self._position_panel_chrome()
+        self._active_frame.setGeometry(self.rect())
 
     def _position_panel_chrome(self) -> None:
         """Keep the +/x overlay pinned to the top-right corner, above the plot."""
@@ -1878,6 +1893,13 @@ class GraphPanelView(QWidget):
         """Set whether Remove Panel is available (R6.6) — menu action and visible button."""
         self._removable = removable
         self._remove_panel_button.setEnabled(removable)
+
+    def set_panel_active(self, active: bool) -> None:
+        """Show/hide the active-panel frame (PC-07). Repaint-only — no relayout."""
+        self._active_frame.setVisible(active)
+        if active:
+            self._active_frame.raise_()
+            self._panel_chrome.raise_()  # chrome は枠より上 (+/x ボタンを隠さない)
 
     def set_panel_index(self, panel_index: int) -> None:
         """Record this panel's index within the GraphAreaView (called by _wire_panel)."""

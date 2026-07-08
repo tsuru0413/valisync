@@ -96,6 +96,9 @@ class GraphAreaView(QWidget):
         self._syncing = False
         self._drop_active = False
         self.setAcceptDrops(True)
+        # PC-07: (tab_index, panel_index, widget) の現行 GraphPanelView 一覧。
+        # "active_panel" の軽量経路が rebuild なしで枠を再適用するために使う。
+        self._panel_views: list[tuple[int, int, GraphPanelView]] = []
 
         # X-sync toggle for the active tab (R7.3).
         self.sync_checkbox = QCheckBox("Sync X")
@@ -142,6 +145,8 @@ class GraphAreaView(QWidget):
         if change == "active":
             self._sync_current()
             self._update_sync_checkbox()
+        elif change == "active_panel":
+            self._sync_active_frames()  # 軽量: rebuild しない (クリック中の破棄禁止)
         elif change == "sync":
             self._update_sync_checkbox()
         else:  # "tabs" | "panels"
@@ -160,6 +165,7 @@ class GraphAreaView(QWidget):
                 if page is not None:
                     page.setParent(None)
                     page.deleteLater()
+            self._panel_views.clear()
             for tab_index, tab in enumerate(self.vm.tabs()):
                 splitter = QSplitter(Qt.Orientation.Vertical)
                 panel_vms = self.vm.panels(tab_index)
@@ -168,6 +174,8 @@ class GraphAreaView(QWidget):
                     self._wire_panel(
                         widget, tab_index, panel_index, removable=len(panel_vms) > 1
                     )
+                    if isinstance(widget, GraphPanelView):
+                        self._panel_views.append((tab_index, panel_index, widget))
                     splitter.addWidget(widget)
                 self.tabs.addTab(splitter, tab.name)
             # SH-04: 最後の1枚は閉じさせない (remove_tab も ValueError を握るが、
@@ -184,6 +192,14 @@ class GraphAreaView(QWidget):
         finally:
             self._syncing = False
         self._update_sync_checkbox()
+        self._sync_active_frames()
+
+    def _sync_active_frames(self) -> None:
+        """Re-apply the active-panel frame from VM state (rebuild 後と "active_panel")。"""
+        for tab_index, panel_index, widget in self._panel_views:
+            widget.set_panel_active(
+                panel_index == self.vm.active_panel_index(tab_index)
+            )
 
     def _wire_panel(
         self, widget: QWidget, tab_index: int, panel_index: int, removable: bool
