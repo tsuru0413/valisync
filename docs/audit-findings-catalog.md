@@ -54,9 +54,9 @@
 | ID | 重要度 | 課題 | 場所 | ユーザー影響 |
 |---|---|---|---|---|
 | SH-01 | ✅解消 | **✅解消（2026-07-08・増分1a）: File>Open＋Ctrl+O＋Welcome 空状態 CTA＋File Browser ボタン＋Recent Files（QSettings MRU・再開可能な絶対パス保存・存在剪定）を既存 _load_file へ集約配線。ShellActions QAction レジストリ新設。CSV Export 導線（SH-03）は増分1b で実装予定。** 〔元課題〕File>Open / Ctrl+O / 最近使ったファイルが皆無（読み込みは D&D か「Data Explorer」ボタンのみ） | `gui/views/main_window.py:97` | 初回ユーザーがデータの開き方に気づけない |
-| SH-02 | 🔴 | 新規タブを作成する UI が無い（多タブ機能に到達不能） | `gui/views/graph_area_view.py:68` | 実装済みの多タブが使えない |
+| SH-02 | ✅解消 | **✅解消（2026-07-08・増分2a）: QTabWidget コーナー "+" ボタン＋Ctrl+T で GraphAreaVM.add_tab に配線。** 新規タブを作成する UI が無い（多タブ機能に到達不能） | `gui/views/graph_area_view.py:68` | 実装済みの多タブが使えない |
 | SH-03 | ✅解消 | **✅解消（2026-07-08・増分1b）: Export CSV ダイアログ（File>Export…・Ctrl+E・ツールバー）＝ファイル別信号ツリー・初期選択=プロット中・統合タイムライン・フルオプション（区切り/小数/単位行/精度）・オフスレッド書出（BusyOverlay・失敗時モーダル）。CsvExporter を CsvExportOptions で拡張（既定は現行一致）。** 〔元課題〕CSV エクスポート/成果書き出しの導線が GUI に無い（`Session.export_csv` 到達不能） | `gui/views/main_window.py:96` | 解析結果を持ち出せない（ジャーニーの出口欠如） |
-| SH-04 | 🟠 | タブを閉じる UI が無い（`remove_tab` 到達不能） | `gui/views/graph_area_view.py:179` | 増えたタブを整理できない |
+| SH-04 | ✅解消 | **✅解消（2026-07-08・増分2a）: setTabsClosable＋tabCloseRequested→remove_tab。最後の1枚は close ボタン抑制。** タブを閉じる UI が無い（`remove_tab` 到達不能） | `gui/views/graph_area_view.py:179` | 増えたタブを整理できない |
 | SH-05 | 🟠 | キーボードショートカット/アクセラレータが皆無 | `gui/views/main_window.py:104` | 反復操作が遅い |
 | SH-06 | 🟠 | パネルの追加/削除が右クリック限定・可視ボタンなし | `gui/views/graph_panel_view.py:1776` | パネル分割の発見が困難 |
 | SH-07 | ✅解消 | **✅解消（2026-07-08・増分1a）: File Browser ヘッダの開くボタン（ヘッダの開くボタン→open_requested→open_file で File>Open と同じファイル選択ダイアログを開き、空リストの手詰まりを解消）を実装。** 〔元課題〕File Browser にファイルを開く/追加する操作が無い（空リストから前進不能） | `gui/views/file_browser_view.py:34` | File Browser 単体で作業を始められない |
@@ -65,7 +65,7 @@
 | SH-10 | 🟠 | 登録データソース一覧が UI に無く複数ソース切替不可 | `gui/views/data_explorer_view.py:137` | 複数フォルダを扱えない |
 | SH-11 | 🟡 | レイアウトを既定に戻す「Reset Layout」が無い（乱れたドック配置から復帰不能） | `gui/views/main_window.py:164`（既知の永続化 footgun と関連） | 崩れた配置を戻せない |
 | SH-12 | 🟡 | ドック表示トグルが View メニュー限定（ツールバー/タイトルバー導線なし） | `gui/views/main_window.py:96` | ★ユーザー指摘：ドック表示切り替えボタンが無い |
-| SH-13 | 🟡 | タブ名リネーム UI が無い（`rename_tab` 到達不能・Tab N 固定） | `gui/views/graph_area_view.py:183` | タブを識別できない |
+| SH-13 | ✅解消 | **✅解消（2026-07-08・増分2a）: tabBarDoubleClicked→インライン QLineEdit エディタ→rename_tab（1-32字・範囲外は編集継続）。** タブ名リネーム UI が無い（`rename_tab` 到達不能・Tab N 固定） | `gui/views/graph_area_view.py:183` | タブを識別できない |
 | SH-14 | 🟡 | ツールバーにアイコン/ツールチップなし・Help/About/バージョンなし | `gui/views/main_window.py:104` | 機能の意味が伝わらない |
 | SH-15 | 🟡 | Remove Source が不可視の「現在ルート」に作用し、右クリック削除と操作モデルが不一致・no-op フィードバックなし | `gui/views/data_explorer_view.py:105` | 何が消えるか予測できない |
 
