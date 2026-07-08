@@ -55,7 +55,7 @@
 |---|---|---|---|---|
 | SH-01 | ✅解消 | **✅解消（2026-07-08・増分1a）: File>Open＋Ctrl+O＋Welcome 空状態 CTA＋File Browser ボタン＋Recent Files（QSettings MRU・再開可能な絶対パス保存・存在剪定）を既存 _load_file へ集約配線。ShellActions QAction レジストリ新設。CSV Export 導線（SH-03）は増分1b で実装予定。** 〔元課題〕File>Open / Ctrl+O / 最近使ったファイルが皆無（読み込みは D&D か「Data Explorer」ボタンのみ） | `gui/views/main_window.py:97` | 初回ユーザーがデータの開き方に気づけない |
 | SH-02 | 🔴 | 新規タブを作成する UI が無い（多タブ機能に到達不能） | `gui/views/graph_area_view.py:68` | 実装済みの多タブが使えない |
-| SH-03 | 🔴 | CSV エクスポート/成果書き出しの導線が GUI に無い（`Session.export_csv` 到達不能） | `gui/views/main_window.py:96` | 解析結果を持ち出せない（ジャーニーの出口欠如） |
+| SH-03 | ✅解消 | **✅解消（2026-07-08・増分1b）: Export CSV ダイアログ（File>Export…・Ctrl+E・ツールバー）＝ファイル別信号ツリー・初期選択=プロット中・統合タイムライン・フルオプション（区切り/小数/単位行/精度）・オフスレッド書出（BusyOverlay・失敗時モーダル）。CsvExporter を CsvExportOptions で拡張（既定は現行一致）。** 〔元課題〕CSV エクスポート/成果書き出しの導線が GUI に無い（`Session.export_csv` 到達不能） | `gui/views/main_window.py:96` | 解析結果を持ち出せない（ジャーニーの出口欠如） |
 | SH-04 | 🟠 | タブを閉じる UI が無い（`remove_tab` 到達不能） | `gui/views/graph_area_view.py:179` | 増えたタブを整理できない |
 | SH-05 | 🟠 | キーボードショートカット/アクセラレータが皆無 | `gui/views/main_window.py:104` | 反復操作が遅い |
 | SH-06 | 🟠 | パネルの追加/削除が右クリック限定・可視ボタンなし | `gui/views/graph_panel_view.py:1776` | パネル分割の発見が困難 |

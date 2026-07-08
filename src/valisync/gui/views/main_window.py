@@ -43,12 +43,14 @@ from valisync.gui.views.channel_browser_view import ChannelBrowserView
 from valisync.gui.views.csv_format_dialog import CsvFormatDialog
 from valisync.gui.views.data_explorer_view import DataExplorerView
 from valisync.gui.views.diagnostics_view import DiagnosticsView
+from valisync.gui.views.export_csv_dialog import ExportCsvDialog
 from valisync.gui.views.file_browser_view import FileBrowserView
 from valisync.gui.views.graph_area_view import GraphAreaView
 from valisync.gui.views.recent_files import RecentFiles
 from valisync.gui.views.shell_actions import ShellActions
 from valisync.gui.views.welcome_view import WelcomeView
 from valisync.gui.workers.expansion_confirmer import ExpansionConfirmer
+from valisync.gui.workers.export_worker import ExportController
 from valisync.gui.workers.load_worker import LoadController
 
 _ORG = "ValiSync"
@@ -83,6 +85,7 @@ class MainWindow(QMainWindow):
         self.graph_area_view = GraphAreaView(self.graph_area_vm)
         self.busy_overlay = BusyOverlay(self)
         self._load_controller = LoadController(parent=self)
+        self._export_controller = ExportController(parent=self)
         # GUI スレッド所属 — ワーカーからの展開確認をモーダルへ marshal (LD-14)。
         self._expansion_confirmer = ExpansionConfirmer(self)
         # LD-01: CSV フォーマット解決 (検出して確認ダイアログ)。テストで差し替え可能。
@@ -141,7 +144,7 @@ class MainWindow(QMainWindow):
         self.shell_actions.action("open_folder").triggered.connect(
             self.open_data_explorer
         )
-        # export の triggered は増分1b で接続
+        self.shell_actions.action("export").triggered.connect(self.export_csv)
 
         # ── メニューバー ─────────────────────────────────────────────────────
         file_menu = self.menuBar().addMenu("File")
@@ -312,6 +315,11 @@ class MainWindow(QMainWindow):
             self._update_central()
         if change in ("active_file", "loaded", "unloaded"):
             self._update_window_title()
+        if change in ("loaded", "unloaded"):
+            # SH-03: データがあるときだけ Export を許可 (spec §6.4)
+            self.shell_actions.action("export").setEnabled(
+                bool(self.app_vm.loaded_file_keys)
+            )
 
     def _update_window_title(self) -> None:
         """FB-07: show the active file so the title answers 'what am I looking at'."""
@@ -368,6 +376,37 @@ class MainWindow(QMainWindow):
         )
         if path:
             self._load_file(path)
+
+    def export_csv(self, *_: object) -> None:
+        """File>Export / Ctrl+E / ツールバーの集約先 (SH-03)。
+
+        アクティブパネルのプロット中信号を初期選択に ExportCsvDialog を開き、
+        確定したら既存の BusyOverlay パターンでオフスレッド書き出しする。
+        """
+        panels = self.graph_area_vm.panels(self.graph_area_vm.active_tab_index)
+        initial = set(panels[0].plotted_signal_keys()) if panels else set()
+        req = ExportCsvDialog.ask(self.app_vm, initial, self)
+        if req is None:
+            return
+        session = self.app_vm.session
+        self._export_controller.submit(
+            lambda: session.export_csv(
+                req.signals, req.output_path, req.use_unified_timeline, req.options
+            ),
+            busy=self.busy_overlay,
+            label=req.output_path.name,
+            on_success=lambda: self.statusBar().showMessage(
+                f"エクスポートしました: {req.output_path.name}"
+            ),
+            on_error=self._on_export_error,
+        )
+
+    def _on_export_error(self, err: Exception) -> None:
+        # FB-01 同様: 失敗を握りつぶさない (ステータス+モーダル)。
+        self.statusBar().showMessage(f"⛔ エクスポート失敗: {err}")
+        QMessageBox.critical(
+            self, "エクスポートエラー", f"CSV を書き出せませんでした。\n\n{err}"
+        )
 
     def open_data_explorer(self, *_: object) -> None:
         """Open (or re-show) the standalone Data Explorer window (R1.5)."""
