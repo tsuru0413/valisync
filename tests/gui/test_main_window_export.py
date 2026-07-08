@@ -55,6 +55,8 @@ def test_export_csv_runs_export_with_request(
     qtbot.waitUntil(lambda: len(calls) == 1, timeout=3000)
     args, _kwargs = calls[0]
     assert args[0] == [sig] and args[1] == target
+    # 4引数転送の回帰捕捉 (Task 5 Minor): use_unified_timeline/options も転送されること
+    assert args[2] is req.use_unified_timeline and args[3] is req.options
 
 
 def test_export_csv_cancel_does_nothing(qtbot: QtBot, monkeypatch) -> None:

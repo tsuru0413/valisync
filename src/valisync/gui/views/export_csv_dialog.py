@@ -115,6 +115,10 @@ class ExportCsvDialog(QDialog):
         # 形式オプション
         form = QFormLayout()
         self._unified = QCheckBox(self)
+        # 既定 ON (安全側): 共有信号では union が同一 timestamps ゆえ出力バイト
+        # 不変。マルチレート信号(独立ラスタ)では unified だけが安全な経路
+        # (whole-branch review Important #1)。
+        self._unified.setChecked(True)
         form.addRow("統合タイムライン", self._unified)
         self._delim = QComboBox(self)
         for label, ch in _DELIMS:

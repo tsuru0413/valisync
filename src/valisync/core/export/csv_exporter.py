@@ -25,6 +25,11 @@ class CsvExportOptions:
     precision: int | None = None
 
     def __post_init__(self) -> None:
+        # 空区切り/空小数点は CSV 構造を壊す(列が融合する)ため核でも拒否。
+        # ダイアログは固定候補コンボからしか到達しないが、公開 API としての
+        # CsvExportOptions は直接構築されうるので堅牢化する。
+        if not self.delimiter or not self.decimal:
+            raise ValueError("delimiter と decimal は空文字にできません")
         # 区切りと小数点が同一だと CSV が曖昧になる(ダイアログでも防ぐが核でも拒否)。
         if self.delimiter == self.decimal:
             raise ValueError("delimiter と decimal に同じ文字は使えません")
@@ -92,9 +97,24 @@ class CsvExporter:
     def _rows_shared_timeline(
         self, signals: list[Signal], opts: CsvExportOptions
     ) -> list[str]:
-        """Build CSV lines assuming all signals share one timestamp axis."""
-        timestamps = signals[0].sorted_view()[0]
-        sorted_values = [s.sorted_view()[1] for s in signals]
+        """Build CSV lines assuming all signals share one timestamp axis.
+
+        Multi-rate signals (e.g. independent MDF channel rasters) do not
+        share a timeline, so blindly indexing by position would silently
+        truncate, misalign, or IndexError. Verify the shared-axis
+        precondition up front and fail loudly instead of writing corrupt
+        data (whole-branch review Important #1).
+        """
+        views = [s.sorted_view() for s in signals]
+        base_ts = views[0][0]
+        for ts, _vs in views:
+            if ts.shape != base_ts.shape or not np.array_equal(ts, base_ts):
+                raise ValueError(
+                    "選択した信号が同一の時間軸を共有していません。"
+                    "共有タイムラインで書き出すには統合タイムラインを有効にしてください。"
+                )
+        timestamps = base_ts
+        sorted_values = [vs for _ts, vs in views]
         lines = self._header_rows(signals, opts)
         for i in range(len(timestamps)):
             cells = [_fmt(timestamps[i], opts)]

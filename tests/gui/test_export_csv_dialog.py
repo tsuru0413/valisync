@@ -59,6 +59,14 @@ def test_initial_selection_is_plotted(qtbot: QtBot) -> None:
     assert _ok(dlg) is True  # 1 件チェックで Ok 有効
 
 
+def test_unified_timeline_defaults_checked(qtbot: QtBot) -> None:
+    # マルチレート信号(独立ラスタ)を安全な既定にする(whole-branch review Important #1)。
+    # 共有信号では unified も出力バイト同一なので既定 ON は無回帰。
+    dlg = ExportCsvDialog(_app_vm(), initial_selected={"csv_1::a"})
+    qtbot.addWidget(dlg)
+    assert dlg._unified.isChecked() is True
+
+
 def test_select_all_and_none(qtbot: QtBot) -> None:
     dlg = ExportCsvDialog(_app_vm(), initial_selected=set())
     qtbot.addWidget(dlg)
