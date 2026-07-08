@@ -1,5 +1,5 @@
 # tests/realgui/test_shell_chrome_flow.py
-"""Layer C: shell chrome no jitsu OS input (SH-11/12)."""
+"""Layer C: シェル chrome の実 OS 入力 (SH-11/12)。"""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ def test_toolbar_dock_toggle_real_click(qtbot: QtBot, tmp_path: Path) -> None:
     assert mw.file_dock.isVisible()
     qtbot.mouseClick(btn, Qt.MouseButton.LeftButton)
     QApplication.processEvents()
-    assert not mw.file_dock.isVisible(), "toolbar toggle real click de dock ga kakurenu"
+    assert not mw.file_dock.isVisible(), "ツールバートグル実クリックでドックが隠れない"
 
 
 def test_reset_layout_real(qtbot: QtBot, tmp_path: Path) -> None:
