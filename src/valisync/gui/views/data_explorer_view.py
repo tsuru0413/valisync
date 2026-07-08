@@ -23,8 +23,10 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QFileDialog,
     QFileSystemModel,
+    QListWidget,
     QMainWindow,
     QMenu,
+    QSplitter,
     QToolBar,
     QTreeView,
 )
@@ -76,7 +78,18 @@ class DataExplorerView(QMainWindow):
         self.tree.setSelectionMode(QTreeView.SelectionMode.ExtendedSelection)
         self.tree.activated.connect(self._on_activated)
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
-        self.setCentralWidget(self.tree)
+
+        # SH-10: 登録データソースの可視リスト (tree の左に並置)。
+        self.source_list = QListWidget(self)
+        self.source_list.setObjectName("data_source_list")
+        self.source_list.currentRowChanged.connect(self._on_source_row_changed)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        splitter.addWidget(self.source_list)
+        splitter.addWidget(self.tree)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        self.setCentralWidget(splitter)  # replaces setCentralWidget(self.tree)
         self.setAcceptDrops(True)  # OS file-manager drops (R12.1)
 
         # ── Toolbar ──────────────────────────────────────────────────────────
@@ -85,6 +98,10 @@ class DataExplorerView(QMainWindow):
         self.action_add_source.triggered.connect(self._on_add_source_clicked)
         self.action_remove_source = toolbar.addAction("Remove Source")
         self.action_remove_source.triggered.connect(self._on_remove_source_clicked)
+
+        # data_sources 変更でリストを再投影 (restore の add もこれで反映)。
+        self._app_unsub = self._app_vm.subscribe(self._on_app_change)
+        self.destroyed.connect(lambda *_: self._app_unsub())
 
         # ── Restore persisted sources ────────────────────────────────────────
         if self._sources_file is not None:
@@ -103,10 +120,14 @@ class DataExplorerView(QMainWindow):
             self.add_source(folder)
 
     def _on_remove_source_clicked(self, *_: object) -> None:
-        """Remove the source the tree is currently rooted at, if registered."""
-        rooted = Path(self.fs_model.filePath(self.tree.rootIndex()))
-        if str(rooted) in self.sources():
-            self.remove_source(rooted)
+        """Remove the source selected in the list (SH-15: not the invisible tree root)."""
+        item = self.source_list.currentItem()
+        if item is None:
+            self.statusBar().showMessage(
+                "削除するデータソースをリストから選択してください", 4000
+            )
+            return
+        self.remove_source(Path(item.text()))
 
     # ─── Source management ─────────────────────────────────────────────────────
 
@@ -136,6 +157,30 @@ class DataExplorerView(QMainWindow):
 
     def _root_at(self, folder: Path) -> None:
         self.tree.setRootIndex(self.fs_model.index(str(folder)))
+
+    def _on_app_change(self, change: str) -> None:
+        if change == "data_sources":
+            self._refresh_source_list()
+
+    def _refresh_source_list(self) -> None:
+        current = self.source_list.currentItem()
+        keep = current.text() if current is not None else None
+        self.source_list.blockSignals(True)  # rebuild without spurious root switches
+        self.source_list.clear()
+        for path in self.sources():
+            self.source_list.addItem(path)
+        if keep is not None:
+            matches = self.source_list.findItems(keep, Qt.MatchFlag.MatchExactly)
+            if matches:
+                self.source_list.setCurrentItem(matches[0])
+        self.source_list.blockSignals(False)
+
+    def _on_source_row_changed(self, row: int) -> None:
+        if row < 0:
+            return
+        item = self.source_list.item(row)
+        if item is not None:
+            self._root_at(Path(item.text()))
 
     # ─── Load ──────────────────────────────────────────────────────────────────
 
