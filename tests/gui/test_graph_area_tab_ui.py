@@ -8,7 +8,7 @@ Tests the affordances for adding a new tab:
 from __future__ import annotations
 
 from PySide6.QtGui import QKeySequence
-from PySide6.QtWidgets import QLabel, QToolButton
+from PySide6.QtWidgets import QLabel, QLineEdit, QToolButton
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from valisync.core.session import Session
@@ -81,3 +81,37 @@ def test_close_button_reappears_above_one_tab(qtbot: QtBot) -> None:
         )
     )
     assert bar.tabButton(0, pos) is not None
+
+
+def test_double_click_opens_rename_editor(qtbot: QtBot) -> None:
+    view = _make_area(qtbot)
+    view._begin_rename(0)  # tabBarDoubleClicked の接続先
+    editor = view._rename_editor
+    assert isinstance(editor, QLineEdit)
+    assert editor.text() == "Tab 1"
+
+
+def test_rename_commit_updates_vm(qtbot: QtBot) -> None:
+    view = _make_area(qtbot)
+    view._begin_rename(0)
+    view._rename_editor.setText("速度ログ")
+    view._rename_editor.committed.emit("速度ログ")
+    assert view.vm.tabs()[0].name == "速度ログ"
+    assert view._rename_editor is None  # 確定で editor 破棄
+
+
+def test_rename_cancel_keeps_name(qtbot: QtBot) -> None:
+    view = _make_area(qtbot)
+    view._begin_rename(0)
+    view._rename_editor.setText("破棄される")
+    view._rename_editor.cancelled.emit()
+    assert view.vm.tabs()[0].name == "Tab 1"
+    assert view._rename_editor is None
+
+
+def test_rename_invalid_length_keeps_editor_open(qtbot: QtBot) -> None:
+    view = _make_area(qtbot)
+    view._begin_rename(0)
+    view._rename_editor.committed.emit("x" * 33)  # 32 字超
+    assert view.vm.tabs()[0].name == "Tab 1"  # 変更されない
+    assert view._rename_editor is not None  # 編集継続

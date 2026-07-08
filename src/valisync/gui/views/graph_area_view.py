@@ -24,11 +24,14 @@ from PySide6.QtGui import (
     QDragLeaveEvent,
     QDragMoveEvent,
     QDropEvent,
+    QFocusEvent,
+    QKeyEvent,
     QKeySequence,
     QShortcut,
 )
 from PySide6.QtWidgets import (
     QCheckBox,
+    QLineEdit,
     QSplitter,
     QStyle,
     QTabBar,
@@ -47,6 +50,29 @@ PanelFactory = Callable[[GraphPanelVM], QWidget]
 
 def _default_panel_factory(panel_vm: GraphPanelVM) -> QWidget:
     return GraphPanelView(panel_vm)
+
+
+class _TabRenameEditor(QLineEdit):
+    """タブバー上のインライン改名エディタ (SH-13)。
+
+    Enter/フォーカス喪失で committed、Escape で cancelled を出す。位置決めと
+    ライフサイクルは GraphAreaView が握る。
+    """
+
+    committed = Signal(str)
+    cancelled = Signal()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.cancelled.emit()
+        elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.committed.emit(self.text())
+        else:
+            super().keyPressEvent(event)
+
+    def focusOutEvent(self, event: QFocusEvent) -> None:
+        super().focusOutEvent(event)
+        self.committed.emit(self.text())
 
 
 class GraphAreaView(QWidget):
@@ -93,6 +119,10 @@ class GraphAreaView(QWidget):
         # SH-04: タブを閉じる。最後の1枚の抑制は _rebuild で per-tab に行う。
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self.remove_tab)
+
+        # SH-13: ダブルクリックでタブ改名。
+        self._rename_editor: _TabRenameEditor | None = None
+        self.tabs.tabBarDoubleClicked.connect(self._begin_rename)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -219,6 +249,37 @@ class GraphAreaView(QWidget):
     def rename_tab(self, index: int, name: str) -> None:
         with contextlib.suppress(ValueError):  # invalid length — leave label (R5.4)
             self.vm.rename_tab(index, name)
+
+    def _begin_rename(self, index: int) -> None:
+        if index < 0:
+            return
+        self._discard_rename_editor()  # 進行中があれば畳む
+        bar = self.tabs.tabBar()
+        editor = _TabRenameEditor(bar)
+        editor.setText(self.tabs.tabText(index))
+        editor.selectAll()
+        editor.setGeometry(bar.tabRect(index))
+        editor.committed.connect(lambda text: self._finish_rename(index, text))
+        editor.cancelled.connect(self._discard_rename_editor)
+        editor.show()
+        editor.setFocus()
+        self._rename_editor = editor
+
+    def _finish_rename(self, index: int, text: str) -> None:
+        # 範囲外は editor を残して修正させる (赤枠でフィードバック)。
+        if not (1 <= len(text) <= 32):
+            if self._rename_editor is not None:
+                self._rename_editor.setStyleSheet("border: 1px solid #c0392b;")
+            return
+        self._discard_rename_editor()
+        self.rename_tab(index, text)  # VM 反映 -> _rebuild
+
+    def _discard_rename_editor(self) -> None:
+        editor = self._rename_editor
+        self._rename_editor = None
+        if editor is not None:
+            editor.hide()
+            editor.deleteLater()
 
     def add_panel(self, tab_index: int | None = None) -> None:
         with contextlib.suppress(ValueError):  # at the 8-panel cap (R6.5)
