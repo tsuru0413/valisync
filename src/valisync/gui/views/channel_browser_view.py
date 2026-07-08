@@ -208,9 +208,10 @@ class ChannelBrowserView(QWidget):
         menu = QMenu(self)
         add = menu.addAction("Add to Active Panel")
         add.setEnabled(bool(self.selected_signal_keys()))
-        add.triggered.connect(
-            lambda *_: self.add_to_panel_requested.emit(self.selected_signal_keys())
-        )
+        # Route through _emit_add_selected so the empty-selection guard is shared
+        # with the button/dblclick/Enter paths (action is already disabled when
+        # empty; this keeps all four add paths symmetric).
+        add.triggered.connect(lambda *_: self._emit_add_selected())
         return menu
 
     def _show_context_menu(self, pos: QPoint) -> None:

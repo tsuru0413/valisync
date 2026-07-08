@@ -306,15 +306,16 @@ class _AlignedAxisItem(pg.AxisItem):
         self._panel_view = panel
 
     def _emit_panel_activation(self) -> None:
-        """Re-emit panel activation from the axis click path.
+        """Emit panel activation for a click that landed on this axis.
 
-        GraphPanelView.mousePressEvent already emits activate_requested on any
-        left press, but whether that press reaches the parent widget depends on
-        platform/grab state (see GraphPanelView.eventFilter's docstring) rather
-        than on the scene "consuming" it outright. To guarantee activation even
-        if that delivery is ever short-circuited, the axis click path emits
-        independently here too — see the activate_requested declaration below
-        for why a duplicate emit per physical click is safe.
+        This is the *sole* activation path for axis clicks, not a backup: a
+        click on this AxisItem is accepted (consumed) by the scene item for Y
+        zoom/pan/resize, so it never propagates up to
+        GraphPanelView.mousePressEvent. Only plot-area presses reach that
+        widget-level handler; axis presses must emit activation from here.
+        Both paths can fire for a single physical click (a plot-area press,
+        never an axis press), and that duplicate is safe — see the
+        activate_requested declaration below for why.
         """
         if self._panel_view is not None:
             self._panel_view.activate_requested.emit()
@@ -640,12 +641,12 @@ class GraphPanelView(QWidget):
     # Uses object so None ("append at end") survives the signal boundary.
     cross_panel_axis_move_requested = Signal(int, int, int, object)
     # PC-07: 左クリックでこのパネルをアクティブに (GraphAreaView が VM へ配線)。
-    # 実クリックでは press 経路 (mousePressEvent) と軸クリック経路
-    # (_AlignedAxisItem._emit_panel_activation) の両方から発火しうるため、1回の
-    # 物理クリックで複数回 emit されることがある。購読側は冪等であること —
-    # GraphAreaVM.set_active_panel は同じ index への再設定を no-op にしており、
-    # これで満たされている。両経路を残しているのは belt-and-suspenders
-    # (どちらか一方の配送が環境依存で欠けても活性化を保証するため) の設計。
+    # 2つの emit 元は排他的なクリック対象をカバーする: プロット領域の press は
+    # mousePressEvent に届いて emit し、軸クリックは scene アイテムに accept され
+    # 親へ伝播しないので _AlignedAxisItem._emit_panel_activation が emit する。
+    # 通常は1回の物理クリックにつき1回だけ発火するが、配送が万一重なっても
+    # 購読側 (GraphAreaVM.set_active_panel) が同じ index への再設定を no-op に
+    # しており冪等なので安全。
     activate_requested = Signal()
 
     def __init__(

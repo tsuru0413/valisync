@@ -299,6 +299,20 @@ def test_add_panel_notifies_subscribers() -> None:
     assert len(changes) >= 1
 
 
+def test_add_panel_emits_only_panels_not_active_panel() -> None:
+    # PC-07 invariant: add_panel auto-activates the new panel, but the "panels"
+    # rebuild already re-applies the active frame, so it must NOT also emit
+    # "active_panel" (that would trigger the lightweight active_panel path on
+    # top of a full rebuild). Guards against over-notification the >= 1 check
+    # above cannot catch.
+    session = _make_session()
+    vm = GraphAreaVM(AppViewModel(session))
+    changes: list[str] = []
+    vm.subscribe(changes.append)
+    vm.add_panel(0)
+    assert changes == ["panels"]
+
+
 # ─── remove_panel ────────────────────────────────────────────────────────────
 
 
