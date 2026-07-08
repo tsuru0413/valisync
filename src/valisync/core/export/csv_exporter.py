@@ -11,13 +11,13 @@ from valisync.core.models import Signal
 
 #: Header name for the leading timestamp column (Req 7.3).
 _TIMESTAMP_HEADER = "timestamp"
-#: 単位行を出力するときのタイムスタンプ列の単位（コアは秒に正規化済み）。
+#: 単位行を出力するときのタイムスタンプ列の単位(コアは秒に正規化済み)。
 _TIMESTAMP_UNIT = "s"
 
 
 @dataclass(frozen=True)
 class CsvExportOptions:
-    """CSV 書式オプション。既定は現行挙動（round-trip・カンマ・単位行なし）。"""
+    """CSV 書式オプション。既定は現行挙動(round-trip・カンマ・単位行なし)。"""
 
     delimiter: str = ","
     decimal: str = "."
@@ -25,7 +25,7 @@ class CsvExportOptions:
     precision: int | None = None
 
     def __post_init__(self) -> None:
-        # 区切りと小数点が同一だと CSV が曖昧になる（ダイアログでも防ぐが核でも拒否）。
+        # 区切りと小数点が同一だと CSV が曖昧になる(ダイアログでも防ぐが核でも拒否)。
         if self.delimiter == self.decimal:
             raise ValueError("delimiter と decimal に同じ文字は使えません")
         if self.precision is not None and self.precision < 0:
@@ -33,7 +33,7 @@ class CsvExportOptions:
 
 
 def _fmt(value: float, options: CsvExportOptions) -> str:
-    """値を書式化。precision=None は round-trip（repr）、指定時は固定小数桁。"""
+    """値を書式化。precision=None は round-trip(repr)、指定時は固定小数桁。"""
     if options.precision is None:
         s = repr(float(value))  # 再パースで float64 を厳密復元
     else:
@@ -66,7 +66,7 @@ class CsvExporter:
         self._atomic_write(Path(output_path), rows)
 
     def _header_rows(self, signals: list[Signal], opts: CsvExportOptions) -> list[str]:
-        """ヘッダ行（＋ unit_row 指定時は単位行）を返す。"""
+        """ヘッダ行(+ unit_row 指定時は単位行)を返す。"""
         names = [s.name for s in signals]
         lines = [opts.delimiter.join([_TIMESTAMP_HEADER, *names])]
         if opts.unit_row:
