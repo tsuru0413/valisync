@@ -44,7 +44,9 @@ from PySide6.QtWidgets import (
     QGraphicsLineItem,
     QGraphicsRectItem,
     QGraphicsWidget,
+    QHBoxLayout,
     QMenu,
+    QToolButton,
     QToolTip,
     QVBoxLayout,
     QWidget,
@@ -698,8 +700,29 @@ class GraphPanelView(QWidget):
         # GraphPanelView.mouseMoveEvent is never called on no-button moves.
         self.plot_widget.viewport().installEventFilter(self)
 
+        # SH-06: パネル追加/削除の可視アフォーダンス (右クリックメニューと併存)。
+        chrome = QHBoxLayout()
+        chrome.setContentsMargins(2, 2, 2, 0)
+        chrome.addStretch(1)
+        add_panel_btn = QToolButton(self)
+        add_panel_btn.setObjectName("add_panel_button")
+        add_panel_btn.setText("+")
+        add_panel_btn.setToolTip("パネルを追加")
+        add_panel_btn.clicked.connect(lambda: self.add_panel_requested.emit())
+        chrome.addWidget(add_panel_btn)
+        self._remove_panel_button = QToolButton(self)
+        self._remove_panel_button.setObjectName("remove_panel_button")
+        self._remove_panel_button.setText("×")  # noqa: RUF001
+        self._remove_panel_button.setToolTip("パネルを削除")
+        self._remove_panel_button.setEnabled(self._removable)
+        self._remove_panel_button.clicked.connect(
+            lambda: self.remove_panel_requested.emit()
+        )
+        chrome.addWidget(self._remove_panel_button)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(chrome)
         layout.addWidget(self.plot_widget)
 
         unsubscribe = self.vm.subscribe(self._on_vm_change)
@@ -1814,8 +1837,9 @@ class GraphPanelView(QWidget):
     # ─── Context menu (R14.3) ───────────────────────────────────────────────────
 
     def set_removable(self, removable: bool) -> None:
-        """Set whether the 'Remove Panel' action is enabled (R6.6 grey-out)."""
+        """Set whether Remove Panel is available (R6.6) — menu action and visible button."""
         self._removable = removable
+        self._remove_panel_button.setEnabled(removable)
 
     def set_panel_index(self, panel_index: int) -> None:
         """Record this panel's index within the GraphAreaView (called by _wire_panel)."""
