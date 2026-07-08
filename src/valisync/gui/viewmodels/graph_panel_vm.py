@@ -355,6 +355,11 @@ class GraphPanelVM(Observable):
         self._axes.append(axis)
         for e in entries:
             e.axis_index = new_index
+            # Cross-panel move: entry_id is unique only within a VM, so the
+            # source VM's id can collide with an existing id in this (dest) VM.
+            # Renumber into this VM's id-space; color/axis settings are kept.
+            e.entry_id = self._next_entry_id
+            self._next_entry_id += 1
             self._plotted.append(e)
         # Drop the target's initial empty placeholder (mirrors create_new_axis), so
         # dropping onto a blank panel does not leave a phantom empty axis band.

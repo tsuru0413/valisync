@@ -1289,3 +1289,74 @@ def test_render_data_carries_entry_id(tmp_path: Path) -> None:
     curves = vm.render_data()
     plotted_ids = {e["entry_id"] for e in vm.inspect()["plotted_signals"]}
     assert {c.entry_id for c in curves} == plotted_ids
+
+
+def test_render_data_carries_entry_id_for_missing_signal(tmp_path: Path) -> None:
+    """entry_id survives the sig=None branch (signal removed from session after add)."""
+    session, group_key = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    key = next(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    entry_id = vm.inspect()["plotted_signals"][0]["entry_id"]
+
+    session.remove_group(group_key)  # signal now absent from session -> sig_map miss
+
+    curves = vm.render_data()
+    assert len(curves) == 1
+    assert curves[0].timestamps.size == 0  # confirms the sig=None placeholder branch
+    assert curves[0].entry_id == entry_id
+
+
+def _empty_sig(name: str = "void") -> Signal:
+    """A Signal with zero samples — exercises render_data's empty-ts_slice branch directly.
+
+    Unlike an out-of-range x_range (which RN-01's +/-1 boundary extension still
+    fills with one point), a genuinely zero-length signal forces ts_slice itself
+    to be empty regardless of x_range.
+    """
+    return Signal(
+        name=name,
+        timestamps=np.array([], dtype=np.float64),
+        values=np.array([], dtype=np.float64),
+        file_format="CSV",
+        bus_type="",
+        source_file="",
+    )
+
+
+def test_render_data_carries_entry_id_for_empty_slice(tmp_path: Path) -> None:
+    """entry_id survives the empty-ts_slice branch (zero-sample signal)."""
+    session = Session()
+    key = _register_signal(session, _empty_sig(), tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    entry_id = vm.inspect()["plotted_signals"][0]["entry_id"]
+
+    curves = vm.render_data()
+    assert len(curves) == 1
+    assert curves[0].timestamps.size == 0  # confirms the empty-slice branch
+    assert curves[0].entry_id == entry_id
+
+
+def test_insert_axis_renumbers_entry_ids_to_dest_vm(tmp_path: Path) -> None:
+    """Moving an axis across panels must not collide entry_ids in the destination VM.
+
+    Both source and destination VMs number entries independently starting at 0,
+    so the first signal added to each gets entry_id 0. insert_axis must renumber
+    the moved entries into the destination's id-space rather than carrying the
+    source's ids verbatim (else the destination ends up with duplicate entry_ids).
+    """
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=2)
+    k0, k1 = [s.name for s in session.signals()][:2]
+    src = GraphPanelVM(session)
+    src.add_signal(k0)  # entry_id 0 in src
+    dst = GraphPanelVM(session)
+    dst.add_signal(k1)  # entry_id 0 in dst
+
+    extracted = src.extract_axis(0)
+    assert extracted is not None
+    axis, entries = extracted
+    dst.insert_axis(axis, entries, column=0, position=None)
+
+    ids = [e["entry_id"] for e in dst.inspect()["plotted_signals"]]
+    assert len(ids) == len(set(ids))  # all distinct — no collision
