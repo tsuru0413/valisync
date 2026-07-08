@@ -7,11 +7,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtWidgets import (
+    QHBoxLayout,
     QLabel,
     QListView,
     QMenu,
+    QPushButton,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -31,6 +33,8 @@ class FileBrowserView(QWidget):
     vm:
         The FileBrowser ViewModel providing the file list and handling selection.
     """
+
+    open_requested = Signal()
 
     def __init__(self, vm: FileBrowserVM) -> None:
         super().__init__()
@@ -57,8 +61,17 @@ class FileBrowserView(QWidget):
         self._stack.addWidget(self.list_view)  # index 0
         self._stack.addWidget(self.placeholder_label)  # index 1
 
+        # Header row: Open button (allows advancing from empty list - SH-07)
+        self.open_button = QPushButton("開く...")
+        self.open_button.setObjectName("file_browser_open")
+        self.open_button.clicked.connect(self.open_requested)
+        header = QHBoxLayout()
+        header.addWidget(self.open_button)
+        header.addStretch(1)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(header)
         layout.addWidget(self._stack)
 
         # Connect selection changes to VM

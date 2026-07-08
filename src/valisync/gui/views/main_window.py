@@ -21,7 +21,14 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction, QCloseEvent
-from PySide6.QtWidgets import QDockWidget, QMainWindow, QMessageBox, QToolBar
+from PySide6.QtWidgets import (
+    QDockWidget,
+    QFileDialog,
+    QMainWindow,
+    QMessageBox,
+    QStackedWidget,
+    QToolBar,
+)
 
 from valisync.core.loaders.csv_format_detector import CsvFormatDetector
 from valisync.core.models.format_def import FormatDefinition
@@ -38,6 +45,9 @@ from valisync.gui.views.data_explorer_view import DataExplorerView
 from valisync.gui.views.diagnostics_view import DiagnosticsView
 from valisync.gui.views.file_browser_view import FileBrowserView
 from valisync.gui.views.graph_area_view import GraphAreaView
+from valisync.gui.views.recent_files import RecentFiles
+from valisync.gui.views.shell_actions import ShellActions
+from valisync.gui.views.welcome_view import WelcomeView
 from valisync.gui.workers.expansion_confirmer import ExpansionConfirmer
 from valisync.gui.workers.load_worker import LoadController
 
@@ -114,8 +124,34 @@ class MainWindow(QMainWindow):
             Qt.DockWidgetArea.BottomDockWidgetArea, self.diagnostics_dock
         )
 
-        # ── Graph Area (Central Widget) ──────────────────────────────────────
-        self.setCentralWidget(self.graph_area_view)
+        # ── Central: Welcome / Graph Area を QStackedWidget で切替 ──────────────
+        self.recent_files = RecentFiles()
+        self._workbench_started = False
+        self.welcome_view = WelcomeView(self.recent_files)
+        self.welcome_view.open_requested.connect(self._on_open_requested)
+        self.central_stack = QStackedWidget(self)
+        self.central_stack.addWidget(self.welcome_view)  # index 0
+        self.central_stack.addWidget(self.graph_area_view)  # index 1
+        self.setCentralWidget(self.central_stack)
+        self._update_central()
+
+        # ── ShellActions (QAction レジストリ) ────────────────────────────────
+        self.shell_actions = ShellActions(self)
+        self.shell_actions.action("open").triggered.connect(self.open_file)
+        self.shell_actions.action("open_folder").triggered.connect(
+            self.open_data_explorer
+        )
+        # export の triggered は増分1b で接続
+
+        # ── メニューバー ─────────────────────────────────────────────────────
+        file_menu = self.menuBar().addMenu("File")
+        file_menu.addAction(self.shell_actions.action("open"))
+        file_menu.addAction(self.shell_actions.action("open_folder"))
+        self.recent_menu = file_menu.addMenu("Recent Files")
+        file_menu.addAction(self.shell_actions.action("export"))
+        file_menu.addSeparator()
+        exit_action = file_menu.addAction("Exit")
+        exit_action.triggered.connect(self.close)
 
         # ── View menu (dock toggles, R1.4) ───────────────────────────────────
         view_menu = self.menuBar().addMenu("View")
@@ -123,9 +159,17 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.channel_dock.toggleViewAction())
         view_menu.addAction(self.diagnostics_dock.toggleViewAction())
 
+        self.menuBar().addMenu("Analyze")  # 増分2 で中身
+        help_menu = self.menuBar().addMenu("Help")
+        about = help_menu.addAction("About ValiSync")
+        about.triggered.connect(self._show_about)
+
         # ── Toolbar (R1.5) ───────────────────────────────────────────────────
         toolbar: QToolBar = self.addToolBar("Main")
         toolbar.setObjectName("main_toolbar")  # required for saveState/restoreState
+        toolbar.addAction(self.shell_actions.action("open"))
+        toolbar.addAction(self.shell_actions.action("export"))
+        toolbar.addSeparator()
         self.action_data_explorer: QAction = QAction("Data Explorer", self)
         self.action_data_explorer.triggered.connect(self.open_data_explorer)
         toolbar.addAction(self.action_data_explorer)
@@ -138,8 +182,10 @@ class MainWindow(QMainWindow):
             self._add_to_active_panel
         )
         self.graph_area_view.file_dropped.connect(self._load_file)
+        self.file_browser_view.open_requested.connect(self.open_file)
         self._app_unsubscribe = self.app_vm.subscribe(self._on_app_change)
 
+        self._rebuild_recent_menu()
         self._restore_state()
 
     # ─── Load pipeline ─────────────────────────────────────────────────────────
@@ -172,7 +218,7 @@ class MainWindow(QMainWindow):
             busy=self.busy_overlay,
             cancel_event=cancel_event,
             label=target.name,
-            on_success=self._on_loaded,
+            on_success=lambda outcome: self._on_loaded(outcome, target),
             on_error=lambda err: self._on_load_error(target, err),
             on_cancelled=lambda: self._on_load_cancelled(target),
             on_discard=_discard,
@@ -183,7 +229,7 @@ class MainWindow(QMainWindow):
         detected = CsvFormatDetector().detect(path)
         return CsvFormatDialog.ask(detected, parent=self)
 
-    def _on_loaded(self, outcome: LoadOutcome) -> None:
+    def _on_loaded(self, outcome: LoadOutcome, source_path: Path | None = None) -> None:
         # GUI thread; register, surface diagnostics, activate, update status.
         self.app_vm.register_loaded(outcome.key)
         source = self.app_vm.session.source_name(outcome.key)
@@ -198,6 +244,13 @@ class MainWindow(QMainWindow):
         elif n_info:
             msg += f" ・ ℹ {n_info} 件の情報（Diagnostics を参照）"  # noqa: RUF001
         self.statusBar().showMessage(msg)
+        # SH-01: Recent には再開可能な絶対パスを保存する。表示用の source は
+        # basename(source_name) だが、それを保存すると Path.exists() の剪定で
+        # 消えるため、実際に開いたパス(source_path)を使う。
+        if source_path is not None:
+            self.recent_files.add(str(source_path))
+            self._rebuild_recent_menu()
+            self.welcome_view.refresh()
 
     def _on_load_error(self, path: Path, err: Exception) -> None:
         # FB-01: never silent — record + modal + status.
@@ -255,6 +308,8 @@ class MainWindow(QMainWindow):
         if change == "loaded":
             self.channel_browser_vm.refresh()
             # Panels are reconciled by GraphAreaVM, which subscribes to app_vm.
+            self._workbench_started = True
+            self._update_central()
         if change in ("active_file", "loaded", "unloaded"):
             self._update_window_title()
 
@@ -271,6 +326,25 @@ class MainWindow(QMainWindow):
             return
         self.setWindowTitle(f"{name} — ValiSync")
 
+    def _update_central(self) -> None:
+        """Welcome か GraphArea を表示。初回ロードで GraphArea へ永続スワップ。
+
+        _workbench_started が True になったら、最後の1件をアンロードしても
+        Welcome へは戻さない (workbench を奪わない・spec §4.2)。
+        """
+        widget = self.graph_area_view if self._workbench_started else self.welcome_view
+        self.central_stack.setCurrentWidget(widget)
+
+    def showing_welcome(self) -> bool:
+        return self.central_stack.currentWidget() is self.welcome_view
+
+    def _on_open_requested(self, path: object) -> None:
+        """WelcomeView からの Open 要求。None=ダイアログ / str=そのパスを直接ロード。"""
+        if path is None:
+            self.open_file()
+        else:
+            self._load_file(str(path))
+
     def _add_to_active_panel(self, keys: list[str]) -> None:
         """Plot *keys* on the first panel of the active tab (the 'active' panel)."""
         panels = self.graph_area_vm.panels(self.graph_area_vm.active_tab_index)
@@ -281,6 +355,20 @@ class MainWindow(QMainWindow):
 
     # ─── Actions ────────────────────────────────────────────────────────────────
 
+    _OPEN_FILTER = "計測ファイル (*.mf4 *.mdf *.dat *.csv);;すべてのファイル (*)"
+
+    def open_file(self, *_: object) -> None:
+        """File>Open / Ctrl+O / Welcome CTA / File Browser ボタンの集約先。
+
+        v1 は単一ファイル。選択されたら既存 _load_file (オフスレッド・CSV
+        フォーマット解決・診断) へ委譲する。
+        """
+        path, _sel = QFileDialog.getOpenFileName(
+            self, "計測ファイルを開く", "", self._OPEN_FILTER
+        )
+        if path:
+            self._load_file(path)
+
     def open_data_explorer(self, *_: object) -> None:
         """Open (or re-show) the standalone Data Explorer window (R1.5)."""
         if self.data_explorer is None:
@@ -289,6 +377,23 @@ class MainWindow(QMainWindow):
             )
         self.data_explorer.show()
         self.data_explorer.raise_()
+
+    def _rebuild_recent_menu(self) -> None:
+        """File>Recent Files を現在の MRU (存在するもの) で作り直す。"""
+        self.recent_menu.clear()
+        paths = self.recent_files.existing()
+        if not paths:
+            empty = self.recent_menu.addAction("（履歴なし）")  # noqa: RUF001
+            empty.setEnabled(False)
+            return
+        for p in paths:
+            act = self.recent_menu.addAction(p)
+            act.triggered.connect(lambda _=False, path=p: self._load_file(path))
+
+    def _show_about(self) -> None:
+        QMessageBox.about(
+            self, "About ValiSync", "ValiSync — ADAS 信号解析デスクトップ"
+        )
 
     # ─── State persistence ────────────────────────────────────────────────────
 

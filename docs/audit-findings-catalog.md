@@ -53,13 +53,13 @@
 
 | ID | 重要度 | 課題 | 場所 | ユーザー影響 |
 |---|---|---|---|---|
-| SH-01 | 🔴 | File>Open / Ctrl+O / 最近使ったファイルが皆無（読み込みは D&D か「Data Explorer」ボタンのみ） | `gui/views/main_window.py:97` | 初回ユーザーがデータの開き方に気づけない |
+| SH-01 | ✅解消 | **✅解消（2026-07-08・増分1a）: File>Open＋Ctrl+O＋Welcome 空状態 CTA＋File Browser ボタン＋Recent Files（QSettings MRU・再開可能な絶対パス保存・存在剪定）を既存 _load_file へ集約配線。ShellActions QAction レジストリ新設。CSV Export 導線（SH-03）は増分1b で実装予定。** 〔元課題〕File>Open / Ctrl+O / 最近使ったファイルが皆無（読み込みは D&D か「Data Explorer」ボタンのみ） | `gui/views/main_window.py:97` | 初回ユーザーがデータの開き方に気づけない |
 | SH-02 | 🔴 | 新規タブを作成する UI が無い（多タブ機能に到達不能） | `gui/views/graph_area_view.py:68` | 実装済みの多タブが使えない |
 | SH-03 | 🔴 | CSV エクスポート/成果書き出しの導線が GUI に無い（`Session.export_csv` 到達不能） | `gui/views/main_window.py:96` | 解析結果を持ち出せない（ジャーニーの出口欠如） |
 | SH-04 | 🟠 | タブを閉じる UI が無い（`remove_tab` 到達不能） | `gui/views/graph_area_view.py:179` | 増えたタブを整理できない |
 | SH-05 | 🟠 | キーボードショートカット/アクセラレータが皆無 | `gui/views/main_window.py:104` | 反復操作が遅い |
 | SH-06 | 🟠 | パネルの追加/削除が右クリック限定・可視ボタンなし | `gui/views/graph_panel_view.py:1776` | パネル分割の発見が困難 |
-| SH-07 | 🟠 | File Browser にファイルを開く/追加する操作が無い（空リストから前進不能） | `gui/views/file_browser_view.py:34` | File Browser 単体で作業を始められない |
+| SH-07 | ✅解消 | **✅解消（2026-07-08・増分1a）: File Browser ヘッダの開くボタン（ヘッダの開くボタン→open_requested→open_file で File>Open と同じファイル選択ダイアログを開き、空リストの手詰まりを解消）を実装。** 〔元課題〕File Browser にファイルを開く/追加する操作が無い（空リストから前進不能） | `gui/views/file_browser_view.py:34` | File Browser 単体で作業を始められない |
 | SH-08 | 🟠 | 読み込み済みファイル削除が右クリック限定・確認/取り消しなし | `gui/views/file_browser_view.py:60,63` | 誤操作で即消える |
 | SH-09 | 🟠 | データソース永続化が実アプリで無効（毎回消える。`sources_file` 未指定） | `gui/views/data_explorer_view.py:128`（Phase3 persistence と重複領域） | 毎回フォルダ再登録 |
 | SH-10 | 🟠 | 登録データソース一覧が UI に無く複数ソース切替不可 | `gui/views/data_explorer_view.py:137` | 複数フォルダを扱えない |

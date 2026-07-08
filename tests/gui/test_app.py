@@ -41,15 +41,18 @@ class TestBuildMainWindow:
         qtbot.addWidget(window)
         assert isinstance(window.channel_dock, QDockWidget)
 
-    def test_graph_area_is_central_widget(
+    def test_graph_area_is_mounted_in_central_stack(
         self, qapp: QApplication, qtbot: QtBot
     ) -> None:
+        """Central widget is a QStackedWidget (Welcome/GraphArea swap, Task 5);
+        the real GraphAreaView must still be the workbench page (index 1)."""
         from valisync.gui.app import build_main_window
         from valisync.gui.views.graph_area_view import GraphAreaView
 
         window = build_main_window()
         qtbot.addWidget(window)
-        assert isinstance(window.centralWidget(), GraphAreaView)
+        assert isinstance(window.graph_area_view, GraphAreaView)
+        assert window.central_stack.widget(1) is window.graph_area_view
 
     def test_accepts_explicit_app_vm(self, qapp: QApplication, qtbot: QtBot) -> None:
         from valisync.gui.app import build_main_window
