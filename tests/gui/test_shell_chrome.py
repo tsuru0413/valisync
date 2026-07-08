@@ -28,9 +28,12 @@ def test_open_folder_has_shortcut(qtbot: QtBot, tmp_path: Path) -> None:
     )
 
 
-def test_exit_has_quit_shortcut(qtbot: QtBot, tmp_path: Path) -> None:
+def test_exit_has_ctrl_q_shortcut(qtbot: QtBot, tmp_path: Path) -> None:
     mw = _mw(qtbot, tmp_path)
-    assert mw.action_exit.shortcut() == QKeySequence(QKeySequence.StandardKey.Quit)
+    # StandardKey.Quit は Windows で押せない Key_Exit(メディアキー)に解決するため
+    # 明示 Ctrl+Q を検証。toString で「実効ショートカットが押下可能な組合せ」を確認
+    # する(Key_Exit なら "Ctrl+Q" を含まず落ちる honest なアサート)。
+    assert "Ctrl+Q" in mw.action_exit.shortcut().toString()
 
 
 def test_menu_titles_have_mnemonics(qtbot: QtBot, tmp_path: Path) -> None:

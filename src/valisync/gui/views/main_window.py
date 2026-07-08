@@ -155,7 +155,9 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.shell_actions.action("export"))
         file_menu.addSeparator()
         self.action_exit = file_menu.addAction("E&xit")
-        self.action_exit.setShortcut(QKeySequence.StandardKey.Quit)
+        # StandardKey.Quit は Windows で Key_Exit(押せないメディアキー)に解決する
+        # ため、明示 Ctrl+Q を使う(主対象 OS は Windows)。
+        self.action_exit.setShortcut(QKeySequence("Ctrl+Q"))
         self.action_exit.triggered.connect(self.close)
 
         # ── View menu (dock toggles, R1.4) ───────────────────────────────────

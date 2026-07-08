@@ -22,7 +22,7 @@
 
 ### SH-05 キーボードショートカット/アクセラレータ（🟠）
 - **mnemonic（Alt キー）**: メニュータイトルとアクション文言に `&` を付す — `&File` / `&View` / `&Analyze` / `&Help`、`E&xit`、`&About ValiSync`。日本語文言のアクション（ShellActions の「開く…」等）は Qt が末尾 `(&O)` 記法を受け付けるため、必要なら `開く(&O)…` 形式（ただし既存ショートカット Ctrl+O があるため mnemonic は menu 経由の副次導線）。**最小: 英語メニュータイトル＋Exit/About に mnemonic**。
-- **不足ショートカット**: `Exit` に `QKeySequence.StandardKey.Quit`（Ctrl+Q）。`open_folder` に `Ctrl+Shift+O`（`shell_actions.py` の `_add` 呼出しで付与）。既存 open=Ctrl+O・export=Ctrl+E・new tab=Ctrl+T（増分2a）は保持。
+- **不足ショートカット**: `Exit` に `Ctrl+Q`（当初 `StandardKey.Quit` を想定したが、Windows では押せない `Key_Exit` メディアキーに解決するため明示指定へ是正 — 実装時 opus review 指摘）。`open_folder` に `Ctrl+Shift+O`（`shell_actions.py` の `_add` 呼出しで付与）。既存 open=Ctrl+O・export=Ctrl+E・new tab=Ctrl+T（増分2a）は保持。
 - ドックトグルのショートカットは任意（過剰付与を避け、mnemonic と可視ボタン=SH-12 を優先）。
 - テスト: 各アクションの `shortcut()` が期待 QKeySequence を返す（Layer A）。mnemonic は文言に `&` を含むこと。
 
