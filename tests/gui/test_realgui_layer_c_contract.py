@@ -24,13 +24,9 @@ _REALGUI_DIR = Path(__file__).resolve().parent.parent / "realgui"
 _REAL_INPUT = re.compile(r"\b(?:at|key|drive_qdrag)\(|\.grabWindow\(")
 
 # 実入力へ未移行の既知合成 realgui。新規追加は禁止・移行して空にするのが目標。
-# (増分1/2/realgui 拡充期に synthetic のまま tests/realgui/ へ置かれたもの)
-_KNOWN_SYNTHETIC = {
-    "test_open_flow.py",
-    "test_export_flow.py",
-    "test_tab_ui_flow.py",
-    "test_panel_source_flow.py",
-}
+# 2026-07-08: open/export/tab_ui/panel_source_flow を実 OS 入力へ移行し空にした
+# (ガード完全厳格化)。以後 tests/realgui/ に合成テストを置くと CI で落ちる。
+_KNOWN_SYNTHETIC: set[str] = set()
 
 
 def _realgui_test_files() -> list[Path]:

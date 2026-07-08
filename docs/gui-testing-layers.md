@@ -45,7 +45,7 @@ PR #11 で、FileBrowser の「Remove File」右クリックメニューが**実
 
 **判定様式**: realgui は Claude/人が OS 入力を直接制御し、操作後の**スクリーンショットを目視して PASS/FAIL を確定**する（`grabWindow(0).save(...)`）。自動 assert は backstop で、合成では証明できない実結果はスクショ判定が本体（②）。
 
-**機械的ガード**: `tests/gui/test_realgui_layer_c_contract.py` が全 `tests/realgui/test_*.py` を走査し、実入力プリミティブ（`at`/`key`/`drive_qdrag`）or `grabWindow` を使わない合成テストを **CI で落とす**（散文警告は現に見落とされたため機械化）。移行前の既知合成4つ（`test_open_flow`/`test_export_flow`/`test_tab_ui_flow`/`test_panel_source_flow`）は allowlist に隔離済み・実入力へ移行して空にするのが目標。
+**機械的ガード**: `tests/gui/test_realgui_layer_c_contract.py` が全 `tests/realgui/test_*.py` を走査し、実入力プリミティブ（`at`/`key`/`drive_qdrag`）or `grabWindow` を使わない合成テストを **CI で落とす**（散文警告は現に見落とされたため機械化）。2026-07-08 に既知合成4つ（`test_open_flow`/`test_export_flow`/`test_tab_ui_flow`/`test_panel_source_flow`）を実 OS 入力へ移行し **allowlist を空にした（完全厳格化）**。以後 `tests/realgui/` に合成テストを置くと CI で落ちる。実キーは前面ウィンドウへ届くため実クリックで前面化してから発行し、実ダブルクリックは同一点2連打を `GetDoubleClickTime` 窓内に発行しつつ各イベント間で event loop を pump する（間隔ゼロの連打は OS が dblclick と認識しない・`test_diagnostics_dock_realinput.py::_double_click` の確立パターン）。
 
 **MainWindow 系 realgui の QSettings 隔離**: MainWindow を構築する realgui は `save_state`/`_restore_state`/`recent_files` 経由で実 ValiSync 設定（ウィンドウ/ドック/Recent）を汚染しうる。`tests/gui/conftest.py` の隔離は `tests/realgui/` に効かないため、`tests/realgui/conftest.py` の autouse fixture が per-test 固有キーへ隔離する（`QT_QPA_PLATFORM=offscreen` は設定しない）。
 
