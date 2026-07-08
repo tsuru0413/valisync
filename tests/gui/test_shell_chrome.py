@@ -39,3 +39,25 @@ def test_menu_titles_have_mnemonics(qtbot: QtBot, tmp_path: Path) -> None:
     assert "&File" in titles
     assert "&View" in titles
     assert "&Help" in titles
+
+
+def test_toolbar_has_dock_toggles(qtbot: QtBot, tmp_path: Path) -> None:
+    from PySide6.QtWidgets import QToolBar
+
+    mw = _mw(qtbot, tmp_path)
+    toolbar = mw.findChild(QToolBar, "main_toolbar")
+    assert toolbar is not None
+    toolbar_actions = toolbar.actions()
+    assert mw.file_dock.toggleViewAction() in toolbar_actions
+    assert mw.channel_dock.toggleViewAction() in toolbar_actions
+    assert mw.diagnostics_dock.toggleViewAction() in toolbar_actions
+
+
+def test_toolbar_toggle_hides_dock(qtbot: QtBot, tmp_path: Path) -> None:
+    mw = _mw(qtbot, tmp_path)
+    mw.show()
+    qtbot.waitExposed(mw)
+    toggle = mw.file_dock.toggleViewAction()
+    assert mw.file_dock.isVisible()
+    toggle.trigger()  # ツールバーボタンと同一 action
+    assert not mw.file_dock.isVisible()

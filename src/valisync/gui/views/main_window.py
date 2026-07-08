@@ -177,6 +177,10 @@ class MainWindow(QMainWindow):
         self.action_data_explorer: QAction = QAction("Data Explorer", self)
         self.action_data_explorer.triggered.connect(self.open_data_explorer)
         toolbar.addAction(self.action_data_explorer)
+        toolbar.addSeparator()
+        toolbar.addAction(self.file_dock.toggleViewAction())
+        toolbar.addAction(self.channel_dock.toggleViewAction())
+        toolbar.addAction(self.diagnostics_dock.toggleViewAction())
 
         # Status bar surfaces load outcomes (FB-06); shown even before any load.
         self.statusBar().showMessage("準備完了")
