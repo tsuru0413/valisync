@@ -19,11 +19,19 @@ import contextlib
 from collections.abc import Callable
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent
+from PySide6.QtGui import (
+    QDragEnterEvent,
+    QDragLeaveEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QKeySequence,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QCheckBox,
     QSplitter,
     QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -67,6 +75,18 @@ class GraphAreaView(QWidget):
 
         self.tabs = QTabWidget(self)
         self.tabs.currentChanged.connect(self._on_current_changed)
+
+        # SH-02: 新規タブのアフォーダンス (コーナー "+" と Ctrl+T)。
+        new_tab_btn = QToolButton(self.tabs)
+        new_tab_btn.setObjectName("new_tab_button")
+        new_tab_btn.setText("+")
+        new_tab_btn.setToolTip("新規タブ (Ctrl+T)")
+        new_tab_btn.clicked.connect(lambda: self.add_tab())
+        self.tabs.setCornerWidget(new_tab_btn, Qt.Corner.TopRightCorner)
+
+        self._new_tab_shortcut = QShortcut(QKeySequence("Ctrl+T"), self)
+        self._new_tab_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._new_tab_shortcut.activated.connect(lambda: self.add_tab())
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
