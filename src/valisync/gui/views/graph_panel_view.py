@@ -305,7 +305,16 @@ class _AlignedAxisItem(pg.AxisItem):
         self._panel_view = panel
 
     def _emit_panel_activation(self) -> None:
-        """Axis clicks are consumed by the scene — re-emit panel activation here."""
+        """Re-emit panel activation from the axis click path.
+
+        GraphPanelView.mousePressEvent already emits activate_requested on any
+        left press, but whether that press reaches the parent widget depends on
+        platform/grab state (see GraphPanelView.eventFilter's docstring) rather
+        than on the scene "consuming" it outright. To guarantee activation even
+        if that delivery is ever short-circuited, the axis click path emits
+        independently here too — see the activate_requested declaration below
+        for why a duplicate emit per physical click is safe.
+        """
         if self._panel_view is not None:
             self._panel_view.activate_requested.emit()
 
@@ -630,6 +639,12 @@ class GraphPanelView(QWidget):
     # Uses object so None ("append at end") survives the signal boundary.
     cross_panel_axis_move_requested = Signal(int, int, int, object)
     # PC-07: 左クリックでこのパネルをアクティブに (GraphAreaView が VM へ配線)。
+    # 実クリックでは press 経路 (mousePressEvent) と軸クリック経路
+    # (_AlignedAxisItem._emit_panel_activation) の両方から発火しうるため、1回の
+    # 物理クリックで複数回 emit されることがある。購読側は冪等であること —
+    # GraphAreaVM.set_active_panel は同じ index への再設定を no-op にしており、
+    # これで満たされている。両経路を残しているのは belt-and-suspenders
+    # (どちらか一方の配送が環境依存で欠けても活性化を保証するため) の設計。
     activate_requested = Signal()
 
     def __init__(

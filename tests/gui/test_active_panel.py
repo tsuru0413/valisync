@@ -6,6 +6,7 @@ import pytest
 from PySide6.QtCore import QPoint, Qt
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
+from tests.gui.test_axis_interaction import _ClickEvent
 from valisync.core.session import Session
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
@@ -97,9 +98,11 @@ def test_axis_click_also_activates_panel(
 ) -> None:
     """軸クリック経路 (_AlignedAxisItem.mouseClickEvent) もパネルを活性化する。
 
-    scene 内アイテムへの合成クリックは不安定なため、経路の終端
-    (set_active_axis を呼ぶハンドラが activate_requested も emit する契約) を
-    ハンドラ経由で検証し、実クリックは Task 7 の realgui が閉ループで証明する。
+    scene 内アイテムへの合成クリックは不安定なため、経路の終端である
+    mouseClickEvent をハンドラ経由 (duck-typed _ClickEvent, test_axis_interaction.py
+    と同じ流儀) で直接駆動する — _emit_panel_activation を直呼びすると変更対象の
+    ハンドラ本体を一切通らずに素通りしてしまうため、実際に変更されたメソッドを
+    通す。実クリックは Task 7 の realgui が閉ループで証明する。
     """
     area, vm = area_with_two_panels
     vm.set_active_panel(0, 0)
@@ -107,5 +110,23 @@ def test_axis_click_also_activates_panel(
     emitted: list[bool] = []
     second.activate_requested.connect(lambda *_: emitted.append(True))
     axis_item = second._y_axes[0]
-    axis_item._emit_panel_activation()  # クリックハンドラが呼ぶ共通経路
-    assert emitted
+    ev = _ClickEvent(Qt.MouseButton.LeftButton)
+    axis_item.mouseClickEvent(
+        ev
+    )  # 実ハンドラ経由 (_emit_panel_activation を内部で呼ぶ)
+    assert len(emitted) == 1, f"expected exactly one emit, got {len(emitted)}"
+
+
+def test_axis_right_click_does_not_activate_panel(
+    area_with_two_panels: tuple[GraphAreaView, GraphAreaVM],
+) -> None:
+    """軸右クリック (early-return ガード) は activate_requested を emit しない。"""
+    area, vm = area_with_two_panels
+    vm.set_active_panel(0, 0)
+    second = area.tabs.widget(0).widget(1)  # type: ignore[attr-defined]
+    emitted: list[bool] = []
+    second.activate_requested.connect(lambda *_: emitted.append(True))
+    axis_item = second._y_axes[0]
+    ev = _ClickEvent(Qt.MouseButton.RightButton)
+    axis_item.mouseClickEvent(ev)
+    assert not emitted
