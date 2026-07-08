@@ -18,6 +18,8 @@ Coverage:
 - propagate_x_range: with sync OFF leaves panels unchanged
 - inspect: returns snapshot dict reflecting current state
 - subscribe notifications are fired on mutations
+- active_panel_index: per-tab active panel tracking (PC-07 foundation),
+  auto-activation on add_panel, clamping on remove_panel
 """
 
 from __future__ import annotations
@@ -297,6 +299,20 @@ def test_add_panel_notifies_subscribers() -> None:
     assert len(changes) >= 1
 
 
+def test_add_panel_emits_only_panels_not_active_panel() -> None:
+    # PC-07 invariant: add_panel auto-activates the new panel, but the "panels"
+    # rebuild already re-applies the active frame, so it must NOT also emit
+    # "active_panel" (that would trigger the lightweight active_panel path on
+    # top of a full rebuild). Guards against over-notification the >= 1 check
+    # above cannot catch.
+    session = _make_session()
+    vm = GraphAreaVM(AppViewModel(session))
+    changes: list[str] = []
+    vm.subscribe(changes.append)
+    vm.add_panel(0)
+    assert changes == ["panels"]
+
+
 # ─── remove_panel ────────────────────────────────────────────────────────────
 
 
@@ -520,3 +536,92 @@ def test_graph_area_prunes_panels_when_file_unloaded(tmp_path: Path) -> None:
     app_vm.unload_file(key)  # AppViewModel notifies "unloaded"; GraphAreaVM reacts
 
     assert [p["signal_key"] for p in panel.inspect()["plotted_signals"]] == []
+
+
+# ─── active panel (PC-07: click-to-activate foundation) ─────────────────────
+
+
+class TestActivePanel:
+    def test_initial_active_panel_index_is_zero(self) -> None:
+        session = _make_session()
+        vm = GraphAreaVM(AppViewModel(session))
+        assert vm.active_panel_index(0) == 0
+
+    def test_set_active_panel_changes_index(self) -> None:
+        session = _make_session()
+        vm = GraphAreaVM(AppViewModel(session))
+        vm.add_panel(0)
+        vm.set_active_panel(0, 0)
+        vm.set_active_panel(0, 1)
+        assert vm.active_panel_index(0) == 1
+
+    def test_set_active_panel_notifies_active_panel_tag(self) -> None:
+        session = _make_session()
+        vm = GraphAreaVM(AppViewModel(session))
+        vm.add_panel(0)
+        vm.set_active_panel(0, 0)
+        changes: list[str] = []
+        vm.subscribe(changes.append)
+        vm.set_active_panel(0, 1)
+        assert changes == ["active_panel"]
+
+    def test_set_active_panel_same_index_does_not_notify(self) -> None:
+        session = _make_session()
+        vm = GraphAreaVM(AppViewModel(session))
+        changes: list[str] = []
+        vm.subscribe(changes.append)
+        vm.set_active_panel(0, 0)
+        assert changes == []
+
+    def test_set_active_panel_out_of_range_is_noop(self) -> None:
+        session = _make_session()
+        vm = GraphAreaVM(AppViewModel(session))
+        vm.set_active_panel(0, 5)
+        assert vm.active_panel_index(0) == 0
+
+    def test_add_panel_makes_new_panel_active(self) -> None:
+        session = _make_session()
+        vm = GraphAreaVM(AppViewModel(session))
+        vm.add_panel(0)
+        assert vm.active_panel_index(0) == 1
+
+    def test_remove_panel_before_active_shifts_index(self) -> None:
+        session = _make_session()
+        vm = GraphAreaVM(AppViewModel(session))
+        vm.add_panel(0)
+        vm.add_panel(0)  # 3 panels, active=2
+        vm.remove_panel(0, 0)
+        assert vm.active_panel_index(0) == 1  # same panel, index shifted down
+
+    def test_remove_active_last_panel_clamps(self) -> None:
+        session = _make_session()
+        vm = GraphAreaVM(AppViewModel(session))
+        vm.add_panel(0)  # 2 panels, active=1
+        vm.remove_panel(0, 1)
+        assert vm.active_panel_index(0) == 0
+
+    def test_active_panel_is_per_tab(self) -> None:
+        session = _make_session()
+        vm = GraphAreaVM(AppViewModel(session))
+        vm.add_panel(0)  # tab0 active=1
+        vm.add_tab()  # tab1 active=0
+        assert vm.active_panel_index(0) == 1
+        assert vm.active_panel_index(1) == 0
+
+    def test_active_panel_returns_vm_of_active_tab(self) -> None:
+        session = _make_session()
+        vm = GraphAreaVM(AppViewModel(session))
+        vm.add_panel(0)
+        assert vm.active_panel() is vm.panels(0)[1]
+
+    def test_active_panel_index_defaults_to_active_tab(self) -> None:
+        session = _make_session()
+        vm = GraphAreaVM(AppViewModel(session))
+        vm.add_tab()
+        vm.add_panel(1)
+        assert vm.active_panel_index() == 1  # tab1 is active
+
+    def test_inspect_includes_active_panel_index(self) -> None:
+        session = _make_session()
+        vm = GraphAreaVM(AppViewModel(session))
+        assert vm.inspect()["tabs"][0]["active_panel_index"] == 0

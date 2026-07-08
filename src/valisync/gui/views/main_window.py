@@ -373,12 +373,14 @@ class MainWindow(QMainWindow):
             self._load_file(str(path))
 
     def _add_to_active_panel(self, keys: list[str]) -> None:
-        """Plot *keys* on the first panel of the active tab (the 'active' panel)."""
-        panels = self.graph_area_vm.panels(self.graph_area_vm.active_tab_index)
+        """Plot *keys* on the ACTIVE panel of the active tab (PC-07)."""
+        vm = self.graph_area_vm
+        panels = vm.panels(vm.active_tab_index)
         if not panels:
-            return
+            return  # 防御的 no-op (VM 不変条件により通常到達不能)
+        target = panels[vm.active_panel_index()]
         for key in keys:
-            panels[0].add_signal(key)
+            target.add_signal(key)
 
     # ─── Actions ────────────────────────────────────────────────────────────────
 
@@ -403,7 +405,11 @@ class MainWindow(QMainWindow):
         確定したら既存の BusyOverlay パターンでオフスレッド書き出しする。
         """
         panels = self.graph_area_vm.panels(self.graph_area_vm.active_tab_index)
-        initial = set(panels[0].plotted_signal_keys()) if panels else set()
+        initial = (
+            set(panels[self.graph_area_vm.active_panel_index()].plotted_signal_keys())
+            if panels
+            else set()
+        )
         req = ExportCsvDialog.ask(self.app_vm, initial, self)
         if req is None:
             return

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from tests.mdf4_helpers import CAN, write_mdf4
@@ -34,6 +35,11 @@ def _window(qtbot: QtBot) -> object:
     window = build_main_window()
     qtbot.addWidget(window)
     return window
+
+
+# Arbitrary signal key used where the assertions only care about routing
+# (which panel receives it), not about resolving real signal data.
+_KEY = "csv_1::speed"
 
 
 # ─── Assembly ──────────────────────────────────────────────────────────────--
@@ -111,6 +117,7 @@ class TestAddToActivePanel:
         self, qtbot: QtBot, tmp_path: Path
     ) -> None:
         window = _window(qtbot)
+        window.graph_area_vm.set_active_panel(0, 0)  # type: ignore[attr-defined]  # 前提: active=0
         session = window.app_vm.session  # type: ignore[attr-defined]
         key = session.load(_mf4(tmp_path), None).key
         sig_name = f"{key}::speed"
@@ -120,6 +127,49 @@ class TestAddToActivePanel:
         panel = window.graph_area_vm.panels(0)[0]  # type: ignore[attr-defined]
         plotted = [p["signal_key"] for p in panel.inspect()["plotted_signals"]]
         assert sig_name in plotted
+
+    def test_add_routes_to_active_panel_not_first(self, qtbot: QtBot) -> None:
+        """PC-07: 配送先は panels[0] 固定でなく VM のアクティブパネル。"""
+        window = _window(qtbot)
+        vm = window.graph_area_vm  # type: ignore[attr-defined]
+        vm.add_panel(0)  # 追加パネルが自動アクティブ (index 1)
+
+        window.channel_browser_view.add_to_panel_requested.emit([_KEY])  # type: ignore[attr-defined]
+
+        assert _KEY in vm.panels(0)[1].plotted_signal_keys()
+        assert _KEY not in vm.panels(0)[0].plotted_signal_keys()
+
+    def test_add_routes_back_to_first_after_reactivation(self, qtbot: QtBot) -> None:
+        window = _window(qtbot)
+        vm = window.graph_area_vm  # type: ignore[attr-defined]
+        vm.add_panel(0)
+        vm.set_active_panel(0, 0)
+
+        window.channel_browser_view.add_to_panel_requested.emit([_KEY])  # type: ignore[attr-defined]
+
+        assert _KEY in vm.panels(0)[0].plotted_signal_keys()
+
+    def test_export_initial_selection_uses_active_panel(
+        self, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        window = _window(qtbot)
+        vm = window.graph_area_vm  # type: ignore[attr-defined]
+        vm.add_panel(0)  # active = panel 1
+        vm.panels(0)[1].add_signal(_KEY)
+        captured: dict[str, set[str]] = {}
+
+        def fake_ask(app_vm: object, initial: set[str], parent: object) -> None:
+            captured["initial"] = set(initial)
+            return None  # ダイアログキャンセル
+
+        monkeypatch.setattr(
+            "valisync.gui.views.main_window.ExportCsvDialog.ask",
+            staticmethod(fake_ask),
+        )
+
+        window.export_csv()  # type: ignore[attr-defined]
+
+        assert captured["initial"] == {_KEY}
 
 
 # ─── Data Explorer launch + Add Source (R1.5 / R3.4 / ④⑤a) ─────────────────────

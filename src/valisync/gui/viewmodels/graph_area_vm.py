@@ -25,6 +25,7 @@ class _Tab:
     name: str
     panels: list[GraphPanelVM] = field(default_factory=list)
     x_sync_enabled: bool = True
+    active_panel_index: int = 0
 
 
 class GraphAreaVM(Observable):
@@ -183,6 +184,9 @@ class GraphAreaVM(Observable):
         panel = GraphPanelVM(self._session)
         tab.panels.append(panel)
         self._subscribe_panel(panel)
+        # PC-07: 作った=使う。新規パネルを自動アクティブ化("panels" の rebuild が
+        # 枠を再適用するので "active_panel" は重ねて出さない)。
+        tab.active_panel_index = len(tab.panels) - 1
         self._notify("panels")
         return len(tab.panels) - 1
 
@@ -196,7 +200,37 @@ class GraphAreaVM(Observable):
             raise ValueError("Cannot remove the last remaining panel from a tab")
         panel = tab.panels.pop(panel_index)
         self._unsubscribe_panel(panel)
+        if tab.active_panel_index >= len(tab.panels):
+            tab.active_panel_index = len(tab.panels) - 1
+        elif panel_index < tab.active_panel_index:
+            tab.active_panel_index -= 1
         self._notify("panels")
+
+    def set_active_panel(self, tab_index: int, panel_index: int) -> None:
+        """Make the panel at *panel_index* the active panel of tab *tab_index*.
+
+        Out-of-range indices are ignored (clicks race panel removal). Notifies
+        "active_panel" only on change — the View treats it as a repaint-only
+        path (never a rebuild).
+        """
+        tab = self._tabs[tab_index]
+        if not (0 <= panel_index < len(tab.panels)):
+            return
+        if tab.active_panel_index == panel_index:
+            return
+        tab.active_panel_index = panel_index
+        self._notify("active_panel")
+
+    def active_panel_index(self, tab_index: int | None = None) -> int:
+        """Return the active panel index of *tab_index* (default: active tab)."""
+        if tab_index is None:
+            tab_index = self.active_tab_index
+        return self._tabs[tab_index].active_panel_index
+
+    def active_panel(self) -> GraphPanelVM:
+        """Return the active panel VM of the active tab (Add/Export の配送先)."""
+        tab = self.active_tab()
+        return tab.panels[tab.active_panel_index]
 
     def move_axis_across_panels(
         self,
@@ -294,6 +328,7 @@ class GraphAreaVM(Observable):
                     "name": tab.name,
                     "panel_count": len(tab.panels),
                     "x_sync_enabled": tab.x_sync_enabled,
+                    "active_panel_index": tab.active_panel_index,
                 }
                 for tab in self._tabs
             ],

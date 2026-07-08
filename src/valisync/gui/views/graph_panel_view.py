@@ -41,6 +41,7 @@ from PySide6.QtGui import (
     QResizeEvent,
 )
 from PySide6.QtWidgets import (
+    QFrame,
     QGraphicsLineItem,
     QGraphicsRectItem,
     QGraphicsWidget,
@@ -304,6 +305,21 @@ class _AlignedAxisItem(pg.AxisItem):
         """Wire this axis back to the containing GraphPanelView for click activation."""
         self._panel_view = panel
 
+    def _emit_panel_activation(self) -> None:
+        """Emit panel activation for a click that landed on this axis.
+
+        This is the *sole* activation path for axis clicks, not a backup: a
+        click on this AxisItem is accepted (consumed) by the scene item for Y
+        zoom/pan/resize, so it never propagates up to
+        GraphPanelView.mousePressEvent. Only plot-area presses reach that
+        widget-level handler; axis presses must emit activation from here.
+        Both paths can fire for a single physical click (a plot-area press,
+        never an axis press), and that duplicate is safe — see the
+        activate_requested declaration below for why.
+        """
+        if self._panel_view is not None:
+            self._panel_view.activate_requested.emit()
+
     # ── Task 5: cursor mapping + active/hover frame ────────────────────────────
 
     def cursor_for_local(self, lx: float, ly: float, h: float) -> CursorKind:
@@ -445,6 +461,7 @@ class _AlignedAxisItem(pg.AxisItem):
             return
         if self._panel_view is not None and self._vm_axis_index is not None:
             self._panel_view.set_active_axis(self._vm_axis_index)
+        self._emit_panel_activation()
         ev.accept()
 
     # ── Task 6: zone-routed drag helpers ──────────────────────────────────────
@@ -623,6 +640,14 @@ class GraphPanelView(QWidget):
     # Args: source_panel_index, axis_index, col, position (int | None).
     # Uses object so None ("append at end") survives the signal boundary.
     cross_panel_axis_move_requested = Signal(int, int, int, object)
+    # PC-07: 左クリックでこのパネルをアクティブに (GraphAreaView が VM へ配線)。
+    # 2つの emit 元は排他的なクリック対象をカバーする: プロット領域の press は
+    # mousePressEvent に届いて emit し、軸クリックは scene アイテムに accept され
+    # 親へ伝播しないので _AlignedAxisItem._emit_panel_activation が emit する。
+    # 通常は1回の物理クリックにつき1回だけ発火するが、配送が万一重なっても
+    # 購読側 (GraphAreaVM.set_active_panel) が同じ index への再設定を no-op に
+    # しており冪等なので安全。
+    activate_requested = Signal()
 
     def __init__(
         self,
@@ -730,6 +755,19 @@ class GraphPanelView(QWidget):
         # chrome は plot_widget の上に浮かせる (レイアウト非参加で plot を原点に保つ)。
         self._panel_chrome.raise_()
         self._position_panel_chrome()
+
+        # PC-07: アクティブパネル枠。chrome と同じく overlay (レイアウト非参加) で
+        # plot_widget を原点 (0,0) に保つ。WA_TransparentForMouseEvents で
+        # ゾーン hit-test に一切干渉しない。色はアクティブ軸 amber (#f59e0b) と同系。
+        self._active_frame = QFrame(self)
+        self._active_frame.setObjectName("active_panel_frame")
+        self._active_frame.setStyleSheet(
+            "#active_panel_frame {"
+            " border: 1px solid #f59e0b; border-radius: 2px; background: transparent; }"
+        )
+        self._active_frame.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._active_frame.setGeometry(self.rect())
+        self._active_frame.setVisible(False)
 
         unsubscribe = self.vm.subscribe(self._on_vm_change)
         self._unsubscribe = unsubscribe
@@ -1655,6 +1693,7 @@ class GraphPanelView(QWidget):
         # menu and must not start a drag gesture.  Y zoom/pan is owned by
         # _AlignedAxisItem (Task 8) so only X zones start a widget-level drag.
         if event.button() == Qt.MouseButton.LeftButton:
+            self.activate_requested.emit()  # PC-07: どのゾーンでも押下=活性化
             zone = self._zone_at(event.position())
             if zone in (ZONE_X_INNER, ZONE_X_OUTER):
                 self._drag_zone = zone
@@ -1840,6 +1879,7 @@ class GraphPanelView(QWidget):
         super().resizeEvent(event)
         self.vm.set_panel_width(max(1, event.size().width()))  # notifies → refresh()
         self._position_panel_chrome()
+        self._active_frame.setGeometry(self.rect())
 
     def _position_panel_chrome(self) -> None:
         """Keep the +/x overlay pinned to the top-right corner, above the plot."""
@@ -1854,6 +1894,13 @@ class GraphPanelView(QWidget):
         """Set whether Remove Panel is available (R6.6) — menu action and visible button."""
         self._removable = removable
         self._remove_panel_button.setEnabled(removable)
+
+    def set_panel_active(self, active: bool) -> None:
+        """Show/hide the active-panel frame (PC-07). Repaint-only — no relayout."""
+        self._active_frame.setVisible(active)
+        if active:
+            self._active_frame.raise_()
+            self._panel_chrome.raise_()  # chrome は枠より上 (+/x ボタンを隠さない)
 
     def set_panel_index(self, panel_index: int) -> None:
         """Record this panel's index within the GraphAreaView (called by _wire_panel)."""

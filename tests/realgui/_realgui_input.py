@@ -75,6 +75,37 @@ def key(vk: int, *, down: bool = True, up: bool = True) -> None:
         _user32.keybd_event(vk, 0, KEYUP, 0)
 
 
+def double_click_interval_s() -> float:
+    """OS のダブルクリック窓の半分（上限 150ms）— 確実に窓内に収める。"""
+    ms = _user32.GetDoubleClickTime() if _user32 is not None else 500
+    return min(ms / 2, 150) / 1000.0
+
+
+def double_click(x: int, y: int) -> None:
+    """実 OS ダブルクリック: 同一物理点へ窓内 2 連打（MOVE なし）。
+
+    各イベント間で event loop を pump する（間隔ゼロの連打は OS が dblclick と
+    認識しない）。OS が 2 組目の press を WM_LBUTTONDBLCLK に合体させる
+    (Qt: MouseButtonDblClick)。test_diagnostics_dock_realinput.py /
+    test_tab_ui_flow.py の module-local 版を 3 使用箇所目で共有昇格したもの
+    (既存 2 ファイルの module-local 版は本増分のスコープ外で触らない)。
+    """
+
+    def _pump(dt: float) -> None:
+        QApplication.processEvents()
+        time.sleep(dt)
+
+    at(x, y, LDOWN)
+    _pump(0.03)
+    at(x, y, LUP)
+    _pump(double_click_interval_s())
+    at(x, y, LDOWN)
+    _pump(0.03)
+    at(x, y, LUP)
+    for _ in range(4):
+        _pump(0.02)
+
+
 def drive_qdrag(
     press_phys: tuple[int, int],
     waypoints_phys: list[tuple[int, int]],
