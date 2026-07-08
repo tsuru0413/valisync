@@ -48,6 +48,15 @@ class ExportController(QObject):
     ) -> None:
         super().__init__(parent)
         self._pool = thread_pool or QThreadPool.globalInstance()
+        # QThreadPool's autoDelete frees the QRunnable (and its `signals`
+        # QObject) right after run() returns. Without a Python reference kept
+        # here until the callback fires, GC can collect worker+signals before
+        # the GUI thread's event loop delivers the queued finished/failed
+        # signal - Qt purges undelivered posted events for destroyed QObjects,
+        # so the callback (and busy.hide()) silently never fires. Not used for
+        # cancel/discard/task tracking (export has none) - purely signal
+        # delivery lifetime safety, same rationale as LoadController._active.
+        self._active: set[ExportWorker] = set()
 
     def submit(
         self,
@@ -62,13 +71,23 @@ class ExportController(QObject):
             busy.set_message(f"エクスポート中: {label or 'CSV'}")
             busy.show()
         worker = ExportWorker(export_callable)
-        worker.signals.finished.connect(lambda: self._finish(busy, on_success))
-        worker.signals.failed.connect(lambda exc: self._fail(busy, exc, on_error))
+        self._active.add(worker)
+        worker.signals.finished.connect(lambda: self._finish(worker, busy, on_success))
+        worker.signals.failed.connect(
+            lambda exc: self._fail(worker, busy, exc, on_error)
+        )
         self._pool.start(worker)
 
     def _finish(
-        self, busy: BusyOverlay | None, on_success: Callable[[], None] | None
+        self,
+        worker: ExportWorker,
+        busy: BusyOverlay | None,
+        on_success: Callable[[], None] | None,
     ) -> None:
+        # Discard first: the signal has already been delivered by this point
+        # (we're running inside its queued-connection slot), so releasing our
+        # reference here cannot race the delivery it guards.
+        self._active.discard(worker)
         if busy is not None:
             busy.hide()
         if on_success is not None:
@@ -76,10 +95,12 @@ class ExportController(QObject):
 
     def _fail(
         self,
+        worker: ExportWorker,
         busy: BusyOverlay | None,
         exc: Exception,
         on_error: Callable[[Exception], None] | None,
     ) -> None:
+        self._active.discard(worker)
         if busy is not None:
             busy.hide()
         if on_error is not None:
