@@ -204,6 +204,9 @@ class GraphAreaView(QWidget):
         widget.offset_apply_requested.connect(
             lambda k, dt, sc: self.vm.apply_offset(k, dt, sc)
         )
+        widget.activate_requested.connect(
+            lambda *_: self.vm.set_active_panel(tab_index, panel_index)
+        )
         widget.cross_panel_axis_move_requested.connect(
             lambda src, ax, col, pos: self.vm.move_axis_across_panels(
                 tab_index, src, ax, panel_index, col, pos

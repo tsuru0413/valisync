@@ -304,6 +304,11 @@ class _AlignedAxisItem(pg.AxisItem):
         """Wire this axis back to the containing GraphPanelView for click activation."""
         self._panel_view = panel
 
+    def _emit_panel_activation(self) -> None:
+        """Axis clicks are consumed by the scene — re-emit panel activation here."""
+        if self._panel_view is not None:
+            self._panel_view.activate_requested.emit()
+
     # ── Task 5: cursor mapping + active/hover frame ────────────────────────────
 
     def cursor_for_local(self, lx: float, ly: float, h: float) -> CursorKind:
@@ -445,6 +450,7 @@ class _AlignedAxisItem(pg.AxisItem):
             return
         if self._panel_view is not None and self._vm_axis_index is not None:
             self._panel_view.set_active_axis(self._vm_axis_index)
+        self._emit_panel_activation()
         ev.accept()
 
     # ── Task 6: zone-routed drag helpers ──────────────────────────────────────
@@ -623,6 +629,8 @@ class GraphPanelView(QWidget):
     # Args: source_panel_index, axis_index, col, position (int | None).
     # Uses object so None ("append at end") survives the signal boundary.
     cross_panel_axis_move_requested = Signal(int, int, int, object)
+    # PC-07: 左クリックでこのパネルをアクティブに (GraphAreaView が VM へ配線)。
+    activate_requested = Signal()
 
     def __init__(
         self,
@@ -1655,6 +1663,7 @@ class GraphPanelView(QWidget):
         # menu and must not start a drag gesture.  Y zoom/pan is owned by
         # _AlignedAxisItem (Task 8) so only X zones start a widget-level drag.
         if event.button() == Qt.MouseButton.LeftButton:
+            self.activate_requested.emit()  # PC-07: どのゾーンでも押下=活性化
             zone = self._zone_at(event.position())
             if zone in (ZONE_X_INNER, ZONE_X_OUTER):
                 self._drag_zone = zone
