@@ -46,3 +46,19 @@ def test_set_removable_toggles_remove_button(qtbot: QtBot) -> None:
     assert not remove_btn.isEnabled()
     view.set_removable(True)
     assert remove_btn.isEnabled()
+
+
+def test_plot_widget_stays_at_panel_origin(qtbot: QtBot) -> None:
+    # SH-06 regression: chrome must overlay (float), not reserve a layout row.
+    # A reserved row shifts plot_widget down ~27px so panel-space mouse events
+    # (event.position()) diverge from plot_widget-space hit-test rects
+    # (_plot_rect_in_widget / mapToScene) -> zone/curve-grab off by ~27px.
+    from PySide6.QtCore import QPoint
+
+    view = _make_panel(qtbot)
+    view.resize(500, 400)
+    view.layout().activate()  # force geometry even offscreen
+    assert view.plot_widget.pos() == QPoint(0, 0), (
+        f"plot_widget at {view.plot_widget.pos()}, not panel origin (0,0); "
+        "chrome row shifts GraphPanelView hit-test coords (SH-06)"
+    )

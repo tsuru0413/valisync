@@ -701,16 +701,20 @@ class GraphPanelView(QWidget):
         self.plot_widget.viewport().installEventFilter(self)
 
         # SH-06: パネル追加/削除の可視アフォーダンス (右クリックメニューと併存)。
-        chrome = QHBoxLayout()
-        chrome.setContentsMargins(2, 2, 2, 0)
-        chrome.addStretch(1)
-        add_panel_btn = QToolButton(self)
+        # plot_widget を panel 原点(0,0)に保つため、レイアウト行を確保せず右上に
+        # 浮かせる。chrome を上に積むと plot がシフトし、event.position()(パネル空間)
+        # と _plot_rect_in_widget/mapToScene(plot_widget 空間)の hit-test が乖離する。
+        self._panel_chrome = QWidget(self)
+        chrome_layout = QHBoxLayout(self._panel_chrome)
+        chrome_layout.setContentsMargins(0, 0, 0, 0)
+        chrome_layout.setSpacing(1)
+        add_panel_btn = QToolButton(self._panel_chrome)
         add_panel_btn.setObjectName("add_panel_button")
         add_panel_btn.setText("+")
         add_panel_btn.setToolTip("パネルを追加")
         add_panel_btn.clicked.connect(lambda: self.add_panel_requested.emit())
-        chrome.addWidget(add_panel_btn)
-        self._remove_panel_button = QToolButton(self)
+        chrome_layout.addWidget(add_panel_btn)
+        self._remove_panel_button = QToolButton(self._panel_chrome)
         self._remove_panel_button.setObjectName("remove_panel_button")
         self._remove_panel_button.setText("×")  # noqa: RUF001
         self._remove_panel_button.setToolTip("パネルを削除")
@@ -718,12 +722,14 @@ class GraphPanelView(QWidget):
         self._remove_panel_button.clicked.connect(
             lambda: self.remove_panel_requested.emit()
         )
-        chrome.addWidget(self._remove_panel_button)
+        chrome_layout.addWidget(self._remove_panel_button)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addLayout(chrome)
         layout.addWidget(self.plot_widget)
+        # chrome は plot_widget の上に浮かせる (レイアウト非参加で plot を原点に保つ)。
+        self._panel_chrome.raise_()
+        self._position_panel_chrome()
 
         unsubscribe = self.vm.subscribe(self._on_vm_change)
         self._unsubscribe = unsubscribe
@@ -1833,6 +1839,14 @@ class GraphPanelView(QWidget):
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self.vm.set_panel_width(max(1, event.size().width()))  # notifies → refresh()
+        self._position_panel_chrome()
+
+    def _position_panel_chrome(self) -> None:
+        """Keep the +/x overlay pinned to the top-right corner, above the plot."""
+        self._panel_chrome.adjustSize()
+        x = self.width() - self._panel_chrome.width() - 2
+        self._panel_chrome.move(max(0, x), 2)
+        self._panel_chrome.raise_()
 
     # ─── Context menu (R14.3) ───────────────────────────────────────────────────
 
