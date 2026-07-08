@@ -8,9 +8,11 @@ from __future__ import annotations
 
 from PySide6.QtCore import QItemSelection, QMimeData, QPoint, Qt, Signal
 from PySide6.QtWidgets import (
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMenu,
+    QPushButton,
     QStackedWidget,
     QTreeView,
     QVBoxLayout,
@@ -47,6 +49,14 @@ class ChannelBrowserView(QWidget):
         self.search_box.setPlaceholderText("Filter signals…")
         self.search_box.setClearButtonEnabled(True)
 
+        # PC-02: 可視の追加ボタン(FileBrowser の Open ボタンパターン踏襲)。
+        # 文言は配送先(アクティブパネル)を正直に示す。
+        self.add_button = QPushButton("アクティブパネルへ追加", self)
+        self.add_button.setObjectName("channel_browser_add")
+        self.add_button.setToolTip("選択中の信号をアクティブパネルへ追加")
+        self.add_button.setEnabled(False)
+        self.add_button.clicked.connect(self._emit_add_selected)
+
         self.tree = QTreeView(self)
         self.tree.setModel(self.model)
         self.tree.setSelectionMode(QTreeView.SelectionMode.ExtendedSelection)
@@ -74,10 +84,14 @@ class ChannelBrowserView(QWidget):
         self._stack.addWidget(self.tree)  # index 0
         self._stack.addWidget(self.placeholder_label)  # index 1
 
+        controls = QHBoxLayout()
+        controls.addWidget(self.search_box, 1)
+        controls.addWidget(self.add_button)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.header_label)
-        layout.addWidget(self.search_box)
+        layout.addLayout(controls)
         layout.addWidget(self._stack)
 
         # ── Wiring ───────────────────────────────────────────────────────────
@@ -123,7 +137,9 @@ class ChannelBrowserView(QWidget):
     def _on_selection_changed(
         self, _selected: QItemSelection, _deselected: QItemSelection
     ) -> None:
-        self._vm.set_selection(self.selected_signal_keys())
+        keys = self.selected_signal_keys()
+        self._vm.set_selection(keys)
+        self.add_button.setEnabled(bool(keys))
 
     # ─── Queries ───────────────────────────────────────────────────────────────
 
@@ -146,6 +162,12 @@ class ChannelBrowserView(QWidget):
         """Flip visibility on every selected signal."""
         for key in self.selected_signal_keys():
             self._vm.toggle_visibility(key)
+
+    def _emit_add_selected(self) -> None:
+        """Emit add_to_panel_requested for the current selection (PC-02/PC-04 共用)."""
+        keys = self.selected_signal_keys()
+        if keys:
+            self.add_to_panel_requested.emit(keys)
 
     # ─── Context menu (R14.1) ──────────────────────────────────────────────────
 
