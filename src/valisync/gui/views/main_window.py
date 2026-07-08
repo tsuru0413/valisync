@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QStackedWidget,
+    QStyle,
     QToolBar,
 )
 
@@ -177,7 +178,13 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.shell_actions.action("open"))
         toolbar.addAction(self.shell_actions.action("export"))
         toolbar.addSeparator()
-        self.action_data_explorer: QAction = QAction("Data Explorer", self)
+        self.action_data_explorer = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon),
+            "Data Explorer",
+            self,
+        )
+        self.action_data_explorer.setToolTip("データエクスプローラを開く")
+        self.action_data_explorer.setStatusTip("データエクスプローラを開く")
         self.action_data_explorer.triggered.connect(self.open_data_explorer)
         toolbar.addAction(self.action_data_explorer)
         toolbar.addSeparator()
@@ -439,10 +446,17 @@ class MainWindow(QMainWindow):
             act = self.recent_menu.addAction(p)
             act.triggered.connect(lambda _=False, path=p: self._load_file(path))
 
+    def _about_text(self) -> str:
+        try:
+            from importlib.metadata import version
+
+            ver = version("valisync")
+        except Exception:  # PackageNotFoundError 等
+            ver = "unknown"
+        return f"ValiSync v{ver} — ADAS 信号解析デスクトップ"
+
     def _show_about(self) -> None:
-        QMessageBox.about(
-            self, "About ValiSync", "ValiSync — ADAS 信号解析デスクトップ"
-        )
+        QMessageBox.about(self, "About ValiSync", self._about_text())
 
     # ─── State persistence ────────────────────────────────────────────────────
 

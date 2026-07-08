@@ -77,3 +77,18 @@ def test_reset_layout_restores_default_dock_area(qtbot: QtBot, tmp_path: Path) -
 def test_reset_layout_action_in_view_menu(qtbot: QtBot, tmp_path: Path) -> None:
     mw = _mw(qtbot, tmp_path)
     assert mw.action_reset_layout.text() == "Reset Layout"
+
+
+def test_data_explorer_action_has_icon_and_tooltip(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    mw = _mw(qtbot, tmp_path)
+    assert not mw.action_data_explorer.icon().isNull()
+    assert mw.action_data_explorer.toolTip() != ""
+
+
+def test_about_text_includes_version(qtbot: QtBot, tmp_path: Path) -> None:
+    mw = _mw(qtbot, tmp_path)
+    text = mw._about_text()
+    assert text.startswith("ValiSync v")
+    assert "—" in text  # "ValiSync v{ver} — ..."
