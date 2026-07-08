@@ -32,6 +32,23 @@ PR #11 で、FileBrowser の「Remove File」右クリックメニューが**実
 - **注意点**: DPI 変換（論理→物理 = `* devicePixelRatioF()`）、ウィンドウ最前面化、マウス占有。回帰検出というより**経路の最終確認**用。
 - **実例**: `tests/realgui/test_file_browser_realclick.py`。
 
+### Layer C か Layer B かは「入力の出所」で決まる（偽装アンチパターン）
+
+**`tests/realgui/` に置き `@pytest.mark.realgui` を付け `--realgui` で pass しても、それだけでは Layer C ではない。** `skip_unless_real_display()` は**プラットフォーム（offscreen か否か）しか見ない**ため、「skip されず pass」は「実プラットフォームで動いた」ことしか意味しない。判定境界は**入力の出所**:
+
+| 入力手段 | 層 |
+|---|---|
+| 実 OS 入力: `_realgui_input.at()`（`SetCursorPos`+`mouse_event`）/`key()`/`drive_qdrag()` | **Layer C** |
+| 合成: `qtbot.mouseClick`/`keyClick`/`mouseDClick`/`QTest`/`QApplication.sendEvent`/`action.trigger()` | **Layer B** |
+
+`qtbot.mouseClick` は場所やマーカに関係なく合成（Layer B）。これを `tests/realgui/` に置くと**実ディスプレイに何も映らず**、OS→Qt のヒットテスト/配送を検証しないのに Layer C を騙る false-green になる（実際に踏んだ。memory: `gui_realgui_synthetic_click_mislabeled_layer_c`）。「場所＋マーカ＋--realgui で pass」を Layer C の代理基準にせず、**テスト本体が実入力プリミティブを使うかで判定**する。
+
+**判定様式**: realgui は Claude/人が OS 入力を直接制御し、操作後の**スクリーンショットを目視して PASS/FAIL を確定**する（`grabWindow(0).save(...)`）。自動 assert は backstop で、合成では証明できない実結果はスクショ判定が本体（②）。
+
+**機械的ガード**: `tests/gui/test_realgui_layer_c_contract.py` が全 `tests/realgui/test_*.py` を走査し、実入力プリミティブ（`at`/`key`/`drive_qdrag`）or `grabWindow` を使わない合成テストを **CI で落とす**（散文警告は現に見落とされたため機械化）。移行前の既知合成4つ（`test_open_flow`/`test_export_flow`/`test_tab_ui_flow`/`test_panel_source_flow`）は allowlist に隔離済み・実入力へ移行して空にするのが目標。
+
+**MainWindow 系 realgui の QSettings 隔離**: MainWindow を構築する realgui は `save_state`/`_restore_state`/`recent_files` 経由で実 ValiSync 設定（ウィンドウ/ドック/Recent）を汚染しうる。`tests/gui/conftest.py` の隔離は `tests/realgui/` に効かないため、`tests/realgui/conftest.py` の autouse fixture が per-test 固有キーへ隔離する（`QT_QPA_PLATFORM=offscreen` は設定しない）。
+
 ### Layer C 専用ケース: D&D の実配送経路は合成イベントで再現できない
 
 コンテキストメニュー（`QContextMenuEvent`）は `sendEvent` で viewport に届き Layer B で実経路を再現できる。しかし **D&D の実配送経路は合成 `QApplication.sendEvent` では再現できない**（実測済み）。
