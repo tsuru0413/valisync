@@ -97,6 +97,7 @@ def test_context_menu_remove_unloads_file(qtbot: QtBot) -> None:
     vm = FileBrowserVM(app_vm)
     view = FileBrowserView(vm)
     qtbot.addWidget(view)
+    view._confirm_fn = lambda _name: True  # SH-08: skip the real modal, approve
     assert vm.files == ["a.csv", "b.csv"]
 
     menu = view.build_context_menu(0)
@@ -157,6 +158,7 @@ def test_right_click_on_row_opens_remove_menu_and_unloads(
     vm = FileBrowserVM(app_vm)
     view = FileBrowserView(vm)
     qtbot.addWidget(view)
+    view._confirm_fn = lambda _name: True  # SH-08: skip the real modal, approve
     view.resize(200, 200)
     view.show()
     qtbot.waitExposed(view)

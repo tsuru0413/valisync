@@ -182,7 +182,12 @@ def test_remove_file_preserves_graph_panel_proportions(
         )
 
         # ─── FileBrowserView (for the real Remove File right-click) ───────────
-        fbv = FileBrowserView(FileBrowserVM(app))
+        # confirm_fn stubbed to auto-approve (SH-08 added a confirmation modal on
+        # the real _default_confirm path) — this test's subject is the rendered
+        # geometry after removal, not the confirm dialog itself (covered by
+        # tests/gui/test_file_browser_delete_confirm.py). Without the stub the
+        # real QMessageBox.question() would open a second, unhandled modal here.
+        fbv = FileBrowserView(FileBrowserVM(app), confirm_fn=lambda _name: True)
         qtbot.addWidget(fbv)
         fbv.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         fbv.setGeometry(840, 120, 360, 240)
