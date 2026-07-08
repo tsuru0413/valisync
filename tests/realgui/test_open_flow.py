@@ -1,8 +1,9 @@
 """Layer C: Ctrl+O が open_file スロットへ到達するか(実 OS キー入力)。
 
-headless の QTest.keyClick でも配線は検証できるが、ショートカットの
-context / focus は実ウィンドウでしか正確に出ない。QFileDialog はモーダルなので
-open_file をスタブし「ショートカット→スロット発火」を確認する。
+実 OS キー(`keybd_event`)は前面ウィンドウへ届くため、実クリックで前面化/フォーカス
+してから Ctrl+O を発行する。QFileDialog はモーダルなので open_file をスタブし
+「実キー→ショートカット context→スロット発火」を確認する。合成 QTest.keyClick は
+この OS→Qt キー経路と focus を迂回する(Layer B)。
 
 honest RED: File メニュー/ツールバーに open アクションを載せ忘れる、または
 shortcut を外すと Ctrl+O がスロットに届かず fired が空になる。
@@ -13,12 +14,36 @@ from __future__ import annotations
 import pytest
 from pytestqt.qtbot import QtBot
 
-from tests.realgui._realgui_input import skip_unless_real_display
+from tests.realgui._realgui_input import (
+    LDOWN,
+    LUP,
+    VK_CONTROL,
+    at,
+    key,
+    skip_unless_real_display,
+)
 
 pytestmark = pytest.mark.realgui
 
+VK_O = 0x4F
 
-def test_ctrl_o_triggers_open(qtbot: QtBot, monkeypatch) -> None:
+
+def _focus_by_real_click(mw) -> None:  # type: ignore[no-untyped-def]
+    """メニューバー右端の空き領域を実クリックしてウィンドウを前面/フォーカスへ。
+
+    メニュー項目の外側なので誤ってメニューを開かない。
+    """
+    from PySide6.QtCore import QPoint
+
+    mb = mw.menuBar()
+    p = mb.mapToGlobal(QPoint(mb.width() - 8, mb.height() // 2))
+    dpr = mw.devicePixelRatioF()
+    x, y = round(p.x() * dpr), round(p.y() * dpr)
+    at(x, y, LDOWN)
+    at(x, y, LUP)
+
+
+def test_ctrl_o_triggers_open(qtbot: QtBot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     skip_unless_real_display()
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
@@ -27,21 +52,28 @@ def test_ctrl_o_triggers_open(qtbot: QtBot, monkeypatch) -> None:
     from valisync.gui.views.main_window import MainWindow
 
     fired: list[int] = []
-    # Patch the CLASS before constructing: __init__ connects the Open QAction to
-    # self.open_file, binding the method at connect() time. An instance-level
-    # patch applied after construction would not change what the connected action
-    # invokes, and the real open_file opens a modal QFileDialog that would hang
-    # the run.
+    # 構築前にクラスを patch(connect が捕捉する bound method を stub 化。実 open_file
+    # のモーダル QFileDialog がハングするため)。
     monkeypatch.setattr(MainWindow, "open_file", lambda self, *a: fired.append(1))
     mw = MainWindow(AppViewModel())
     qtbot.addWidget(mw)
+    mw.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+    mw.setGeometry(200, 200, 900, 600)
     mw.show()
+    mw.raise_()
+    mw.activateWindow()
     qtbot.waitExposed(mw)
     QApplication.processEvents()
 
-    qtbot.keyClick(mw, Qt.Key.Key_O, Qt.KeyboardModifier.ControlModifier)
+    _focus_by_real_click(mw)
     QApplication.processEvents()
 
+    # 実 OS キー: Ctrl 保持 → O → Ctrl 解放。
+    key(VK_CONTROL, up=False)
+    key(VK_O)
+    key(VK_CONTROL, down=False)
+
+    qtbot.waitUntil(lambda: fired == [1], timeout=2000)
     assert fired == [1], (
-        "Ctrl+O が open_file に届かない(open アクションの shortcut/配線を確認)"
+        "Ctrl+O(実キー)が open_file に届かない(open アクションの shortcut/配線/focus を確認)"
     )
