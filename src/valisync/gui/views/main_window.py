@@ -20,7 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt
-from PySide6.QtGui import QAction, QCloseEvent
+from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
@@ -147,24 +147,25 @@ class MainWindow(QMainWindow):
         self.shell_actions.action("export").triggered.connect(self.export_csv)
 
         # ── メニューバー ─────────────────────────────────────────────────────
-        file_menu = self.menuBar().addMenu("File")
+        file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction(self.shell_actions.action("open"))
         file_menu.addAction(self.shell_actions.action("open_folder"))
         self.recent_menu = file_menu.addMenu("Recent Files")
         file_menu.addAction(self.shell_actions.action("export"))
         file_menu.addSeparator()
-        exit_action = file_menu.addAction("Exit")
-        exit_action.triggered.connect(self.close)
+        self.action_exit = file_menu.addAction("E&xit")
+        self.action_exit.setShortcut(QKeySequence.StandardKey.Quit)
+        self.action_exit.triggered.connect(self.close)
 
         # ── View menu (dock toggles, R1.4) ───────────────────────────────────
-        view_menu = self.menuBar().addMenu("View")
+        view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(self.file_dock.toggleViewAction())
         view_menu.addAction(self.channel_dock.toggleViewAction())
         view_menu.addAction(self.diagnostics_dock.toggleViewAction())
 
-        self.menuBar().addMenu("Analyze")  # 増分2 で中身
-        help_menu = self.menuBar().addMenu("Help")
-        about = help_menu.addAction("About ValiSync")
+        self.menuBar().addMenu("&Analyze")  # 増分2 で中身
+        help_menu = self.menuBar().addMenu("&Help")
+        about = help_menu.addAction("&About ValiSync")
         about.triggered.connect(self._show_about)
 
         # ── Toolbar (R1.5) ───────────────────────────────────────────────────
