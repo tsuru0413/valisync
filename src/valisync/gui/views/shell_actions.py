@@ -29,7 +29,7 @@ class ShellActions:
             "open_folder",
             "フォルダを開く…",
             style.standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon),
-            None,
+            "Ctrl+Shift+O",
             "データソースフォルダを登録する",
         )
         exp = self._add(

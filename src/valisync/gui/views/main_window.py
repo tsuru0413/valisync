@@ -20,13 +20,14 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt
-from PySide6.QtGui import QAction, QCloseEvent
+from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
     QMainWindow,
     QMessageBox,
     QStackedWidget,
+    QStyle,
     QToolBar,
 )
 
@@ -147,24 +148,30 @@ class MainWindow(QMainWindow):
         self.shell_actions.action("export").triggered.connect(self.export_csv)
 
         # ── メニューバー ─────────────────────────────────────────────────────
-        file_menu = self.menuBar().addMenu("File")
+        file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction(self.shell_actions.action("open"))
         file_menu.addAction(self.shell_actions.action("open_folder"))
         self.recent_menu = file_menu.addMenu("Recent Files")
         file_menu.addAction(self.shell_actions.action("export"))
         file_menu.addSeparator()
-        exit_action = file_menu.addAction("Exit")
-        exit_action.triggered.connect(self.close)
+        self.action_exit = file_menu.addAction("E&xit")
+        # StandardKey.Quit は Windows で Key_Exit(押せないメディアキー)に解決する
+        # ため、明示 Ctrl+Q を使う(主対象 OS は Windows)。
+        self.action_exit.setShortcut(QKeySequence("Ctrl+Q"))
+        self.action_exit.triggered.connect(self.close)
 
         # ── View menu (dock toggles, R1.4) ───────────────────────────────────
-        view_menu = self.menuBar().addMenu("View")
+        view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(self.file_dock.toggleViewAction())
         view_menu.addAction(self.channel_dock.toggleViewAction())
         view_menu.addAction(self.diagnostics_dock.toggleViewAction())
+        view_menu.addSeparator()
+        self.action_reset_layout = view_menu.addAction("Reset Layout")
+        self.action_reset_layout.triggered.connect(self._reset_layout)
 
-        self.menuBar().addMenu("Analyze")  # 増分2 で中身
-        help_menu = self.menuBar().addMenu("Help")
-        about = help_menu.addAction("About ValiSync")
+        self.menuBar().addMenu("&Analyze")  # 増分2 で中身
+        help_menu = self.menuBar().addMenu("&Help")
+        about = help_menu.addAction("&About ValiSync")
         about.triggered.connect(self._show_about)
 
         # ── Toolbar (R1.5) ───────────────────────────────────────────────────
@@ -173,9 +180,19 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.shell_actions.action("open"))
         toolbar.addAction(self.shell_actions.action("export"))
         toolbar.addSeparator()
-        self.action_data_explorer: QAction = QAction("Data Explorer", self)
+        self.action_data_explorer = QAction(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon),
+            "Data Explorer",
+            self,
+        )
+        self.action_data_explorer.setToolTip("データエクスプローラを開く")
+        self.action_data_explorer.setStatusTip("データエクスプローラを開く")
         self.action_data_explorer.triggered.connect(self.open_data_explorer)
         toolbar.addAction(self.action_data_explorer)
+        toolbar.addSeparator()
+        toolbar.addAction(self.file_dock.toggleViewAction())
+        toolbar.addAction(self.channel_dock.toggleViewAction())
+        toolbar.addAction(self.diagnostics_dock.toggleViewAction())
 
         # Status bar surfaces load outcomes (FB-06); shown even before any load.
         self.statusBar().showMessage("準備完了")
@@ -189,6 +206,8 @@ class MainWindow(QMainWindow):
         self._app_unsubscribe = self.app_vm.subscribe(self._on_app_change)
 
         self._rebuild_recent_menu()
+        # SH-11: 永続状態で上書きされる前の既定配置を捕捉 (Reset Layout 用)。
+        self._default_state = self.saveState()
         self._restore_state()
 
     # ─── Load pipeline ─────────────────────────────────────────────────────────
@@ -429,10 +448,17 @@ class MainWindow(QMainWindow):
             act = self.recent_menu.addAction(p)
             act.triggered.connect(lambda _=False, path=p: self._load_file(path))
 
+    def _about_text(self) -> str:
+        try:
+            from importlib.metadata import version
+
+            ver = version("valisync")
+        except Exception:  # PackageNotFoundError 等
+            ver = "unknown"
+        return f"ValiSync v{ver} — ADAS 信号解析デスクトップ"
+
     def _show_about(self) -> None:
-        QMessageBox.about(
-            self, "About ValiSync", "ValiSync — ADAS 信号解析デスクトップ"
-        )
+        QMessageBox.about(self, "About ValiSync", self._about_text())
 
     # ─── State persistence ────────────────────────────────────────────────────
 
@@ -460,3 +486,7 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(geometry)
         if state:
             self.restoreState(state)
+
+    def _reset_layout(self) -> None:
+        """Restore the default dock/toolbar arrangement captured at startup (SH-11)."""
+        self.restoreState(self._default_state)
