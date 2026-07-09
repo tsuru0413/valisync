@@ -2065,9 +2065,10 @@ class GraphPanelView(QWidget):
             self.vm.set_color(entry_id, hex_color)
 
     def build_curve_menu(self, entry_id: int) -> QMenu:
-        """Right-click menu for one curve (PC-01: 非表示/色変更/削除).
+        """Right-click menu for one curve (spec §4.3).
 
-        The axis-move and offset items (spec §4.3) are added in 増分2b.
+        非表示/色変更▸/削除/新しい軸へ移動/──/時間オフセット…/
+        オフセットをリセット…/オフセット情報行(非ゼロ時のみ・disabled)。
         """
         menu = QMenu(self)
         menu.addAction("非表示").triggered.connect(
@@ -2084,11 +2085,134 @@ class GraphPanelView(QWidget):
         color_menu.addAction("その他…").triggered.connect(
             lambda *_: self._pick_custom_color(entry_id)
         )
-        menu.addSeparator()
         menu.addAction("削除").triggered.connect(
             lambda *_: self._remove_curve(entry_id)
         )
+        menu.addAction("新しい軸へ移動").triggered.connect(
+            lambda *_: self.vm.move_entry_to_new_axis(entry_id)
+        )
+        menu.addSeparator()
+        menu.addAction("時間オフセット…").triggered.connect(
+            lambda *_: self._prompt_offset_input(entry_id)
+        )
+        signal_key = self.vm.signal_key_for_entry(entry_id)
+        current_offset = (
+            self.vm.offset_for(signal_key) if signal_key is not None else 0.0
+        )
+        reset_act = menu.addAction("オフセットをリセット…")
+        reset_act.setEnabled(current_offset != 0.0)
+        reset_act.triggered.connect(lambda *_: self._prompt_offset_reset(entry_id))
+        if current_offset != 0.0:
+            info = menu.addAction(f"オフセット: {current_offset:+.3g}s")
+            info.setEnabled(False)
         return menu
+
+    def _prompt_offset_input(self, entry_id: int) -> None:
+        """Open the numeric offset dialog and emit offset_apply_requested (additive)."""
+        signal_key = self.vm.signal_key_for_entry(entry_id)
+        if signal_key is None:
+            return
+        fn = self._offset_input_dialog_fn or self._default_offset_input_dialog
+        result = fn(signal_key, self.vm.offset_for(signal_key))
+        if result is not None:
+            delta_t, scope = result
+            self.offset_apply_requested.emit(signal_key, delta_t, scope)
+
+    def _default_offset_input_dialog(
+        self, signal_key: str, current: float
+    ) -> tuple[float, str] | None:
+        """Modal numeric offset dialog (DI default). Returns (delta_t, scope) or None.
+
+        Extends the scope-selection dialog (_default_apply_dialog) with a Δt input.
+        OK is disabled while Δt is non-finite (§10). Enter applies the 'signal' scope.
+        """
+        from PySide6.QtWidgets import (
+            QDialog,
+            QDialogButtonBox,
+            QLabel,
+            QLineEdit,
+            QRadioButton,
+            QVBoxLayout,
+        )
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("時間オフセット")
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel(f"現在のオフセット: {current:+.3g} s"))
+        lay.addWidget(QLabel("追加する Δt (秒):"))
+        dt_edit = QLineEdit("0")
+        lay.addWidget(dt_edit)
+        sig_radio = QRadioButton("この信号のみ")
+        grp_radio = QRadioButton("同じファイルグループ全体")
+        sig_radio.setChecked(True)
+        lay.addWidget(sig_radio)
+        lay.addWidget(grp_radio)
+        box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        ok_btn = box.button(QDialogButtonBox.StandardButton.Ok)
+        box.accepted.connect(dlg.accept)
+        box.rejected.connect(dlg.reject)
+        lay.addWidget(box)
+
+        def _validate() -> None:
+            try:
+                val = float(dt_edit.text())
+            except ValueError:
+                ok_btn.setEnabled(False)
+                return
+            ok_btn.setEnabled(math.isfinite(val))
+
+        dt_edit.textChanged.connect(lambda *_: _validate())
+        ok_btn.setDefault(True)
+        _validate()
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return (float(dt_edit.text()), "signal" if sig_radio.isChecked() else "group")
+
+    def _prompt_offset_reset(self, entry_id: int) -> None:
+        """Open the reset-scope dialog and emit offset_reset_requested."""
+        signal_key = self.vm.signal_key_for_entry(entry_id)
+        if signal_key is None:
+            return
+        fn = self._reset_dialog_fn or self._default_reset_dialog
+        scope = fn(signal_key)
+        if scope in ("signal", "group"):
+            self.offset_reset_requested.emit(signal_key, scope)
+
+    def _default_reset_dialog(self, signal_key: str) -> str | None:
+        """Modal reset-scope dialog: 'signal' / 'group' / None (cancel).
+
+        Same shape as _default_apply_dialog minus the Δt (reset zeroes the offset).
+        """
+        from PySide6.QtWidgets import (
+            QDialog,
+            QDialogButtonBox,
+            QLabel,
+            QRadioButton,
+            QVBoxLayout,
+        )
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("時間オフセットのリセット")
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("オフセットを 0 に戻します。対象を選択してください。"))
+        sig_radio = QRadioButton("この信号のみ")
+        grp_radio = QRadioButton("同じファイルグループ全体")
+        sig_radio.setChecked(True)
+        lay.addWidget(sig_radio)
+        lay.addWidget(grp_radio)
+        box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        box.accepted.connect(dlg.accept)
+        box.rejected.connect(dlg.reject)
+        lay.addWidget(box)
+        ok_btn = box.button(QDialogButtonBox.StandardButton.Ok)
+        ok_btn.setDefault(True)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return "signal" if sig_radio.isChecked() else "group"
 
     def build_context_menu(self) -> QMenu:
         """Build the blank-area panel menu (add/remove panel, reset axes, interp)."""

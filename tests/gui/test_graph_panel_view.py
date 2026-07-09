@@ -724,6 +724,141 @@ class TestCurveContextMenu:
         assert vm.inspect()["plotted_signals"][0]["color"] == before
 
 
+def _curve_menu_texts(menu: object) -> list[str]:
+    return [a.text() for a in menu.actions() if not a.isSeparator()]  # type: ignore[attr-defined]
+
+
+class TestCurveMenuAxisMoveAndOffset:
+    """新しい軸へ移動・時間オフセット…・オフセットをリセット…・情報行 (増分2b Task 4)。
+
+    signal_key には group-prefix が付く (_session_with_signals の name_map 経由
+    で解決済みキーを使う — 文字列リテラル "csv::a" は実キーではない)。
+    """
+
+    def test_build_curve_menu_has_axis_move_and_offset_items(
+        self, qtbot: QtBot
+    ) -> None:
+        from valisync.gui.views.graph_panel_view import GraphPanelView
+
+        session, keys = _session_with_signals({"csv::a": ([0.0], [1.0])})
+        vm = GraphPanelVM(session)
+        vm.add_signal_to_axis(keys["csv::a"], 0)
+        view = GraphPanelView(vm)
+        qtbot.addWidget(view)
+        eid = vm._plotted[0].entry_id
+        texts = _curve_menu_texts(view.build_curve_menu(eid))
+        for expected in (
+            "非表示",
+            "色変更",
+            "削除",
+            "新しい軸へ移動",
+            "時間オフセット…",
+            "オフセットをリセット…",
+        ):
+            assert expected in texts
+
+    def test_curve_menu_move_to_new_axis_triggers_vm(self, qtbot: QtBot) -> None:
+        from valisync.gui.views.graph_panel_view import GraphPanelView
+
+        session, keys = _session_with_signals(
+            {"csv::a": ([0.0], [1.0]), "csv::b": ([0.0], [2.0])}
+        )
+        vm = GraphPanelVM(session)
+        vm.add_signal_to_axis(keys["csv::a"], 0)
+        vm.add_signal_to_axis(keys["csv::b"], 0)
+        view = GraphPanelView(vm)
+        qtbot.addWidget(view)
+        eid_b = next(e.entry_id for e in vm._plotted if e.signal_key == keys["csv::b"])
+        act = next(
+            a
+            for a in view.build_curve_menu(eid_b).actions()
+            if a.text() == "新しい軸へ移動"
+        )
+        act.trigger()
+        assert len(vm.axes) == 2
+
+    def test_curve_menu_reset_disabled_when_no_offset(self, qtbot: QtBot) -> None:
+        from valisync.gui.views.graph_panel_view import GraphPanelView
+
+        session, keys = _session_with_signals({"csv::a": ([0.0], [1.0])})
+        vm = GraphPanelVM(session)
+        vm.add_signal_to_axis(keys["csv::a"], 0)
+        view = GraphPanelView(vm)
+        qtbot.addWidget(view)
+        eid = vm._plotted[0].entry_id
+        menu = view.build_curve_menu(eid)
+        reset_act = next(
+            a for a in menu.actions() if a.text() == "オフセットをリセット…"
+        )
+        assert reset_act.isEnabled() is False
+        # 情報行は非ゼロ時のみ → 存在しない
+        assert not any(a.text().startswith("オフセット: ") for a in menu.actions())
+
+    def test_curve_menu_reset_enabled_and_info_row_when_offset_applied(
+        self, qtbot: QtBot
+    ) -> None:
+        from valisync.gui.views.graph_panel_view import GraphPanelView
+
+        session, keys = _session_with_signals({"csv::a": ([0.0], [1.0])})
+        vm = GraphPanelVM(session)
+        vm.add_signal_to_axis(keys["csv::a"], 0)
+        vm.set_offsets({keys["csv::a"]: 0.5}, {})
+        view = GraphPanelView(vm)
+        qtbot.addWidget(view)
+        eid = vm._plotted[0].entry_id
+        menu = view.build_curve_menu(eid)
+        reset_act = next(
+            a for a in menu.actions() if a.text() == "オフセットをリセット…"
+        )
+        assert reset_act.isEnabled() is True
+        info = next(a for a in menu.actions() if a.text().startswith("オフセット: "))
+        assert info.isEnabled() is False
+        assert "+0.5" in info.text()
+
+    def test_curve_menu_offset_input_emits_apply(self, qtbot: QtBot) -> None:
+        from valisync.gui.views.graph_panel_view import GraphPanelView
+
+        session, keys = _session_with_signals({"csv::a": ([0.0], [1.0])})
+        vm = GraphPanelVM(session)
+        vm.add_signal_to_axis(keys["csv::a"], 0)
+        view = GraphPanelView(
+            vm, offset_input_dialog_fn=lambda sk, cur: (0.3, "signal")
+        )
+        qtbot.addWidget(view)
+        eid = vm._plotted[0].entry_id
+        emitted: list[tuple[str, float, str]] = []
+        view.offset_apply_requested.connect(
+            lambda k, dt, sc: emitted.append((k, dt, sc))
+        )
+        act = next(
+            a
+            for a in view.build_curve_menu(eid).actions()
+            if a.text() == "時間オフセット…"
+        )
+        act.trigger()
+        assert emitted == [(keys["csv::a"], 0.3, "signal")]
+
+    def test_curve_menu_reset_emits_reset(self, qtbot: QtBot) -> None:
+        from valisync.gui.views.graph_panel_view import GraphPanelView
+
+        session, keys = _session_with_signals({"csv::a": ([0.0], [1.0])})
+        vm = GraphPanelVM(session)
+        vm.add_signal_to_axis(keys["csv::a"], 0)
+        vm.set_offsets({keys["csv::a"]: 0.5}, {})
+        view = GraphPanelView(vm, reset_dialog_fn=lambda sk: "signal")
+        qtbot.addWidget(view)
+        eid = vm._plotted[0].entry_id
+        emitted: list[tuple[str, str]] = []
+        view.offset_reset_requested.connect(lambda k, sc: emitted.append((k, sc)))
+        act = next(
+            a
+            for a in view.build_curve_menu(eid).actions()
+            if a.text() == "オフセットをリセット…"
+        )
+        act.trigger()
+        assert emitted == [(keys["csv::a"], "signal")]
+
+
 def _shown_curve_click_setup(
     qtbot: QtBot, tmp_path: Path
 ) -> tuple[object, int, QPointF]:
