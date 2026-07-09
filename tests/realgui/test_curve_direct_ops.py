@@ -160,6 +160,38 @@ def _dialog_dismisser(stop: threading.Event) -> None:
         key_input(VK_ESCAPE)
 
 
+def _menu_hang_watchdog(stop: threading.Event) -> None:
+    """Background thread: force-close a stuck ``QMenu.exec()`` modal loop.
+
+    ``contextMenuEvent`` calls ``menu.exec(globalPos)`` synchronously, which is
+    itself a *nested* Qt event loop entered from within the outer
+    orchestration ``loop.exec()`` in the caller. If the real click on the
+    "非表示" (hide) row misses its target (wrong geometry, DPI
+    mismatch, ...), nothing tells the popup to close and the nested
+    ``menu.exec()`` blocks forever -- the outer
+    ``QTimer.singleShot(5000, loop.quit)`` safety net only reaches the OUTER
+    QEventLoop, it cannot unwind a nested exec() that is still running (same
+    class of hang as ``drive_qdrag``'s OLE modal loop, memory
+    gui_realgui_drag_qtimer_hang, just via QMenu's native popup grab instead
+    of QDrag).
+
+    This thread sends a real ``VK_ESCAPE`` after a deadline: QMenu treats
+    Escape as "close", so its ``exec()`` unwinds even though the click never
+    landed, and the test then fails on a clean assertion instead of hanging.
+    Ground truth for "did it hang" is whether the caller's ``loop.exec()``
+    has returned -- the caller sets ``stop`` as its very next statement after
+    that call, so in the happy path (click lands, menu closes, loop.exec()
+    returns almost immediately) this thread notices ``stop`` well before its
+    deadline and never sends Escape. Mirrors ``_dialog_dismisser``'s shape
+    (background daemon thread, deadline poll, guarded action).
+    """
+    deadline = time.time() + 4.0
+    while time.time() < deadline and not stop.is_set():
+        time.sleep(0.1)
+    if not stop.is_set():
+        key_input(VK_ESCAPE)
+
+
 def test_real_click_activates_curve_thick_pen_and_does_not_offset(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
@@ -301,13 +333,29 @@ def test_real_right_click_menu_hide_removes_curve(qtbot: QtBot, tmp_path: Path) 
                 hx, hy = round(gp.x() * dpr), round(gp.y() * dpr)
                 at(hx, hy, LDOWN)
                 at(hx, hy, LUP)
+                # Click fired at the action's rect -- this is NOT proof it
+                # landed and dismissed the menu (menu.exec() may still be
+                # blocked; see _menu_hang_watchdog above). The real evidence
+                # is the eid not in view.curve_keys() assertion below.
                 captured["clicked"] = True
         loop.quit()
+
+    watchdog_stop = threading.Event()
+    watchdog = threading.Thread(
+        target=_menu_hang_watchdog, args=(watchdog_stop,), daemon=True
+    )
+    watchdog.start()
 
     QTimer.singleShot(300, do_right_click)
     QTimer.singleShot(900, _capture_and_click_hide)
     QTimer.singleShot(5000, loop.quit)  # safety net
     loop.exec()
+
+    # loop.exec() has returned -- the nested menu.exec() (if any) already
+    # unwound on its own, so stop the watchdog before it can fire a stray
+    # Escape at later tests/dialogs.
+    watchdog_stop.set()
+    watchdog.join(timeout=2.0)
 
     assert captured.get("type") == "QMenu", (
         f"real right-click did not raise the curve menu (got "
