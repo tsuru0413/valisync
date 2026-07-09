@@ -12,6 +12,7 @@ from PySide6.QtCore import (
     QMimeData,
     QObject,
     QPoint,
+    QSortFilterProxyModel,
     Qt,
     Signal,
 )
@@ -53,6 +54,13 @@ class ChannelBrowserView(QWidget):
         super().__init__(parent)
         self._vm = vm
         self.model = SignalTableModel(vm)
+        # PC-20: ソート専用の proxy を挟む(フィルタは現行どおり VM 真実 = proxy は
+        # accept-all のまま)。ヘッダクリックで Name/Unit 列ソート。
+        self.proxy = QSortFilterProxyModel(self)
+        self.proxy.setSourceModel(self.model)
+        # Real channel names are mixed-case (EngineSpeed / vehSpd); sort
+        # case-insensitively so an A-Z scan isn't split into upper/lower blocks.
+        self.proxy.setSortCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
 
         self.search_box = QLineEdit(self)
         self.search_box.setPlaceholderText("Filter signals…")
@@ -67,7 +75,13 @@ class ChannelBrowserView(QWidget):
         self.add_button.clicked.connect(self._emit_add_selected)
 
         self.tree = QTreeView(self)
-        self.tree.setModel(self.model)
+        self.tree.setModel(self.proxy)
+        self.tree.setSortingEnabled(True)
+        # setSortingEnabled(True) は「現在のソート指標」で即時 sortByColumn する。
+        # 既定は源順(セッション/グループ順)を保ち、ヘッダクリックで初めてソート
+        # する挙動にしたいので、proxy のソート列を -1(パススルー)へ戻す(spec DP2:
+        # 「ヘッダクリックで名前/単位ソート」= 既定ソートは要求されていない)。
+        self.tree.sortByColumn(-1, Qt.SortOrder.AscendingOrder)
         self.tree.setSelectionMode(QTreeView.SelectionMode.ExtendedSelection)
         self.tree.setDragEnabled(True)
         self.tree.setUniformRowHeights(True)
@@ -159,10 +173,16 @@ class ChannelBrowserView(QWidget):
     # ─── Queries ───────────────────────────────────────────────────────────────
 
     def selected_signal_keys(self) -> list[str]:
-        """Return the namespaced keys of the currently-selected signal rows."""
+        """Return the namespaced keys of the currently-selected signal rows.
+
+        Rows are proxy indexes (sort may reorder them), so each must be mapped
+        back to the source model before resolving its key -- otherwise a sorted
+        view would drag/select the wrong signal (PC-20).
+        """
         keys: list[str] = []
         for index in self.tree.selectionModel().selectedRows(0):
-            key = self.model.signal_key_at(index)
+            src = self.proxy.mapToSource(index)
+            key = self.model.signal_key_at(src)
             if key is not None:
                 keys.append(key)
         return keys

@@ -58,6 +58,42 @@ def _loaded_vm(tmp_path: Path) -> tuple[AppViewModel, ChannelBrowserVM, str]:
     return app_vm, ChannelBrowserVM(app_vm), key
 
 
+def _csv_format_n(n_signals: int) -> FormatDefinition:
+    """Like _csv_format() but for an arbitrary signal-column count (PC-20)."""
+    return FormatDefinition(
+        name="test",
+        delimiter=Delimiter.COMMA,
+        timestamp_column=0,
+        timestamp_unit="sec",
+        signal_start_column=1,
+        signal_end_column=n_signals,
+        has_header=True,
+    )
+
+
+def _cb_view_with_signals(
+    qtbot: QtBot, tmp_path: Path, names: list[str]
+) -> ChannelBrowserView:
+    """Build a ChannelBrowserView with *names* registered, in that column
+    (== registration) order, as the active file's signals.
+
+    Used by the PC-20 sort tests, which need a deliberately non-alphabetical
+    initial order to distinguish "source order" from "sorted order".
+    """
+    path = tmp_path / "sort.csv"
+    header = "t," + ",".join(names)
+    row0 = "0.0," + ",".join("1.0" for _ in names)
+    row1 = "1.0," + ",".join("2.0" for _ in names)
+    path.write_text(f"{header}\n{row0}\n{row1}\n", encoding="utf-8")
+    app_vm = AppViewModel()
+    key = app_vm.request_load(path, _csv_format_n(len(names)))
+    app_vm.set_active_file(key)
+    vm = ChannelBrowserVM(app_vm)
+    view = ChannelBrowserView(vm)
+    qtbot.addWidget(view)
+    return view
+
+
 def _select(view: ChannelBrowserView, row: int) -> None:
     index = view.model.index(row, 0)
     view.tree.selectionModel().select(
@@ -255,7 +291,10 @@ def test_double_click_emits_add(qtbot: QtBot, tmp_path: Path) -> None:
     emitted: list[list[str]] = []
     view.add_to_panel_requested.connect(emitted.append)
 
-    index = view.model.index(0, 0)
+    # PC-20: view.tree's model is now view.proxy (not view.model directly), so
+    # the index fed to tree.visualRect() must belong to the proxy -- an index
+    # from the source model silently mismatches (empty rect, no exception).
+    index = view.proxy.index(0, 0)
     qtbot.waitUntil(lambda: view.tree.visualRect(index).height() > 0)
     rect_center = view.tree.visualRect(index).center()
 
@@ -267,3 +306,70 @@ def test_double_click_emits_add(qtbot: QtBot, tmp_path: Path) -> None:
 
     assert len(emitted) == 1
     assert emitted[0] == view.selected_signal_keys()
+
+
+# ─── Header-click Column Sort (PC-20/DP2) ────────────────────────────────────
+# QSortFilterProxyModel sits between SignalTableModel (source) and the tree,
+# for sorting only (filtering stays VM-truth). selected_signal_keys() must
+# mapToSource the (post-sort, reordered) proxy index before resolving the key
+# -- otherwise the sorted view would select/drag whatever row is at that
+# source position, not the row the user actually sees (honest layering note
+# in the plan: this only shows up once a sort has actually been applied).
+
+
+def test_default_order_is_source_order(qtbot: QtBot, tmp_path: Path) -> None:
+    # ソート未クリックの既定は源順(登録順)を保つ(sortByColumn(-1) パススルー)。
+    view = _cb_view_with_signals(qtbot, tmp_path, ["zed", "alpha", "mid"])
+    names = [view.proxy.index(r, 0).data() for r in range(view.proxy.rowCount())]
+    assert names == ["zed", "alpha", "mid"]  # 名前昇順に勝手に並び替えない
+
+
+def test_header_click_sorts_by_name(qtbot: QtBot, tmp_path: Path) -> None:
+    # 登録順 "zed","alpha","mid" → 名前昇順ソートで alpha,mid,zed
+    view = _cb_view_with_signals(qtbot, tmp_path, ["zed", "alpha", "mid"])
+    view.proxy.sort(0, Qt.SortOrder.AscendingOrder)  # Name 列 昇順
+    names = [view.proxy.index(r, 0).data() for r in range(view.proxy.rowCount())]
+    assert names == ["alpha", "mid", "zed"]
+
+
+def test_selected_keys_correct_after_sort(qtbot: QtBot, tmp_path: Path) -> None:
+    view = _cb_view_with_signals(qtbot, tmp_path, ["zed", "alpha", "mid"])
+    view.proxy.sort(0, Qt.SortOrder.AscendingOrder)
+    # ソート後の視覚的先頭行(=alpha)を選択 → mapToSource で alpha の key が返る
+    top = view.proxy.index(0, 0)
+    view.tree.selectionModel().select(
+        top,
+        QItemSelectionModel.SelectionFlag.Select
+        | QItemSelectionModel.SelectionFlag.Rows,
+    )
+    keys = view.selected_signal_keys()
+    assert len(keys) == 1
+    assert keys[0].endswith(
+        "::alpha"
+    )  # 見た目どおり alpha(源 index ずれで zed にならない)
+
+
+def test_dnd_mime_keys_correct_after_sort(qtbot: QtBot, tmp_path: Path) -> None:
+    view = _cb_view_with_signals(qtbot, tmp_path, ["zed", "alpha", "mid"])
+    view.proxy.sort(0, Qt.SortOrder.AscendingOrder)
+    top = view.proxy.index(0, 0)
+    view.tree.selectionModel().select(
+        top,
+        QItemSelectionModel.SelectionFlag.Select
+        | QItemSelectionModel.SelectionFlag.Rows,
+    )
+    md = view.mime_data_for_selection()
+    from valisync.gui.adapters.qt_signal_models import decode_signal_keys
+
+    keys = decode_signal_keys(md)
+    assert keys and keys[0].endswith("::alpha")
+
+
+def test_sort_is_case_insensitive(qtbot: QtBot, tmp_path: Path) -> None:
+    # 実 ADAS 信号名は大小混在 (EngineSpeed/vehSpd) -- QSortFilterProxyModel の
+    # 既定 CaseSensitive のままだと大文字始まりが全て小文字始まりより前に来て
+    # A-Z 走査が2ブロックに分断される (レビュー指摘の Minor follow-up)。
+    view = _cb_view_with_signals(qtbot, tmp_path, ["Beta", "alpha", "Gamma"])
+    view.proxy.sort(0, Qt.SortOrder.AscendingOrder)
+    names = [view.proxy.index(r, 0).data() for r in range(view.proxy.rowCount())]
+    assert names == ["alpha", "Beta", "Gamma"]

@@ -1689,3 +1689,22 @@ def test_step_cursor_notifies_cursor(tmp_path: Path) -> None:
     vm.subscribe(changes.append)
     vm.step_cursor("A", 1)
     assert "cursor" in changes
+
+
+# ─── Grid (PC-15/DP13) ───────────────────────────────────────────────────────
+
+
+def test_grid_enabled_defaults_false(tmp_path):
+    vm = _loaded_vm(tmp_path)
+    assert vm.grid_enabled is False
+
+
+def test_toggle_grid_updates_and_notifies(tmp_path):
+    vm = _loaded_vm(tmp_path)
+    seen: list[str] = []
+    vm.subscribe(lambda change: seen.append(change))
+    vm.toggle_grid(True)
+    assert vm.grid_enabled is True
+    assert "grid" in seen
+    vm.toggle_grid(False)
+    assert vm.grid_enabled is False
