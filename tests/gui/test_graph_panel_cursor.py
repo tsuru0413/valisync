@@ -713,3 +713,55 @@ def test_cursor_line_at_detects_visible_line(qtbot: QtBot) -> None:
     scene_x = vb0.mapViewToScene(QPointF(0.5, 0.0)).x()
     widget_pt = view.plot_widget.mapFromScene(QPointF(scene_x, 10.0))
     assert view._cursor_line_at(QPointF(widget_pt)) == "A"
+
+
+def _interp_submenu(view):
+    menu = view.build_context_menu()
+    act = next(a for a in menu.actions() if a.text() == "補間方式")
+    sub = act.menu()
+    # Keep the parent menu + action wrappers alive alongside the returned
+    # submenu: shiboken ties the submenu wrapper's lifetime to the QAction
+    # wrapper that fetched it via .menu(), so both must outlive this call
+    # (see memory gui_pyside_qaction_submenu_shiboken_lifetime).
+    sub._keepalive = (menu, act)  # type: ignore[attr-defined]
+    return sub
+
+
+def test_interp_menu_is_checkable_and_reflects_current(qtbot: QtBot) -> None:
+    from valisync.core.interpolation import InterpolationMethod
+
+    view = _shown_cursor_panel(qtbot)
+    view.vm.set_interp_method(InterpolationMethod.ZERO_ORDER_HOLD)
+    sub = _interp_submenu(view)
+    acts = {a.text(): a for a in sub.actions()}
+    assert all(a.isCheckable() for a in acts.values())
+    assert acts["前値保持"].isChecked() is True
+    assert acts["線形"].isChecked() is False
+
+
+def test_interp_menu_is_exclusive(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    sub = _interp_submenu(view)
+    acts = {a.text(): a for a in sub.actions()}
+    acts["最近傍"].setChecked(True)  # exclusive group unchecks the others
+    assert acts["線形"].isChecked() is False
+    assert acts["前値保持"].isChecked() is False
+
+
+def test_interp_menu_action_sets_vm(qtbot: QtBot) -> None:
+    from valisync.core.interpolation import InterpolationMethod
+
+    view = _shown_cursor_panel(qtbot)
+    sub = _interp_submenu(view)
+    next(a for a in sub.actions() if a.text() == "最近傍").trigger()
+    assert view.vm.interp_method == InterpolationMethod.NEAREST
+
+
+def test_readout_header_shows_current_interp(qtbot: QtBot) -> None:
+    from valisync.core.interpolation import InterpolationMethod
+
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.set_interp_method(InterpolationMethod.NEAREST)
+    view.vm.set_cursor(0.005)
+    assert "最近傍" in view._readout.header_text()

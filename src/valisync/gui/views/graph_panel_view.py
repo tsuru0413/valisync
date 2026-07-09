@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from valisync.core.interpolation import InterpolationMethod
 from valisync.gui.adapters.qt_signal_models import (
     AXIS_INDEX_MIME,
     SIGNAL_KEYS_MIME,
@@ -66,6 +67,14 @@ from valisync.gui.adapters.qt_signal_models import (
 )
 from valisync.gui.viewmodels.graph_panel_vm import _PALETTE, GraphPanelVM
 from valisync.gui.views.cursor_shapes import CursorKind, cursor
+
+# Interp method → menu/readout label (PC-09). Single source of truth so the
+# context-menu radio group and the CursorReadout header never drift apart.
+_INTERP_LABELS: dict[InterpolationMethod, str] = {
+    InterpolationMethod.LINEAR: "線形",
+    InterpolationMethod.ZERO_ORDER_HOLD: "前値保持",
+    InterpolationMethod.NEAREST: "最近傍",
+}
 
 # ─── Axis interaction zones (R9.1 / R10.1) ────────────────────────────────────
 
@@ -1365,10 +1374,19 @@ class GraphPanelView(QWidget):
             # Push VM's visible_stat_cols into the readout before rendering so
             # the VM is the single source of truth (spec §7).
             self._readout.sync_visible_stats(self.vm.visible_stat_cols)
-            self._readout.set_delta(t, self.vm.cursor_t_b, self.vm.delta_readings())
+            self._readout.set_delta(
+                t,
+                self.vm.cursor_t_b,
+                self.vm.delta_readings(),
+                interp_label=_INTERP_LABELS.get(self.vm.interp_method, ""),
+            )
         else:
             self._cursor_line_b.setVisible(False)
-            self._readout.set_global(t, self.vm.cursor_readings())
+            self._readout.set_global(
+                t,
+                self.vm.cursor_readings(),
+                interp_label=_INTERP_LABELS.get(self.vm.interp_method, ""),
+            )
         if not self._readout_placed:
             # 初回表示時にプロット矩形左上へ配置(以降のカーソル同期では
             # ユーザーがドラッグ移動した位置を乱さない)。
@@ -2358,8 +2376,6 @@ class GraphPanelView(QWidget):
 
     def build_context_menu(self) -> QMenu:
         """Build the blank-area panel menu (add/remove panel, reset axes, interp)."""
-        from valisync.core.interpolation import InterpolationMethod
-
         menu = QMenu(self)
         menu.addAction("Add Panel").triggered.connect(
             lambda *_: self.add_panel_requested.emit()
@@ -2382,15 +2398,21 @@ class GraphPanelView(QWidget):
         sub_act.setEnabled(self.vm.cursor_t is not None)  # greyed out until main ON
         # setChecked BEFORE toggled.connect so the initial state-set does not fire the handler
         sub_act.toggled.connect(lambda checked: self.vm.toggle_delta(checked))
+        from PySide6.QtGui import QActionGroup
+
         interp = menu.addMenu("補間方式")
+        interp_group = QActionGroup(interp)
+        interp_group.setExclusive(True)
         for label, method in (
             ("線形", InterpolationMethod.LINEAR),
             ("前値保持", InterpolationMethod.ZERO_ORDER_HOLD),
             ("最近傍", InterpolationMethod.NEAREST),
         ):
-            interp.addAction(label).triggered.connect(
-                lambda *_, m=method: self.vm.set_interp_method(m)
-            )
+            act = interp.addAction(label)
+            act.setCheckable(True)
+            act.setActionGroup(interp_group)
+            act.setChecked(method == self.vm.interp_method)  # BEFORE triggered.connect
+            act.triggered.connect(lambda *_, m=method: self.vm.set_interp_method(m))
         return menu
 
     def build_axis_menu(self, axis_index: int) -> QMenu:
