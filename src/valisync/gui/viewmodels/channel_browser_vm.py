@@ -24,7 +24,6 @@ class SignalItem:
     name: str  # Original name, e.g. "speed"
     unit: str  # Physical unit, e.g. "km/h"
     key: str  # Full namespaced key, e.g. "csv_1::speed"
-    tooltip: str = ""  # value_labels のラベル行 (LD-07・空=ツールチップなし)
 
 
 def _labels_tooltip(metadata: dict[str, Any] | None) -> str:
@@ -86,14 +85,7 @@ class ChannelBrowserVM(Observable):
 
             unit = sig.metadata.get("unit", "") if sig.metadata else ""
 
-            results.append(
-                SignalItem(
-                    name=orig_name,
-                    unit=str(unit),
-                    key=sig.name,
-                    tooltip=_labels_tooltip(sig.metadata),
-                )
-            )
+            results.append(SignalItem(name=orig_name, unit=str(unit), key=sig.name))
 
         return results
 
@@ -158,6 +150,56 @@ class ChannelBrowserVM(Observable):
     def selected(self) -> list[str]:
         """Return the current selection as a list of namespaced signal names."""
         return list(self._selection)
+
+    # ─── Tooltip (PC-19/DP14) ────────────────────────────────────────────────
+
+    def _signal_by_key(self, key: str) -> Any | None:
+        """Look up the active file's Signal whose namespaced name == key."""
+        active_key = self._app_vm.active_file_key
+        if not active_key:
+            return None
+        try:
+            for sig in self._app_vm.session.group_signals(active_key):
+                if sig.name == key:
+                    return sig
+        except KeyError:
+            return None
+        return None
+
+    def tooltip_for(self, key: str) -> str:
+        """Lazily assemble a multi-line tooltip for *key* (PC-19).
+
+        Sections (absent lines omitted for CSV/Derived): unit / sample count
+        (raw recorded len) / origin (bus_type, channel_group_name, source_name) /
+        comment / value_labels. Time range is intentionally excluded.
+        """
+        sig = self._signal_by_key(key)
+        if sig is None:
+            return ""
+        md = sig.metadata or {}
+        lines: list[str] = []
+        unit = md.get("unit", "")
+        if unit:
+            lines.append(f"単位: {unit}")
+        lines.append(f"サンプル数: {len(sig.timestamps)}")
+        origin = " / ".join(
+            b
+            for b in (
+                sig.bus_type,
+                md.get("channel_group_name", ""),
+                md.get("source_name", ""),
+            )
+            if b
+        )
+        if origin:
+            lines.append(f"由来: {origin}")
+        comment = md.get("comment", "")
+        if comment:
+            lines.append(f"コメント: {comment}")
+        labels = _labels_tooltip(md)  # "ラベル: ..." or ""
+        if labels:
+            lines.append(labels)
+        return "\n".join(lines)
 
     # ─── Event Handling ──────────────────────────────────────────────────────
 

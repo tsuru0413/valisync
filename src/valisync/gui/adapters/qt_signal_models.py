@@ -135,7 +135,7 @@ class SignalTableModel(QAbstractTableModel):
                 return item.unit
 
         if role == Qt.ItemDataRole.ToolTipRole:
-            return item.tooltip or None
+            return self._vm.tooltip_for(item.key) or None
 
         return None
 

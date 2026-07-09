@@ -43,6 +43,39 @@ def _setup_vm(tmp_path: Path) -> tuple[ChannelBrowserVM, AppViewModel, str]:
     return vm, app_vm, key
 
 
+def _cb_vm_with_signal(
+    tmp_path: Path,
+    key_orig: str,
+    metadata: dict[str, object] | None = None,
+    bus_type: str = "",
+    n_samples: int = 10,
+) -> ChannelBrowserVM:
+    """Build a ChannelBrowserVM with one fake Signal active under "test_key".
+
+    Follows the existing group_signals-injection pattern used elsewhere in
+    this module (see test_signal_item_contains_unit): tooltip_for only needs
+    Signal fields, so a real loaded file is unnecessary.
+    """
+    import numpy as np
+
+    app_vm = AppViewModel()
+    vm = ChannelBrowserVM(app_vm)
+
+    sig = Signal(
+        name=f"test_key::{key_orig}",
+        timestamps=np.arange(float(n_samples)),
+        values=np.zeros(n_samples),
+        file_format="MDF4",
+        bus_type=bus_type,
+        source_file="test.mf4",
+        metadata=dict(metadata) if metadata else {},
+    )
+
+    app_vm.session.group_signals = lambda key: [sig]  # type: ignore[method-assign]
+    app_vm.set_active_file("test_key")
+    return vm
+
+
 # ─── Tests ──────────────────────────────────────────────────────────────────
 
 
@@ -89,8 +122,8 @@ def test_signal_item_contains_unit(tmp_path: Path) -> None:
     assert vm.signals[0].unit == "km/h"
 
 
-def test_signal_item_tooltip_lists_value_labels(tmp_path: Path) -> None:
-    """value_labels 持ち信号の tooltip に『ラベル: 0=OFF, 1=LEFT, 2=RIGHT』(LD-07)."""
+def test_tooltip_for_lists_value_labels(tmp_path: Path) -> None:
+    """value_labels 持ち信号の tooltip_for に『ラベル: 0=OFF, 1=LEFT, 2=RIGHT』(LD-07)."""
     app_vm = AppViewModel()
     vm = ChannelBrowserVM(app_vm)
 
@@ -110,10 +143,10 @@ def test_signal_item_tooltip_lists_value_labels(tmp_path: Path) -> None:
     app_vm.set_active_file("test_key")
 
     item = next(i for i in vm.signals if i.name == "TurnSig")
-    assert item.tooltip == "ラベル: 0=OFF, 1=LEFT, 2=RIGHT"
+    assert "ラベル: 0=OFF, 1=LEFT, 2=RIGHT" in vm.tooltip_for(item.key)
 
 
-def test_signal_item_tooltip_truncates_after_8(tmp_path: Path) -> None:
+def test_tooltip_for_truncates_after_8(tmp_path: Path) -> None:
     """9 件以上は先頭 8 件 + 『… (全 n 件)』(LD-07)."""
     app_vm = AppViewModel()
     vm = ChannelBrowserVM(app_vm)
@@ -135,16 +168,64 @@ def test_signal_item_tooltip_truncates_after_8(tmp_path: Path) -> None:
     app_vm.set_active_file("test_key")
 
     item = next(i for i in vm.signals if i.name == "Many")
-    assert item.tooltip.endswith("… (全 10 件)")
-    assert "8=S8" not in item.tooltip.split("…")[0]
+    tip = vm.tooltip_for(item.key)
+    assert tip.endswith("… (全 10 件)")
+    assert "8=S8" not in tip.split("…")[0]
 
 
-def test_signal_item_tooltip_empty_without_value_labels(tmp_path: Path) -> None:
-    """value_labels が無い信号は tooltip="" (Qt は None を返してツールチップ非表示)."""
+def test_tooltip_for_omits_labels_without_value_labels(tmp_path: Path) -> None:
+    """value_labels が無い信号の tooltip_for に『ラベル:』行は無い。"""
     vm, app_vm, key = _setup_vm(tmp_path)
     app_vm.set_active_file(key)
 
-    assert all(item.tooltip == "" for item in vm.signals)
+    assert all("ラベル:" not in vm.tooltip_for(item.key) for item in vm.signals)
+
+
+def test_tooltip_for_full_metadata(tmp_path: Path) -> None:
+    # MDF 相当: unit + comment + channel_group_name + source_name + value_labels
+    vm = _cb_vm_with_signal(
+        tmp_path,
+        key_orig="gear",
+        metadata={
+            "unit": "-",
+            "comment": "現在のギア段",
+            "channel_group_name": "PT_CAN",
+            "source_name": "ECU1",
+            "value_labels": {0: "N", 1: "D"},
+        },
+        bus_type="CAN",
+        n_samples=1234,
+    )
+    key = vm.signals[0].key
+    tip = vm.tooltip_for(key)
+    assert "単位: -" in tip
+    assert "サンプル数: 1234" in tip
+    assert "CAN" in tip and "PT_CAN" in tip and "ECU1" in tip  # 由来
+    assert "現在のギア段" in tip  # コメント
+    assert "N" in tip and "D" in tip  # value_labels (LD-07)
+
+
+def test_tooltip_for_csv_omits_absent_rows(tmp_path: Path) -> None:
+    # CSV 相当: unit のみ、bus_type 空、comment/group/source/labels なし
+    vm = _cb_vm_with_signal(
+        tmp_path,
+        key_orig="speed",
+        metadata={"unit": "km/h"},
+        bus_type="",
+        n_samples=50,
+    )
+    key = vm.signals[0].key
+    tip = vm.tooltip_for(key)
+    assert "単位: km/h" in tip
+    assert "サンプル数: 50" in tip
+    assert "由来:" not in tip  # bus_type/group/source 全欠損 -> 由来行なし
+    assert "コメント:" not in tip  # comment なし
+    assert "ラベル:" not in tip  # value_labels なし
+
+
+def test_tooltip_for_unknown_key_empty(tmp_path: Path) -> None:
+    vm = _cb_vm_with_signal(tmp_path, key_orig="speed", metadata={"unit": "km/h"})
+    assert vm.tooltip_for("nonexistent::key") == ""
 
 
 def test_signals_clears_when_active_file_unset(tmp_path: Path) -> None:

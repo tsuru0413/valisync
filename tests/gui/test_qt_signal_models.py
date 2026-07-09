@@ -82,7 +82,7 @@ def test_data_returns_name_and_unit(qtbot: QtBot, tmp_path: Path) -> None:
 
 
 def test_model_returns_tooltip_role(qtbot: QtBot) -> None:
-    """SignalTableModel が ToolTipRole で item.tooltip を返す (空なら None)。LD-07."""
+    """SignalTableModel の ToolTipRole は vm.tooltip_for(item.key) の遅延結果。LD-07."""
     app_vm = AppViewModel()
     vm = ChannelBrowserVM(app_vm)
     model = SignalTableModel(vm)
@@ -121,11 +121,19 @@ def test_model_returns_tooltip_role(qtbot: QtBot) -> None:
         if model.data(model.index(row, 0), Qt.ItemDataRole.DisplayRole) == "speed"
     )
 
-    assert (
-        model.data(model.index(turnsig_row, 0), Qt.ItemDataRole.ToolTipRole)
-        == "ラベル: 0=OFF, 1=LEFT, 2=RIGHT"
-    )
-    assert model.data(model.index(speed_row, 0), Qt.ItemDataRole.ToolTipRole) is None
+    turnsig_tip = model.data(model.index(turnsig_row, 0), Qt.ItemDataRole.ToolTipRole)
+    speed_tip = model.data(model.index(speed_row, 0), Qt.ItemDataRole.ToolTipRole)
+
+    # Rich content now always includes the raw sample count (PC-19/DP14), so
+    # neither row is None any more; value_labels remain in the labeled row
+    # (LD-07 no regression) and the plain row surfaces its unit instead.
+    assert turnsig_tip is not None
+    assert "サンプル数: 1" in turnsig_tip
+    assert "ラベル: 0=OFF, 1=LEFT, 2=RIGHT" in turnsig_tip
+
+    assert speed_tip is not None
+    assert "単位: km/h" in speed_tip
+    assert "サンプル数: 1" in speed_tip
 
 
 def test_header_data(qtbot: QtBot) -> None:
