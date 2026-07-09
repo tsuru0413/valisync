@@ -363,3 +363,13 @@ def test_dnd_mime_keys_correct_after_sort(qtbot: QtBot, tmp_path: Path) -> None:
 
     keys = decode_signal_keys(md)
     assert keys and keys[0].endswith("::alpha")
+
+
+def test_sort_is_case_insensitive(qtbot: QtBot, tmp_path: Path) -> None:
+    # 実 ADAS 信号名は大小混在 (EngineSpeed/vehSpd) -- QSortFilterProxyModel の
+    # 既定 CaseSensitive のままだと大文字始まりが全て小文字始まりより前に来て
+    # A-Z 走査が2ブロックに分断される (レビュー指摘の Minor follow-up)。
+    view = _cb_view_with_signals(qtbot, tmp_path, ["Beta", "alpha", "Gamma"])
+    view.proxy.sort(0, Qt.SortOrder.AscendingOrder)
+    names = [view.proxy.index(r, 0).data() for r in range(view.proxy.rowCount())]
+    assert names == ["alpha", "Beta", "Gamma"]

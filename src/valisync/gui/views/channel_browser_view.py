@@ -58,6 +58,9 @@ class ChannelBrowserView(QWidget):
         # accept-all のまま)。ヘッダクリックで Name/Unit 列ソート。
         self.proxy = QSortFilterProxyModel(self)
         self.proxy.setSourceModel(self.model)
+        # Real channel names are mixed-case (EngineSpeed / vehSpd); sort
+        # case-insensitively so an A-Z scan isn't split into upper/lower blocks.
+        self.proxy.setSortCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
 
         self.search_box = QLineEdit(self)
         self.search_box.setPlaceholderText("Filter signals…")
