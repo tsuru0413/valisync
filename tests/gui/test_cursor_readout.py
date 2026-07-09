@@ -232,3 +232,28 @@ def test_delta_value_a_shows_label_dy_does_not(qtbot: QtBot):
     joined = " ".join(w.row_texts()[0])
     assert "1 (LEFT)" in joined
     assert "+1 (LEFT)" not in joined  # dy 側には付かない
+
+
+# --- Task 5 (PC-09): 補間方式ラベルの常時表示 ---
+
+
+def test_set_global_header_includes_interp_label(qtbot: QtBot):
+    ro = CursorReadout()
+    qtbot.addWidget(ro)
+    ro.set_global(
+        1.5, [CursorReading("csv::a", "#fff", 3.0, True)], interp_label="線形"
+    )
+    assert "線形" in ro.header_text()
+
+
+def test_set_delta_header_includes_interp_label(qtbot: QtBot):
+    ro = CursorReadout()
+    qtbot.addWidget(ro)
+    stats = _stats(1.0, 2.0, 0.0, 0.5, 3)
+    ro.set_delta(
+        1.0,
+        2.0,
+        [DeltaReading("csv::a", "#fff", 1.0, 0.5, stats, True)],
+        interp_label="最近傍",
+    )
+    assert "最近傍" in ro.header_text()

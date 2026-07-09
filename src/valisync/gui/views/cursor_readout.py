@@ -124,13 +124,20 @@ class CursorReadout(QWidget):
 
     # ── R16/R17 API ────────────────────────────────────────────────────────────
 
-    def set_global(self, t_a: float, readings: list[CursorReading]) -> None:
-        """Global mode: header = (dot) t_a, columns = [swatch|name|値]."""
+    def set_global(
+        self, t_a: float, readings: list[CursorReading], interp_label: str = ""
+    ) -> None:
+        """Global mode: header = (dot) t_a [ - interp], columns = [swatch|name|値]."""
         self._last_delta = None
         ta_str = _fmt_time(t_a)
         self._header_text = f"● {ta_str}"
+        if interp_label:
+            self._header_text += f"  ─ {interp_label}"
         self._col_headers = []
-        self._header.setText(f'<span style="color:#f9e2af">●</span> {ta_str}')
+        header_html = f'<span style="color:#f9e2af">●</span> {ta_str}'
+        if interp_label:
+            header_html += f"  ─ {interp_label}"
+        self._header.setText(header_html)
         self._header.show()
         self._rebuild(
             col_headers=[],
@@ -144,21 +151,32 @@ class CursorReadout(QWidget):
             ],
         )
 
-    def set_delta(self, t_a: float, t_b: float, readings: list[DeltaReading]) -> None:
-        """Delta mode: header = (dot) t_a (dot) t_b · Dt, columns = A値/Dy/<stats>."""
+    def set_delta(
+        self,
+        t_a: float,
+        t_b: float,
+        readings: list[DeltaReading],
+        interp_label: str = "",
+    ) -> None:
+        """Delta mode: header = (dot) t_a (dot) t_b · Dt [ - interp], columns = A値/Dy/<stats>."""
         self._last_delta = (t_a, t_b, readings)
         dt = t_b - t_a
         ta_str = _fmt_time(t_a)
         tb_str = _fmt_time(t_b)
         dt_str = _fmt_time(dt)
         self._header_text = f"● {ta_str}  ● {tb_str} · Δt {dt_str}"
+        if interp_label:
+            self._header_text += f"  ─ {interp_label}"
         stat_cols = [c for c in _STAT_COLS if c in self._visible_stats]
         self._col_headers = ["A値", "Δy", *stat_cols]
-        self._header.setText(
+        header_html = (
             f'<span style="color:#f9e2af">●</span> {ta_str}'
             f'  <span style="color:#89b4fa">●</span> {tb_str}'
             f" · <b>Δt {dt_str}</b>"
         )
+        if interp_label:
+            header_html += f"  ─ {interp_label}"
+        self._header.setText(header_html)
         self._header.show()
         rows = []
         for r in readings:

@@ -1515,3 +1515,130 @@ def test_remove_entry_and_toggle_axis_notify_and_bust_cache(tmp_path: Path) -> N
     after_curves = vm.render_data()
     assert len(after_curves) != before_count  # hidden -> no curve emitted
     assert "signals" in changes
+
+
+# ─── step_cursor (increment 3a, Task 1) ─────────────────────────────────────
+
+
+def test_step_cursor_forward_snaps_to_next_sample(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=1)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.set_cursor(0.005)  # between samples 0.00 and 0.01
+    vm.step_cursor("A", 1)
+    assert vm.cursor_t == pytest.approx(0.01)
+
+
+def test_step_cursor_backward_snaps_to_prev_sample(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=1)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.set_cursor(0.005)
+    vm.step_cursor("A", -1)
+    assert vm.cursor_t == pytest.approx(0.0)
+
+
+def test_step_cursor_from_exact_sample_moves_one(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=1)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.set_cursor(0.01)  # exactly on a sample
+    vm.step_cursor("A", 1)
+    assert vm.cursor_t == pytest.approx(0.02)
+    vm.step_cursor("A", -1)
+    assert vm.cursor_t == pytest.approx(0.01)
+
+
+def test_step_cursor_clamps_at_ends(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=5, n_signals=1)  # t: 0.00..0.04
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.set_cursor(0.0)
+    vm.step_cursor("A", -1)
+    assert vm.cursor_t == pytest.approx(0.0)  # clamp at first
+    vm.set_cursor(0.04)
+    vm.step_cursor("A", 1)
+    assert vm.cursor_t == pytest.approx(0.04)  # clamp at last
+
+
+def test_step_cursor_noop_without_cursor(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.step_cursor("A", 1)  # A not set
+    assert vm.cursor_t is None
+
+
+def test_step_cursor_b_requires_delta_enabled(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=1)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.set_cursor(0.005)  # A set, delta off
+    vm.step_cursor("B", 1)  # B disabled -> no-op
+    assert vm.cursor_t_b is None
+    vm.toggle_delta(True)  # B at 75% of x_range
+    before = vm.cursor_t_b
+    vm.step_cursor("B", 1)
+    assert vm.cursor_t_b is not None and vm.cursor_t_b >= before
+
+
+def _coarse_grid_sig(name: str = "coarse") -> Signal:
+    """t=0.00,0.02,0.04,... の粗いグリッド信号 (hidden entry 用・フォールバック弁別)."""
+    return Signal(
+        name=name,
+        timestamps=np.array([0.0, 0.02, 0.04, 0.06, 0.08], dtype=np.float64),
+        values=np.array([0.0, 1.0, 2.0, 3.0, 4.0], dtype=np.float64),
+        file_format="CSV",
+        bus_type="",
+        source_file="",
+    )
+
+
+def _fine_grid_sig(name: str = "fine") -> Signal:
+    """t=0.00,0.01,0.02,... の細かいグリッド信号 (visible entry 用・フォールバック弁別)."""
+    return Signal(
+        name=name,
+        timestamps=np.array([0.0, 0.01, 0.02, 0.03, 0.04], dtype=np.float64),
+        values=np.array([0.0, 1.0, 2.0, 3.0, 4.0], dtype=np.float64),
+        file_format="CSV",
+        bus_type="",
+        source_file="",
+    )
+
+
+def test_step_cursor_falls_back_to_first_visible_when_ref_hidden(
+    tmp_path: Path,
+) -> None:
+    """hidden な reference_entry_id は無視され、可視 entry のグリッドへスナップする.
+
+    2信号を異なる時間グリッドで用意する (hidden=粗い 0.02 刻み・visible=細かい
+    0.01 刻み)。両者が同一グリッドだと可視ゲートの有無に関わらず同じスナップ先に
+    なり弁別できないため、意図的にグリッドをずらす。reference_entry_id が hidden
+    entry を指しても可視ゲートにより無視され、可視信号 (細かいグリッド) の次サン
+    プルへスナップすることを検証する。可視ゲートが壊れて hidden 側を尊重すると
+    0.02 へスナップし、このテストは失敗する。
+    """
+    session = Session()
+    hidden_key = _register_signal(session, _coarse_grid_sig(), tmp_path)
+    visible_key = _register_signal(session, _fine_grid_sig(), tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(hidden_key)  # entry 0 — hidden below
+    vm.add_signal(visible_key)  # entry 1 — stays visible
+    eid0 = vm._plotted[0].entry_id
+    vm.toggle_entry_visibility(eid0)  # hide entry 0 (coarse grid)
+    vm.set_cursor(0.005)
+    vm.step_cursor("A", 1, reference_entry_id=eid0)
+    # falls back to visible entry's fine grid (0.01), not hidden entry's coarse grid (0.02)
+    assert vm.cursor_t == pytest.approx(0.01)
+    assert vm.cursor_t != pytest.approx(0.02)
+
+
+def test_step_cursor_notifies_cursor(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=1)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.set_cursor(0.005)
+    changes: list[str] = []
+    vm.subscribe(changes.append)
+    vm.step_cursor("A", 1)
+    assert "cursor" in changes

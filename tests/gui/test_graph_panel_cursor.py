@@ -7,8 +7,11 @@
 from __future__ import annotations
 
 import csv
+import tempfile
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import numpy as np
@@ -486,3 +489,279 @@ def test_cursor_reading_nan_value_yields_no_label_and_no_crash(tmp_path: Path) -
 
     r = next(r for r in vm.cursor_readings() if "TurnSig" in r.name)
     assert r.label is None
+
+
+# --- Task 2: アクティブカーソル(A/B) 状態 + 自動アクティブ + 太線フィードバック ---
+
+
+def _shown_cursor_panel(
+    qtbot: QtBot,
+    time_dialog_fn: Callable[[str, float], float | None] | None = None,
+) -> GraphPanelView:
+    """1 信号を表示済みの最小 GraphPanelView (活性化テスト用の共通土台)。
+
+    tmp_path フィクスチャに頼らず自前の一時ディレクトリで CSV を作る -- 呼び出し
+    側テストのシグネチャを qtbot のみに保つため (ブリーフのテストコードを逐語で
+    使えるように)。CSV ローダーは読み込み時に配列へ展開する (遅延読み込みではな
+    い) ため、一時ディレクトリを使い回さなくても VM は自己完結する。
+    """
+    tmp_path = Path(tempfile.mkdtemp())
+    vm = _vm_with_signal(tmp_path)
+    view = GraphPanelView(vm, time_dialog_fn=time_dialog_fn)
+    qtbot.addWidget(view)
+    view.resize(400, 300)
+    view.show()
+    qtbot.waitExposed(view)
+    return view
+
+
+def test_placing_cursor_auto_activates_a(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.toggle_main_cursor(True)
+    assert view.active_cursor() == "A"
+
+
+def test_enabling_delta_auto_activates_b(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.toggle_main_cursor(True)
+    view.vm.toggle_delta(True)
+    assert view.active_cursor() == "B"
+
+
+def test_disabling_delta_falls_back_to_a(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.toggle_main_cursor(True)
+    view.vm.toggle_delta(True)
+    view.vm.toggle_delta(False)
+    assert view.active_cursor() == "A"
+
+
+def test_clearing_cursor_deactivates(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.toggle_main_cursor(True)
+    view.vm.toggle_main_cursor(False)
+    assert view.active_cursor() is None
+
+
+def test_active_cursor_line_is_thicker(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.toggle_main_cursor(True)  # A active
+    assert view.cursor_line_width("A") > view.cursor_line_width("B")
+    view.vm.toggle_delta(True)  # B active
+    assert view.cursor_line_width("B") > view.cursor_line_width("A")
+
+
+def test_dragging_b_line_activates_b(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.toggle_main_cursor(True)
+    view.vm.toggle_delta(True)
+    # simulate the A line being active, then a B-line drag re-activates B
+    view._active_cursor = "A"
+    view._cursor_line_b.setValue(0.6)  # fires sigPositionChanged → handler
+    assert view.active_cursor() == "B"
+    # drag-order correctness: the visible pen width must follow active_cursor.
+    # A reversed statement order (set active AFTER vm.set_cursor_b) would leave
+    # active_cursor()=="B" passing while the reentrant sync painted A thick.
+    assert view.cursor_line_width("B") > view.cursor_line_width("A")
+
+
+def test_arrow_right_steps_active_cursor(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.set_cursor(0.005)  # A active (auto)
+    view.setFocus()
+    qtbot.keyClick(view, Qt.Key.Key_Right)
+    assert view.vm.cursor_t == pytest.approx(0.01)
+    qtbot.keyClick(view, Qt.Key.Key_Left)
+    assert view.vm.cursor_t == pytest.approx(0.0)
+
+
+def test_arrow_steps_active_b_cursor(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.set_cursor(0.005)
+    view.vm.toggle_delta(True)  # B active, at 0.75
+    view.setFocus()
+    b_before = view.vm.cursor_t_b
+    qtbot.keyClick(view, Qt.Key.Key_Left)
+    assert view.vm.cursor_t_b is not None and view.vm.cursor_t_b <= b_before
+    assert view.vm.cursor_t == pytest.approx(0.005)  # A untouched
+
+
+def test_arrow_noop_without_cursor(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.setFocus()
+    # Spy step_cursor: with no cursor set, the VIEW-LEVEL guard must skip the
+    # block entirely (arrow falls through to super()), so step_cursor is never
+    # reached. Asserting only `cursor_t is None` would still pass if the guard
+    # were dropped and only the VM's internal no-op saved it — but that variant
+    # wrongly accept()s the arrow. Spying step_cursor discriminates the two.
+    calls: list[tuple] = []
+    orig_step = view.vm.step_cursor
+    view.vm.step_cursor = lambda *a, **k: calls.append((a, k))  # type: ignore[method-assign]
+    try:
+        qtbot.keyClick(view, Qt.Key.Key_Right)  # no cursor set
+    finally:
+        view.vm.step_cursor = orig_step  # type: ignore[method-assign]
+    assert calls == []  # view-level guard skipped the block; never reached VM
+    assert view.vm.cursor_t is None
+
+
+# --- Task 4: カーソル線右クリックメニュー+ルーティング先頭分岐+時刻ダイアログ ---
+
+
+def _spy_all_menus(view: GraphPanelView) -> list[tuple[str, object]]:
+    calls: list[tuple[str, object]] = []
+    view.build_cursor_menu = lambda which: (  # type: ignore[method-assign]
+        calls.append(("cursor", which)) or SimpleNamespace(exec=lambda *a: None)
+    )
+    view.build_curve_menu = lambda eid: (  # type: ignore[method-assign]
+        calls.append(("curve", eid)) or SimpleNamespace(exec=lambda *a: None)
+    )
+    view.build_axis_menu = lambda idx: (  # type: ignore[method-assign]
+        calls.append(("axis", idx)) or SimpleNamespace(exec=lambda *a: None)
+    )
+    view.build_context_menu = lambda: (  # type: ignore[method-assign]
+        calls.append(("panel", None)) or SimpleNamespace(exec=lambda *a: None)
+    )
+    return calls
+
+
+def _ctx_event() -> QContextMenuEvent:
+    return QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(10, 100))
+
+
+def test_context_menu_routes_cursor_first(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view._cursor_line_at = lambda pos: "A"  # type: ignore[method-assign]
+    view._curve_at = lambda pos: 7  # type: ignore[method-assign]  # would-be curve, but cursor wins
+    calls = _spy_all_menus(view)
+    view.contextMenuEvent(_ctx_event())
+    assert calls == [("cursor", "A")]
+
+
+def test_context_menu_curve_when_no_cursor_line(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view._cursor_line_at = lambda pos: None  # type: ignore[method-assign]
+    view._curve_at = lambda pos: 7  # type: ignore[method-assign]
+    calls = _spy_all_menus(view)
+    view.contextMenuEvent(_ctx_event())
+    assert calls == [("curve", 7)]
+
+
+def test_build_cursor_menu_items(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    menu = view.build_cursor_menu("A")
+    texts = [a.text() for a in menu.actions()]
+    assert texts == ["時刻を指定…", "カーソルを消す"]
+    menu_b = view.build_cursor_menu("B")
+    assert [a.text() for a in menu_b.actions()] == ["時刻を指定…", "サブカーソルを消す"]
+
+
+def test_cursor_time_dialog_moves_a(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot, time_dialog_fn=lambda which, cur: 0.42)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.set_cursor(0.1)
+    act = next(
+        a for a in view.build_cursor_menu("A").actions() if a.text() == "時刻を指定…"
+    )
+    act.trigger()
+    assert view.vm.cursor_t == pytest.approx(0.42)
+
+
+def test_clear_a_clears_everything(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.set_cursor(0.1)
+    view.vm.toggle_delta(True)
+    next(
+        a for a in view.build_cursor_menu("A").actions() if a.text() == "カーソルを消す"
+    ).trigger()
+    assert view.vm.cursor_t is None
+    assert view.vm.delta_enabled is False
+
+
+def test_clear_b_only_disables_delta(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.set_cursor(0.1)
+    view.vm.toggle_delta(True)
+    next(
+        a
+        for a in view.build_cursor_menu("B").actions()
+        if a.text() == "サブカーソルを消す"
+    ).trigger()
+    assert view.vm.cursor_t == pytest.approx(0.1)  # A survives
+    assert view.vm.delta_enabled is False
+
+
+def test_cursor_line_at_detects_visible_line(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.show()
+    qtbot.waitExposed(view)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.set_cursor(0.5)
+    # scene x of the A line → widget pos, then _cursor_line_at should report "A"
+    vb0 = view._view_boxes[0]
+    scene_x = vb0.mapViewToScene(QPointF(0.5, 0.0)).x()
+    widget_pt = view.plot_widget.mapFromScene(QPointF(scene_x, 10.0))
+    assert view._cursor_line_at(QPointF(widget_pt)) == "A"
+
+
+def _interp_submenu(view):
+    menu = view.build_context_menu()
+    act = next(a for a in menu.actions() if a.text() == "補間方式")
+    sub = act.menu()
+    # Keep the parent menu + action wrappers alive alongside the returned
+    # submenu: shiboken ties the submenu wrapper's lifetime to the QAction
+    # wrapper that fetched it via .menu(), so both must outlive this call
+    # (see memory gui_pyside_qaction_submenu_shiboken_lifetime).
+    sub._keepalive = (menu, act)  # type: ignore[attr-defined]
+    return sub
+
+
+def test_interp_menu_is_checkable_and_reflects_current(qtbot: QtBot) -> None:
+    from valisync.core.interpolation import InterpolationMethod
+
+    view = _shown_cursor_panel(qtbot)
+    view.vm.set_interp_method(InterpolationMethod.ZERO_ORDER_HOLD)
+    sub = _interp_submenu(view)
+    acts = {a.text(): a for a in sub.actions()}
+    assert all(a.isCheckable() for a in acts.values())
+    assert acts["前値保持"].isChecked() is True
+    assert acts["線形"].isChecked() is False
+
+
+def test_interp_menu_is_exclusive(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    sub = _interp_submenu(view)
+    acts = {a.text(): a for a in sub.actions()}
+    acts["最近傍"].setChecked(True)  # exclusive group unchecks the others
+    assert acts["線形"].isChecked() is False
+    assert acts["前値保持"].isChecked() is False
+
+
+def test_interp_menu_action_sets_vm(qtbot: QtBot) -> None:
+    from valisync.core.interpolation import InterpolationMethod
+
+    view = _shown_cursor_panel(qtbot)
+    sub = _interp_submenu(view)
+    next(a for a in sub.actions() if a.text() == "最近傍").trigger()
+    assert view.vm.interp_method == InterpolationMethod.NEAREST
+
+
+def test_readout_header_shows_current_interp(qtbot: QtBot) -> None:
+    from valisync.core.interpolation import InterpolationMethod
+
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.set_interp_method(InterpolationMethod.NEAREST)
+    view.vm.set_cursor(0.005)
+    assert "最近傍" in view._readout.header_text()

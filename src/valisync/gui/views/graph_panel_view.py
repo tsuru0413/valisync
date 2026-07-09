@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from valisync.core.interpolation import InterpolationMethod
 from valisync.gui.adapters.qt_signal_models import (
     AXIS_INDEX_MIME,
     SIGNAL_KEYS_MIME,
@@ -66,6 +67,14 @@ from valisync.gui.adapters.qt_signal_models import (
 )
 from valisync.gui.viewmodels.graph_panel_vm import _PALETTE, GraphPanelVM
 from valisync.gui.views.cursor_shapes import CursorKind, cursor
+
+# Interp method → menu/readout label (PC-09). Single source of truth so the
+# context-menu radio group and the CursorReadout header never drift apart.
+_INTERP_LABELS: dict[InterpolationMethod, str] = {
+    InterpolationMethod.LINEAR: "線形",
+    InterpolationMethod.ZERO_ORDER_HOLD: "前値保持",
+    InterpolationMethod.NEAREST: "最近傍",
+}
 
 # ─── Axis interaction zones (R9.1 / R10.1) ────────────────────────────────────
 
@@ -670,6 +679,7 @@ class GraphPanelView(QWidget):
         offset_input_dialog_fn: Callable[[str, float], tuple[float, str] | None]
         | None = None,
         reset_dialog_fn: Callable[[str], str | None] | None = None,
+        time_dialog_fn: Callable[[str, float], float | None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.vm = vm
@@ -678,6 +688,7 @@ class GraphPanelView(QWidget):
         self._range_dialog_fn = range_dialog_fn
         self._offset_input_dialog_fn = offset_input_dialog_fn
         self._reset_dialog_fn = reset_dialog_fn
+        self._time_dialog_fn = time_dialog_fn
         # Curve items keyed by VM entry_id (a stable per-entry ID), NOT signal_key,
         # so the same signal on two axes draws as two independent items.
         self._items: dict[int, pg.PlotDataItem] = {}
@@ -720,6 +731,12 @@ class GraphPanelView(QWidget):
         self._hover_axis_index: int | None = None
         # Active curve (entry_id) — transient View state, drives thick-pen feedback.
         self._active_curve_id: int | None = None
+        # Active cursor (A/B) — transient View state, drives thick-line feedback
+        # and arrow-key routing. None when no cursor is placed.
+        self._active_cursor: str | None = None
+        # Tracks whether B was showing on the previous sync, to detect the
+        # off→on transition that makes B the active cursor.
+        self._prev_showing_b: bool = False
         # DP16: candidate captured on a curve press until the drag threshold is
         # crossed (entry_id, press position).  None when no candidate is pending.
         self._curve_press_candidate: tuple[int, QPointF] | None = None
@@ -1330,7 +1347,18 @@ class GraphPanelView(QWidget):
             self._readout.setVisible(False)
             self._readout_placed = False
             self._readout.reset_user_moved()
+            self._active_cursor = None
+            self._prev_showing_b = False
             return
+        showing_b = self.vm.delta_enabled and self.vm.cursor_t_b is not None
+        if self._active_cursor is None:
+            self._active_cursor = "A"
+        if showing_b and not self._prev_showing_b:
+            self._active_cursor = "B"
+        if not showing_b and self._active_cursor == "B":
+            self._active_cursor = "A"
+        self._prev_showing_b = showing_b
+        self._apply_cursor_pens()
         self._suppress_cursor_signal = True
         try:
             self._cursor_line.setValue(t)
@@ -1346,10 +1374,19 @@ class GraphPanelView(QWidget):
             # Push VM's visible_stat_cols into the readout before rendering so
             # the VM is the single source of truth (spec §7).
             self._readout.sync_visible_stats(self.vm.visible_stat_cols)
-            self._readout.set_delta(t, self.vm.cursor_t_b, self.vm.delta_readings())
+            self._readout.set_delta(
+                t,
+                self.vm.cursor_t_b,
+                self.vm.delta_readings(),
+                interp_label=_INTERP_LABELS.get(self.vm.interp_method, ""),
+            )
         else:
             self._cursor_line_b.setVisible(False)
-            self._readout.set_global(t, self.vm.cursor_readings())
+            self._readout.set_global(
+                t,
+                self.vm.cursor_readings(),
+                interp_label=_INTERP_LABELS.get(self.vm.interp_method, ""),
+            )
         if not self._readout_placed:
             # 初回表示時にプロット矩形左上へ配置(以降のカーソル同期では
             # ユーザーがドラッグ移動した位置を乱さない)。
@@ -1358,14 +1395,38 @@ class GraphPanelView(QWidget):
         self._readout.setVisible(True)
         self._readout.raise_()
 
+    def _apply_cursor_pens(self) -> None:
+        """Thicken the active cursor line (width 3.5) and normalise the other."""
+        self._cursor_line.setPen(
+            pg.mkPen("#f9e2af", width=3.5 if self._active_cursor == "A" else 2)
+        )
+        self._cursor_line_b.setPen(
+            pg.mkPen(
+                "#89b4fa",
+                width=3.5 if self._active_cursor == "B" else 2,
+                style=Qt.PenStyle.DashLine,
+            )
+        )
+
+    def active_cursor(self) -> str | None:
+        """Which cursor (A/B) is active — transient View state (tests/realgui)."""
+        return self._active_cursor
+
+    def cursor_line_width(self, which: str) -> float:
+        """Pen width of the A/B cursor line (tests/realgui)."""
+        line = self._cursor_line if which == "A" else self._cursor_line_b
+        return float(line.pen.widthF())
+
     def _on_cursor_line_dragged(self) -> None:
         if self._suppress_cursor_signal:
             return
+        self._active_cursor = "A"
         self.vm.set_cursor(float(self._cursor_line.value()))
 
     def _on_cursor_line_b_dragged(self) -> None:
         if self._suppress_cursor_signal:
             return
+        self._active_cursor = "B"
         self.vm.set_cursor_b(float(self._cursor_line_b.value()))
 
     # Test introspection
@@ -1571,6 +1632,30 @@ class GraphPanelView(QWidget):
         except Exception:
             return None
 
+    def _cursor_line_at(self, pos: QPointF) -> str | None:
+        """Return "A"/"B" if *pos* is within CURSOR_LINE_HIT_PX of a visible cursor line.
+
+        Scene-pixel proximity test — the same one the _curve_at guard uses so the
+        cursor line wins over a nearby curve. Checks A before B. None otherwise.
+        """
+        if not self._view_boxes:
+            return None
+        try:
+            scene_pos = self.plot_widget.mapToScene(pos.toPoint())
+        except Exception:
+            return None
+        vb0 = self._view_boxes[0]
+        for which, line in (("A", self._cursor_line), ("B", self._cursor_line_b)):
+            try:
+                if not line.isVisible():
+                    continue
+                line_scene_x = vb0.mapViewToScene(QPointF(float(line.value()), 0.0)).x()
+            except Exception:
+                continue
+            if abs(scene_pos.x() - line_scene_x) <= CURSOR_LINE_HIT_PX:
+                return which
+        return None
+
     def _curve_at(self, pos: QPointF) -> int | None:
         """Return the entry_id of the nearest curve within CURVE_HIT_TOL_PX of *pos*.
 
@@ -1588,16 +1673,8 @@ class GraphPanelView(QWidget):
             return None
 
         # Cursor-line guard: yield to a nearby visible cursor line.
-        vb0 = self._view_boxes[0]
-        for line in self._cursor_lines():
-            try:
-                if not line.isVisible():
-                    continue
-                line_scene_x = vb0.mapViewToScene(QPointF(float(line.value()), 0.0)).x()
-            except Exception:
-                continue
-            if abs(scene_pos.x() - line_scene_x) <= CURSOR_LINE_HIT_PX:
-                return None
+        if self._cursor_line_at(pos) is not None:
+            return None
 
         best_key: int | None = None
         best_dist = CURVE_HIT_TOL_PX
@@ -1886,6 +1963,17 @@ class GraphPanelView(QWidget):
                 self.vm.toggle_entry_visibility(aid)
             elif self._active_axis_index is not None:
                 self.vm.toggle_axis_visibility(self._active_axis_index)
+            event.accept()
+            return
+        if (
+            event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right)
+            and self.vm.cursor_t is not None
+        ):
+            direction = 1 if event.key() == Qt.Key.Key_Right else -1
+            which = self._active_cursor or "A"
+            # active curve is the snap reference; VM falls back to first
+            # visible entry when it is None/hidden.
+            self.vm.step_cursor(which, direction, self._active_curve_id)
             event.accept()
             return
         super().keyPressEvent(event)
@@ -2214,10 +2302,80 @@ class GraphPanelView(QWidget):
             return None
         return "signal" if sig_radio.isChecked() else "group"
 
+    def build_cursor_menu(self, which: str) -> QMenu:
+        """Right-click menu for a cursor line (spec §4.3: 時刻を指定…/消去)."""
+        menu = QMenu(self)
+        menu.addAction("時刻を指定…").triggered.connect(
+            lambda *_: self._prompt_cursor_time(which)
+        )
+        label = "カーソルを消す" if which == "A" else "サブカーソルを消す"
+        menu.addAction(label).triggered.connect(lambda *_: self._clear_cursor(which))
+        return menu
+
+    def _clear_cursor(self, which: str) -> None:
+        """A line → clear all (B follows via VM invariant); B line → disable Δ only."""
+        if which == "A":
+            self.vm.set_cursor(None)
+        else:
+            self.vm.toggle_delta(False)
+
+    def _prompt_cursor_time(self, which: str) -> None:
+        """Open the time dialog and move *which* cursor to the entered time."""
+        current = self.vm.cursor_t if which == "A" else self.vm.cursor_t_b
+        if current is None:
+            return
+        fn = self._time_dialog_fn or self._default_time_dialog
+        t = fn(which, current)
+        if t is not None:
+            if which == "A":
+                self.vm.set_cursor(t)
+            else:
+                self.vm.set_cursor_b(t)
+
+    def _default_time_dialog(self, which: str, current: float) -> float | None:
+        """Modal cursor-time dialog (DI default). Returns t or None on cancel.
+
+        OK is disabled while the input is non-finite (§10).
+        """
+        from PySide6.QtWidgets import (
+            QDialog,
+            QDialogButtonBox,
+            QLabel,
+            QLineEdit,
+            QVBoxLayout,
+        )
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("カーソル時刻を指定")
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel(f"{which} カーソルの時刻 (秒):"))
+        edit = QLineEdit(f"{current:.6g}")
+        lay.addWidget(edit)
+        box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        ok_btn = box.button(QDialogButtonBox.StandardButton.Ok)
+        box.accepted.connect(dlg.accept)
+        box.rejected.connect(dlg.reject)
+        lay.addWidget(box)
+
+        def _validate() -> None:
+            try:
+                val = float(edit.text())
+            except ValueError:
+                ok_btn.setEnabled(False)
+                return
+            ok_btn.setEnabled(math.isfinite(val))
+
+        edit.textChanged.connect(lambda *_: _validate())
+        ok_btn.setDefault(True)
+        _validate()
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return float(edit.text())
+
     def build_context_menu(self) -> QMenu:
         """Build the blank-area panel menu (add/remove panel, reset axes, interp)."""
-        from valisync.core.interpolation import InterpolationMethod
-
         menu = QMenu(self)
         menu.addAction("Add Panel").triggered.connect(
             lambda *_: self.add_panel_requested.emit()
@@ -2240,15 +2398,21 @@ class GraphPanelView(QWidget):
         sub_act.setEnabled(self.vm.cursor_t is not None)  # greyed out until main ON
         # setChecked BEFORE toggled.connect so the initial state-set does not fire the handler
         sub_act.toggled.connect(lambda checked: self.vm.toggle_delta(checked))
+        from PySide6.QtGui import QActionGroup
+
         interp = menu.addMenu("補間方式")
+        interp_group = QActionGroup(interp)
+        interp_group.setExclusive(True)
         for label, method in (
             ("線形", InterpolationMethod.LINEAR),
             ("前値保持", InterpolationMethod.ZERO_ORDER_HOLD),
             ("最近傍", InterpolationMethod.NEAREST),
         ):
-            interp.addAction(label).triggered.connect(
-                lambda *_, m=method: self.vm.set_interp_method(m)
-            )
+            act = interp.addAction(label)
+            act.setCheckable(True)
+            act.setActionGroup(interp_group)
+            act.setChecked(method == self.vm.interp_method)  # BEFORE triggered.connect
+            act.triggered.connect(lambda *_, m=method: self.vm.set_interp_method(m))
         return menu
 
     def build_axis_menu(self, axis_index: int) -> QMenu:
@@ -2331,9 +2495,12 @@ class GraphPanelView(QWidget):
         return (float(lo_edit.text()), float(hi_edit.text()))
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
-        # ルーティング優先順 (spec §4.3): 曲線 → Y軸 → 空白 (パネル)。
-        # カーソル線分岐は 増分3 で先頭に差し込む。
+        # ルーティング優先順 (spec §4.3): カーソル線 → 曲線 → Y軸 → 空白 (パネル)。
         pos = QPointF(event.pos())
+        which = self._cursor_line_at(pos)
+        if which is not None:
+            self.build_cursor_menu(which).exec(event.globalPos())
+            return
         eid = self._curve_at(pos)
         if eid is not None:
             self.build_curve_menu(eid).exec(event.globalPos())
