@@ -1863,7 +1863,7 @@ class GraphPanelView(QWidget):
         if event.key() == Qt.Key.Key_H:
             aid = self._active_curve_id
             # active curve が非表示中でも entry として存在すれば再表示できる
-            # (非表示曲線はクリック不可のため H の対象として維持する・spec 10)。
+            # (非表示曲線はクリック不可のため H の対象として維持する・spec §10)。
             if aid is not None and self.vm.signal_key_for_entry(aid) is not None:
                 self.vm.toggle_entry_visibility(aid)
             elif self._active_axis_index is not None:
