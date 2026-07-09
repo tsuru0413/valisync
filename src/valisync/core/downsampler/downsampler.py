@@ -8,13 +8,19 @@ from valisync.core.models import Signal
 def _minmax_indices(
     vs: np.ndarray, seg_starts: np.ndarray, seg_ends: np.ndarray
 ) -> np.ndarray:
-    """Per-segment min-max sample selection, vectorized (NaN-aware).
+    """Per-segment min-max sample selection, vectorized (non-finite-aware).
 
     For each contiguous segment [seg_starts[i], seg_ends[i]) return the FIRST
-    index attaining that segment's min and the FIRST attaining its max — matching
-    np.nanargmin/np.nanargmax's leading-tie preference. A segment whose values are
-    all NaN keeps its first index (seg start). Result is sorted, de-duplicated
-    input indices.
+    index attaining that segment's min and the FIRST attaining its max (leading-tie
+    preference). Result is sorted, de-duplicated input indices.
+
+    Non-finite values (NaN and ±inf) are excluded from the min/max selection: they
+    are not plottable (pyqtgraph drops non-finite vertices when drawing, and Y
+    auto-fit uses finite values only), so an LOD bucket spends its two slots on the
+    FINITE extrema whenever a finite value exists. A segment with NO finite value
+    keeps its first index (seg start). This DELIBERATELY diverges from the historic
+    np.nanargmin/np.nanargmax loop, which excluded only NaN and could pick a real
+    ±inf as an extremum — see test_minmax_indices_excludes_real_inf.
 
     seg_starts must be strictly increasing (distinct bucket boundaries) so
     reduceat treats each as its own segment. seg_ends[i] == seg_starts[i+1].
@@ -22,7 +28,7 @@ def _minmax_indices(
     n_seg = len(seg_starts)
     m = len(vs)
 
-    # NaN を極値へ退避: min には +inf、max には -inf を割り当て決して勝たせない。
+    # 非有限(NaN/±inf)を極値へ退避: min には +inf、max には -inf を割り当て決して勝たせない。
     finite = np.isfinite(vs)
     v_min = np.where(finite, vs, np.inf)
     v_max = np.where(finite, vs, -np.inf)
@@ -36,7 +42,7 @@ def _minmax_indices(
     seg_max = np.maximum.reduceat(v_max, seg_starts)
 
     # 各セグメントで min/max を達成する「最初の」インデックス(非達成は番兵 m)。
-    # 全 NaN セグメントは seg_min=+inf に全要素が一致 -> 先頭 index を選ぶ。
+    # 全非有限セグメントは seg_min=+inf に全要素が一致 -> 先頭 index を選ぶ。
     min_hit = np.where(v_min == seg_min[seg_id], idx, m)
     max_hit = np.where(v_max == seg_max[seg_id], idx, m)
     argmin_seg = np.minimum.reduceat(min_hit, seg_starts)

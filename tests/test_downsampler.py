@@ -173,10 +173,36 @@ def test_minmax_indices_all_nan_segment_keeps_first() -> None:
     assert _minmax_indices(vs, seg_starts, seg_ends).tolist() == [0]
 
 
+def test_minmax_indices_excludes_real_inf() -> None:
+    """±inf is non-plottable (pyqtgraph drops it; Y auto-fit ignores it), so it is
+    excluded from min/max selection just like NaN — the bucket's two LOD slots go to
+    the FINITE extrema. This deliberately diverges from the historic
+    nanargmin/nanargmax loop, which would pick idx1(-inf)/idx3(+inf) here."""
+    from valisync.core.downsampler.downsampler import _minmax_indices
+
+    vs = np.array([1.0, -np.inf, 2.0, np.inf, 0.5])
+    seg_starts, seg_ends = _segs([0], len(vs))
+    # finite min 0.5 @ idx4, finite max 2.0 @ idx2 (NOT the inf at idx1/idx3)
+    assert _minmax_indices(vs, seg_starts, seg_ends).tolist() == [2, 4]
+
+
+def test_minmax_indices_all_non_finite_segment_keeps_first() -> None:
+    """A segment with no finite value (mixed NaN and ±inf) collapses to its first
+    index — the min/max slots have nothing plottable to represent."""
+    from valisync.core.downsampler.downsampler import _minmax_indices
+
+    vs = np.array([np.inf, -np.inf, np.nan])  # zero finite values
+    seg_starts, seg_ends = _segs([0], len(vs))
+    assert _minmax_indices(vs, seg_starts, seg_ends).tolist() == [0]
+
+
 def _reference_indices(
     vs: np.ndarray, seg_starts: np.ndarray, seg_ends: np.ndarray
 ) -> np.ndarray:
-    """Independent reference: the pre-vectorization per-bucket loop."""
+    """Independent reference: the pre-vectorization per-bucket loop (excludes only
+    NaN, so a real ±inf could win). Fed finite+NaN inputs only — ±inf is a
+    deliberate divergence from this reference (see
+    test_minmax_indices_excludes_real_inf)."""
     result: set[int] = set()
     for lo, hi in zip(seg_starts.tolist(), seg_ends.tolist(), strict=True):
         seg = vs[lo:hi]
@@ -195,6 +221,8 @@ def test_minmax_indices_matches_reference_loop(nan_frac: float) -> None:
     rng = np.random.default_rng(0)
     m = 5000
     vs = rng.standard_normal(m)
+    # finite + NaN only; ±inf is intentionally out of scope (deliberate
+    # divergence — see test_minmax_indices_excludes_real_inf).
     if nan_frac > 0:
         vs[rng.random(m) < nan_frac] = np.nan
     # 40 contiguous segments of ~equal length (strictly-increasing starts).
