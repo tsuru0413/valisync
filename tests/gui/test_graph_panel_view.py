@@ -15,8 +15,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QSize, Qt
-from PySide6.QtGui import QDropEvent, QResizeEvent
+import numpy as np
+from PySide6.QtCore import QEvent, QPointF, QSize, Qt
+from PySide6.QtGui import QDropEvent, QMouseEvent, QResizeEvent
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from valisync.core.models import Delimiter, FormatDefinition
@@ -402,3 +403,98 @@ class TestEntryIdAccessors:
         assert set(view.signal_keys_drawn()) == {k0, k1}  # type: ignore[attr-defined]
         eid0 = view.entry_id_for(k0)  # type: ignore[attr-defined]
         assert view.signal_keys_drawn()[view.curve_keys().index(eid0)] == k0  # type: ignore[attr-defined]
+
+
+# ─── DP16: curve press-hold candidate -> activate (thick pen) or offset drag ──
+
+
+def _press_event(view: object, p: QPointF) -> QMouseEvent:
+    return QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        p,
+        view.mapToGlobal(p.toPoint()),  # type: ignore[attr-defined]
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+
+def _release_event(view: object, p: QPointF) -> QMouseEvent:
+    return QMouseEvent(
+        QEvent.Type.MouseButtonRelease,
+        p,
+        view.mapToGlobal(p.toPoint()),  # type: ignore[attr-defined]
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+
+def _curve_click_setup(qtbot: QtBot, tmp_path: Path) -> tuple[object, int, QPointF]:
+    """Build a one-signal panel and locate a widget-space point ON the curve.
+
+    Reused by the DP16 activation tests: each needs a point that _curve_at
+    resolves to the sole entry, obtained via its own drawn (x, y) data mapped
+    ViewBox -> scene -> widget, so the hit-test tolerance is never guessed at.
+    """
+    session, _ = _loaded_session(tmp_path, n_signals=1)
+    key = _keys(session)[0]
+    vm = GraphPanelVM(session)
+    view = _make_view(qtbot, vm)
+    view.resize(400, 300)  # type: ignore[attr-defined]
+    vm.add_signal(key)
+    vm.set_x_range(0.0, 1.0)
+    view.refresh()  # type: ignore[attr-defined]
+    eid = view.curve_keys()[0]  # type: ignore[attr-defined]
+
+    x, y = view.curve_xy(eid)  # type: ignore[attr-defined]
+    vb = view._item_vb[eid]  # type: ignore[attr-defined]
+    mid = len(x) // 2
+    scene_pt = vb.mapViewToScene(QPointF(float(x[mid]), float(y[mid])))
+    wpt = view.plot_widget.mapFromScene(scene_pt)  # type: ignore[attr-defined]
+    pos = QPointF(view.plot_widget.mapTo(view, wpt))  # type: ignore[attr-defined]
+    return view, eid, pos
+
+
+class TestCurveActivation:
+    """DP16 (spec §7): press holds a candidate; release within startDragDistance
+    activates the curve (thick pen + its axis); a move past the threshold instead
+    promotes to the R14 offset drag (covered in test_graph_panel_offset_drag.py).
+    """
+
+    def test_click_on_curve_activates_it_thick_pen(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        view, eid, pos = _curve_click_setup(qtbot, tmp_path)
+
+        view.mousePressEvent(_press_event(view, pos))  # type: ignore[attr-defined]
+        view.mouseReleaseEvent(_release_event(view, pos))  # type: ignore[attr-defined]
+
+        assert view.active_curve_id() == eid  # type: ignore[attr-defined]
+        assert view.pen_width(eid) == 2.5  # type: ignore[attr-defined]
+
+    def test_click_within_threshold_does_not_offset(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        view, eid, pos = _curve_click_setup(qtbot, tmp_path)
+        before = np.asarray(view.curve_xy(eid)[0]).copy()  # type: ignore[attr-defined]
+
+        view.mousePressEvent(_press_event(view, pos))  # type: ignore[attr-defined]
+        view.mouseReleaseEvent(_release_event(view, pos))  # type: ignore[attr-defined]
+
+        after = np.asarray(view.curve_xy(eid)[0])  # type: ignore[attr-defined]
+        assert np.array_equal(before, after)
+
+    def test_axis_click_deactivates_curve(self, qtbot: QtBot, tmp_path: Path) -> None:
+        # Exercise the same helper _AlignedAxisItem.mouseClickEvent calls (Step 10)
+        # rather than the axis scene-click plumbing itself (covered by the
+        # existing axis-activation tests) -- this isolates the DP16 deactivation
+        # contract: once a curve is active, the axis-click path must clear it.
+        view, eid, pos = _curve_click_setup(qtbot, tmp_path)
+        view.mousePressEvent(_press_event(view, pos))  # type: ignore[attr-defined]
+        view.mouseReleaseEvent(_release_event(view, pos))  # type: ignore[attr-defined]
+        assert view.active_curve_id() == eid  # type: ignore[attr-defined]
+
+        view._deactivate_curve()  # type: ignore[attr-defined]
+
+        assert view.active_curve_id() is None  # type: ignore[attr-defined]

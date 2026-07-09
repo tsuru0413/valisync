@@ -41,6 +41,7 @@ from PySide6.QtGui import (
     QResizeEvent,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QGraphicsLineItem,
     QGraphicsRectItem,
@@ -461,6 +462,7 @@ class _AlignedAxisItem(pg.AxisItem):
             return
         if self._panel_view is not None and self._vm_axis_index is not None:
             self._panel_view.set_active_axis(self._vm_axis_index)
+            self._panel_view._deactivate_curve()  # axis click is a different target
         self._emit_panel_activation()
         ev.accept()
 
@@ -698,6 +700,11 @@ class GraphPanelView(QWidget):
         # them and later tasks wire visuals without touching __init__.
         self._active_axis_index: int | None = None
         self._hover_axis_index: int | None = None
+        # Active curve (entry_id) — transient View state, drives thick-pen feedback.
+        self._active_curve_id: int | None = None
+        # DP16: candidate captured on a curve press until the drag threshold is
+        # crossed (entry_id, press position).  None when no candidate is pending.
+        self._curve_press_candidate: tuple[int, QPointF] | None = None
         # Panel index within the GraphAreaView (set by _wire_panel via set_panel_index).
         self._panel_index: int = 0
         # Axis-move drag feedback: lazily created, reused per drag, nulled on rebuild.
@@ -870,7 +877,8 @@ class GraphPanelView(QWidget):
             self._item_signal_key[curve.entry_id] = curve.name
 
             item.setData(curve.timestamps, curve.values)
-            item.setPen(pg.mkPen(curve.color))
+            width = 2.5 if curve.entry_id == self._active_curve_id else 1.0
+            item.setPen(pg.mkPen(curve.color, width=width))
 
         # R14: if a curve was rebuilt mid-offset-drag, keep the preview consistent.
         if self._offset_drag_key is not None:
@@ -1156,6 +1164,30 @@ class GraphPanelView(QWidget):
         self._active_axis_index = index
         for ax in self._y_axes:
             ax.update()  # repaint frame/grips for each axis spine
+
+    def active_curve_id(self) -> int | None:
+        """Return the currently active curve's entry_id (None if none)."""
+        return self._active_curve_id
+
+    def _activate_curve(self, entry_id: int) -> None:
+        """Make *entry_id* the active curve: thick pen + activate its axis too.
+
+        Per spec §2 the curve's axis is activated alongside so the amber frame
+        and the thick curve always point at the same axis.  refresh() is the
+        authoritative re-pen (applies width 2.5 to the active entry).
+        """
+        self._active_curve_id = entry_id
+        axis = self.vm.axis_of_entry(entry_id)
+        if axis is not None:
+            self.set_active_axis(axis)
+        self.refresh()
+
+    def _deactivate_curve(self) -> None:
+        """Clear the active curve (another target was clicked) and un-thicken it."""
+        if self._active_curve_id is None:
+            return
+        self._active_curve_id = None
+        self.refresh()
 
     def set_hover_axis(self, index: int | None) -> None:
         """Set/clear the hovered axis (transient UI state) and repaint frames.
@@ -1731,12 +1763,24 @@ class GraphPanelView(QWidget):
             self.activate_requested.emit()  # PC-07: どのゾーンでも押下=活性化
             zone = self._zone_at(event.position())
             if zone in (ZONE_X_INNER, ZONE_X_OUTER):
+                self._deactivate_curve()  # X zone is a different target -> deactivate
                 self._drag_zone = zone
                 self._drag_start = event.position()
             elif zone == ZONE_PLOT:
                 eid = self._curve_at(event.position())
                 if eid is not None:
-                    self._begin_offset_drag(eid, event.position())
+                    # DP16: a press does not begin the drag immediately -- it is held
+                    # as a candidate until a move exceeds startDragDistance (promote
+                    # to offset drag) or release arrives within the threshold
+                    # (activate).  The child QGraphicsView consumes moves while the
+                    # mouse is down, so the parent needs an explicit grab here to
+                    # observe them at all (released on activation/escape/drag end).
+                    self._curve_press_candidate = (eid, event.position())
+                    self.grabMouse()
+                else:
+                    self._deactivate_curve()  # empty-plot click -> deactivate
+            else:
+                self._deactivate_curve()
         super().mousePressEvent(event)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
@@ -1765,6 +1809,15 @@ class GraphPanelView(QWidget):
         return super().eventFilter(watched, event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._curve_press_candidate is not None:
+            eid, start = self._curve_press_candidate
+            moved = (event.position() - start).manhattanLength()
+            if moved >= QApplication.startDragDistance():
+                self._curve_press_candidate = None  # promoted -> candidate discarded
+                self._begin_offset_drag(eid, start)
+                self._update_offset_preview(event.position(), event.globalPosition())
+            super().mouseMoveEvent(event)
+            return
         if self._offset_drag_key is not None:
             self._update_offset_preview(event.position(), event.globalPosition())
             super().mouseMoveEvent(event)
@@ -1774,6 +1827,13 @@ class GraphPanelView(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._curve_press_candidate is not None:
+            eid, _ = self._curve_press_candidate
+            self._curve_press_candidate = None
+            self.releaseMouse()  # release the grab taken on press
+            self._activate_curve(eid)  # within threshold -> activate
+            super().mouseReleaseEvent(event)
+            return
         if self._offset_drag_key is not None:
             self._end_offset_drag()
             super().mouseReleaseEvent(event)
@@ -1790,10 +1850,16 @@ class GraphPanelView(QWidget):
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        if event.key() == Qt.Key.Key_Escape and self._offset_drag_key is not None:
-            self._cancel_offset_drag()
-            event.accept()
-            return
+        if event.key() == Qt.Key.Key_Escape:
+            if self._curve_press_candidate is not None:
+                self._curve_press_candidate = None
+                self.releaseMouse()
+                event.accept()
+                return
+            if self._offset_drag_key is not None:
+                self._cancel_offset_drag()
+                event.accept()
+                return
         super().keyPressEvent(event)
 
     # ─── Drag-and-drop sink (R12.4) ────────────────────────────────────────────

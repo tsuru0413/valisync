@@ -173,13 +173,14 @@ def test_real_offset_drag_shifts_both_panels(qtbot: QtBot, tmp_path) -> None:
 def test_real_escape_cancels_offset_drag(qtbot: QtBot, tmp_path: Path) -> None:
     """M1: Escape mid-drag cancels the offset gesture without opening the apply dialog.
 
-    Flow: LDOWN on curve → MOVEs to set non-zero delta → VK_ESCAPE → LUP.
+    Flow: LDOWN on curve (candidate) → MOVEs past the DP16 threshold (promotes to
+    the offset drag) → more MOVEs to set a non-zero delta → VK_ESCAPE → LUP.
     After Escape the drag state must be fully cleared and _finish_offset / the apply
     dialog must never have been called.
 
-    honest RED gate: remove graph_panel_view.py lines 1638-1640 — the keyPressEvent
-    Escape handler (``if event.key() == Qt.Key.Key_Escape and
-    self._offset_drag_key is not None: self._cancel_offset_drag()``) → Escape is
+    honest RED gate: remove the ``self._offset_drag_key is not None:
+    self._cancel_offset_drag()`` branch from graph_panel_view.py's keyPressEvent
+    Escape handler (currently around line 1861) → Escape is
     ignored → drag stays active (_offset_drag_key is not None immediately after the
     key) OR the LUP triggers _end_offset_drag → the patched _apply_dialog_fn is
     called → dialog_called=True → the ``assert not dialog_called`` assertion below
@@ -211,28 +212,37 @@ def test_real_escape_cancels_offset_drag(qtbot: QtBot, tmp_path: Path) -> None:
     gx, gy = to_phys(p0, start_sx, start_sy)
     tx, _ = to_phys(p0, target_sx, start_sy)
 
-    # ── Start the offset drag ──────────────────────────────────────────────────
+    # ── Press, then move past the drag threshold ───────────────────────────────
+    # DP16: a press alone only holds a candidate (graph_panel_view.py
+    # mousePressEvent) — the offset drag itself begins in mouseMoveEvent once the
+    # move exceeds QApplication.startDragDistance(). Real win32 press/move
+    # delivery can take several event-loop turns, so pump until the candidate is
+    # observed, then move (in small steps, matching the main test) until the
+    # drag actually engages, rather than asserting after a single processEvents.
     at(gx, gy, LDOWN)
     time.sleep(0.05)
-    # Real win32 press delivery can take several event-loop turns; pump until
-    # the drag state is set rather than asserting after a single processEvents.
     for _ in range(25):
+        QApplication.processEvents()
+        if p0._curve_press_candidate is not None:
+            break
+        time.sleep(0.02)
+    assert p0._curve_press_candidate is not None, (
+        "curve press candidate did not appear — curve may not be in the "
+        "ZONE_PLOT hit area"
+    )
+
+    steps = 4
+    for k in range(1, steps + 1):
+        at(gx + (tx - gx) * k // steps, gy, MOVE)
         QApplication.processEvents()
         if p0._offset_drag_key is not None:
             break
         time.sleep(0.02)
 
-    # Confirm drag engaged before testing the cancel path.
+    # Confirm the drag engaged (candidate promoted) before testing the cancel path.
     assert p0._offset_drag_key is not None, (
-        "offset drag did not start — curve may not be in the ZONE_PLOT hit area"
+        "offset drag did not start after crossing the drag threshold"
     )
-
-    # ── Move to set a non-zero delta so _finish_offset would see a real shift ──
-    steps = 4
-    for k in range(1, steps + 1):
-        at(gx + (tx - gx) * k // steps, gy, MOVE)
-        QApplication.processEvents()
-        time.sleep(0.02)
 
     # ── Press Escape while grabMouse is held → _cancel_offset_drag ────────────
     key(VK_ESCAPE)
@@ -268,7 +278,7 @@ def test_real_cursor_line_wins_overlap_press(qtbot: QtBot, tmp_path: Path) -> No
     """M2: Pressing at cursor-line × curve overlap routes to the line, not the curve.
 
     _curve_at returns None when the press is within CURSOR_LINE_HIT_PX (10 scene px)
-    of a visible cursor line, so no offset drag is started even though a curve is
+    of a visible cursor line, so no drag candidate is captured even though a curve is
     also nearby (within CURVE_HIT_TOL_PX=8 scene px).
 
     Press geometry: 5 scene pixels to the right of the cursor line —
@@ -279,16 +289,26 @@ def test_real_cursor_line_wins_overlap_press(qtbot: QtBot, tmp_path: Path) -> No
       • Distance to nearest curve point ≈ 5 scene px < CURVE_HIT_TOL_PX=8 → without
         the guard, _curve_at WOULD return the curve key
 
-    honest RED gate: remove or neuter graph_panel_view.py lines 1412-1413 — the
-    ``CURSOR_LINE_HIT_PX`` early-return guard inside ``_curve_at``
-    (``if abs(scene_pos.x() - line_scene_x) <= CURSOR_LINE_HIT_PX: return None``)
-    → _curve_at finds the curve at ~5 scene px (< CURVE_HIT_TOL_PX)
-    → _begin_offset_drag is called → _offset_drag_key is not None → the primary
-    assertion below flips RED, proving the test is not vacuously green.
+    DP16 note: a curve press no longer begins the offset drag directly — it is
+    held as ``_curve_press_candidate`` in mousePressEvent (only promoted to
+    ``_offset_drag_key`` by a later move past the drag threshold). The guard's
+    effect is therefore observed on the candidate right after the press, not on
+    ``_offset_drag_key`` — checking the latter after a plain press+release would
+    be true whether or not the guard fired (a within-threshold click never begins
+    an offset drag, it activates the curve instead), so it would no longer be
+    load-bearing for this guard.
 
-    NOTE: lines 1407-1408 (``if not line.isVisible(): continue``) is NOT the
-    load-bearing target — removing the visibility skip does not disable the guard
-    because the visible cursor-A line still reaches the ``return None`` at line 1413.
+    honest RED gate: remove or neuter the ``CURSOR_LINE_HIT_PX`` early-return
+    guard inside ``_curve_at`` (``if abs(scene_pos.x() - line_scene_x) <=
+    CURSOR_LINE_HIT_PX: return None``) → _curve_at finds the curve at ~5 scene px
+    (< CURVE_HIT_TOL_PX) → mousePressEvent sets ``_curve_press_candidate`` to
+    that curve → the primary assertion below (checked right after the press)
+    flips RED, proving the test is not vacuously green.
+
+    NOTE: the ``if not line.isVisible(): continue`` skip a few lines above the
+    guard is NOT the load-bearing target — removing the visibility skip does not
+    disable the guard because the visible cursor-A line still reaches the
+    ``return None``.
 
     Positive line-engagement signal: no cursor-line movement is observable here
     because the press lands outside the InfiniteLine's bounding rect (the line item
@@ -329,17 +349,23 @@ def test_real_cursor_line_wins_overlap_press(qtbot: QtBot, tmp_path: Path) -> No
     press_sy = curve_scene_y
     px, py = to_phys(p0, press_sx, press_sy)
 
-    # ── Press and release at the overlap point ────────────────────────────────
+    # ── Press at the overlap point ──────────────────────────────────────────────
     at(px, py, LDOWN)
     time.sleep(0.05)
     QApplication.processEvents()
+
+    # ── Primary assertion: cursor-line guard prevented the curve hit-test ──────
+    # (checked right after the press, before release — see the DP16 note above)
+    assert p0._curve_press_candidate is None, (
+        "curve press candidate captured at cursor-line overlap — "
+        "_curve_at's cursor-line guard did not fire"
+    )
+
     at(px, py, LUP)
     QApplication.processEvents()
 
-    # ── Primary assertion: cursor-line guard prevented offset drag ─────────────
     assert p0._offset_drag_key is None, (
-        "offset drag started at cursor-line overlap — "
-        "_curve_at guard (graph_panel_view.py:1407-1408) did not fire"
+        "offset drag started at cursor-line overlap — _curve_at guard did not fire"
     )
     assert p0._offset_orig_pen is None, (
         "curve pen was highlighted — _begin_offset_drag must have been called"
