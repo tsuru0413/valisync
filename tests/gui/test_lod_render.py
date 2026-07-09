@@ -84,7 +84,7 @@ def test_lod_narrow_viewport_getData_bounded(qtbot: QtBot) -> None:
     assert vm.panel_width_px <= 200, f"expected ≤200 px, got {vm.panel_width_px}"
     assert vm.lod_active is True, "5000-pt signal at 200 px width should activate LOD"
 
-    xs_narrow, _ = view._items[key].getData()
+    xs_narrow, _ = view._items[view.entry_id_for(key)].getData()
     assert xs_narrow is not None, "PlotDataItem has no data after narrow show"
     narrow_count = len(xs_narrow)
     # Core assertion: the VIEW must have called setData with LOD-reduced arrays.
@@ -106,7 +106,8 @@ def test_lod_wide_viewport_getData_increases(qtbot: QtBot) -> None:
     for _ in range(3):
         QApplication.processEvents()
 
-    xs_narrow, _ = view._items[key].getData()
+    eid = view.entry_id_for(key)
+    xs_narrow, _ = view._items[eid].getData()
     assert xs_narrow is not None, "PlotDataItem has no data after narrow show"
     narrow_count = len(xs_narrow)
 
@@ -115,7 +116,7 @@ def test_lod_wide_viewport_getData_increases(qtbot: QtBot) -> None:
     for _ in range(3):
         QApplication.processEvents()
 
-    xs_wide, _ = view._items[key].getData()
+    xs_wide, _ = view._items[eid].getData()
     assert xs_wide is not None, "PlotDataItem has no data after wide resize"
     wide_count = len(xs_wide)
     assert wide_count > narrow_count, (

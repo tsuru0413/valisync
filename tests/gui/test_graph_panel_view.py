@@ -14,9 +14,13 @@ TDD: written before the view exists; all must FAIL first.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import Mock
 
-from PySide6.QtCore import QPointF, QSize, Qt
-from PySide6.QtGui import QDropEvent, QResizeEvent
+import numpy as np
+import pytest
+from PySide6.QtCore import QEvent, QPoint, QPointF, QSize, Qt
+from PySide6.QtGui import QContextMenuEvent, QDropEvent, QMouseEvent, QResizeEvent
+from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from valisync.core.models import Delimiter, FormatDefinition
@@ -84,8 +88,8 @@ class TestDrawing:
 
         vm.add_signal(key)
 
-        assert key in view.curve_keys()  # type: ignore[attr-defined]
-        x, y = view.curve_xy(key)  # type: ignore[attr-defined]
+        assert key in view.signal_keys_drawn()  # type: ignore[attr-defined]
+        x, y = view.curve_xy(view.entry_id_for(key))  # type: ignore[attr-defined]
         assert len(x) > 0
         assert len(x) == len(y)
 
@@ -98,7 +102,10 @@ class TestDrawing:
         vm.add_signal(key)
 
         expected = vm.inspect()["plotted_signals"][0]["color"]
-        assert view.pen_color(key).lower() == expected.lower()  # type: ignore[attr-defined]
+        assert (
+            view.pen_color(view.entry_id_for(key)).lower()  # type: ignore[attr-defined]
+            == expected.lower()
+        )
 
     def test_overlay_multiple_signals(self, qtbot: QtBot, tmp_path: Path) -> None:
         session, _ = _loaded_session(tmp_path, n_signals=2)
@@ -109,7 +116,7 @@ class TestDrawing:
         vm.add_signal(k0)
         vm.add_signal(k1)
 
-        assert set(view.curve_keys()) == {k0, k1}  # type: ignore[attr-defined]
+        assert set(view.signal_keys_drawn()) == {k0, k1}  # type: ignore[attr-defined]
 
     def test_remove_signal_removes_curve(self, qtbot: QtBot, tmp_path: Path) -> None:
         session, _ = _loaded_session(tmp_path)
@@ -120,7 +127,7 @@ class TestDrawing:
         vm.add_signal(key)
         vm.remove_signal(key)
 
-        assert key not in view.curve_keys()  # type: ignore[attr-defined]
+        assert key not in view.signal_keys_drawn()  # type: ignore[attr-defined]
 
     def test_toggle_invisible_hides_curve(self, qtbot: QtBot, tmp_path: Path) -> None:
         session, _ = _loaded_session(tmp_path)
@@ -132,7 +139,7 @@ class TestDrawing:
         vm.toggle_visibility(key)
 
         # render_data omits invisible signals, so no curve is drawn for it.
-        assert key not in view.curve_keys()  # type: ignore[attr-defined]
+        assert key not in view.signal_keys_drawn()  # type: ignore[attr-defined]
 
     def test_unclipped_rendering(self, qtbot: QtBot, tmp_path: Path) -> None:
         session, _ = _loaded_session(tmp_path)
@@ -143,7 +150,7 @@ class TestDrawing:
         vm.add_signal(key)
 
         # Verify that clipToView is False (R4)
-        assert view.is_clipped(key) is False  # type: ignore[attr-defined]
+        assert view.is_clipped(view.entry_id_for(key)) is False  # type: ignore[attr-defined]
 
 
 # ─── Empty signal (R8.5) ──────────────────────────────────────────────────────
@@ -161,8 +168,8 @@ class TestEmptySignal:
         vm.add_signal(key)
         vm.set_x_range(1.0e9, 1.0e9 + 1.0)  # window with no samples
 
-        assert key in view.curve_keys()  # type: ignore[attr-defined]  # curve still registered
-        x, _y = view.curve_xy(key)  # type: ignore[attr-defined]
+        assert key in view.signal_keys_drawn()  # type: ignore[attr-defined]  # curve still registered
+        x, _y = view.curve_xy(view.entry_id_for(key))  # type: ignore[attr-defined]
         # RN-01: 境界サンプルが1点描かれ得るが、窓 [1e9, 1e9+1] 内には無い (可視域外)。
         xs = [] if x is None else list(x)
         assert all(not (1.0e9 <= xv <= 1.0e9 + 1.0) for xv in xs)
@@ -189,7 +196,7 @@ class TestDrop:
         view.dropEvent(event)  # type: ignore[attr-defined]
 
         assert any(p["signal_key"] == key for p in vm.inspect()["plotted_signals"])
-        assert key in view.curve_keys()  # type: ignore[attr-defined]
+        assert key in view.signal_keys_drawn()  # type: ignore[attr-defined]
 
     def test_first_drop_on_plot_fills_full_height(
         self, qtbot: QtBot, tmp_path: Path
@@ -344,3 +351,434 @@ class TestSmokeAndLifecycle:
 
         assert len(vm._callbacks) == 0
         vm.set_x_range(0.0, 1.0)  # a notify after destruction must not raise
+
+
+# ─── entry_id-keyed internals (PC-01 増分2a Task3) ─────────────────────────────
+
+
+class TestEntryIdAccessors:
+    def test_duplicate_signal_key_draws_independent_curves(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        # 同一 signal_key を 2 axis に載せると 2 本独立に描画される (entry_id 化の核心)
+        session, _ = _loaded_session(tmp_path, n_signals=1)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        vm.add_signal(key)
+        vm.create_new_axis(key)
+
+        # curve_keys は entry_id 群 (2 本ぶん・重複しない)
+        assert len(view.curve_keys()) == 2  # type: ignore[attr-defined]
+        assert len(set(view.curve_keys())) == 2  # type: ignore[attr-defined]
+        # signal_keys_drawn は signal_key 群 (同名 2 本ぶん)
+        assert view.signal_keys_drawn() == [key, key]  # type: ignore[attr-defined]
+        # 各 entry のデータを独立に読める
+        for eid in view.curve_keys():  # type: ignore[attr-defined]
+            x, _y = view.curve_xy(eid)  # type: ignore[attr-defined]
+            assert len(x) > 0
+
+    def test_set_color_on_one_entry_repaints_only_it(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        session, _ = _loaded_session(tmp_path, n_signals=1)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal(key)
+        vm.create_new_axis(key)
+        e0, e1 = view.curve_keys()  # type: ignore[attr-defined]
+        vm.set_color(e1, "#123456")
+        view.refresh()  # VM notify 経由でも呼ばれるが、テストは明示的に
+        assert view.pen_color(e1).lower() == "#123456"  # type: ignore[attr-defined]
+        assert view.pen_color(e0).lower() != "#123456"  # type: ignore[attr-defined]
+
+    def test_entry_id_for_and_signal_keys_drawn(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        session, _ = _loaded_session(tmp_path, n_signals=2)
+        k0, k1 = _keys(session)[:2]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal(k0)
+        vm.add_signal(k1)
+        assert set(view.signal_keys_drawn()) == {k0, k1}  # type: ignore[attr-defined]
+        eid0 = view.entry_id_for(k0)  # type: ignore[attr-defined]
+        assert view.signal_keys_drawn()[view.curve_keys().index(eid0)] == k0  # type: ignore[attr-defined]
+
+
+# ─── DP16: curve press-hold candidate -> activate (thick pen) or offset drag ──
+
+
+def _press_event(view: object, p: QPointF) -> QMouseEvent:
+    return QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        p,
+        view.mapToGlobal(p.toPoint()),  # type: ignore[attr-defined]
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+
+def _release_event(view: object, p: QPointF) -> QMouseEvent:
+    return QMouseEvent(
+        QEvent.Type.MouseButtonRelease,
+        p,
+        view.mapToGlobal(p.toPoint()),  # type: ignore[attr-defined]
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+
+def _curve_click_setup(qtbot: QtBot, tmp_path: Path) -> tuple[object, int, QPointF]:
+    """Build a one-signal panel and locate a widget-space point ON the curve.
+
+    Reused by the DP16 activation tests: each needs a point that _curve_at
+    resolves to the sole entry, obtained via its own drawn (x, y) data mapped
+    ViewBox -> scene -> widget, so the hit-test tolerance is never guessed at.
+    """
+    session, _ = _loaded_session(tmp_path, n_signals=1)
+    key = _keys(session)[0]
+    vm = GraphPanelVM(session)
+    view = _make_view(qtbot, vm)
+    view.resize(400, 300)  # type: ignore[attr-defined]
+    vm.add_signal(key)
+    vm.set_x_range(0.0, 1.0)
+    view.refresh()  # type: ignore[attr-defined]
+    eid = view.curve_keys()[0]  # type: ignore[attr-defined]
+
+    x, y = view.curve_xy(eid)  # type: ignore[attr-defined]
+    vb = view._item_vb[eid]  # type: ignore[attr-defined]
+    mid = len(x) // 2
+    scene_pt = vb.mapViewToScene(QPointF(float(x[mid]), float(y[mid])))
+    wpt = view.plot_widget.mapFromScene(scene_pt)  # type: ignore[attr-defined]
+    pos = QPointF(view.plot_widget.mapTo(view, wpt))  # type: ignore[attr-defined]
+    return view, eid, pos
+
+
+class TestCurveActivation:
+    """DP16 (spec §7): press holds a candidate; release within startDragDistance
+    activates the curve (thick pen + its axis); a move past the threshold instead
+    promotes to the R14 offset drag (covered in test_graph_panel_offset_drag.py).
+    """
+
+    def test_click_on_curve_activates_it_thick_pen(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        view, eid, pos = _curve_click_setup(qtbot, tmp_path)
+
+        view.mousePressEvent(_press_event(view, pos))  # type: ignore[attr-defined]
+        view.mouseReleaseEvent(_release_event(view, pos))  # type: ignore[attr-defined]
+
+        assert view.active_curve_id() == eid  # type: ignore[attr-defined]
+        assert view.pen_width(eid) == 2.5  # type: ignore[attr-defined]
+
+    def test_click_within_threshold_does_not_offset(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        view, eid, pos = _curve_click_setup(qtbot, tmp_path)
+        before = np.asarray(view.curve_xy(eid)[0]).copy()  # type: ignore[attr-defined]
+
+        view.mousePressEvent(_press_event(view, pos))  # type: ignore[attr-defined]
+        view.mouseReleaseEvent(_release_event(view, pos))  # type: ignore[attr-defined]
+
+        after = np.asarray(view.curve_xy(eid)[0])  # type: ignore[attr-defined]
+        assert np.array_equal(before, after)
+
+    def test_axis_click_deactivates_curve(self, qtbot: QtBot, tmp_path: Path) -> None:
+        # Exercise the same helper _AlignedAxisItem.mouseClickEvent calls (Step 10)
+        # rather than the axis scene-click plumbing itself (covered by the
+        # existing axis-activation tests) -- this isolates the DP16 deactivation
+        # contract: once a curve is active, the axis-click path must clear it.
+        view, eid, pos = _curve_click_setup(qtbot, tmp_path)
+        view.mousePressEvent(_press_event(view, pos))  # type: ignore[attr-defined]
+        view.mouseReleaseEvent(_release_event(view, pos))  # type: ignore[attr-defined]
+        assert view.active_curve_id() == eid  # type: ignore[attr-defined]
+
+        view._deactivate_curve()  # type: ignore[attr-defined]
+
+        assert view.active_curve_id() is None  # type: ignore[attr-defined]
+
+    def test_h_toggles_active_curve_visibility(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        session, _ = _loaded_session(tmp_path, n_signals=1)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal(key)
+        view.refresh()  # type: ignore[attr-defined]
+        eid = view.curve_keys()[0]  # type: ignore[attr-defined]
+        view._active_curve_id = eid  # type: ignore[attr-defined]  # 活性化済みとする
+        view.setFocus()  # type: ignore[attr-defined]
+
+        qtbot.keyClick(view, Qt.Key.Key_H)
+        assert vm.inspect()["plotted_signals"][0]["visible"] is False
+        # H は解除トリガーにしない -> 非表示後も active のまま再表示できる
+        assert view.active_curve_id() == eid  # type: ignore[attr-defined]
+        qtbot.keyClick(view, Qt.Key.Key_H)
+        assert vm.inspect()["plotted_signals"][0]["visible"] is True
+
+    def test_h_falls_back_to_axis_when_no_active_curve(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        session, _ = _loaded_session(tmp_path, n_signals=2)
+        k0, k1 = _keys(session)[:2]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal(k0)  # axis 0
+        vm.add_signal(k1)  # axis 0
+        view.refresh()  # type: ignore[attr-defined]
+        view._active_curve_id = None  # type: ignore[attr-defined]
+        view.set_active_axis(0)  # type: ignore[attr-defined]
+        view.setFocus()  # type: ignore[attr-defined]
+
+        qtbot.keyClick(view, Qt.Key.Key_H)
+        assert all(not e["visible"] for e in vm.inspect()["plotted_signals"])
+
+
+# ─── Task 6: 曲線右クリックメニュー (非表示/色変更/削除) + ルーティング骨格 ────────
+
+
+def _color_submenu(menu: object) -> tuple[object, object]:
+    """Return (action, submenu) for the curve menu's "色変更" entry.
+
+    PySide/shiboken ties a QAction.menu() wrapper's validity to the QAction
+    object it was fetched from: chaining ``next(a.menu() for a in ...)`` in a
+    single expression discards that QAction the instant next() returns, and
+    the returned submenu is then reported "already deleted" on the next
+    access -- even though the underlying (Qt-parented) QMenu is still alive.
+    Keeping both the action and the submenu alive as separate locals avoids it.
+    """
+    action = next(a for a in menu.actions() if "色変更" in a.text())  # type: ignore[attr-defined]
+    return action, action.menu()  # type: ignore[attr-defined]
+
+
+class TestCurveContextMenu:
+    """PC-01 (spec §4.3, 増分2a サブセット): build_curve_menu の各項目。
+
+    軸移動・オフセット項目は 増分2b のため、ここでは意図的に含まない。
+    """
+
+    def test_right_click_on_curve_shows_curve_menu(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        # 曲線位置の右クリックで曲線メニューが構築される (項目内容の検証)
+        session, _ = _loaded_session(tmp_path, n_signals=1)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal(key)
+        view.refresh()  # type: ignore[attr-defined]
+        eid = view.curve_keys()[0]  # type: ignore[attr-defined]
+        menu = view.build_curve_menu(eid)  # type: ignore[attr-defined]
+        labels = [a.text() for a in menu.actions() if a.text()]
+        assert "非表示" in labels
+        assert "削除" in labels
+        assert any("色変更" in a.text() for a in menu.actions())
+
+    def test_curve_menu_hide_toggles_visibility(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        session, _ = _loaded_session(tmp_path, n_signals=1)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal(key)
+        view.refresh()  # type: ignore[attr-defined]
+        eid = view.curve_keys()[0]  # type: ignore[attr-defined]
+        menu = view.build_curve_menu(eid)  # type: ignore[attr-defined]
+        hide = next(a for a in menu.actions() if a.text() == "非表示")
+        hide.trigger()
+        assert vm.inspect()["plotted_signals"][0]["visible"] is False
+
+    def test_curve_menu_color_swatch_sets_color(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        # パレットスウォッチのクリック相当 (trigger) が VM の set_color まで届く
+        session, _ = _loaded_session(tmp_path, n_signals=1)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal(key)
+        view.refresh()  # type: ignore[attr-defined]
+        eid = view.curve_keys()[0]  # type: ignore[attr-defined]
+        menu = view.build_curve_menu(eid)  # type: ignore[attr-defined]
+        _color_action, color_menu = _color_submenu(menu)
+        assert color_menu is not None
+        swatch = color_menu.actions()[0]  # type: ignore[attr-defined]  # _PALETTE[0] の hex ラベル
+        swatch.trigger()
+        assert vm.inspect()["plotted_signals"][0]["color"] == swatch.text()
+
+    def test_curve_menu_delete_removes_entry(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        session, _ = _loaded_session(tmp_path, n_signals=1)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal(key)
+        view.refresh()  # type: ignore[attr-defined]
+        eid = view.curve_keys()[0]  # type: ignore[attr-defined]
+        view._active_curve_id = eid  # type: ignore[attr-defined]
+        menu = view.build_curve_menu(eid)  # type: ignore[attr-defined]
+        delete = next(a for a in menu.actions() if a.text() == "削除")
+        delete.trigger()
+        assert vm.inspect()["plotted_signals"] == []
+        assert view.active_curve_id() is None  # type: ignore[attr-defined]  # 削除で解除
+
+    def test_curve_menu_custom_color_uses_injected_dialog(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        from valisync.gui.views.graph_panel_view import GraphPanelView
+
+        session, _ = _loaded_session(tmp_path, n_signals=1)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = GraphPanelView(vm, color_dialog_fn=lambda: "#0a0b0c")
+        qtbot.addWidget(view)
+        vm.add_signal(key)
+        view.refresh()  # type: ignore[attr-defined]
+        eid = view.curve_keys()[0]  # type: ignore[attr-defined]
+        menu = view.build_curve_menu(eid)  # type: ignore[attr-defined]
+        _color_action, color_menu = _color_submenu(menu)
+        other = next(a for a in color_menu.actions() if a.text() == "その他…")  # type: ignore[attr-defined]
+        other.trigger()
+        assert vm.inspect()["plotted_signals"][0]["color"] == "#0a0b0c"
+
+    def test_custom_color_dialog_cancel_leaves_color_unchanged(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        # DI スタブが None (キャンセル相当) を返すとき _pick_custom_color は
+        # set_color を呼ばない (ガード確認)。
+        from valisync.gui.views.graph_panel_view import GraphPanelView
+
+        session, _ = _loaded_session(tmp_path, n_signals=1)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = GraphPanelView(vm, color_dialog_fn=lambda: None)
+        qtbot.addWidget(view)
+        vm.add_signal(key)
+        view.refresh()  # type: ignore[attr-defined]
+        eid = view.curve_keys()[0]  # type: ignore[attr-defined]
+        before = vm.inspect()["plotted_signals"][0]["color"]
+        menu = view.build_curve_menu(eid)  # type: ignore[attr-defined]
+        _color_action, color_menu = _color_submenu(menu)
+        other = next(a for a in color_menu.actions() if a.text() == "その他…")  # type: ignore[attr-defined]
+        other.trigger()
+        assert vm.inspect()["plotted_signals"][0]["color"] == before
+
+
+def _shown_curve_click_setup(
+    qtbot: QtBot, tmp_path: Path
+) -> tuple[object, int, QPointF]:
+    """Like ``_curve_click_setup``, but the widget is shown before *pos* is
+    computed (mirrors test_graph_panel_offset_drag.py's established real-event
+    pattern), since these tests deliver a real ``QContextMenuEvent`` via
+    ``QApplication.sendEvent`` rather than calling the handler directly.
+    """
+    session, _ = _loaded_session(tmp_path, n_signals=1)
+    key = _keys(session)[0]
+    vm = GraphPanelVM(session)
+    view = _make_view(qtbot, vm)
+    view.resize(400, 300)  # type: ignore[attr-defined]
+    vm.add_signal(key)
+    vm.set_x_range(0.0, 1.0)
+    view.refresh()  # type: ignore[attr-defined]
+    view.show()  # type: ignore[attr-defined]
+    qtbot.waitExposed(view)  # type: ignore[attr-defined]
+    for _ in range(3):
+        QApplication.processEvents()
+    eid = view.curve_keys()[0]  # type: ignore[attr-defined]
+
+    x, y = view.curve_xy(eid)  # type: ignore[attr-defined]
+    vb = view._item_vb[eid]  # type: ignore[attr-defined]
+    mid = len(x) // 2
+    scene_pt = vb.mapViewToScene(QPointF(float(x[mid]), float(y[mid])))
+    wpt = view.plot_widget.mapFromScene(scene_pt)  # type: ignore[attr-defined]
+    pos = QPointF(view.plot_widget.mapTo(view, wpt))  # type: ignore[attr-defined]
+    return view, eid, pos
+
+
+class TestContextMenuRouting:
+    """contextMenuEvent の実イベント経路 (sendEvent) でのルーティング検証。
+
+    build_curve_menu/build_context_menu を直接呼ぶだけのテストでは、Step 6 の
+    ルーティング条件式 (_curve_at 分岐) 自体が壊れても検出できない
+    (false-green)。ここでは実際に QContextMenuEvent を送って「どちらの
+    builder が呼ばれたか」を monkeypatch したスパイで検証する。
+    """
+
+    def test_curve_position_routes_to_curve_menu(
+        self, qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        view, eid, pos = _shown_curve_click_setup(qtbot, tmp_path)
+
+        curve_calls: list[int] = []
+        blank_calls: list[None] = []
+        real_curve_menu = view.build_curve_menu  # type: ignore[attr-defined]
+
+        def spy_curve_menu(entry_id: int) -> object:
+            curve_calls.append(entry_id)
+            real_curve_menu(entry_id)  # exercise the real builder too
+            m = Mock()
+            m.exec = Mock(return_value=None)
+            return m
+
+        def spy_blank_menu() -> object:
+            blank_calls.append(None)
+            m = Mock()
+            m.exec = Mock(return_value=None)
+            return m
+
+        monkeypatch.setattr(view, "build_curve_menu", spy_curve_menu)
+        monkeypatch.setattr(view, "build_context_menu", spy_blank_menu)
+
+        global_pos = view.mapToGlobal(pos.toPoint())  # type: ignore[attr-defined]
+        QApplication.sendEvent(
+            view,
+            QContextMenuEvent(
+                QContextMenuEvent.Reason.Mouse, pos.toPoint(), global_pos
+            ),
+        )
+
+        assert curve_calls == [eid]
+        assert blank_calls == []
+
+    def test_blank_position_routes_to_panel_menu(
+        self, qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # _shown_curve_click_setup と同じ土台を使い、曲線から十分離れた
+        # 原点近傍 (_curve_at が None を返す) を対象点にする。
+        view, _eid, _curve_pos = _shown_curve_click_setup(qtbot, tmp_path)
+        pos = QPoint(2, 2)
+        assert view._curve_at(QPointF(pos)) is None  # type: ignore[attr-defined]
+
+        curve_calls: list[int] = []
+        blank_calls: list[None] = []
+
+        def spy_curve_menu(entry_id: int) -> object:
+            curve_calls.append(entry_id)
+            m = Mock()
+            m.exec = Mock(return_value=None)
+            return m
+
+        def spy_blank_menu() -> object:
+            blank_calls.append(None)
+            m = Mock()
+            m.exec = Mock(return_value=None)
+            return m
+
+        monkeypatch.setattr(view, "build_curve_menu", spy_curve_menu)
+        monkeypatch.setattr(view, "build_context_menu", spy_blank_menu)
+
+        global_pos = view.mapToGlobal(pos)  # type: ignore[attr-defined]
+        QApplication.sendEvent(
+            view, QContextMenuEvent(QContextMenuEvent.Reason.Mouse, pos, global_pos)
+        )
+
+        assert blank_calls == [None]
+        assert curve_calls == []

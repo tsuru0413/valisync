@@ -225,7 +225,7 @@ def test_click_activates_panel_and_add_routes_there(
     assert key not in panel0_vm.plotted_signal_keys(), (
         f"信号が非アクティブなパネル 1 に誤着地した。screenshot: {shot2}"
     )
-    assert key in panel1.curve_keys(), (
+    assert key in panel1.signal_keys_drawn(), (
         f"パネル 2 に曲線が実描画されていない。screenshot: {shot2}"
     )
 

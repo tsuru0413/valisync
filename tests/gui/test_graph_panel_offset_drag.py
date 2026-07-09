@@ -58,10 +58,26 @@ def _press_drag(view, dx_px: float):
     return start, target
 
 
-def test_press_on_curve_activates_offset_drag(qtbot: QtBot) -> None:
+def test_press_on_curve_holds_candidate_not_drag(qtbot: QtBot) -> None:
+    """DP16: a press on a curve does not begin the drag immediately.
+
+    It is held as a ``_curve_press_candidate`` until a move exceeds
+    ``QApplication.startDragDistance()`` (see
+    test_press_then_move_past_threshold_activates_offset_drag below) or a
+    release within the threshold activates the curve instead (Task 4,
+    tests/gui/test_graph_panel_view.py::TestCurveActivation).
+    """
     view = _shown(qtbot)
     _send(view, QEvent.Type.MouseButtonPress, _center(view))
+    assert view._offset_drag_key is None
+    assert view._curve_press_candidate is not None
+
+
+def test_press_then_move_past_threshold_activates_offset_drag(qtbot: QtBot) -> None:
+    view = _shown(qtbot)
+    _press_drag(view, dx_px=120.0)  # well past startDragDistance
     assert view._offset_drag_key is not None
+    assert view._curve_press_candidate is None
 
 
 def test_drag_previews_horizontal_shift(qtbot: QtBot) -> None:
@@ -80,14 +96,16 @@ def test_release_signal_scope_emits_request(qtbot: QtBot) -> None:
     captured: list[tuple] = []
     view = _shown(qtbot, apply_dialog_fn=lambda key, dt: "signal")
     view.offset_apply_requested.connect(lambda k, dt, sc: captured.append((k, dt, sc)))
-    key = sorted(view._items.keys())[0]
+    # offset_apply_requested emits the signal_key (not the entry_id); resolve it
+    # via signal_keys_drawn() (draw-order list, so index 0 matches the sole entry).
+    signal_key = view.signal_keys_drawn()[0]
     _start, target = _press_drag(view, dx_px=120.0)
     _send(view, QEvent.Type.MouseButtonRelease, target)
     for _ in range(3):  # let the deferred (singleShot) dialog resolve
         QApplication.processEvents()
     assert len(captured) == 1
     k, dt, sc = captured[0]
-    assert k == key and sc == "signal" and dt > 0.0
+    assert k == signal_key and sc == "signal" and dt > 0.0
     assert view._offset_drag_key is None
 
 
@@ -130,12 +148,13 @@ def test_refresh_cancels_drag_when_curve_removed(qtbot: QtBot) -> None:
     captured: list[tuple] = []
     view = _shown(qtbot)
     view.offset_apply_requested.connect(lambda k, dt, sc: captured.append((k, dt, sc)))
-    key = sorted(view._items.keys())[0]
+    # vm.remove_signal takes a signal_key, not the entry_id _items is keyed by.
+    signal_key = view.signal_keys_drawn()[0]
     _press_drag(view, dx_px=30.0)
     assert view._offset_drag_key is not None  # drag is active before removal
     # remove_signal notifies the VM subscriber synchronously → refresh() fires,
     # the guard sees _offset_drag_key absent from _items, and cancels the drag.
-    view.vm.remove_signal(key)
+    view.vm.remove_signal(signal_key)
     assert view._offset_drag_key is None
     assert captured == []  # cancel must NOT emit offset_apply_requested
 
@@ -162,7 +181,11 @@ def test_offset_drag_grabs_on_begin_releases_on_apply(qtbot: QtBot) -> None:
     grabs, releases = _spy_grab(view)
     _start, target = _press_drag(view, dx_px=120.0)
     assert view._offset_drag_key is not None
-    assert len(grabs) == 1  # begin grabbed the mouse
+    # DP16: the press grabs for the candidate, then crossing the threshold grabs
+    # again inside _begin_offset_drag (unchanged, redundant but harmless — Qt
+    # no-ops a re-grab by the same widget). >= 1 is the behavioural contract this
+    # test protects; the exact count (2) is an implementation artefact.
+    assert len(grabs) >= 1
     _send(view, QEvent.Type.MouseButtonRelease, target)
     for _ in range(3):
         QApplication.processEvents()
@@ -174,7 +197,7 @@ def test_offset_drag_releases_on_escape(qtbot: QtBot) -> None:
     view = _shown(qtbot)
     grabs, releases = _spy_grab(view)
     _press_drag(view, dx_px=120.0)
-    assert len(grabs) == 1
+    assert len(grabs) >= 1  # DP16: candidate grab + _begin_offset_drag grab
     esc = QKeyEvent(
         QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier
     )
@@ -186,10 +209,11 @@ def test_offset_drag_releases_on_escape(qtbot: QtBot) -> None:
 def test_offset_drag_releases_when_curve_removed(qtbot: QtBot) -> None:
     view = _shown(qtbot)
     grabs, releases = _spy_grab(view)
-    key = sorted(view._items.keys())[0]
+    # vm.remove_signal takes a signal_key, not the entry_id _items is keyed by.
+    signal_key = view.signal_keys_drawn()[0]
     _press_drag(view, dx_px=30.0)
-    assert len(grabs) == 1
-    view.vm.remove_signal(key)  # synchronous refresh → guard cancels the drag
+    assert len(grabs) >= 1  # DP16: candidate grab + _begin_offset_drag grab
+    view.vm.remove_signal(signal_key)  # synchronous refresh → guard cancels the drag
     assert view._offset_drag_key is None
     assert len(releases) >= 1  # the cancel path must release the grab
 

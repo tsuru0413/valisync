@@ -150,10 +150,12 @@ def test_drop_on_plot_creates_new_axis(qtbot: QtBot, tmp_path: Path) -> None:
     assert panel.drop_seen, (
         f"no dropEvent on the panel — real QDrag never completed. screenshot: {tmp_path / 'h1.png'}"
     )
-    # panel.curve_keys() (GraphPanelView method) returns keys of PlotDataItems currently
-    # drawn — confirmed in graph_panel_view.py. Note: NOT panel.vm.curve_keys() which
-    # does not exist on GraphPanelVM; the VM uses _plotted internally.
-    qtbot.waitUntil(lambda: keys[0] in panel.curve_keys(), timeout=2000)
+    # panel.signal_keys_drawn() (GraphPanelView method) returns the signal_keys of
+    # PlotDataItems currently drawn — confirmed in graph_panel_view.py. curve_keys()
+    # now returns entry_ids (PC-01), so signal_key membership goes through this
+    # instead. Note: no equivalent exists on GraphPanelVM; the VM uses _plotted
+    # internally.
+    qtbot.waitUntil(lambda: keys[0] in panel.signal_keys_drawn(), timeout=2000)
     assert len(panel.vm.axes) >= max(1, n_before), "no axis holds the dropped signal"
 
 
@@ -169,8 +171,8 @@ def _prepare_one_axis(panel, keys: list[str], qtbot: QtBot) -> None:
     panel.vm.create_new_axis(keys[0])
     for _ in range(3):
         QApplication.processEvents()
-    # curve_keys() is a GraphPanelView method — confirmed in graph_panel_view.py.
-    qtbot.waitUntil(lambda: keys[0] in panel.curve_keys(), timeout=2000)
+    # signal_keys_drawn() is a GraphPanelView method — confirmed in graph_panel_view.py.
+    qtbot.waitUntil(lambda: keys[0] in panel.signal_keys_drawn(), timeout=2000)
 
 
 def _y_band_phys(panel, axis_index: int) -> tuple[int, int]:
@@ -222,8 +224,8 @@ def test_drop_on_y_band_overwrites_axis(qtbot: QtBot, tmp_path: Path) -> None:
 
     assert panel.drop_seen, f"no dropEvent. screenshot: {tmp_path / 'h2.png'}"
     # Overwrite: axis 0 now holds keys[1] and NOT keys[0].
-    qtbot.waitUntil(lambda: keys[1] in panel.curve_keys(), timeout=2000)
-    assert keys[0] not in panel.curve_keys(), (
+    qtbot.waitUntil(lambda: keys[1] in panel.signal_keys_drawn(), timeout=2000)
+    assert keys[0] not in panel.signal_keys_drawn(), (
         f"overwrite did not replace the original signal. screenshot: {tmp_path / 'h2.png'}"
     )
 
@@ -259,7 +261,10 @@ def test_ctrl_drop_on_y_band_joins_axis(qtbot: QtBot, tmp_path: Path) -> None:
     assert panel.drop_seen, f"no dropEvent. screenshot: {tmp_path / 'h3.png'}"
     # Join: BOTH signals present on the axis.
     qtbot.waitUntil(
-        lambda: keys[0] in panel.curve_keys() and keys[1] in panel.curve_keys(),
+        lambda: (
+            keys[0] in panel.signal_keys_drawn()
+            and keys[1] in panel.signal_keys_drawn()
+        ),
         timeout=2000,
     )
 
@@ -298,7 +303,10 @@ def test_multiselect_drop_on_plot_adds_all(qtbot: QtBot, tmp_path: Path) -> None
     assert panel.drop_seen, f"no dropEvent. screenshot: {tmp_path / 'h4.png'}"
     # Both keys must appear because the mime payload carried both selected rows.
     qtbot.waitUntil(
-        lambda: keys[0] in panel.curve_keys() and keys[1] in panel.curve_keys(),
+        lambda: (
+            keys[0] in panel.signal_keys_drawn()
+            and keys[1] in panel.signal_keys_drawn()
+        ),
         timeout=2000,
     )
 
@@ -339,7 +347,7 @@ def test_drop_then_immediate_gesture_does_not_hang(
     assert panel.drop_seen, f"no dropEvent. screenshot: {tmp_path / 'c2.png'}"
 
     # Wait for the drop to fully materialise before exercising the gesture.
-    qtbot.waitUntil(lambda: keys[0] in panel.curve_keys(), timeout=2000)
+    qtbot.waitUntil(lambda: keys[0] in panel.signal_keys_drawn(), timeout=2000)
 
     # Immediately drive a plain left-drag inside the plot (pan/zoom zone — not a
     # QDrag).  Manual at() loop (NOT drive_qdrag) because this is an ordinary

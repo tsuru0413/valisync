@@ -1242,3 +1242,276 @@ def test_rn02_reset_x_returns_to_auto(tmp_path: Path) -> None:
     vm.add_signal(b)  # manual なので拡張しない
     vm.reset_x()
     assert vm.x_range == (0.0, 600.0) and vm._x_range_is_auto is True
+
+
+def test_entry_id_is_monotonic_and_unique(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=2)
+    k0, k1 = [s.name for s in session.signals()][:2]
+    vm = GraphPanelVM(session)
+    vm.add_signal(k0)
+    vm.add_signal(k1)
+    ids = [e["entry_id"] for e in vm.inspect()["plotted_signals"]]
+    assert ids == [0, 1]  # monotonic, in add order
+
+
+def test_same_signal_key_gets_distinct_entry_ids(tmp_path: Path) -> None:
+    # Same signal_key plotted on 2 axes must be tracked as distinct entries.
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    key = next(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)  # axis 0
+    vm.create_new_axis(key)  # separate axis
+    entries = vm.inspect()["plotted_signals"]
+    assert len(entries) == 2
+    assert entries[0]["entry_id"] != entries[1]["entry_id"]
+    assert entries[0]["signal_key"] == entries[1]["signal_key"] == key
+
+
+def test_signal_key_and_axis_reverse_lookup(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    key = next(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    vm.create_new_axis(key)
+    e0, e1 = vm.inspect()["plotted_signals"]
+    assert vm.signal_key_for_entry(e0["entry_id"]) == key
+    assert vm.axis_of_entry(e1["entry_id"]) == e1["axis_index"]
+    assert vm.signal_key_for_entry(999) is None
+    assert vm.axis_of_entry(999) is None
+
+
+def test_render_data_carries_entry_id(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    key = next(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    vm.create_new_axis(key)
+    curves = vm.render_data()
+    plotted_ids = {e["entry_id"] for e in vm.inspect()["plotted_signals"]}
+    assert {c.entry_id for c in curves} == plotted_ids
+
+
+def test_render_data_carries_entry_id_for_missing_signal(tmp_path: Path) -> None:
+    """entry_id survives the sig=None branch (signal removed from session after add)."""
+    session, group_key = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    key = next(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    entry_id = vm.inspect()["plotted_signals"][0]["entry_id"]
+
+    session.remove_group(group_key)  # signal now absent from session -> sig_map miss
+
+    curves = vm.render_data()
+    assert len(curves) == 1
+    assert curves[0].timestamps.size == 0  # confirms the sig=None placeholder branch
+    assert curves[0].entry_id == entry_id
+
+
+def _empty_sig(name: str = "void") -> Signal:
+    """A Signal with zero samples — exercises render_data's empty-ts_slice branch directly.
+
+    Unlike an out-of-range x_range (which RN-01's +/-1 boundary extension still
+    fills with one point), a genuinely zero-length signal forces ts_slice itself
+    to be empty regardless of x_range.
+    """
+    return Signal(
+        name=name,
+        timestamps=np.array([], dtype=np.float64),
+        values=np.array([], dtype=np.float64),
+        file_format="CSV",
+        bus_type="",
+        source_file="",
+    )
+
+
+def test_render_data_carries_entry_id_for_empty_slice(tmp_path: Path) -> None:
+    """entry_id survives the empty-ts_slice branch (zero-sample signal)."""
+    session = Session()
+    key = _register_signal(session, _empty_sig(), tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    entry_id = vm.inspect()["plotted_signals"][0]["entry_id"]
+
+    curves = vm.render_data()
+    assert len(curves) == 1
+    assert curves[0].timestamps.size == 0  # confirms the empty-slice branch
+    assert curves[0].entry_id == entry_id
+
+
+def test_insert_axis_renumbers_entry_ids_to_dest_vm(tmp_path: Path) -> None:
+    """Moving an axis across panels must not collide entry_ids in the destination VM.
+
+    Both source and destination VMs number entries independently starting at 0,
+    so the first signal added to each gets entry_id 0. insert_axis must renumber
+    the moved entries into the destination's id-space rather than carrying the
+    source's ids verbatim (else the destination ends up with duplicate entry_ids).
+    """
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=2)
+    k0, k1 = [s.name for s in session.signals()][:2]
+    src = GraphPanelVM(session)
+    src.add_signal(k0)  # entry_id 0 in src
+    dst = GraphPanelVM(session)
+    dst.add_signal(k1)  # entry_id 0 in dst
+
+    extracted = src.extract_axis(0)
+    assert extracted is not None
+    axis, entries = extracted
+    dst.insert_axis(axis, entries, column=0, position=None)
+
+    ids = [e["entry_id"] for e in dst.inspect()["plotted_signals"]]
+    assert len(ids) == len(set(ids))  # all distinct — no collision
+
+
+def test_toggle_entry_visibility_targets_only_that_entry(tmp_path: Path) -> None:
+    # 同一 signal_key の 2 エントリのうち片方だけを不可視にできる (先頭一致の曖昧さを解消)
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    key = next(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    vm.create_new_axis(key)
+    e0, e1 = vm.inspect()["plotted_signals"]
+    vm.toggle_entry_visibility(e1["entry_id"])
+    vis = {e["entry_id"]: e["visible"] for e in vm.inspect()["plotted_signals"]}
+    assert vis[e0["entry_id"]] is True
+    assert vis[e1["entry_id"]] is False
+
+
+def test_set_color_changes_only_target_and_busts_cache(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    key = next(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    eid = vm.inspect()["plotted_signals"][0]["entry_id"]
+    vm.render_data()  # prime cache
+    vm.set_color(eid, "#123456")
+    # 色は cache_key に含まれない → invalidate されていないと古い色が返る
+    curves = vm.render_data()
+    assert curves[0].color == "#123456"
+    assert vm.inspect()["plotted_signals"][0]["color"] == "#123456"
+
+
+def test_set_color_targets_only_that_entry_when_duplicated(tmp_path: Path) -> None:
+    """set_color must match on entry_id, not signal_key.
+
+    Two entries share the same signal_key here (added on separate axes); a
+    signal_key-matching implementation would recolor both, not just the
+    targeted entry.
+    """
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    key = next(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    vm.create_new_axis(key)  # duplicate signal_key, distinct entry_id
+    e0, e1 = vm.inspect()["plotted_signals"]
+    assert e0["color"] != e1["color"]  # distinct palette slots — sanity check
+    original_e0_color = e0["color"]
+
+    vm.set_color(e1["entry_id"], "#123456")
+
+    colors = {e["entry_id"]: e["color"] for e in vm.inspect()["plotted_signals"]}
+    assert colors[e1["entry_id"]] == "#123456"
+    assert colors[e0["entry_id"]] == original_e0_color  # untouched
+
+
+def test_remove_entry_removes_only_that_entry(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    key = next(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    vm.create_new_axis(key)
+    e0, e1 = vm.inspect()["plotted_signals"]
+    vm.remove_entry(e0["entry_id"])
+    remaining = vm.inspect()["plotted_signals"]
+    assert len(remaining) == 1
+    assert remaining[0]["entry_id"] == e1["entry_id"]
+
+
+def test_toggle_axis_visibility_flips_all_on_axis(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=2)
+    k0, k1 = [s.name for s in session.signals()][:2]
+    vm = GraphPanelVM(session)
+    vm.add_signal(k0)  # axis 0
+    vm.add_signal(k1)  # axis 0 (同 axis)
+    # 1 本でも可視 → 全非表示
+    vm.toggle_axis_visibility(0)
+    assert all(not e["visible"] for e in vm.inspect()["plotted_signals"])
+    # 全非表示 → 全表示
+    vm.toggle_axis_visibility(0)
+    assert all(e["visible"] for e in vm.inspect()["plotted_signals"])
+
+
+def test_toggle_axis_visibility_mixed_state_hides_all(tmp_path: Path) -> None:
+    """From a mixed visible/hidden state, toggle_axis_visibility must hide ALL
+    entries on the axis (any_visible -> hide-all), not flip each entry on its
+    own — a per-entry-flip implementation would leave one visible here.
+    """
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=2)
+    k0, k1 = [s.name for s in session.signals()][:2]
+    vm = GraphPanelVM(session)
+    vm.add_signal(k0)  # axis 0
+    vm.add_signal(k1)  # axis 0 (same axis)
+    e0, _e1 = vm.inspect()["plotted_signals"]
+    vm.toggle_entry_visibility(e0["entry_id"])  # hide k0 only -> mixed state
+
+    vm.toggle_axis_visibility(0)
+
+    assert all(not e["visible"] for e in vm.inspect()["plotted_signals"])
+
+
+def test_toggle_axis_visibility_empty_axis_is_noop(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    key = next(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    vm.toggle_axis_visibility(5)  # 存在しない axis
+    assert vm.inspect()["plotted_signals"][0]["visible"] is True
+
+
+def test_entry_ops_notify_signals(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    key = next(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    eid = vm.inspect()["plotted_signals"][0]["entry_id"]
+    changes: list[str] = []
+    vm.subscribe(changes.append)
+    vm.toggle_entry_visibility(eid)
+    vm.set_color(eid, "#abcdef")
+    assert changes == ["signals", "signals"]
+
+
+def test_remove_entry_and_toggle_axis_notify_and_bust_cache(tmp_path: Path) -> None:
+    """remove_entry / toggle_axis_visibility must notify 'signals' and actually
+    invalidate the render cache, not merely mutate _plotted and rely on the
+    cache key happening to change.
+
+    The remove_entry check hides k0 (leaving it as the removed entry) so the
+    cache key (visible signal keys) is UNCHANGED across the remove: both
+    before and after, k1 is the only visible entry. What DOES change is k1's
+    axis_index — removing k0 empties axis 0, so _compact_axes remaps k1's
+    axis from 1 to 0. A stale (non-invalidated) cache would still hit on the
+    unchanged key and return k1's curve with its old axis_index=1.
+    """
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=2)
+    k0, k1 = [s.name for s in session.signals()][:2]
+    vm = GraphPanelVM(session)
+    vm.add_signal(k0)  # entry e_k0: axis_index 0 (hidden, then removed)
+    vm.create_new_axis(k1)  # entry e_k1: axis_index 1 (stays visible)
+    e_k0, _e_k1 = vm.inspect()["plotted_signals"]
+    vm.toggle_entry_visibility(e_k0["entry_id"])  # hide k0
+
+    changes: list[str] = []
+    vm.subscribe(changes.append)
+
+    vm.render_data()  # prime: cached under visible_keys=(k1,), k1 axis_index=1
+    vm.remove_entry(e_k0["entry_id"])
+    curves = vm.render_data()
+    assert curves[0].axis_index == 0  # remapped; a stale cache would say 1
+    assert "signals" in changes
+
+    changes.clear()
+    before_count = len(vm.render_data())  # k1 alone, visible
+    vm.toggle_axis_visibility(0)  # k1 is now the sole entry on axis 0
+    after_curves = vm.render_data()
+    assert len(after_curves) != before_count  # hidden -> no curve emitted
+    assert "signals" in changes

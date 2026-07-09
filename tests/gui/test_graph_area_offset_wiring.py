@@ -59,7 +59,8 @@ def _first_panel_view(area_view) -> GraphPanelView:
 def test_offset_request_updates_app_and_rerenders(qtbot: QtBot) -> None:
     view, app, _area_vm, signal_key = _area_view(qtbot)
     panel_view = _first_panel_view(view)
-    base = np.asarray(panel_view.curve_xy(signal_key)[0]).copy()
+    eid = panel_view.entry_id_for(signal_key)
+    base = np.asarray(panel_view.curve_xy(eid)[0]).copy()
 
     # Wide x_range so the +0.5 shifted data (0.5-0.79) stays in view after the
     # broadcast refresh.  Without this the auto-fit window (~0-0.29) excludes the
@@ -73,7 +74,7 @@ def test_offset_request_updates_app_and_rerenders(qtbot: QtBot) -> None:
         QApplication.processEvents()
 
     assert app.signal_offsets == {signal_key: 0.5}
-    after = np.asarray(panel_view.curve_xy(signal_key)[0])
+    after = np.asarray(panel_view.curve_xy(eid)[0])
     np.testing.assert_allclose(after, base + 0.5)
 
 
@@ -114,28 +115,30 @@ def test_dragged_panel_rerenders_clipped_not_preview(qtbot: QtBot) -> None:
     for _ in range(3):
         QApplication.processEvents()
 
-    full_len = len(np.asarray(p0.curve_xy(signal_key)[0]))
+    eid0 = p0.entry_id_for(signal_key)
+    eid1 = p1.entry_id_for(signal_key)
+    full_len = len(np.asarray(p0.curve_xy(eid0)[0]))
 
     # Put p0 into the mid-drag state the real gesture leaves at release time, then
     # finish through the real apply path (apply_dialog_fn → "signal").  The pixel→
     # Δt conversion is hard to pin, so the state is set directly; the finish→emit→
     # broadcast→refresh path under test is exercised unchanged.
-    xs0, ys0 = p0._items[signal_key].getData()
+    xs0, ys0 = p0._items[eid0].getData()
     p0._apply_dialog_fn = lambda k, dt: "signal"  # type: ignore[assignment]
-    p0._offset_drag_key = signal_key
+    p0._offset_drag_key = eid0
     p0._offset_drag_start_x = 0.0
     p0._offset_orig_xy = (np.asarray(xs0).copy(), np.asarray(ys0).copy())
-    p0._offset_orig_pen = p0._items[signal_key].opts.get("pen")
+    p0._offset_orig_pen = p0._items[eid0].opts.get("pen")
     p0._offset_last_delta = 0.15
-    p0._items[signal_key].setData(np.asarray(xs0) + 0.15, ys0)  # preview applied
+    p0._items[eid0].setData(np.asarray(xs0) + 0.15, ys0)  # preview applied
 
-    p0._finish_offset(signal_key, 0.15)
+    p0._finish_offset(eid0, 0.15)
     for _ in range(3):
         QApplication.processEvents()
 
     assert app.signal_offsets == {signal_key: 0.15}
-    x0 = np.asarray(p0.curve_xy(signal_key)[0])
-    x1 = np.asarray(p1.curve_xy(signal_key)[0])
+    x0 = np.asarray(p0.curve_xy(eid0)[0])
+    x1 = np.asarray(p1.curve_xy(eid1)[0])
     # Clipping must have shortened the render (else the test cannot distinguish
     # preview from clipped — guards the test's own meaningfulness).
     assert len(x1) < full_len

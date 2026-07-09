@@ -128,7 +128,7 @@ class TestSignalDropToPanel:
         qtbot.addWidget(panel)
         panel.dropEvent(_drop_event(mime))
 
-        assert set(panel.curve_keys()) == {f"{key}::a", f"{key}::b"}
+        assert set(panel.signal_keys_drawn()) == {f"{key}::a", f"{key}::b"}
 
     def test_drag_enter_highlights_panel(self, qtbot: QtBot, tmp_path: Path) -> None:
         from valisync.gui.views.graph_panel_view import GraphPanelView

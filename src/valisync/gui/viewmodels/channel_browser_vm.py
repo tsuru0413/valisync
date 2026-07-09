@@ -24,7 +24,6 @@ class SignalItem:
     name: str  # Original name, e.g. "speed"
     unit: str  # Physical unit, e.g. "km/h"
     key: str  # Full namespaced key, e.g. "csv_1::speed"
-    visible: bool = True
     tooltip: str = ""  # value_labels のラベル行 (LD-07・空=ツールチップなし)
 
 
@@ -58,8 +57,6 @@ class ChannelBrowserVM(Observable):
         self._app_vm = app_vm
         self._filter_text: str = ""
         self._selection: list[str] = []
-        # Visibility defaults to True; only keys explicitly toggled-off are stored.
-        self._hidden: set[str] = set()
 
         # Subscribe to AppViewModel events to react to file selection changes
         self._unsubscribe = self._app_vm.subscribe(self._on_app_change)
@@ -94,7 +91,6 @@ class ChannelBrowserVM(Observable):
                     name=orig_name,
                     unit=str(unit),
                     key=sig.name,
-                    visible=sig.name not in self._hidden,
                     tooltip=_labels_tooltip(sig.metadata),
                 )
             )
@@ -162,32 +158,6 @@ class ChannelBrowserVM(Observable):
     def selected(self) -> list[str]:
         """Return the current selection as a list of namespaced signal names."""
         return list(self._selection)
-
-    # ─── Visibility ──────────────────────────────────────────────────────────
-
-    def toggle_visibility(self, signal_key: str) -> None:
-        """Flip the visibility of *signal_key*."""
-        if signal_key in self._hidden:
-            self._hidden.discard(signal_key)
-        else:
-            self._hidden.add(signal_key)
-        self._notify("visibility")
-
-    def is_visible(self, signal_key: str) -> bool:
-        """Return True if *signal_key* is currently visible."""
-        return signal_key not in self._hidden
-
-    def visible_signal_keys(self) -> list[str]:
-        """Return the namespaced names of all currently-visible signals in active file."""
-        active_key = self._app_vm.active_file_key
-        if not active_key:
-            return []
-
-        try:
-            group_sigs = self._app_vm.session.group_signals(active_key)
-        except KeyError:
-            return []
-        return [sig.name for sig in group_sigs if sig.name not in self._hidden]
 
     # ─── Event Handling ──────────────────────────────────────────────────────
 

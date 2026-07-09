@@ -60,6 +60,7 @@ class RenderCurve:
     timestamps: np.ndarray  # float64, already LOD-reduced if applicable
     values: np.ndarray  # float64, same length as timestamps
     axis_index: int = 0  # Added for multi-axis support
+    entry_id: int = 0  # stable curve id (View internal key, per-entry op targeting)
 
 
 @dataclass
@@ -111,6 +112,8 @@ class _PlottedEntry:
     color: str
     visible: bool = True
     axis_index: int = 0
+    # monotonic stable id, distinguishes entries sharing a signal_key
+    entry_id: int = 0
 
 
 class GraphPanelVM(Observable):
@@ -126,6 +129,7 @@ class GraphPanelVM(Observable):
         super().__init__()
         self._session = session
         self._plotted: list[_PlottedEntry] = []
+        self._next_entry_id: int = 0  # monotonic id issued on each add
         self.x_range: tuple[float, float] | None = None
         # RN-02: x_range が「自動フィット由来」か「手動ズーム由来」かを区別する。
         # None チェックだけだと初回オートフィット後の非 None を手動と誤認し、
@@ -205,8 +209,15 @@ class GraphPanelVM(Observable):
     def add_signal_to_axis(self, signal_key: str, axis_index: int) -> None:
         """Add *signal_key* to a specific axis."""
         color = _PALETTE[len(self._plotted) % len(_PALETTE)]
+        entry_id = self._next_entry_id
+        self._next_entry_id += 1
         self._plotted.append(
-            _PlottedEntry(signal_key=signal_key, color=color, axis_index=axis_index)
+            _PlottedEntry(
+                signal_key=signal_key,
+                color=color,
+                axis_index=axis_index,
+                entry_id=entry_id,
+            )
         )
 
         # Propagate unit + representative name from signal to axis.
@@ -344,6 +355,11 @@ class GraphPanelVM(Observable):
         self._axes.append(axis)
         for e in entries:
             e.axis_index = new_index
+            # Cross-panel move: entry_id is unique only within a VM, so the
+            # source VM's id can collide with an existing id in this (dest) VM.
+            # Renumber into this VM's id-space; color/axis settings are kept.
+            e.entry_id = self._next_entry_id
+            self._next_entry_id += 1
             self._plotted.append(e)
         # Drop the target's initial empty placeholder (mirrors create_new_axis), so
         # dropping onto a blank panel does not leave a phantom empty axis band.
@@ -492,6 +508,55 @@ class GraphPanelVM(Observable):
         self._invalidate_cache()
         self._notify("signals")
 
+    def toggle_entry_visibility(self, entry_id: int) -> None:
+        """Flip the visibility of the entry with *entry_id* (entry-addressed)."""
+        for e in self._plotted:
+            if e.entry_id == entry_id:
+                e.visible = not e.visible
+                break
+        self._invalidate_cache()
+        self._notify("signals")
+
+    def set_color(self, entry_id: int, color: str) -> None:
+        """Set the colour of the entry with *entry_id* and bust the render cache.
+
+        Colour is intentionally NOT part of _make_cache_key, so the cache must be
+        invalidated here or render_data would return the stale-coloured curve.
+        """
+        for e in self._plotted:
+            if e.entry_id == entry_id:
+                e.color = color
+                break
+        self._invalidate_cache()
+        self._notify("signals")
+
+    def remove_entry(self, entry_id: int) -> None:
+        """Remove the entry with *entry_id* and reconcile axes (entry-addressed).
+
+        Mirrors remove_signal but targets one entry: survivors keep their
+        heights, the vacated axis band stays blank, and the panel collapses to a
+        placeholder only when the last entry is removed (via _compact_axes).
+        """
+        self._plotted = [e for e in self._plotted if e.entry_id != entry_id]
+        self._compact_axes()
+        self._invalidate_cache()
+        self._notify("signals")
+
+    def toggle_axis_visibility(self, axis_index: int) -> None:
+        """Flip visibility of all entries on *axis_index* (H fallback, DP5).
+
+        If any entry on the axis is visible, hide them all; otherwise show them
+        all. No-op when the axis has no entries.
+        """
+        on_axis = [e for e in self._plotted if e.axis_index == axis_index]
+        if not on_axis:
+            return
+        any_visible = any(e.visible for e in on_axis)
+        for e in on_axis:
+            e.visible = not any_visible
+        self._invalidate_cache()
+        self._notify("signals")
+
     # ─── Range management ────────────────────────────────────────────────────
 
     def set_x_range(self, lo: float, hi: float) -> None:
@@ -611,6 +676,8 @@ class GraphPanelVM(Observable):
                         color=entry.color,
                         timestamps=np.empty(0, dtype=np.float64),
                         values=np.empty(0, dtype=np.float64),
+                        axis_index=entry.axis_index,
+                        entry_id=entry.entry_id,
                     )
                 )
                 continue
@@ -646,6 +713,7 @@ class GraphPanelVM(Observable):
                         timestamps=np.empty(0, dtype=np.float64),
                         values=np.empty(0, dtype=np.float64),
                         axis_index=entry.axis_index,
+                        entry_id=entry.entry_id,
                     )
                 )
                 continue
@@ -680,6 +748,7 @@ class GraphPanelVM(Observable):
                     timestamps=out_ts,
                     values=out_vs,
                     axis_index=entry.axis_index,
+                    entry_id=entry.entry_id,
                 )
             )
 
@@ -878,6 +947,20 @@ class GraphPanelVM(Observable):
             )
         return out
 
+    def signal_key_for_entry(self, entry_id: int) -> str | None:
+        """Return the signal_key of the entry with *entry_id* (None if absent)."""
+        for e in self._plotted:
+            if e.entry_id == entry_id:
+                return e.signal_key
+        return None
+
+    def axis_of_entry(self, entry_id: int) -> int | None:
+        """Return the axis_index of the entry with *entry_id* (None if absent)."""
+        for e in self._plotted:
+            if e.entry_id == entry_id:
+                return e.axis_index
+        return None
+
     # ─── Introspection ────────────────────────────────────────────────────────
 
     def inspect(self) -> dict[str, Any]:
@@ -892,6 +975,7 @@ class GraphPanelVM(Observable):
                     "color": e.color,
                     "visible": e.visible,
                     "axis_index": e.axis_index,
+                    "entry_id": e.entry_id,
                 }
                 for e in self._plotted
             ],
