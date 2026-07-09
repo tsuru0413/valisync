@@ -239,6 +239,19 @@ class CursorReadout(QWidget):
         """
         return list(self._rows)
 
+    def table_tsv(self) -> str:
+        """表示中の列・現在精度・単位を反映した TSV を返す (PC-10)。
+
+        1 行目はヘッダ (信号列+データ列見出し。global モードは列見出しが空なので
+        単一の 値 列)。以降は各行 表示名(単位込み) + 各セル。_row_cells は
+        _rebuild 時点の表示整形済みデータ (精度・単位が既に反映済み)。
+        """
+        data_headers = self._col_headers if self._col_headers else ["値"]
+        lines = ["\t".join(["信号", *data_headers])]
+        for disp_name, cells in self._row_cells:
+            lines.append("\t".join([disp_name, *cells]))
+        return "\n".join(lines)
+
     def was_user_moved(self) -> bool:
         """True once the user has drag-repositioned the readout (PC-21)."""
         return self._user_moved

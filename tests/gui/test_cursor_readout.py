@@ -303,3 +303,36 @@ def test_stat_toggle_reretains_interp_label(qtbot: QtBot):
     # legacy stat-toggle 再描画 (_on_stat_toggled 未 wire) で interp_label を欠落しない
     ro._toggle_stat("count", False)
     assert "線形" in ro.header_text()
+
+
+def test_table_tsv_global(qtbot: QtBot):
+    ro = CursorReadout()
+    qtbot.addWidget(ro)
+    ro.set_global(
+        0.0,
+        [
+            CursorReading("spd", "#fff", 1.5, True, unit="km/h"),
+            CursorReading("rpm", "#fff", 800.0, True),
+        ],
+        precision=6,
+    )
+    tsv = ro.table_tsv()
+    lines = tsv.splitlines()
+    assert lines[0].split("\t") == ["信号", "値"]
+    assert lines[1].split("\t") == ["spd [km/h]", "1.5"]
+    assert lines[2].split("\t") == ["rpm", "800"]
+
+
+def test_table_tsv_delta_reflects_visible_stats(qtbot: QtBot):
+    ro = CursorReadout()
+    qtbot.addWidget(ro)
+    ro.sync_visible_stats({"mean"})  # count 等を非表示
+    stats = _stats(2.0, 3.0, 1.0, 0.5, 4)
+    ro.set_delta(
+        0.0,
+        1.0,
+        [DeltaReading("a", "#fff", 1.0, 0.5, stats, True)],
+        precision=6,
+    )
+    header = ro.table_tsv().splitlines()[0].split("\t")
+    assert header == ["信号", "A値", "Δy", "mean"]  # 表示中の列のみ
