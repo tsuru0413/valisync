@@ -56,12 +56,16 @@ def test_add_to_panel_menu_appears_on_real_os_right_click(
     view.show()
     qtbot.waitExposed(view)
     qtbot.waitUntil(
-        lambda: view.tree.visualRect(view.model.index(0, 0)).height() > 0,
+        lambda: view.tree.visualRect(view.proxy.index(0, 0)).height() > 0,
         timeout=3000,
     )
 
     # Select the first signal row so "Add to Active Panel" is enabled.
-    index = view.model.index(0, 0)
+    # Proxy index (not source): the tree is bound to the sort proxy (Task 3/PC-20),
+    # so visualRect/selection require indexes from the proxy — a source index gives
+    # an empty visualRect (isIndexValid fails the model check). Pass-through proxy,
+    # so proxy.index(0,0) maps 1:1 to the source row.
+    index = view.proxy.index(0, 0)
     view.tree.selectionModel().select(
         index,
         QItemSelectionModel.SelectionFlag.Select

@@ -82,7 +82,7 @@ def _make_browser_and_panel(qtbot: QtBot, tmp_path: Path):
         w.show()
         qtbot.waitExposed(w)
     qtbot.waitUntil(
-        lambda: browser.tree.visualRect(browser.model.index(0, 0)).height() > 0,
+        lambda: browser.tree.visualRect(browser.proxy.index(0, 0)).height() > 0,
         timeout=3000,
     )
     QApplication.processEvents()
@@ -95,7 +95,7 @@ def _make_browser_and_panel(qtbot: QtBot, tmp_path: Path):
 
 def _row_phys(browser, row: int) -> tuple[int, int]:
     """Physical-pixel center of a ChannelBrowser tree row."""
-    idx = browser.model.index(row, 0)
+    idx = browser.proxy.index(row, 0)
     dpr = browser.devicePixelRatioF()
     center = browser.tree.visualRect(idx).center()
     gp = browser.tree.viewport().mapToGlobal(center)
@@ -421,7 +421,7 @@ def test_drop_highlight_visible_mid_drag(qtbot: QtBot, tmp_path: Path) -> None:
         w.show()
         qtbot.waitExposed(w)
     qtbot.waitUntil(
-        lambda: browser.tree.visualRect(browser.model.index(0, 0)).height() > 0,
+        lambda: browser.tree.visualRect(browser.proxy.index(0, 0)).height() > 0,
         timeout=3000,
     )
     QApplication.processEvents()
