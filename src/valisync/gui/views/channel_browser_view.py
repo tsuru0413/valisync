@@ -173,11 +173,6 @@ class ChannelBrowserView(QWidget):
 
     # ─── Commands ────────────────────────────────────────────────────────────--
 
-    def toggle_visibility_for_selection(self) -> None:
-        """Flip visibility on every selected signal."""
-        for key in self.selected_signal_keys():
-            self._vm.toggle_visibility(key)
-
     def _emit_add_selected(self) -> None:
         """Emit add_to_panel_requested for the current selection (PC-02/PC-04 共用)."""
         keys = self.selected_signal_keys()
