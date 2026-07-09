@@ -2103,7 +2103,7 @@ class GraphPanelView(QWidget):
         reset_act.setEnabled(current_offset != 0.0)
         reset_act.triggered.connect(lambda *_: self._prompt_offset_reset(entry_id))
         if current_offset != 0.0:
-            info = menu.addAction(f"オフセット: {current_offset:+.3g}s")
+            info = menu.addAction(f"オフセット: {current_offset:+.3f}s")
             info.setEnabled(False)
         return menu
 
@@ -2138,7 +2138,7 @@ class GraphPanelView(QWidget):
         dlg = QDialog(self)
         dlg.setWindowTitle("時間オフセット")
         lay = QVBoxLayout(dlg)
-        lay.addWidget(QLabel(f"現在のオフセット: {current:+.3g} s"))
+        lay.addWidget(QLabel(f"現在のオフセット: {current:+.3f} s"))
         lay.addWidget(QLabel("追加する Δt (秒):"))
         dt_edit = QLineEdit("0")
         lay.addWidget(dt_edit)

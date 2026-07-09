@@ -890,7 +890,8 @@ class TestCurveMenuAxisMoveAndOffset:
         assert reset_act.isEnabled() is True
         info = next(a for a in menu.actions() if a.text().startswith("オフセット: "))
         assert info.isEnabled() is False
-        assert "+0.5" in info.text()
+        # 固定小数で表示 (spec §182 の "+0.250s" 形式・sci-notation を避ける)
+        assert info.text() == "オフセット: +0.500s"
 
     def test_curve_menu_offset_input_emits_apply(self, qtbot: QtBot) -> None:
         from valisync.gui.views.graph_panel_view import GraphPanelView
