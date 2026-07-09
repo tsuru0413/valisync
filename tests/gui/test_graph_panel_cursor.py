@@ -560,3 +560,7 @@ def test_dragging_b_line_activates_b(qtbot: QtBot) -> None:
     view._active_cursor = "A"
     view._cursor_line_b.setValue(0.6)  # fires sigPositionChanged → handler
     assert view.active_cursor() == "B"
+    # drag-order correctness: the visible pen width must follow active_cursor.
+    # A reversed statement order (set active AFTER vm.set_cursor_b) would leave
+    # active_cursor()=="B" passing while the reentrant sync painted A thick.
+    assert view.cursor_line_width("B") > view.cursor_line_width("A")
