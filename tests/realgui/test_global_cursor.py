@@ -7,21 +7,113 @@
 from __future__ import annotations
 
 import contextlib
+import threading
 import time
 
 import pytest
+from PySide6.QtCore import QPointF
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from tests.realgui._realgui_input import (
     LDOWN,
     LUP,
     MOVE,
+    RDOWN,
+    RUP,
+    VK_ESCAPE,
+    VK_RIGHT,
     at,
     skip_unless_real_display,
     to_phys,
 )
+from tests.realgui._realgui_input import key as key_input
 
 pytestmark = pytest.mark.realgui
+
+
+def _menu_hang_watchdog(stop: threading.Event) -> None:
+    """Force-close a stuck ``QMenu.exec()`` modal loop by sending a real Escape.
+
+    ``contextMenuEvent`` calls ``menu.exec(globalPos)`` synchronously — a *nested*
+    Qt event loop. If the real click on a menu row misses its target (wrong
+    geometry, DPI mismatch, or the right-click never raised the menu at all),
+    nothing closes the popup and the nested ``menu.exec()`` blocks forever; the
+    caller's outer ``QTimer.singleShot(5000, loop.quit)`` safety net only reaches
+    the OUTER loop and cannot unwind the nested exec(). QMenu treats Escape as
+    "close", so this daemon thread sends ``VK_ESCAPE`` after a deadline and the
+    test then fails on a clean assertion instead of hanging. Ground truth for
+    "did it hang" is whether the caller's ``loop.exec()`` returned: the caller
+    sets ``stop`` immediately after, so in the happy path this thread sees
+    ``stop`` well before its deadline and never fires. (module-local copy of the
+    helper established in test_axis_menu_offset.py — kept per-file to avoid
+    cross-test-module imports.)
+    """
+    deadline = time.time() + 4.0
+    while time.time() < deadline and not stop.is_set():
+        time.sleep(0.1)
+    if not stop.is_set():
+        key_input(VK_ESCAPE)
+
+
+def _open_menu_click_item(dpr_widget, phys, item_text, shot_menu):  # type: ignore[no-untyped-def]
+    """Real right-click at *phys*, screenshot the popup, then real-click its row
+    labelled *item_text*. Returns the captured dict {type, actions, clicked}.
+
+    Mirrors the established modal-menu pattern (test_axis_menu_offset.py::
+    _open_menu_click_item): the QMenu opens inside contextMenuEvent's synchronous
+    exec(), and the capture singleShot fires *inside* that nested modal loop. The
+    clicked-row rect is mapped to physical pixels via popup.mapToGlobal x DPR
+    (widget-space convention). A menu-hang watchdog guards against the click
+    missing its target.
+    """
+    from PySide6.QtCore import QEventLoop, QTimer
+    from PySide6.QtWidgets import QApplication, QMenu
+
+    px, py = phys
+    captured: dict[str, object] = {}
+    loop = QEventLoop()
+
+    def _do_right_click() -> None:
+        at(px, py, RDOWN)
+        at(px, py, RUP)
+        # The context-menu QMenu.exec() opens here (real OS WM_CONTEXTMENU);
+        # _capture_and_click (a later singleShot) runs inside its modal loop.
+
+    def _capture_and_click() -> None:
+        popup = QApplication.activePopupWidget()
+        captured["type"] = type(popup).__name__ if popup is not None else None
+        with contextlib.suppress(Exception):
+            QApplication.primaryScreen().grabWindow(0).save(str(shot_menu))
+        if isinstance(popup, QMenu):
+            captured["actions"] = [a.text() for a in popup.actions()]
+            act = next((a for a in popup.actions() if a.text() == item_text), None)
+            if act is not None:
+                r = popup.actionGeometry(act)
+                dpr = dpr_widget.devicePixelRatioF()
+                gp = popup.mapToGlobal(r.center())
+                hx, hy = round(gp.x() * dpr), round(gp.y() * dpr)
+                at(hx, hy, LDOWN)
+                at(hx, hy, LUP)
+                # Firing at the rect is NOT proof it landed/dismissed the menu
+                # (menu.exec() may still be blocked; see _menu_hang_watchdog).
+                # The real evidence is the per-test effect assertion.
+                captured["clicked"] = True
+        loop.quit()
+
+    stop = threading.Event()
+    watchdog = threading.Thread(target=_menu_hang_watchdog, args=(stop,), daemon=True)
+    watchdog.start()
+
+    QTimer.singleShot(300, _do_right_click)
+    QTimer.singleShot(900, _capture_and_click)
+    QTimer.singleShot(5000, loop.quit)  # outer safety net
+    loop.exec()
+
+    # loop.exec() returned -> any nested menu.exec() already unwound; stop the
+    # watchdog before it can fire a stray Escape at a later test/dialog.
+    stop.set()
+    watchdog.join(timeout=2.0)
+    return captured
 
 
 def _shown_panel(qtbot: QtBot):
@@ -216,3 +308,108 @@ def test_real_drag_b_cursor_stats_live_recalc(qtbot: QtBot, tmp_path) -> None:
         QApplication.primaryScreen().grabWindow(0).save(
             str(tmp_path / "stats_live.png")
         )
+
+
+# ─── 増分3a: 実 ←/→ でカーソルをサンプルスナップ移動 (PC-08) ──────────────────
+
+
+def test_real_arrow_keys_step_cursor(qtbot: QtBot, tmp_path) -> None:
+    """A 線をトグル設置 → ウィンドウを前面/アクティブ化 → 実 → キーで cursor 値が増加。
+
+    実 OS キー (keybd_event VK_RIGHT) が GraphPanelView.keyPressEvent に届き
+    vm.step_cursor 経由でカーソルが次サンプルへスナップする経路 (②の load-bearing:
+    cursor_line_value の数値変化) を実機で証明する。合成 QTest.keyClick は
+    keyPressEvent を直送してしまい、フォーカス/前面化の欠落を見逃す (Layer B 偽装)。
+    """
+    skip_unless_real_display()
+    from PySide6.QtWidgets import QApplication
+
+    view = _shown_panel(qtbot)
+    view.vm.x_range = view.vm.x_range or (0.0, 1.0)
+    view.vm.toggle_main_cursor(True)
+    for _ in range(3):
+        QApplication.processEvents()
+    assert view.cursor_line_visible()
+
+    # Real OS keys only reach the app if its window is the foreground/active
+    # window; _shown_panel only sets WindowStaysOnTopHint (visual) so raise +
+    # activate here, then land keyboard focus on the View (ClickFocus accepts a
+    # programmatic setFocus once the window is active).
+    view.raise_()
+    view.activateWindow()
+    qtbot.waitUntil(view.isActiveWindow, timeout=3000)
+    view.setFocus()
+    for _ in range(3):
+        QApplication.processEvents()
+    assert view.hasFocus(), (
+        "GraphPanelView did not take keyboard focus — a real arrow key would "
+        "not reach keyPressEvent (focus routing defect, not a test artefact)."
+    )
+
+    x_before = view.cursor_line_value()
+    key_input(VK_RIGHT)  # real OS Key_Right (keybd_event)
+    for _ in range(6):
+        QApplication.processEvents()
+        time.sleep(0.02)
+    with contextlib.suppress(Exception):
+        QApplication.primaryScreen().grabWindow(0).save(
+            str(tmp_path / "arrow_step.png")
+        )
+    assert view.cursor_line_value() > x_before, (
+        "real → key did not advance the cursor to the next sample "
+        f"(before={x_before!r}, after={view.cursor_line_value()!r}). The key may "
+        "not be reaching GraphPanelView.keyPressEvent (window not active / focus "
+        "on a child that consumes arrow keys)."
+    )
+
+
+def test_real_right_click_cursor_line_clears(qtbot: QtBot, tmp_path) -> None:
+    """A 線を設置 → 線上を実右クリック → 「カーソルを消す」を実クリック → カーソル消滅。
+
+    contextMenuEvent のカーソル線分岐 (_cursor_line_at → build_cursor_menu) が実 OS
+    右クリック経路で機能することを証明する。右クリックがカーソル線で消費されたり
+    pyqtgraph 既定メニューが勝った場合は captured["type"] != "QMenu" で clean-fail。
+    """
+    skip_unless_real_display()
+    from PySide6.QtWidgets import QApplication
+
+    view = _shown_panel(qtbot)
+    view.vm.x_range = view.vm.x_range or (0.0, 1.0)
+    view.vm.toggle_main_cursor(True)  # A at 50% — inside the visible plot rect
+    for _ in range(3):
+        QApplication.processEvents()
+    assert view.cursor_line_visible()
+
+    # Physical screen point ON the A cursor line: its data-x → scene → widget →
+    # physical pixels. y at the plot centre keeps the grab point inside the
+    # visible plot rect (memory gui_realgui_offscreen_target_opens_os_system_menu:
+    # right-clicking outside the drawn rect opens the OS window menu instead).
+    line_x = view.cursor_line_value()
+    sx = view._view_boxes[0].mapViewToScene(QPointF(line_x, 0.0)).x()
+    _sx, sy, _ = _scene_center(view)
+    target = to_phys(view, sx, sy)
+
+    shot_menu = tmp_path / "cursor_menu_00_open.png"
+    captured = _open_menu_click_item(view, target, "カーソルを消す", shot_menu)
+
+    for _ in range(6):
+        QApplication.processEvents()
+        time.sleep(0.02)
+    shot_after = tmp_path / "cursor_menu_01_after_clear.png"
+    with contextlib.suppress(Exception):
+        QApplication.primaryScreen().grabWindow(0).save(str(shot_after))
+
+    assert captured.get("type") == "QMenu", (
+        "real right-click on the A cursor line did not raise the cursor menu (got "
+        f"{captured.get('type')!r}) — event may be swallowed by the line item or "
+        f"pyqtgraph's default. screenshot: {shot_menu}"
+    )
+    actions = captured.get("actions") or []
+    assert "カーソルを消す" in actions, (
+        f"cursor menu missing 'カーソルを消す': {actions!r}"
+    )
+    assert captured.get("clicked"), "real click on 'カーソルを消す' failed to fire"
+    assert not view.cursor_line_visible(), (
+        "cursor line still visible after a real click on 'カーソルを消す' "
+        f"(vm.cursor_t={view.vm.cursor_t!r}). screenshots: {shot_menu}, {shot_after}"
+    )
