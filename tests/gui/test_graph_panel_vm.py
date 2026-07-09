@@ -1708,3 +1708,29 @@ def test_toggle_grid_updates_and_notifies(tmp_path):
     assert "grid" in seen
     vm.toggle_grid(False)
     assert vm.grid_enabled is False
+
+
+# ─── RN-03: height-only resize guard ─────────────────────────────────────────
+
+
+def test_set_panel_width_unchanged_is_noop(tmp_path: Path) -> None:
+    """A height-only resize re-calls set_panel_width with the SAME width. Since
+    LOD depends on panel_width_px (never height), that must NOT invalidate the
+    cache or notify (RN-03). A different width still invalidates as before."""
+    vm = _loaded_vm(tmp_path)
+    vm.set_panel_width(640)  # move off the 800 default to a known width
+
+    calls: list[int] = []
+    original = vm._invalidate_cache
+
+    def spy() -> None:
+        calls.append(1)
+        original()
+
+    vm._invalidate_cache = spy  # type: ignore[method-assign]
+
+    vm.set_panel_width(640)  # same width -> no work
+    assert calls == []
+
+    vm.set_panel_width(320)  # different width -> invalidates like before
+    assert calls == [1]

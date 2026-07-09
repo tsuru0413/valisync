@@ -729,7 +729,15 @@ class GraphPanelVM(Observable):
         self._notify("range")
 
     def set_panel_width(self, px: int) -> None:
-        """Update the panel pixel width; invalidates the render cache."""
+        """Update the panel pixel width; invalidates the render cache.
+
+        Height-only resizes re-call this with an unchanged width. LOD depends on
+        panel_width_px (part of the render cache key), never on height, so
+        re-fitting then is pure waste -- bail out unless the pixel budget
+        actually changed (RN-03).
+        """
+        if px == self.panel_width_px:
+            return
         self.panel_width_px = px
         self._invalidate_cache()
         self._notify("range")
