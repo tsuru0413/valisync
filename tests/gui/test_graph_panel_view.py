@@ -14,10 +14,13 @@ TDD: written before the view exists; all must FAIL first.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import Mock
 
 import numpy as np
-from PySide6.QtCore import QEvent, QPointF, QSize, Qt
-from PySide6.QtGui import QDropEvent, QMouseEvent, QResizeEvent
+import pytest
+from PySide6.QtCore import QEvent, QPoint, QPointF, QSize, Qt
+from PySide6.QtGui import QContextMenuEvent, QDropEvent, QMouseEvent, QResizeEvent
+from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from valisync.core.models import Delimiter, FormatDefinition
@@ -535,3 +538,247 @@ class TestCurveActivation:
 
         qtbot.keyClick(view, Qt.Key.Key_H)
         assert all(not e["visible"] for e in vm.inspect()["plotted_signals"])
+
+
+# ─── Task 6: 曲線右クリックメニュー (非表示/色変更/削除) + ルーティング骨格 ────────
+
+
+def _color_submenu(menu: object) -> tuple[object, object]:
+    """Return (action, submenu) for the curve menu's "色変更" entry.
+
+    PySide/shiboken ties a QAction.menu() wrapper's validity to the QAction
+    object it was fetched from: chaining ``next(a.menu() for a in ...)`` in a
+    single expression discards that QAction the instant next() returns, and
+    the returned submenu is then reported "already deleted" on the next
+    access -- even though the underlying (Qt-parented) QMenu is still alive.
+    Keeping both the action and the submenu alive as separate locals avoids it.
+    """
+    action = next(a for a in menu.actions() if "色変更" in a.text())  # type: ignore[attr-defined]
+    return action, action.menu()  # type: ignore[attr-defined]
+
+
+class TestCurveContextMenu:
+    """PC-01 (spec §4.3, 増分2a サブセット): build_curve_menu の各項目。
+
+    軸移動・オフセット項目は 増分2b のため、ここでは意図的に含まない。
+    """
+
+    def test_right_click_on_curve_shows_curve_menu(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        # 曲線位置の右クリックで曲線メニューが構築される (項目内容の検証)
+        session, _ = _loaded_session(tmp_path, n_signals=1)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal(key)
+        view.refresh()  # type: ignore[attr-defined]
+        eid = view.curve_keys()[0]  # type: ignore[attr-defined]
+        menu = view.build_curve_menu(eid)  # type: ignore[attr-defined]
+        labels = [a.text() for a in menu.actions() if a.text()]
+        assert "非表示" in labels
+        assert "削除" in labels
+        assert any("色変更" in a.text() for a in menu.actions())
+
+    def test_curve_menu_hide_toggles_visibility(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        session, _ = _loaded_session(tmp_path, n_signals=1)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal(key)
+        view.refresh()  # type: ignore[attr-defined]
+        eid = view.curve_keys()[0]  # type: ignore[attr-defined]
+        menu = view.build_curve_menu(eid)  # type: ignore[attr-defined]
+        hide = next(a for a in menu.actions() if a.text() == "非表示")
+        hide.trigger()
+        assert vm.inspect()["plotted_signals"][0]["visible"] is False
+
+    def test_curve_menu_color_swatch_sets_color(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        # パレットスウォッチのクリック相当 (trigger) が VM の set_color まで届く
+        session, _ = _loaded_session(tmp_path, n_signals=1)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal(key)
+        view.refresh()  # type: ignore[attr-defined]
+        eid = view.curve_keys()[0]  # type: ignore[attr-defined]
+        menu = view.build_curve_menu(eid)  # type: ignore[attr-defined]
+        _color_action, color_menu = _color_submenu(menu)
+        assert color_menu is not None
+        swatch = color_menu.actions()[0]  # type: ignore[attr-defined]  # _PALETTE[0] の hex ラベル
+        swatch.trigger()
+        assert vm.inspect()["plotted_signals"][0]["color"] == swatch.text()
+
+    def test_curve_menu_delete_removes_entry(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        session, _ = _loaded_session(tmp_path, n_signals=1)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal(key)
+        view.refresh()  # type: ignore[attr-defined]
+        eid = view.curve_keys()[0]  # type: ignore[attr-defined]
+        view._active_curve_id = eid  # type: ignore[attr-defined]
+        menu = view.build_curve_menu(eid)  # type: ignore[attr-defined]
+        delete = next(a for a in menu.actions() if a.text() == "削除")
+        delete.trigger()
+        assert vm.inspect()["plotted_signals"] == []
+        assert view.active_curve_id() is None  # type: ignore[attr-defined]  # 削除で解除
+
+    def test_curve_menu_custom_color_uses_injected_dialog(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        from valisync.gui.views.graph_panel_view import GraphPanelView
+
+        session, _ = _loaded_session(tmp_path, n_signals=1)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = GraphPanelView(vm, color_dialog_fn=lambda: "#0a0b0c")
+        qtbot.addWidget(view)
+        vm.add_signal(key)
+        view.refresh()  # type: ignore[attr-defined]
+        eid = view.curve_keys()[0]  # type: ignore[attr-defined]
+        menu = view.build_curve_menu(eid)  # type: ignore[attr-defined]
+        _color_action, color_menu = _color_submenu(menu)
+        other = next(a for a in color_menu.actions() if a.text() == "その他…")  # type: ignore[attr-defined]
+        other.trigger()
+        assert vm.inspect()["plotted_signals"][0]["color"] == "#0a0b0c"
+
+    def test_custom_color_dialog_cancel_leaves_color_unchanged(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        # DI スタブが None (キャンセル相当) を返すとき _pick_custom_color は
+        # set_color を呼ばない (ガード確認)。
+        from valisync.gui.views.graph_panel_view import GraphPanelView
+
+        session, _ = _loaded_session(tmp_path, n_signals=1)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = GraphPanelView(vm, color_dialog_fn=lambda: None)
+        qtbot.addWidget(view)
+        vm.add_signal(key)
+        view.refresh()  # type: ignore[attr-defined]
+        eid = view.curve_keys()[0]  # type: ignore[attr-defined]
+        before = vm.inspect()["plotted_signals"][0]["color"]
+        menu = view.build_curve_menu(eid)  # type: ignore[attr-defined]
+        _color_action, color_menu = _color_submenu(menu)
+        other = next(a for a in color_menu.actions() if a.text() == "その他…")  # type: ignore[attr-defined]
+        other.trigger()
+        assert vm.inspect()["plotted_signals"][0]["color"] == before
+
+
+def _shown_curve_click_setup(
+    qtbot: QtBot, tmp_path: Path
+) -> tuple[object, int, QPointF]:
+    """Like ``_curve_click_setup``, but the widget is shown before *pos* is
+    computed (mirrors test_graph_panel_offset_drag.py's established real-event
+    pattern), since these tests deliver a real ``QContextMenuEvent`` via
+    ``QApplication.sendEvent`` rather than calling the handler directly.
+    """
+    session, _ = _loaded_session(tmp_path, n_signals=1)
+    key = _keys(session)[0]
+    vm = GraphPanelVM(session)
+    view = _make_view(qtbot, vm)
+    view.resize(400, 300)  # type: ignore[attr-defined]
+    vm.add_signal(key)
+    vm.set_x_range(0.0, 1.0)
+    view.refresh()  # type: ignore[attr-defined]
+    view.show()  # type: ignore[attr-defined]
+    qtbot.waitExposed(view)  # type: ignore[attr-defined]
+    for _ in range(3):
+        QApplication.processEvents()
+    eid = view.curve_keys()[0]  # type: ignore[attr-defined]
+
+    x, y = view.curve_xy(eid)  # type: ignore[attr-defined]
+    vb = view._item_vb[eid]  # type: ignore[attr-defined]
+    mid = len(x) // 2
+    scene_pt = vb.mapViewToScene(QPointF(float(x[mid]), float(y[mid])))
+    wpt = view.plot_widget.mapFromScene(scene_pt)  # type: ignore[attr-defined]
+    pos = QPointF(view.plot_widget.mapTo(view, wpt))  # type: ignore[attr-defined]
+    return view, eid, pos
+
+
+class TestContextMenuRouting:
+    """contextMenuEvent の実イベント経路 (sendEvent) でのルーティング検証。
+
+    build_curve_menu/build_context_menu を直接呼ぶだけのテストでは、Step 6 の
+    ルーティング条件式 (_curve_at 分岐) 自体が壊れても検出できない
+    (false-green)。ここでは実際に QContextMenuEvent を送って「どちらの
+    builder が呼ばれたか」を monkeypatch したスパイで検証する。
+    """
+
+    def test_curve_position_routes_to_curve_menu(
+        self, qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        view, eid, pos = _shown_curve_click_setup(qtbot, tmp_path)
+
+        curve_calls: list[int] = []
+        blank_calls: list[None] = []
+        real_curve_menu = view.build_curve_menu  # type: ignore[attr-defined]
+
+        def spy_curve_menu(entry_id: int) -> object:
+            curve_calls.append(entry_id)
+            real_curve_menu(entry_id)  # exercise the real builder too
+            m = Mock()
+            m.exec = Mock(return_value=None)
+            return m
+
+        def spy_blank_menu() -> object:
+            blank_calls.append(None)
+            m = Mock()
+            m.exec = Mock(return_value=None)
+            return m
+
+        monkeypatch.setattr(view, "build_curve_menu", spy_curve_menu)
+        monkeypatch.setattr(view, "build_context_menu", spy_blank_menu)
+
+        global_pos = view.mapToGlobal(pos.toPoint())  # type: ignore[attr-defined]
+        QApplication.sendEvent(
+            view,
+            QContextMenuEvent(
+                QContextMenuEvent.Reason.Mouse, pos.toPoint(), global_pos
+            ),
+        )
+
+        assert curve_calls == [eid]
+        assert blank_calls == []
+
+    def test_blank_position_routes_to_panel_menu(
+        self, qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # _shown_curve_click_setup と同じ土台を使い、曲線から十分離れた
+        # 原点近傍 (_curve_at が None を返す) を対象点にする。
+        view, _eid, _curve_pos = _shown_curve_click_setup(qtbot, tmp_path)
+        pos = QPoint(2, 2)
+        assert view._curve_at(QPointF(pos)) is None  # type: ignore[attr-defined]
+
+        curve_calls: list[int] = []
+        blank_calls: list[None] = []
+
+        def spy_curve_menu(entry_id: int) -> object:
+            curve_calls.append(entry_id)
+            m = Mock()
+            m.exec = Mock(return_value=None)
+            return m
+
+        def spy_blank_menu() -> object:
+            blank_calls.append(None)
+            m = Mock()
+            m.exec = Mock(return_value=None)
+            return m
+
+        monkeypatch.setattr(view, "build_curve_menu", spy_curve_menu)
+        monkeypatch.setattr(view, "build_context_menu", spy_blank_menu)
+
+        global_pos = view.mapToGlobal(pos)  # type: ignore[attr-defined]
+        QApplication.sendEvent(
+            view, QContextMenuEvent(QContextMenuEvent.Reason.Mouse, pos, global_pos)
+        )
+
+        assert blank_calls == [None]
+        assert curve_calls == []

@@ -35,9 +35,11 @@ from PySide6.QtGui import (
     QDragLeaveEvent,
     QDragMoveEvent,
     QDropEvent,
+    QIcon,
     QKeyEvent,
     QMouseEvent,
     QPen,
+    QPixmap,
     QResizeEvent,
 )
 from PySide6.QtWidgets import (
@@ -61,7 +63,7 @@ from valisync.gui.adapters.qt_signal_models import (
     decode_signal_keys,
     encode_axis_move,
 )
-from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+from valisync.gui.viewmodels.graph_panel_vm import _PALETTE, GraphPanelVM
 from valisync.gui.views.cursor_shapes import CursorKind, cursor
 
 # ─── Axis interaction zones (R9.1 / R10.1) ────────────────────────────────────
@@ -656,10 +658,12 @@ class GraphPanelView(QWidget):
         vm: GraphPanelVM,
         parent: QWidget | None = None,
         apply_dialog_fn: Callable[[str, float], str | None] | None = None,
+        color_dialog_fn: Callable[[], str | None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.vm = vm
         self._apply_dialog_fn = apply_dialog_fn
+        self._color_dialog_fn = color_dialog_fn or self._default_color_dialog
         # Curve items keyed by VM entry_id (a stable per-entry ID), NOT signal_key,
         # so the same signal on two axes draws as two independent items.
         self._items: dict[int, pg.PlotDataItem] = {}
@@ -2021,6 +2025,57 @@ class GraphPanelView(QWidget):
         self.vm.reset_x()
         self.vm.reset_y()
 
+    def _default_color_dialog(self) -> str | None:
+        """Native colour picker (DI default). Returns hex or None on cancel."""
+        from PySide6.QtWidgets import QColorDialog
+
+        col = QColorDialog.getColor(parent=self)
+        return col.name() if col.isValid() else None
+
+    def _color_icon(self, hex_color: str) -> QIcon:
+        """A 16x16 solid-colour swatch icon for a palette menu entry."""
+        pix = QPixmap(16, 16)
+        pix.fill(QColor(hex_color))
+        return QIcon(pix)
+
+    def _remove_curve(self, entry_id: int) -> None:
+        """Delete a curve; clear active state if it was the active one."""
+        if entry_id == self._active_curve_id:
+            self._active_curve_id = None
+        self.vm.remove_entry(entry_id)
+
+    def _pick_custom_color(self, entry_id: int) -> None:
+        """Open the injected colour dialog; apply the chosen colour if any."""
+        hex_color = self._color_dialog_fn()
+        if hex_color:
+            self.vm.set_color(entry_id, hex_color)
+
+    def build_curve_menu(self, entry_id: int) -> QMenu:
+        """Right-click menu for one curve (PC-01: 非表示/色変更/削除).
+
+        The axis-move and offset items (spec §4.3) are added in 増分2b.
+        """
+        menu = QMenu(self)
+        menu.addAction("非表示").triggered.connect(
+            lambda *_: self.vm.toggle_entry_visibility(entry_id)
+        )
+        color_menu = menu.addMenu("色変更")
+        for hex_color in _PALETTE:
+            act = color_menu.addAction(hex_color)
+            act.setIcon(self._color_icon(hex_color))
+            act.triggered.connect(
+                lambda *_, c=hex_color: self.vm.set_color(entry_id, c)
+            )
+        color_menu.addSeparator()
+        color_menu.addAction("その他…").triggered.connect(
+            lambda *_: self._pick_custom_color(entry_id)
+        )
+        menu.addSeparator()
+        menu.addAction("削除").triggered.connect(
+            lambda *_: self._remove_curve(entry_id)
+        )
+        return menu
+
     def build_context_menu(self) -> QMenu:
         """Build the blank-area panel menu (add/remove panel, reset axes, interp)."""
         from valisync.core.interpolation import InterpolationMethod
@@ -2059,4 +2114,11 @@ class GraphPanelView(QWidget):
         return menu
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        # ルーティング優先順 (spec §4.3): 曲線 → 空白 (パネル)。
+        # 軸分岐は 増分2b、カーソル線分岐は 増分3 で先頭に差し込む。
+        pos = QPointF(event.pos())
+        eid = self._curve_at(pos)
+        if eid is not None:
+            self.build_curve_menu(eid).exec(event.globalPos())
+            return
         self.build_context_menu().exec(event.globalPos())
