@@ -1390,6 +1390,29 @@ def test_set_color_changes_only_target_and_busts_cache(tmp_path: Path) -> None:
     assert vm.inspect()["plotted_signals"][0]["color"] == "#123456"
 
 
+def test_set_color_targets_only_that_entry_when_duplicated(tmp_path: Path) -> None:
+    """set_color must match on entry_id, not signal_key.
+
+    Two entries share the same signal_key here (added on separate axes); a
+    signal_key-matching implementation would recolor both, not just the
+    targeted entry.
+    """
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    key = next(s.name for s in session.signals())
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    vm.create_new_axis(key)  # duplicate signal_key, distinct entry_id
+    e0, e1 = vm.inspect()["plotted_signals"]
+    assert e0["color"] != e1["color"]  # distinct palette slots — sanity check
+    original_e0_color = e0["color"]
+
+    vm.set_color(e1["entry_id"], "#123456")
+
+    colors = {e["entry_id"]: e["color"] for e in vm.inspect()["plotted_signals"]}
+    assert colors[e1["entry_id"]] == "#123456"
+    assert colors[e0["entry_id"]] == original_e0_color  # untouched
+
+
 def test_remove_entry_removes_only_that_entry(tmp_path: Path) -> None:
     session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
     key = next(s.name for s in session.signals())
@@ -1417,6 +1440,24 @@ def test_toggle_axis_visibility_flips_all_on_axis(tmp_path: Path) -> None:
     assert all(e["visible"] for e in vm.inspect()["plotted_signals"])
 
 
+def test_toggle_axis_visibility_mixed_state_hides_all(tmp_path: Path) -> None:
+    """From a mixed visible/hidden state, toggle_axis_visibility must hide ALL
+    entries on the axis (any_visible -> hide-all), not flip each entry on its
+    own — a per-entry-flip implementation would leave one visible here.
+    """
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=2)
+    k0, k1 = [s.name for s in session.signals()][:2]
+    vm = GraphPanelVM(session)
+    vm.add_signal(k0)  # axis 0
+    vm.add_signal(k1)  # axis 0 (same axis)
+    e0, _e1 = vm.inspect()["plotted_signals"]
+    vm.toggle_entry_visibility(e0["entry_id"])  # hide k0 only -> mixed state
+
+    vm.toggle_axis_visibility(0)
+
+    assert all(not e["visible"] for e in vm.inspect()["plotted_signals"])
+
+
 def test_toggle_axis_visibility_empty_axis_is_noop(tmp_path: Path) -> None:
     session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
     key = next(s.name for s in session.signals())
@@ -1437,3 +1478,40 @@ def test_entry_ops_notify_signals(tmp_path: Path) -> None:
     vm.toggle_entry_visibility(eid)
     vm.set_color(eid, "#abcdef")
     assert changes == ["signals", "signals"]
+
+
+def test_remove_entry_and_toggle_axis_notify_and_bust_cache(tmp_path: Path) -> None:
+    """remove_entry / toggle_axis_visibility must notify 'signals' and actually
+    invalidate the render cache, not merely mutate _plotted and rely on the
+    cache key happening to change.
+
+    The remove_entry check hides k0 (leaving it as the removed entry) so the
+    cache key (visible signal keys) is UNCHANGED across the remove: both
+    before and after, k1 is the only visible entry. What DOES change is k1's
+    axis_index — removing k0 empties axis 0, so _compact_axes remaps k1's
+    axis from 1 to 0. A stale (non-invalidated) cache would still hit on the
+    unchanged key and return k1's curve with its old axis_index=1.
+    """
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=2)
+    k0, k1 = [s.name for s in session.signals()][:2]
+    vm = GraphPanelVM(session)
+    vm.add_signal(k0)  # entry e_k0: axis_index 0 (hidden, then removed)
+    vm.create_new_axis(k1)  # entry e_k1: axis_index 1 (stays visible)
+    e_k0, _e_k1 = vm.inspect()["plotted_signals"]
+    vm.toggle_entry_visibility(e_k0["entry_id"])  # hide k0
+
+    changes: list[str] = []
+    vm.subscribe(changes.append)
+
+    vm.render_data()  # prime: cached under visible_keys=(k1,), k1 axis_index=1
+    vm.remove_entry(e_k0["entry_id"])
+    curves = vm.render_data()
+    assert curves[0].axis_index == 0  # remapped; a stale cache would say 1
+    assert "signals" in changes
+
+    changes.clear()
+    before_count = len(vm.render_data())  # k1 alone, visible
+    vm.toggle_axis_visibility(0)  # k1 is now the sole entry on axis 0
+    after_curves = vm.render_data()
+    assert len(after_curves) != before_count  # hidden -> no curve emitted
+    assert "signals" in changes
