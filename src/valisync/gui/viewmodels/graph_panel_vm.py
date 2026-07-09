@@ -44,6 +44,22 @@ _PALETTE: tuple[str, ...] = (
 # 9 decimal places = ~1 ns precision on seconds timestamps, more than sufficient.
 _CACHE_KEY_DECIMALS: int = 9
 
+
+def _padded_range(lo: float, hi: float) -> tuple[float, float]:
+    """Expand a degenerate (~zero-width) auto-fit range around its centre.
+
+    A constant signal fits to (v, v); mapped verbatim that yields a 1e-9-wide,
+    degenerate Y axis (RN-05). Widen it to a readable window centred on v:
+    +/-50% of |v|, or [-1, 1] when v == 0. Non-degenerate ranges pass through
+    unchanged. Auto-fit callers only -- manual set_y_range keeps exact values.
+    """
+    if hi - lo > max(abs(hi), abs(lo), 1.0) * 1e-9:
+        return (lo, hi)
+    v = (lo + hi) / 2.0
+    pad = abs(v) * 0.5 if v != 0.0 else 1.0
+    return (v - pad, v + pad)
+
+
 MIN_H: float = 0.05
 
 
@@ -600,6 +616,15 @@ class GraphPanelVM(Observable):
         self._axes[axis_index].set_range(min(lo, hi), max(lo, hi))
         self._notify("axes")
 
+    def _fit_axis(self, axis: YAxisVM, lo: float | None, hi: float | None) -> None:
+        """Store an auto-fit result on *axis*, widening a degenerate constant-signal
+        span so its Y axis stays readable (RN-05). None lo/hi clears the range
+        (nothing fittable), matching the prior set_range(None, None) behaviour.
+        """
+        if lo is not None and hi is not None:
+            lo, hi = _padded_range(lo, hi)
+        axis.set_range(lo, hi)
+
     def reset_axis_y(self, axis_index: int) -> None:
         """Fit one Y-axis to the visible values of the signals assigned to it.
 
@@ -627,7 +652,7 @@ class GraphPanelVM(Observable):
             v_hi = float(finite_vals.max())
             lo = v_lo if lo is None else min(lo, v_lo)
             hi = v_hi if hi is None else max(hi, v_hi)
-        self._axes[axis_index].set_range(lo, hi)
+        self._fit_axis(self._axes[axis_index], lo, hi)
         self._invalidate_cache()
         self._notify("range")
 
@@ -723,13 +748,21 @@ class GraphPanelVM(Observable):
 
             # Clear to None when nothing is fittable so a later add_signal can
             # auto-fit instead of being clipped to a stale window.
-            axis.set_range(lo, hi)
+            self._fit_axis(axis, lo, hi)
 
         self._invalidate_cache()
         self._notify("range")
 
     def set_panel_width(self, px: int) -> None:
-        """Update the panel pixel width; invalidates the render cache."""
+        """Update the panel pixel width; invalidates the render cache.
+
+        Height-only resizes re-call this with an unchanged width. LOD depends on
+        panel_width_px (part of the render cache key), never on height, so
+        re-fitting then is pure waste -- bail out unless the pixel budget
+        actually changed (RN-03).
+        """
+        if px == self.panel_width_px:
+            return
         self.panel_width_px = px
         self._invalidate_cache()
         self._notify("range")
@@ -1249,8 +1282,7 @@ class GraphPanelVM(Observable):
                     lo = v_lo if lo is None else min(lo, v_lo)
                     hi = v_hi if hi is None else max(hi, v_hi)
 
-                if lo is not None and hi is not None:
-                    axis.set_range(lo, hi)
+                self._fit_axis(axis, lo, hi)
 
     def _make_cache_key(self) -> tuple[Any, ...]:
         """Build a hashable cache key capturing all inputs that affect the render."""

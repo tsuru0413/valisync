@@ -1708,3 +1708,87 @@ def test_toggle_grid_updates_and_notifies(tmp_path):
     assert "grid" in seen
     vm.toggle_grid(False)
     assert vm.grid_enabled is False
+
+
+# ─── RN-03: height-only resize guard ─────────────────────────────────────────
+
+
+def test_set_panel_width_unchanged_is_noop(tmp_path: Path) -> None:
+    """A height-only resize re-calls set_panel_width with the SAME width. Since
+    LOD depends on panel_width_px (never height), that must NOT invalidate the
+    cache or notify (RN-03). A different width still invalidates as before."""
+    vm = _loaded_vm(tmp_path)
+    vm.set_panel_width(640)  # move off the 800 default to a known width
+
+    calls: list[int] = []
+    original = vm._invalidate_cache
+
+    def spy() -> None:
+        calls.append(1)
+        original()
+
+    vm._invalidate_cache = spy  # type: ignore[method-assign]
+
+    vm.set_panel_width(640)  # same width -> no work
+    assert calls == []
+
+    vm.set_panel_width(320)  # different width -> invalidates like before
+    assert calls == [1]
+
+
+# ─── RN-05: constant-signal Y-axis padding ───────────────────────────────────
+
+
+def _constant_vm(tmp_path: Path, value: float) -> GraphPanelVM:
+    """A GraphPanelVM with one constant-valued signal plotted (values all == value)."""
+    session = Session()
+    sig = Signal(
+        name="flag",
+        timestamps=np.array([0.0, 1.0, 2.0], dtype=np.float64),
+        values=np.array([value, value, value], dtype=np.float64),
+        file_format="CSV",
+        bus_type="",
+        source_file="",
+    )
+    key = _register_signal(session, sig, tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    return vm
+
+
+def test_padded_range_identity_for_normal_span() -> None:
+    """A non-degenerate range passes through unchanged."""
+    from valisync.gui.viewmodels.graph_panel_vm import _padded_range
+
+    assert _padded_range(0.0, 20.0) == (0.0, 20.0)
+
+
+def test_constant_signal_autofit_is_padded(tmp_path: Path) -> None:
+    """A constant signal (v=5) auto-fits to a non-degenerate window centred on v
+    (+/-50% -> (2.5, 7.5)) instead of the degenerate (5, 5) (RN-05)."""
+    vm = _constant_vm(tmp_path, 5.0)
+    lo, hi = vm._axes[0].y_range
+    assert lo < hi
+    assert (lo + hi) / 2.0 == pytest.approx(5.0)
+    assert (lo, hi) == pytest.approx((2.5, 7.5))
+
+
+def test_constant_zero_signal_uses_unit_window(tmp_path: Path) -> None:
+    """A constant zero signal cannot use a relative pad; it gets [-1, 1] (RN-05)."""
+    vm = _constant_vm(tmp_path, 0.0)
+    assert vm._axes[0].y_range == pytest.approx((-1.0, 1.0))
+
+
+def test_constant_signal_virtual_range_has_finite_span(tmp_path: Path) -> None:
+    """calculate_virtual_range yields a sensible (non-1e-9) span once padded."""
+    vm = _constant_vm(tmp_path, 5.0)
+    v_lo, v_hi = vm._axes[0].calculate_virtual_range()
+    assert v_hi - v_lo > 1e-6
+
+
+def test_manual_set_y_range_zero_width_not_padded(tmp_path: Path) -> None:
+    """Manual range entry is the user's explicit value and must NOT be padded,
+    even when degenerate (auto-fit-only policy, RN-05)."""
+    vm = _loaded_vm(tmp_path)
+    vm.set_y_range(3.0, 3.0)
+    assert vm._axes[0].y_range == (3.0, 3.0)
