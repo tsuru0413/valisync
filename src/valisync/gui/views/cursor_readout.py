@@ -10,8 +10,15 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QColor, QMouseEvent, QPixmap
+from PySide6.QtGui import (
+    QActionGroup,
+    QColor,
+    QContextMenuEvent,
+    QMouseEvent,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
+    QApplication,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -137,6 +144,8 @@ class CursorReadout(QWidget):
         self._on_stat_toggled: Callable[[str, bool], None] | None = None
         # Wired by GraphPanelView: X / メニュー「カーソルを消す」で全消去 (全 A/B/Δ)。
         self._on_clear: Callable[[], None] | None = None
+        # Wired by GraphPanelView: 精度メニュー選択 -> vm.set_value_precision(p)。
+        self._on_precision: Callable[[int], None] | None = None
 
     # ── R15 backward-compatible API ────────────────────────────────────────────
 
@@ -328,6 +337,37 @@ class CursorReadout(QWidget):
             self._visible_stats.discard(col)
         if self._last_delta is not None:
             self.set_delta(*self._last_delta)  # 再描画
+
+    def build_readout_menu(self) -> QMenu:
+        """readout 右クリックメニュー: 統計列 ▸ / 精度 ▸ / 表をコピー / カーソルを消す。"""
+        menu = QMenu(self)
+        stat_sub = self.build_column_menu()
+        stat_sub.setTitle("統計列")
+        menu.addMenu(stat_sub)
+
+        prec_sub = menu.addMenu("精度")
+        group = QActionGroup(prec_sub)
+        group.setExclusive(True)
+        for p in (4, 6, 8):
+            act = prec_sub.addAction(str(p))
+            act.setCheckable(True)
+            act.setActionGroup(group)
+            act.setChecked(p == self._precision)  # BEFORE triggered.connect
+            act.triggered.connect(lambda *_, val=p: self._emit_precision(val))
+
+        menu.addAction("表をコピー", self._copy_table)
+        menu.addAction("カーソルを消す", self._clear_cursors)
+        return menu
+
+    def _emit_precision(self, p: int) -> None:
+        if self._on_precision is not None:
+            self._on_precision(p)
+
+    def _copy_table(self) -> None:
+        QApplication.clipboard().setText(self.table_tsv())
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        self.build_readout_menu().exec(event.globalPos())
 
     def sync_visible_stats(self, cols: set[str]) -> None:
         """Overwrite local visible-stats from VM state without triggering a re-render.

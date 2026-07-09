@@ -348,6 +348,80 @@ def test_close_button_fires_on_clear(qtbot: QtBot):
     assert fired == [True]
 
 
+def _readout_menu_items(ro):
+    menu = ro.build_readout_menu()
+    return menu, {a.text(): a for a in menu.actions()}
+
+
+def test_readout_menu_has_expected_items(qtbot):
+    from valisync.gui.views.cursor_readout import CursorReadout
+
+    ro = CursorReadout()
+    qtbot.addWidget(ro)
+    _menu, acts = _readout_menu_items(ro)
+    assert "統計列" in acts
+    assert "精度" in acts
+    assert "表をコピー" in acts
+    assert "カーソルを消す" in acts
+
+
+def test_precision_submenu_exclusive_reflects_current(qtbot):
+    from valisync.gui.viewmodels.graph_panel_vm import CursorReading
+    from valisync.gui.views.cursor_readout import CursorReadout
+
+    ro = CursorReadout()
+    qtbot.addWidget(ro)
+    ro.set_global(0.0, [CursorReading("a", "#fff", 1.0, True)], precision=6)
+    _menu, acts = _readout_menu_items(ro)
+    sub = acts["精度"].menu()
+    pacts = {a.text(): a for a in sub.actions()}
+    assert pacts["6"].isChecked() is True
+    assert pacts["4"].isChecked() is False
+    pacts["8"].setChecked(True)  # 排他効果
+    assert pacts["6"].isChecked() is False
+
+
+def test_precision_action_fires_callback(qtbot):
+    from valisync.gui.viewmodels.graph_panel_vm import CursorReading
+    from valisync.gui.views.cursor_readout import CursorReadout
+
+    ro = CursorReadout()
+    qtbot.addWidget(ro)
+    ro.set_global(0.0, [CursorReading("a", "#fff", 1.0, True)], precision=6)
+    got: list[int] = []
+    ro._on_precision = got.append
+    _menu, acts = _readout_menu_items(ro)
+    sub = acts["精度"].menu()
+    next(a for a in sub.actions() if a.text() == "8").trigger()
+    assert got == [8]
+
+
+def test_copy_action_puts_tsv_on_clipboard(qtbot):
+    from PySide6.QtWidgets import QApplication
+
+    from valisync.gui.viewmodels.graph_panel_vm import CursorReading
+    from valisync.gui.views.cursor_readout import CursorReadout
+
+    ro = CursorReadout()
+    qtbot.addWidget(ro)
+    ro.set_global(0.0, [CursorReading("spd", "#fff", 1.5, True, unit="km/h")])
+    _menu, acts = _readout_menu_items(ro)
+    acts["表をコピー"].trigger()
+    assert "spd [km/h]" in QApplication.clipboard().text()
+
+
+def test_readout_menu_clear_fires_on_clear(qtbot):
+    from valisync.gui.views.cursor_readout import CursorReadout
+
+    ro = CursorReadout()
+    qtbot.addWidget(ro)
+    fired: list[bool] = []
+    ro._on_clear = lambda: fired.append(True)
+    _menu, acts = _readout_menu_items(ro)
+    acts["カーソルを消す"].trigger()
+    assert fired == [True]
+
+
 def test_readout_has_move_cursor(qtbot: QtBot):
     from PySide6.QtCore import Qt
 
