@@ -1515,3 +1515,95 @@ def test_remove_entry_and_toggle_axis_notify_and_bust_cache(tmp_path: Path) -> N
     after_curves = vm.render_data()
     assert len(after_curves) != before_count  # hidden -> no curve emitted
     assert "signals" in changes
+
+
+# ─── step_cursor (increment 3a, Task 1) ─────────────────────────────────────
+
+
+def test_step_cursor_forward_snaps_to_next_sample(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=1)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.set_cursor(0.005)  # between samples 0.00 and 0.01
+    vm.step_cursor("A", 1)
+    assert vm.cursor_t == pytest.approx(0.01)
+
+
+def test_step_cursor_backward_snaps_to_prev_sample(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=1)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.set_cursor(0.005)
+    vm.step_cursor("A", -1)
+    assert vm.cursor_t == pytest.approx(0.0)
+
+
+def test_step_cursor_from_exact_sample_moves_one(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=1)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.set_cursor(0.01)  # exactly on a sample
+    vm.step_cursor("A", 1)
+    assert vm.cursor_t == pytest.approx(0.02)
+    vm.step_cursor("A", -1)
+    assert vm.cursor_t == pytest.approx(0.01)
+
+
+def test_step_cursor_clamps_at_ends(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=5, n_signals=1)  # t: 0.00..0.04
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.set_cursor(0.0)
+    vm.step_cursor("A", -1)
+    assert vm.cursor_t == pytest.approx(0.0)  # clamp at first
+    vm.set_cursor(0.04)
+    vm.step_cursor("A", 1)
+    assert vm.cursor_t == pytest.approx(0.04)  # clamp at last
+
+
+def test_step_cursor_noop_without_cursor(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=10, n_signals=1)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.step_cursor("A", 1)  # A not set
+    assert vm.cursor_t is None
+
+
+def test_step_cursor_b_requires_delta_enabled(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=1)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.set_cursor(0.005)  # A set, delta off
+    vm.step_cursor("B", 1)  # B disabled -> no-op
+    assert vm.cursor_t_b is None
+    vm.toggle_delta(True)  # B at 75% of x_range
+    before = vm.cursor_t_b
+    vm.step_cursor("B", 1)
+    assert vm.cursor_t_b is not None and vm.cursor_t_b >= before
+
+
+def test_step_cursor_falls_back_to_first_visible_when_ref_hidden(
+    tmp_path: Path,
+) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=2)
+    vm = GraphPanelVM(session)
+    k0, k1 = session.signals()[0].name, session.signals()[1].name
+    vm.add_signal(k0)
+    vm.add_signal(k1)
+    # hide the first entry; ref points to it -> fallback to next visible
+    eid0 = vm._plotted[0].entry_id
+    vm.toggle_entry_visibility(eid0)
+    vm.set_cursor(0.005)
+    vm.step_cursor("A", 1, reference_entry_id=eid0)
+    assert vm.cursor_t == pytest.approx(0.01)  # still snaps (via visible k1, same grid)
+
+
+def test_step_cursor_notifies_cursor(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=1)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.set_cursor(0.005)
+    changes: list[str] = []
+    vm.subscribe(changes.append)
+    vm.step_cursor("A", 1)
+    assert "cursor" in changes

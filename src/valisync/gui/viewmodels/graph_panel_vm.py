@@ -961,6 +961,70 @@ class GraphPanelVM(Observable):
         self.cursor_t_b = t
         self._notify("delta")
 
+    def _reference_timestamps(
+        self, reference_entry_id: int | None
+    ) -> np.ndarray | None:
+        """Displayed (offset-applied), sorted timestamps of the reference signal.
+
+        Resolves *reference_entry_id* to its signal_key, honouring it only when
+        that entry is currently visible; otherwise (None / absent / hidden) falls
+        back to the first visible entry. Returns None when no visible signal is
+        available. Uses sorted_view (all recorded samples, offset applied) so the
+        snap targets exactly what is drawn.
+        """
+        key: str | None = None
+        if reference_entry_id is not None:
+            visible = any(
+                e.entry_id == reference_entry_id and e.visible for e in self._plotted
+            )
+            if visible:
+                key = self.signal_key_for_entry(reference_entry_id)
+        if key is None:
+            for e in self._plotted:
+                if e.visible:
+                    key = e.signal_key
+                    break
+        if key is None:
+            return None
+        sig = self._signal_map().get(key)
+        if sig is None or len(sig.timestamps) == 0:
+            return None
+        return sig.sorted_view()[0]
+
+    def step_cursor(
+        self, which: str, direction: int, reference_entry_id: int | None = None
+    ) -> None:
+        """Move the A or B cursor to the reference signal's adjacent sample time.
+
+        *which* is "A" or "B"; *direction* is +1 (right) or -1 (left). The cursor
+        snaps to the neighbouring recorded timestamp of the reference signal on
+        the DISPLAYED time axis (offsets applied), so arrow-key stepping lands
+        exactly on samples. Clamps at the first/last sample. No-op when the
+        relevant cursor is unset or no visible reference signal exists.
+        """
+        if which == "A":
+            current = self.cursor_t
+        elif which == "B":
+            current = self.cursor_t_b if self.delta_enabled else None
+        else:
+            return
+        if current is None:
+            return
+        ts = self._reference_timestamps(reference_entry_id)
+        if ts is None or len(ts) == 0:
+            return
+        if direction > 0:
+            idx = int(np.searchsorted(ts, current, side="right"))
+            target = ts[idx] if idx < len(ts) else ts[-1]
+        else:
+            idx = int(np.searchsorted(ts, current, side="left")) - 1
+            target = ts[idx] if idx >= 0 else ts[0]
+        target_f = float(target)
+        if which == "A":
+            self.set_cursor(target_f)
+        else:
+            self.set_cursor_b(target_f)
+
     def set_visible_stats(self, cols: set[str]) -> None:
         """Update visible stat columns and notify 'delta' so the view re-renders.
 
