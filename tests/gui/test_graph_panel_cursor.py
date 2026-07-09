@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import csv
 import tempfile
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import numpy as np
@@ -492,7 +494,10 @@ def test_cursor_reading_nan_value_yields_no_label_and_no_crash(tmp_path: Path) -
 # --- Task 2: アクティブカーソル(A/B) 状態 + 自動アクティブ + 太線フィードバック ---
 
 
-def _shown_cursor_panel(qtbot: QtBot) -> GraphPanelView:
+def _shown_cursor_panel(
+    qtbot: QtBot,
+    time_dialog_fn: Callable[[str, float], float | None] | None = None,
+) -> GraphPanelView:
     """1 信号を表示済みの最小 GraphPanelView (活性化テスト用の共通土台)。
 
     tmp_path フィクスチャに頼らず自前の一時ディレクトリで CSV を作る -- 呼び出し
@@ -502,7 +507,7 @@ def _shown_cursor_panel(qtbot: QtBot) -> GraphPanelView:
     """
     tmp_path = Path(tempfile.mkdtemp())
     vm = _vm_with_signal(tmp_path)
-    view = GraphPanelView(vm)
+    view = GraphPanelView(vm, time_dialog_fn=time_dialog_fn)
     qtbot.addWidget(view)
     view.resize(400, 300)
     view.show()
@@ -607,3 +612,104 @@ def test_arrow_noop_without_cursor(qtbot: QtBot) -> None:
         view.vm.step_cursor = orig_step  # type: ignore[method-assign]
     assert calls == []  # view-level guard skipped the block; never reached VM
     assert view.vm.cursor_t is None
+
+
+# --- Task 4: カーソル線右クリックメニュー+ルーティング先頭分岐+時刻ダイアログ ---
+
+
+def _spy_all_menus(view: GraphPanelView) -> list[tuple[str, object]]:
+    calls: list[tuple[str, object]] = []
+    view.build_cursor_menu = lambda which: (  # type: ignore[method-assign]
+        calls.append(("cursor", which)) or SimpleNamespace(exec=lambda *a: None)
+    )
+    view.build_curve_menu = lambda eid: (  # type: ignore[method-assign]
+        calls.append(("curve", eid)) or SimpleNamespace(exec=lambda *a: None)
+    )
+    view.build_axis_menu = lambda idx: (  # type: ignore[method-assign]
+        calls.append(("axis", idx)) or SimpleNamespace(exec=lambda *a: None)
+    )
+    view.build_context_menu = lambda: (  # type: ignore[method-assign]
+        calls.append(("panel", None)) or SimpleNamespace(exec=lambda *a: None)
+    )
+    return calls
+
+
+def _ctx_event() -> QContextMenuEvent:
+    return QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(10, 100))
+
+
+def test_context_menu_routes_cursor_first(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view._cursor_line_at = lambda pos: "A"  # type: ignore[method-assign]
+    view._curve_at = lambda pos: 7  # type: ignore[method-assign]  # would-be curve, but cursor wins
+    calls = _spy_all_menus(view)
+    view.contextMenuEvent(_ctx_event())
+    assert calls == [("cursor", "A")]
+
+
+def test_context_menu_curve_when_no_cursor_line(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view._cursor_line_at = lambda pos: None  # type: ignore[method-assign]
+    view._curve_at = lambda pos: 7  # type: ignore[method-assign]
+    calls = _spy_all_menus(view)
+    view.contextMenuEvent(_ctx_event())
+    assert calls == [("curve", 7)]
+
+
+def test_build_cursor_menu_items(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    menu = view.build_cursor_menu("A")
+    texts = [a.text() for a in menu.actions()]
+    assert texts == ["時刻を指定…", "カーソルを消す"]
+    menu_b = view.build_cursor_menu("B")
+    assert [a.text() for a in menu_b.actions()] == ["時刻を指定…", "サブカーソルを消す"]
+
+
+def test_cursor_time_dialog_moves_a(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot, time_dialog_fn=lambda which, cur: 0.42)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.set_cursor(0.1)
+    act = next(
+        a for a in view.build_cursor_menu("A").actions() if a.text() == "時刻を指定…"
+    )
+    act.trigger()
+    assert view.vm.cursor_t == pytest.approx(0.42)
+
+
+def test_clear_a_clears_everything(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.set_cursor(0.1)
+    view.vm.toggle_delta(True)
+    next(
+        a for a in view.build_cursor_menu("A").actions() if a.text() == "カーソルを消す"
+    ).trigger()
+    assert view.vm.cursor_t is None
+    assert view.vm.delta_enabled is False
+
+
+def test_clear_b_only_disables_delta(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.set_cursor(0.1)
+    view.vm.toggle_delta(True)
+    next(
+        a
+        for a in view.build_cursor_menu("B").actions()
+        if a.text() == "サブカーソルを消す"
+    ).trigger()
+    assert view.vm.cursor_t == pytest.approx(0.1)  # A survives
+    assert view.vm.delta_enabled is False
+
+
+def test_cursor_line_at_detects_visible_line(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.show()
+    qtbot.waitExposed(view)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.set_cursor(0.5)
+    # scene x of the A line → widget pos, then _cursor_line_at should report "A"
+    vb0 = view._view_boxes[0]
+    scene_x = vb0.mapViewToScene(QPointF(0.5, 0.0)).x()
+    widget_pt = view.plot_widget.mapFromScene(QPointF(scene_x, 10.0))
+    assert view._cursor_line_at(QPointF(widget_pt)) == "A"
