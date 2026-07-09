@@ -593,5 +593,17 @@ def test_arrow_noop_without_cursor(qtbot: QtBot) -> None:
     view = _shown_cursor_panel(qtbot)
     view.vm.x_range = (0.0, 1.0)
     view.setFocus()
-    qtbot.keyClick(view, Qt.Key.Key_Right)  # no cursor set
+    # Spy step_cursor: with no cursor set, the VIEW-LEVEL guard must skip the
+    # block entirely (arrow falls through to super()), so step_cursor is never
+    # reached. Asserting only `cursor_t is None` would still pass if the guard
+    # were dropped and only the VM's internal no-op saved it — but that variant
+    # wrongly accept()s the arrow. Spying step_cursor discriminates the two.
+    calls: list[tuple] = []
+    orig_step = view.vm.step_cursor
+    view.vm.step_cursor = lambda *a, **k: calls.append((a, k))  # type: ignore[method-assign]
+    try:
+        qtbot.keyClick(view, Qt.Key.Key_Right)  # no cursor set
+    finally:
+        view.vm.step_cursor = orig_step  # type: ignore[method-assign]
+    assert calls == []  # view-level guard skipped the block; never reached VM
     assert view.vm.cursor_t is None
