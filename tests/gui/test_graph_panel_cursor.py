@@ -564,3 +564,34 @@ def test_dragging_b_line_activates_b(qtbot: QtBot) -> None:
     # A reversed statement order (set active AFTER vm.set_cursor_b) would leave
     # active_cursor()=="B" passing while the reentrant sync painted A thick.
     assert view.cursor_line_width("B") > view.cursor_line_width("A")
+
+
+def test_arrow_right_steps_active_cursor(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.set_cursor(0.005)  # A active (auto)
+    view.setFocus()
+    qtbot.keyClick(view, Qt.Key.Key_Right)
+    assert view.vm.cursor_t == pytest.approx(0.01)
+    qtbot.keyClick(view, Qt.Key.Key_Left)
+    assert view.vm.cursor_t == pytest.approx(0.0)
+
+
+def test_arrow_steps_active_b_cursor(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.set_cursor(0.005)
+    view.vm.toggle_delta(True)  # B active, at 0.75
+    view.setFocus()
+    b_before = view.vm.cursor_t_b
+    qtbot.keyClick(view, Qt.Key.Key_Left)
+    assert view.vm.cursor_t_b is not None and view.vm.cursor_t_b <= b_before
+    assert view.vm.cursor_t == pytest.approx(0.005)  # A untouched
+
+
+def test_arrow_noop_without_cursor(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.setFocus()
+    qtbot.keyClick(view, Qt.Key.Key_Right)  # no cursor set
+    assert view.vm.cursor_t is None

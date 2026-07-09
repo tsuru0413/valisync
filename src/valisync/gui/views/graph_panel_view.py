@@ -1929,6 +1929,17 @@ class GraphPanelView(QWidget):
                 self.vm.toggle_axis_visibility(self._active_axis_index)
             event.accept()
             return
+        if (
+            event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right)
+            and self.vm.cursor_t is not None
+        ):
+            direction = 1 if event.key() == Qt.Key.Key_Right else -1
+            which = self._active_cursor or "A"
+            # active curve is the snap reference; VM falls back to first
+            # visible entry when it is None/hidden.
+            self.vm.step_cursor(which, direction, self._active_curve_id)
+            event.accept()
+            return
         super().keyPressEvent(event)
 
     # ─── Drag-and-drop sink (R12.4) ────────────────────────────────────────────
