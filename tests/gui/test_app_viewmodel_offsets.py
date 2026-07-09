@@ -118,3 +118,33 @@ def test_inspect_includes_offsets() -> None:
     snap = app.inspect()
     assert snap["signal_offsets"] == {"csv_1::speed": 0.1}
     assert snap["file_offsets"] == {}
+
+
+def test_reset_offset_signal_scope_zeros_only_that_signal() -> None:
+    app = AppViewModel()
+    app.apply_offset("csv::a", 0.5, "signal")
+    app.apply_offset("csv::b", 0.3, "signal")
+    events: list[str] = []
+    app.subscribe(events.append)
+    app.reset_offset("csv::a", "signal")
+    assert "offsets" in events  # notification fires
+    assert "csv::a" not in app.signal_offsets  # a is gone
+    assert app.signal_offsets["csv::b"] == 0.3  # b is untouched
+
+
+def test_reset_offset_group_scope_zeros_file_and_purges_siblings() -> None:
+    app = AppViewModel()
+    app.apply_offset("csv::a", 0.5, "signal")
+    app.apply_offset("csv::a", 0.2, "group")  # gives a file offset + purges siblings
+    # Group apply already purged per-signal offsets; add another one to prove
+    # reset_offset(group) purges it too.
+    app.apply_offset("csv::z", 0.9, "signal")
+    app.reset_offset("csv::a", "group")
+    assert "csv" not in app.file_offsets  # file offset is gone
+    assert "csv::z" not in app.signal_offsets  # sibling per-signal purged too
+
+
+def test_reset_offset_invalid_scope_raises() -> None:
+    app = AppViewModel()
+    with pytest.raises(ValueError):
+        app.reset_offset("csv::a", "bogus")

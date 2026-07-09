@@ -640,6 +640,9 @@ class GraphPanelView(QWidget):
     # Emitted on offset-drag release when the user confirms a scope in the apply
     # dialog. The GraphAreaView wires this to GraphAreaVM.apply_offset (R14).
     offset_apply_requested = Signal(str, float, str)
+    # Emitted when the user confirms an offset-reset scope in the curve menu's
+    # "オフセットをリセット…" dialog. GraphAreaView wires this to GraphAreaVM.reset_offset.
+    offset_reset_requested = Signal(str, str)  # (signal_key, scope)
     # Emitted when an axis-move drop targets a different panel (Task 3).
     # Args: source_panel_index, axis_index, col, position (int | None).
     # Uses object so None ("append at end") survives the signal boundary.

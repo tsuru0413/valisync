@@ -300,6 +300,14 @@ class GraphAreaVM(Observable):
         """
         self._app_vm.apply_offset(signal_key, delta_t, scope)
 
+    def reset_offset(self, signal_key: str, scope: str) -> None:
+        """Forward an offset-reset request to the AppViewModel (View-layer wiring target).
+
+        Symmetric to apply_offset; the resulting 'offsets' notification is handled
+        by _on_app_change, which re-broadcasts the reduced offsets to every panel.
+        """
+        self._app_vm.reset_offset(signal_key, scope)
+
     # ─── Accessors ───────────────────────────────────────────────────────────
 
     def tabs(self) -> list[_Tab]:

@@ -499,6 +499,18 @@ class GraphPanelVM(Observable):
         self._file_offsets = dict(file_offsets)
         self._invalidate_cache()
 
+    def offset_for(self, signal_key: str) -> float:
+        """Return the combined (signal + file) time offset applied to *signal_key*.
+
+        Public getter over the private offset dicts set_offsets stores. Drives the
+        curve menu's "オフセットをリセット…" enabled state and the "オフセット: +Xs"
+        info row. Group key is the prefix before '::' (same convention as _signal_map).
+        """
+        group_key = signal_key.split("::", 1)[0]
+        return self._file_offsets.get(group_key, 0.0) + self._signal_offsets.get(
+            signal_key, 0.0
+        )
+
     def toggle_visibility(self, signal_key: str) -> None:
         """Flip the visibility of *signal_key*."""
         for entry in self._plotted:
