@@ -1582,20 +1582,55 @@ def test_step_cursor_b_requires_delta_enabled(tmp_path: Path) -> None:
     assert vm.cursor_t_b is not None and vm.cursor_t_b >= before
 
 
+def _coarse_grid_sig(name: str = "coarse") -> Signal:
+    """t=0.00,0.02,0.04,... の粗いグリッド信号 (hidden entry 用・フォールバック弁別)."""
+    return Signal(
+        name=name,
+        timestamps=np.array([0.0, 0.02, 0.04, 0.06, 0.08], dtype=np.float64),
+        values=np.array([0.0, 1.0, 2.0, 3.0, 4.0], dtype=np.float64),
+        file_format="CSV",
+        bus_type="",
+        source_file="",
+    )
+
+
+def _fine_grid_sig(name: str = "fine") -> Signal:
+    """t=0.00,0.01,0.02,... の細かいグリッド信号 (visible entry 用・フォールバック弁別)."""
+    return Signal(
+        name=name,
+        timestamps=np.array([0.0, 0.01, 0.02, 0.03, 0.04], dtype=np.float64),
+        values=np.array([0.0, 1.0, 2.0, 3.0, 4.0], dtype=np.float64),
+        file_format="CSV",
+        bus_type="",
+        source_file="",
+    )
+
+
 def test_step_cursor_falls_back_to_first_visible_when_ref_hidden(
     tmp_path: Path,
 ) -> None:
-    session, _ = _loaded_session(tmp_path, n_rows=100, n_signals=2)
+    """hidden な reference_entry_id は無視され、可視 entry のグリッドへスナップする.
+
+    2信号を異なる時間グリッドで用意する (hidden=粗い 0.02 刻み・visible=細かい
+    0.01 刻み)。両者が同一グリッドだと可視ゲートの有無に関わらず同じスナップ先に
+    なり弁別できないため、意図的にグリッドをずらす。reference_entry_id が hidden
+    entry を指しても可視ゲートにより無視され、可視信号 (細かいグリッド) の次サン
+    プルへスナップすることを検証する。可視ゲートが壊れて hidden 側を尊重すると
+    0.02 へスナップし、このテストは失敗する。
+    """
+    session = Session()
+    hidden_key = _register_signal(session, _coarse_grid_sig(), tmp_path)
+    visible_key = _register_signal(session, _fine_grid_sig(), tmp_path)
     vm = GraphPanelVM(session)
-    k0, k1 = session.signals()[0].name, session.signals()[1].name
-    vm.add_signal(k0)
-    vm.add_signal(k1)
-    # hide the first entry; ref points to it -> fallback to next visible
+    vm.add_signal(hidden_key)  # entry 0 — hidden below
+    vm.add_signal(visible_key)  # entry 1 — stays visible
     eid0 = vm._plotted[0].entry_id
-    vm.toggle_entry_visibility(eid0)
+    vm.toggle_entry_visibility(eid0)  # hide entry 0 (coarse grid)
     vm.set_cursor(0.005)
     vm.step_cursor("A", 1, reference_entry_id=eid0)
-    assert vm.cursor_t == pytest.approx(0.01)  # still snaps (via visible k1, same grid)
+    # falls back to visible entry's fine grid (0.01), not hidden entry's coarse grid (0.02)
+    assert vm.cursor_t == pytest.approx(0.01)
+    assert vm.cursor_t != pytest.approx(0.02)
 
 
 def test_step_cursor_notifies_cursor(tmp_path: Path) -> None:
