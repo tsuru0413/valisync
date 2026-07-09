@@ -1379,6 +1379,7 @@ class GraphPanelView(QWidget):
                 self.vm.cursor_t_b,
                 self.vm.delta_readings(),
                 interp_label=_INTERP_LABELS.get(self.vm.interp_method, ""),
+                precision=self.vm.value_precision,
             )
         else:
             self._cursor_line_b.setVisible(False)
@@ -1386,6 +1387,7 @@ class GraphPanelView(QWidget):
                 t,
                 self.vm.cursor_readings(),
                 interp_label=_INTERP_LABELS.get(self.vm.interp_method, ""),
+                precision=self.vm.value_precision,
             )
         if not self._readout_placed:
             # 初回表示時にプロット矩形左上へ配置(以降のカーソル同期では

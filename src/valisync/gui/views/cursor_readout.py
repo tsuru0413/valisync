@@ -20,24 +20,29 @@ _NO_DATA = "データなし"
 _STAT_COLS: tuple[str, ...] = ("mean", "max", "min", "std", "count")
 
 
-def _fmt(v: float | None) -> str:
-    return _OUT_OF_RANGE if v is None else f"{v:.4g}"
+_DEFAULT_PRECISION = 6
 
 
-def _fmt_labeled(v: float | None, label: str | None) -> str:
-    """value_labels 命中時は「値 (ラベル)」形式で併記する (LD-07)。"""
-    base = _fmt(v)
+def _fmt_value(v: float | None, precision: int = _DEFAULT_PRECISION) -> str:
+    return _OUT_OF_RANGE if v is None else f"{v:.{precision}g}"
+
+
+def _fmt_labeled(
+    v: float | None, label: str | None, precision: int = _DEFAULT_PRECISION
+) -> str:
+    """value_labels 命中時は value (ラベル) 形式で併記する (LD-07)。"""
+    base = _fmt_value(v, precision)
     return f"{base} ({label})" if label else base
 
 
-def _fmt_dy(v: float | None) -> str:
+def _fmt_dy(v: float | None, precision: int = _DEFAULT_PRECISION) -> str:
     if v is None:
         return _OUT_OF_RANGE
-    return f"{v:+.4g}"  # 符号付き
+    return f"{v:+.{precision}g}"  # 符号付き
 
 
 def _fmt_time(t: float) -> str:
-    return f"{t:.4g} s"
+    return f"{t:.4g} s"  # 時刻は固定精度 (精度切替の対象外・spec 増分3)
 
 
 class CursorReadout(QWidget):
@@ -75,14 +80,16 @@ class CursorReadout(QWidget):
         outer.addLayout(self._grid)
 
         self._rows: list[tuple[str, str]] = []
-        # 差分更新用: 構造(列見出し+各行 name/セル数)が不変なら QLabel を再利用し
+        # TSV エクスポート等の構造化アクセス用 (name [unit] 反映済み, セルはリストのまま)。
+        self._row_cells: list[tuple[str, list[str]]] = []
+        # 差分更新用: 構造(列見出し+各行 name/unit/セル数)が不変なら QLabel を再利用し
         # setText で値だけ更新する(毎移動の全 deleteLater/再生成を回避・RN-06)。
         self._value_labels: list[list[QLabel]] = []
         self._swatch_labels: list[QLabel] = []
         self._row_colors: list[str] = []
-        self._layout_sig: tuple[tuple[str, ...], tuple[tuple[str, int], ...]] | None = (
-            None
-        )
+        self._layout_sig: (
+            tuple[tuple[str, ...], tuple[tuple[str, str, int], ...]] | None
+        ) = None
         self._drag_offset: QPoint | None = (
             None  # for click-drag repositioning within parent
         )
@@ -94,7 +101,10 @@ class CursorReadout(QWidget):
         self._visible_stats: set[str] = set(_STAT_COLS)
         self._col_headers: list[str] = []
         self._header_text: str = ""
-        self._last_delta: tuple[float, float, list[DeltaReading]] | None = None
+        self._last_delta: tuple[float, float, list[DeltaReading], str, int] | None = (
+            None
+        )
+        self._precision: int = _DEFAULT_PRECISION
         # Optional callback wired by GraphPanelView so stat-column toggles update
         # the VM (spec §7: VM is the source of truth for visible_stat_cols).
         # When None, _toggle_stat updates _visible_stats directly (test/legacy path).
@@ -115,6 +125,7 @@ class CursorReadout(QWidget):
             rows=[
                 (
                     r.name,
+                    r.unit,
                     r.color,
                     [_fmt_labeled(r.value if r.in_range else None, r.label)],
                 )
@@ -125,10 +136,15 @@ class CursorReadout(QWidget):
     # ── R16/R17 API ────────────────────────────────────────────────────────────
 
     def set_global(
-        self, t_a: float, readings: list[CursorReading], interp_label: str = ""
+        self,
+        t_a: float,
+        readings: list[CursorReading],
+        interp_label: str = "",
+        precision: int = _DEFAULT_PRECISION,
     ) -> None:
         """Global mode: header = (dot) t_a [ - interp], columns = [swatch|name|値]."""
         self._last_delta = None
+        self._precision = precision
         ta_str = _fmt_time(t_a)
         self._header_text = f"● {ta_str}"
         if interp_label:
@@ -144,8 +160,9 @@ class CursorReadout(QWidget):
             rows=[
                 (
                     r.name,
+                    r.unit,
                     r.color,
-                    [_fmt_labeled(r.value if r.in_range else None, r.label)],
+                    [_fmt_labeled(r.value if r.in_range else None, r.label, precision)],
                 )
                 for r in readings
             ],
@@ -157,9 +174,11 @@ class CursorReadout(QWidget):
         t_b: float,
         readings: list[DeltaReading],
         interp_label: str = "",
+        precision: int = _DEFAULT_PRECISION,
     ) -> None:
         """Delta mode: header = (dot) t_a (dot) t_b · Dt [ - interp], columns = A値/Dy/<stats>."""
-        self._last_delta = (t_a, t_b, readings)
+        self._last_delta = (t_a, t_b, readings, interp_label, precision)
+        self._precision = precision
         dt = t_b - t_a
         ta_str = _fmt_time(t_a)
         tb_str = _fmt_time(t_b)
@@ -181,21 +200,21 @@ class CursorReadout(QWidget):
         rows = []
         for r in readings:
             cells: list[str] = [
-                _fmt_labeled(r.value_a if r.in_range else None, r.label),
-                _fmt_dy(r.dy),
+                _fmt_labeled(r.value_a if r.in_range else None, r.label, precision),
+                _fmt_dy(r.dy, precision),
             ]
             if r.stats.count == 0:
                 cells += [_NO_DATA for _ in stat_cols]
             else:
                 stat_map: dict[str, str] = {
-                    "mean": f"{r.stats.mean:.4g}",
-                    "max": f"{r.stats.max:.4g}",
-                    "min": f"{r.stats.min:.4g}",
-                    "std": f"{r.stats.std:.4g}",
-                    "count": str(r.stats.count),
+                    "mean": f"{r.stats.mean:.{precision}g}",
+                    "max": f"{r.stats.max:.{precision}g}",
+                    "min": f"{r.stats.min:.{precision}g}",
+                    "std": f"{r.stats.std:.{precision}g}",
+                    "count": str(r.stats.count),  # count は整数のまま
                 }
                 cells += [stat_map[c] for c in stat_cols]
-            rows.append((r.name, r.color, cells))
+            rows.append((r.name, r.unit, r.color, cells))
         self._rebuild(col_headers=self._col_headers, rows=rows)
 
     # ── Introspection ──────────────────────────────────────────────────────────
@@ -273,12 +292,12 @@ class CursorReadout(QWidget):
     def _rebuild(
         self,
         col_headers: list[str],
-        rows: list[tuple[str, str, list[str]]],
+        rows: list[tuple[str, str, str, list[str]]],
     ) -> None:
         """構造不変なら差分更新、構造が変わったら全再構築(RN-06)。"""
         sig = (
             tuple(col_headers),
-            tuple((name, len(cells)) for name, _color, cells in rows),
+            tuple((name, unit, len(cells)) for name, unit, _color, cells in rows),
         )
         if sig == self._layout_sig and len(rows) == len(self._value_labels):
             self._update_in_place(rows)
@@ -288,8 +307,8 @@ class CursorReadout(QWidget):
     def _full_rebuild(
         self,
         col_headers: list[str],
-        rows: list[tuple[str, str, list[str]]],
-        sig: tuple[tuple[str, ...], tuple[tuple[str, int], ...]],
+        rows: list[tuple[str, str, str, list[str]]],
+        sig: tuple[tuple[str, ...], tuple[tuple[str, str, int], ...]],
     ) -> None:
         """全 QLabel を破棄・再生成し、差分更新用の参照を記録する。"""
         while self._grid.count():
@@ -299,6 +318,7 @@ class CursorReadout(QWidget):
                 if w is not None:
                     w.deleteLater()
         self._rows = []
+        self._row_cells = []
         self._value_labels = []
         self._swatch_labels = []
         self._row_colors = []
@@ -315,13 +335,19 @@ class CursorReadout(QWidget):
                 )
                 self._grid.addWidget(lbl, r0, c)
             r0 = 1
-        for i, (name, color, cells) in enumerate(rows):
+        for i, (name, unit, color, cells) in enumerate(rows):
             swatch = QLabel()
             pix = QPixmap(10, 10)
             pix.fill(QColor(color))
             swatch.setPixmap(pix)
             self._grid.addWidget(swatch, r0 + i, 0)
-            self._grid.addWidget(QLabel(name), r0 + i, 1)
+            name_lbl = QLabel()
+            if unit:
+                name_lbl.setTextFormat(Qt.TextFormat.RichText)
+                name_lbl.setText(f'{name} <span style="color:#7f849c">[{unit}]</span>')
+            else:
+                name_lbl.setText(name)
+            self._grid.addWidget(name_lbl, r0 + i, 1)
             vlabels: list[QLabel] = []
             for c, text in enumerate(cells):
                 v = QLabel(text)
@@ -331,16 +357,18 @@ class CursorReadout(QWidget):
             self._value_labels.append(vlabels)
             self._swatch_labels.append(swatch)
             self._row_colors.append(color)
-            self._rows.append((name, " ".join(cells)))
+            disp_name = f"{name} [{unit}]" if unit else name
+            self._rows.append((disp_name, " ".join(cells)))
+            self._row_cells.append((disp_name, list(cells)))
         self._layout_sig = sig
         self.adjustSize()
 
     def _update_in_place(
         self,
-        rows: list[tuple[str, str, list[str]]],
+        rows: list[tuple[str, str, str, list[str]]],
     ) -> None:
         """既存 QLabel を setText で差分更新(色変化時のみ swatch を差し替え)。"""
-        for i, (name, color, cells) in enumerate(rows):
+        for i, (name, unit, color, cells) in enumerate(rows):
             for c, text in enumerate(cells):
                 self._value_labels[i][c].setText(text)
             if self._row_colors[i] != color:
@@ -348,7 +376,9 @@ class CursorReadout(QWidget):
                 pix.fill(QColor(color))
                 self._swatch_labels[i].setPixmap(pix)
                 self._row_colors[i] = color
-            self._rows[i] = (name, " ".join(cells))
+            disp_name = f"{name} [{unit}]" if unit else name
+            self._rows[i] = (disp_name, " ".join(cells))
+            self._row_cells[i] = (disp_name, list(cells))
         self.adjustSize()
 
     # ── Drag to reposition within the parent plot (R15: フロート表は移動可) ────

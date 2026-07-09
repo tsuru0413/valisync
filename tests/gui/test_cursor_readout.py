@@ -257,3 +257,49 @@ def test_set_delta_header_includes_interp_label(qtbot: QtBot):
         interp_label="最近傍",
     )
     assert "最近傍" in ro.header_text()
+
+
+# --- Task 2 (PC-11/PC-16): 精度パラメータ・単位表示・interp_label 保持 ---
+
+
+def test_precision_controls_value_digits(qtbot: QtBot):
+    ro = CursorReadout()
+    qtbot.addWidget(ro)
+    ro.set_global(
+        0.0,
+        [CursorReading("csv::a", "#fff", 1.23456789, True, unit="km/h")],
+        precision=4,
+    )
+    v4 = ro.row_texts()[0][1]
+    ro.set_global(
+        0.0,
+        [CursorReading("csv::a", "#fff", 1.23456789, True, unit="km/h")],
+        precision=8,
+    )
+    v8 = ro.row_texts()[0][1]
+    assert v4 == "1.235"  # .4g
+    assert v8 == "1.2345679"  # .8g
+    assert v4 != v8  # 精度が効いている
+
+
+def test_unit_shown_beside_name(qtbot: QtBot):
+    ro = CursorReadout()
+    qtbot.addWidget(ro)
+    ro.set_global(0.0, [CursorReading("spd", "#fff", 1.0, True, unit="km/h")])
+    assert "[km/h]" in ro.row_texts()[0][0]  # 名前セルに単位
+
+
+def test_stat_toggle_reretains_interp_label(qtbot: QtBot):
+    ro = CursorReadout()
+    qtbot.addWidget(ro)
+    stats = _stats(1.0, 2.0, 0.0, 0.5, 3)
+    ro.set_delta(
+        0.0,
+        1.0,
+        [DeltaReading("a", "#fff", 1.0, 0.5, stats, True, unit="km/h")],
+        interp_label="線形",
+        precision=6,
+    )
+    # legacy stat-toggle 再描画 (_on_stat_toggled 未 wire) で interp_label を欠落しない
+    ro._toggle_stat("count", False)
+    assert "線形" in ro.header_text()
