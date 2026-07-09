@@ -720,6 +720,12 @@ class GraphPanelView(QWidget):
         self._hover_axis_index: int | None = None
         # Active curve (entry_id) — transient View state, drives thick-pen feedback.
         self._active_curve_id: int | None = None
+        # Active cursor (A/B) — transient View state, drives thick-line feedback
+        # and arrow-key routing. None when no cursor is placed.
+        self._active_cursor: str | None = None
+        # Tracks whether B was showing on the previous sync, to detect the
+        # off→on transition that makes B the active cursor.
+        self._prev_showing_b: bool = False
         # DP16: candidate captured on a curve press until the drag threshold is
         # crossed (entry_id, press position).  None when no candidate is pending.
         self._curve_press_candidate: tuple[int, QPointF] | None = None
@@ -1330,7 +1336,18 @@ class GraphPanelView(QWidget):
             self._readout.setVisible(False)
             self._readout_placed = False
             self._readout.reset_user_moved()
+            self._active_cursor = None
+            self._prev_showing_b = False
             return
+        showing_b = self.vm.delta_enabled and self.vm.cursor_t_b is not None
+        if self._active_cursor is None:
+            self._active_cursor = "A"
+        if showing_b and not self._prev_showing_b:
+            self._active_cursor = "B"
+        if not showing_b and self._active_cursor == "B":
+            self._active_cursor = "A"
+        self._prev_showing_b = showing_b
+        self._apply_cursor_pens()
         self._suppress_cursor_signal = True
         try:
             self._cursor_line.setValue(t)
@@ -1358,14 +1375,38 @@ class GraphPanelView(QWidget):
         self._readout.setVisible(True)
         self._readout.raise_()
 
+    def _apply_cursor_pens(self) -> None:
+        """Thicken the active cursor line (width 3.5) and normalise the other."""
+        self._cursor_line.setPen(
+            pg.mkPen("#f9e2af", width=3.5 if self._active_cursor == "A" else 2)
+        )
+        self._cursor_line_b.setPen(
+            pg.mkPen(
+                "#89b4fa",
+                width=3.5 if self._active_cursor == "B" else 2,
+                style=Qt.PenStyle.DashLine,
+            )
+        )
+
+    def active_cursor(self) -> str | None:
+        """Which cursor (A/B) is active — transient View state (tests/realgui)."""
+        return self._active_cursor
+
+    def cursor_line_width(self, which: str) -> float:
+        """Pen width of the A/B cursor line (tests/realgui)."""
+        line = self._cursor_line if which == "A" else self._cursor_line_b
+        return float(line.pen.widthF())
+
     def _on_cursor_line_dragged(self) -> None:
         if self._suppress_cursor_signal:
             return
+        self._active_cursor = "A"
         self.vm.set_cursor(float(self._cursor_line.value()))
 
     def _on_cursor_line_b_dragged(self) -> None:
         if self._suppress_cursor_signal:
             return
+        self._active_cursor = "B"
         self.vm.set_cursor_b(float(self._cursor_line_b.value()))
 
     # Test introspection

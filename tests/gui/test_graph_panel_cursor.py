@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import csv
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock
@@ -486,3 +487,76 @@ def test_cursor_reading_nan_value_yields_no_label_and_no_crash(tmp_path: Path) -
 
     r = next(r for r in vm.cursor_readings() if "TurnSig" in r.name)
     assert r.label is None
+
+
+# --- Task 2: アクティブカーソル(A/B) 状態 + 自動アクティブ + 太線フィードバック ---
+
+
+def _shown_cursor_panel(qtbot: QtBot) -> GraphPanelView:
+    """1 信号を表示済みの最小 GraphPanelView (活性化テスト用の共通土台)。
+
+    tmp_path フィクスチャに頼らず自前の一時ディレクトリで CSV を作る -- 呼び出し
+    側テストのシグネチャを qtbot のみに保つため (ブリーフのテストコードを逐語で
+    使えるように)。CSV ローダーは読み込み時に配列へ展開する (遅延読み込みではな
+    い) ため、一時ディレクトリを使い回さなくても VM は自己完結する。
+    """
+    tmp_path = Path(tempfile.mkdtemp())
+    vm = _vm_with_signal(tmp_path)
+    view = GraphPanelView(vm)
+    qtbot.addWidget(view)
+    view.resize(400, 300)
+    view.show()
+    qtbot.waitExposed(view)
+    return view
+
+
+def test_placing_cursor_auto_activates_a(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.toggle_main_cursor(True)
+    assert view.active_cursor() == "A"
+
+
+def test_enabling_delta_auto_activates_b(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.toggle_main_cursor(True)
+    view.vm.toggle_delta(True)
+    assert view.active_cursor() == "B"
+
+
+def test_disabling_delta_falls_back_to_a(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.toggle_main_cursor(True)
+    view.vm.toggle_delta(True)
+    view.vm.toggle_delta(False)
+    assert view.active_cursor() == "A"
+
+
+def test_clearing_cursor_deactivates(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.toggle_main_cursor(True)
+    view.vm.toggle_main_cursor(False)
+    assert view.active_cursor() is None
+
+
+def test_active_cursor_line_is_thicker(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.toggle_main_cursor(True)  # A active
+    assert view.cursor_line_width("A") > view.cursor_line_width("B")
+    view.vm.toggle_delta(True)  # B active
+    assert view.cursor_line_width("B") > view.cursor_line_width("A")
+
+
+def test_dragging_b_line_activates_b(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.toggle_main_cursor(True)
+    view.vm.toggle_delta(True)
+    # simulate the A line being active, then a B-line drag re-activates B
+    view._active_cursor = "A"
+    view._cursor_line_b.setValue(0.6)  # fires sigPositionChanged → handler
+    assert view.active_cursor() == "B"
