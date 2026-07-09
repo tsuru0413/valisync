@@ -498,3 +498,40 @@ class TestCurveActivation:
         view._deactivate_curve()  # type: ignore[attr-defined]
 
         assert view.active_curve_id() is None  # type: ignore[attr-defined]
+
+    def test_h_toggles_active_curve_visibility(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        session, _ = _loaded_session(tmp_path, n_signals=1)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal(key)
+        view.refresh()  # type: ignore[attr-defined]
+        eid = view.curve_keys()[0]  # type: ignore[attr-defined]
+        view._active_curve_id = eid  # type: ignore[attr-defined]  # 活性化済みとする
+        view.setFocus()  # type: ignore[attr-defined]
+
+        qtbot.keyClick(view, Qt.Key.Key_H)
+        assert vm.inspect()["plotted_signals"][0]["visible"] is False
+        # H は解除トリガーにしない -> 非表示後も active のまま再表示できる
+        assert view.active_curve_id() == eid  # type: ignore[attr-defined]
+        qtbot.keyClick(view, Qt.Key.Key_H)
+        assert vm.inspect()["plotted_signals"][0]["visible"] is True
+
+    def test_h_falls_back_to_axis_when_no_active_curve(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        session, _ = _loaded_session(tmp_path, n_signals=2)
+        k0, k1 = _keys(session)[:2]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal(k0)  # axis 0
+        vm.add_signal(k1)  # axis 0
+        view.refresh()  # type: ignore[attr-defined]
+        view._active_curve_id = None  # type: ignore[attr-defined]
+        view.set_active_axis(0)  # type: ignore[attr-defined]
+        view.setFocus()  # type: ignore[attr-defined]
+
+        qtbot.keyClick(view, Qt.Key.Key_H)
+        assert all(not e["visible"] for e in vm.inspect()["plotted_signals"])
