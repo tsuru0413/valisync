@@ -511,6 +511,31 @@ def _curve_click_setup(qtbot: QtBot, tmp_path: Path) -> tuple[object, int, QPoin
     return view, eid, pos
 
 
+class _FakeAxisClickEvent:
+    """Duck-typed pyqtgraph mouseClickEvent (left button).
+
+    ``_AlignedAxisItem.mouseClickEvent`` only calls ``.button()``, ``.accept()``,
+    and ``.ignore()`` on its event argument (it never reads position), so a
+    synthetic ``QGraphicsSceneMouseEvent`` is unnecessary — driving the handler
+    with this duck-type directly exercises the wiring without a scene-level
+    input simulation (Layer B, per the T4-c follow-up honest-layering note).
+    """
+
+    def __init__(self, button: Qt.MouseButton) -> None:
+        self._button = button
+        self.accepted = False
+        self.ignored = False
+
+    def button(self) -> Qt.MouseButton:
+        return self._button
+
+    def accept(self) -> None:
+        self.accepted = True
+
+    def ignore(self) -> None:
+        self.ignored = True
+
+
 class TestCurveActivation:
     """DP16 (spec §7): press holds a candidate; release within startDragDistance
     activates the curve (thick pen + its axis); a move past the threshold instead
@@ -553,6 +578,58 @@ class TestCurveActivation:
         view._deactivate_curve()  # type: ignore[attr-defined]
 
         assert view.active_curve_id() is None  # type: ignore[attr-defined]
+
+    def test_axis_click_event_deactivates_active_curve(self, qtbot: QtBot) -> None:
+        """T4-c follow-up: drives ``_AlignedAxisItem.mouseClickEvent`` itself
+        (rather than calling ``_deactivate_curve`` directly, as
+        ``test_axis_click_deactivates_curve`` above does) so the axis-click ->
+        curve-deactivation wiring inside the handler is actually covered — that
+        line could previously be deleted without failing any test.
+        """
+        from valisync.gui.views.graph_panel_view import GraphPanelView
+
+        session, keys = _session_with_signals(
+            {"csv::a": ([0.0], [1.0]), "csv::b": ([0.0], [2.0])}
+        )
+        vm = GraphPanelVM(session)
+        vm.add_signal_to_axis(keys["csv::a"], 0)
+        vm.create_new_axis(keys["csv::b"])  # axis 1
+        view = GraphPanelView(vm)
+        qtbot.addWidget(view)
+        view.show()  # type: ignore[attr-defined]
+        qtbot.waitExposed(view)  # type: ignore[attr-defined]
+
+        # 曲線 a (軸0) を活性化 -> 次に軸1を実ハンドラで click
+        eid_a = next(e.entry_id for e in vm._plotted if e.signal_key == keys["csv::a"])
+        view._activate_curve(eid_a)  # type: ignore[attr-defined]
+        assert view._active_curve_id == eid_a  # type: ignore[attr-defined]
+
+        axis1 = view._y_axes[1]  # type: ignore[attr-defined]
+        assert axis1._vm_axis_index == 1  # reconcile で設定済み
+        axis1.mouseClickEvent(_FakeAxisClickEvent(Qt.MouseButton.LeftButton))
+
+        assert view._active_curve_id is None  # type: ignore[attr-defined]
+        assert view._active_axis_index == 1  # type: ignore[attr-defined]
+
+    def test_axis_click_right_button_is_ignored(self, qtbot: QtBot) -> None:
+        from valisync.gui.views.graph_panel_view import GraphPanelView
+
+        session, keys = _session_with_signals({"csv::a": ([0.0], [1.0])})
+        vm = GraphPanelVM(session)
+        vm.add_signal_to_axis(keys["csv::a"], 0)
+        view = GraphPanelView(vm)
+        qtbot.addWidget(view)
+        view.show()  # type: ignore[attr-defined]
+        qtbot.waitExposed(view)  # type: ignore[attr-defined]
+
+        eid = vm._plotted[0].entry_id
+        view._activate_curve(eid)  # type: ignore[attr-defined]
+
+        ev = _FakeAxisClickEvent(Qt.MouseButton.RightButton)
+        view._y_axes[0].mouseClickEvent(ev)  # type: ignore[attr-defined]
+
+        assert ev.ignored is True
+        assert view._active_curve_id == eid  # type: ignore[attr-defined]  # 右クリックでは解除しない
 
     def test_h_toggles_active_curve_visibility(
         self, qtbot: QtBot, tmp_path: Path
