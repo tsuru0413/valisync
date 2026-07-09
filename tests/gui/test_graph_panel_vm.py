@@ -1736,6 +1736,35 @@ def test_set_panel_width_unchanged_is_noop(tmp_path: Path) -> None:
     assert calls == [1]
 
 
+def test_set_x_range_unchanged_is_noop(tmp_path: Path) -> None:
+    """X-sync fan-out re-sets the SOURCE panel to its current range and pushes an
+    already-synced range to siblings. Re-applying the same (lo, hi) must be a no-op:
+    no cache invalidation, no 'range' notify (RN-04). A different range still
+    invalidates and notifies as before."""
+    vm = _loaded_vm(tmp_path)
+    vm.set_x_range(0.0, 10.0)  # known starting range
+
+    calls: list[int] = []
+    original = vm._invalidate_cache
+
+    def spy() -> None:
+        calls.append(1)
+        original()
+
+    vm._invalidate_cache = spy  # type: ignore[method-assign]
+
+    notes: list[str] = []
+    vm.subscribe(notes.append)
+
+    vm.set_x_range(0.0, 10.0)  # same range -> no work
+    assert calls == []
+    assert "range" not in notes
+
+    vm.set_x_range(0.0, 20.0)  # different range -> invalidates + notifies as before
+    assert calls == [1]
+    assert "range" in notes
+
+
 # ─── RN-05: constant-signal Y-axis padding ───────────────────────────────────
 
 
