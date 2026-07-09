@@ -13,7 +13,9 @@ TDD: written before the view exists; all must FAIL first.
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import numpy as np
@@ -23,10 +25,11 @@ from PySide6.QtGui import QContextMenuEvent, QDropEvent, QMouseEvent, QResizeEve
 from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
-from valisync.core.models import Delimiter, FormatDefinition
+from valisync.core.models import Delimiter, FormatDefinition, Signal, SignalGroup
 from valisync.core.session import Session
 from valisync.gui.adapters.qt_signal_models import encode_signal_keys
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+from valisync.gui.views.graph_panel_view import ZONE_PLOT, ZONE_Y_INNER
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -74,6 +77,55 @@ def _make_view(qtbot: QtBot, vm: GraphPanelVM) -> object:
     view = GraphPanelView(vm)
     qtbot.addWidget(view)
     return view
+
+
+def _session_with_signals(
+    specs: dict[str, tuple[list[float], list[float]]],
+) -> tuple[Session, dict[str, str]]:
+    """Build a Session with one directly-injected signal per (name, (ts, vs)).
+
+    Mirrors ``_session_with_signals`` in test_graph_panel_multi_axis.py (Task 1)
+    — duplicated locally rather than imported to avoid a circular import (that
+    module imports helpers FROM this one). Bypasses the CSV loader so callers
+    can hand-pick exact values. Returns (session, name_map) since the group key
+    SignalGroupManager assigns is auto-generated, not the literal *specs* name.
+    """
+    session = Session()
+    base_dir = Path(__file__).resolve().parent
+    name_map: dict[str, str] = {}
+    for i, (name, (ts, vs)) in enumerate(specs.items()):
+        sig = Signal(
+            name=name,
+            timestamps=np.array(ts, dtype=np.float64),
+            values=np.array(vs, dtype=np.float64),
+            file_format="CSV",
+            bus_type="",
+            source_file="",
+        )
+        key = session._groups.add(
+            SignalGroup(
+                signals=(sig,),
+                source_path=base_dir / f"_synthetic_{name}_{i}.csv",
+                file_format="CSV",
+                loaded_at=datetime.now(),
+            )
+        )
+        name_map[name] = session.group_signals(key)[0].name
+    return session, name_map
+
+
+def _build_panel_view_with_axes(qtbot: QtBot) -> object:
+    """Two-axis GraphPanelView (axis 0 = s1, axis 1 = s2), qtbot-managed.
+
+    Reuses the shared Layer A/B/C factory (tests/gui/_panel_factory.py) instead
+    of hand-rolling a session/VM so this helper stays in sync with how other
+    axis-menu tests build their fixture.
+    """
+    from tests.gui._panel_factory import make_two_axis_panel
+
+    panel = make_two_axis_panel()
+    qtbot.addWidget(panel)
+    return panel
 
 
 # ─── Drawing curves ───────────────────────────────────────────────────────────
@@ -782,3 +834,159 @@ class TestContextMenuRouting:
 
         assert blank_calls == [None]
         assert curve_calls == []
+
+
+# ─── Axis right-click menu (増分2b Task 3) ────────────────────────────────────
+
+
+def _spy_menus(view: object) -> list[tuple[str, object]]:
+    """3ビルダーを記録スパイへ差し替え、.exec() を no-op にする。"""
+    calls: list[tuple[str, object]] = []
+    view.build_curve_menu = lambda eid: (  # type: ignore[method-assign,attr-defined]
+        calls.append(("curve", eid)) or SimpleNamespace(exec=lambda *a: None)
+    )
+    view.build_axis_menu = lambda idx: (  # type: ignore[method-assign,attr-defined]
+        calls.append(("axis", idx)) or SimpleNamespace(exec=lambda *a: None)
+    )
+    view.build_context_menu = lambda: (  # type: ignore[method-assign,attr-defined]
+        calls.append(("panel", None)) or SimpleNamespace(exec=lambda *a: None)
+    )
+    return calls
+
+
+def _ctx_event() -> QContextMenuEvent:
+    return QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(10, 100))
+
+
+class TestAxisMenuRouting:
+    """contextMenuEvent の軸分岐 (spec §4.3: 曲線 → Y軸 → 空白)。
+
+    分類器 (_curve_at/_zone_at/_axis_index_at) はスタブして分岐だけを検証する
+    (幾何は既存の _axis_index_at / TestContextMenuRouting のジオメトリテストが
+    担保)。3ビルダーはスパイに差し替え .exec() を no-op にして
+    contextMenuEvent のモーダル呼び出しによるハングを避ける。
+    """
+
+    def test_context_menu_routes_axis_when_on_y_zone(self, qtbot: QtBot) -> None:
+        view = _build_panel_view_with_axes(qtbot)
+        view._curve_at = lambda pos: None  # type: ignore[method-assign]
+        view._zone_at = lambda pos: ZONE_Y_INNER  # type: ignore[method-assign]
+        view._axis_index_at = lambda pos: 1  # type: ignore[method-assign]
+        calls = _spy_menus(view)
+
+        view.contextMenuEvent(_ctx_event())  # type: ignore[attr-defined]
+
+        assert calls == [("axis", 1)]
+
+    def test_context_menu_curve_wins_over_axis(self, qtbot: QtBot) -> None:
+        view = _build_panel_view_with_axes(qtbot)
+        view._curve_at = lambda pos: 7  # type: ignore[method-assign]
+        view._zone_at = lambda pos: ZONE_Y_INNER  # type: ignore[method-assign]
+        calls = _spy_menus(view)
+
+        view.contextMenuEvent(_ctx_event())  # type: ignore[attr-defined]
+
+        assert calls == [("curve", 7)]  # 曲線が軸より優先
+
+    def test_context_menu_falls_back_to_panel_on_plot(self, qtbot: QtBot) -> None:
+        view = _build_panel_view_with_axes(qtbot)
+        view._curve_at = lambda pos: None  # type: ignore[method-assign]
+        view._zone_at = lambda pos: ZONE_PLOT  # type: ignore[method-assign]
+        calls = _spy_menus(view)
+
+        view.contextMenuEvent(_ctx_event())  # type: ignore[attr-defined]
+
+        assert calls == [("panel", None)]
+
+
+class TestAxisContextMenu:
+    """build_axis_menu: オートフィット/範囲指定/削除/曲線一覧 (spec §4.3)。"""
+
+    def test_build_axis_menu_items_and_entry_list(self, qtbot: QtBot) -> None:
+        from valisync.gui.views.graph_panel_view import GraphPanelView
+
+        session, keys = _session_with_signals(
+            {"csv::a": ([0.0], [1.0]), "csv::b": ([0.0], [2.0])}
+        )
+        vm = GraphPanelVM(session)
+        vm.add_signal_to_axis(keys["csv::a"], 0)
+        vm.add_signal_to_axis(keys["csv::b"], 0)
+        view = GraphPanelView(vm)
+        qtbot.addWidget(view)
+
+        menu = view.build_axis_menu(0)  # type: ignore[attr-defined]
+
+        texts = [a.text() for a in menu.actions() if not a.isSeparator()]
+        assert "この軸をオートフィット" in texts
+        assert "範囲を指定…" in texts
+        assert "軸を削除" in texts
+        # 曲線一覧 (signal_key ラベル・checkable・checked=visible)
+        entry_acts = [
+            a for a in menu.actions() if a.text() in (keys["csv::a"], keys["csv::b"])
+        ]
+        assert len(entry_acts) == 2
+        assert all(a.isCheckable() and a.isChecked() for a in entry_acts)
+
+    def test_build_axis_menu_autofit_triggers_reset_axis_y(self, qtbot: QtBot) -> None:
+        from valisync.gui.views.graph_panel_view import GraphPanelView
+
+        session, keys = _session_with_signals({"csv::a": ([0.0, 1.0], [10.0, 30.0])})
+        vm = GraphPanelVM(session)
+        vm.add_signal_to_axis(keys["csv::a"], 0)
+        vm.set_axis_range(0, 100.0, 200.0)
+        view = GraphPanelView(vm)
+        qtbot.addWidget(view)
+
+        menu = view.build_axis_menu(0)  # type: ignore[attr-defined]
+        act = next(a for a in menu.actions() if a.text() == "この軸をオートフィット")
+        act.trigger()
+
+        assert vm.axes[0].y_range == (10.0, 30.0)
+
+    def test_build_axis_menu_delete_triggers_remove_axis(self, qtbot: QtBot) -> None:
+        from valisync.gui.views.graph_panel_view import GraphPanelView
+
+        session, keys = _session_with_signals(
+            {"csv::a": ([0.0], [1.0]), "csv::b": ([0.0], [2.0])}
+        )
+        vm = GraphPanelVM(session)
+        vm.add_signal_to_axis(keys["csv::a"], 0)
+        vm.create_new_axis(keys["csv::b"])  # axis 1
+        view = GraphPanelView(vm)
+        qtbot.addWidget(view)
+
+        menu = view.build_axis_menu(1)  # type: ignore[attr-defined]
+        act = next(a for a in menu.actions() if a.text() == "軸を削除")
+        act.trigger()
+
+        assert {e.signal_key for e in vm._plotted} == {keys["csv::a"]}
+
+    def test_build_axis_menu_entry_toggle_hides_curve(self, qtbot: QtBot) -> None:
+        from valisync.gui.views.graph_panel_view import GraphPanelView
+
+        session, keys = _session_with_signals({"csv::a": ([0.0], [1.0])})
+        vm = GraphPanelVM(session)
+        vm.add_signal_to_axis(keys["csv::a"], 0)
+        view = GraphPanelView(vm)
+        qtbot.addWidget(view)
+
+        menu = view.build_axis_menu(0)  # type: ignore[attr-defined]
+        act = next(a for a in menu.actions() if a.text() == keys["csv::a"])
+        act.trigger()  # checkable → toggled → toggle_entry_visibility
+
+        assert vm.entries_on_axis(0)[0][3] is False
+
+    def test_build_axis_menu_range_uses_injected_dialog(self, qtbot: QtBot) -> None:
+        from valisync.gui.views.graph_panel_view import GraphPanelView
+
+        session, keys = _session_with_signals({"csv::a": ([0.0], [1.0])})
+        vm = GraphPanelVM(session)
+        vm.add_signal_to_axis(keys["csv::a"], 0)
+        view = GraphPanelView(vm, range_dialog_fn=lambda idx, cur: (2.0, 8.0))
+        qtbot.addWidget(view)
+
+        menu = view.build_axis_menu(0)  # type: ignore[attr-defined]
+        act = next(a for a in menu.actions() if a.text() == "範囲を指定…")
+        act.trigger()
+
+        assert vm.axes[0].y_range == (2.0, 8.0)

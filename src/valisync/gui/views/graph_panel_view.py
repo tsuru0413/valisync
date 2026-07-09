@@ -20,6 +20,7 @@ drag-preview with a debounce timer is a noted refinement (R9.5).
 from __future__ import annotations
 
 import contextlib
+import math
 from collections.abc import Callable
 from typing import Any
 
@@ -662,11 +663,21 @@ class GraphPanelView(QWidget):
         parent: QWidget | None = None,
         apply_dialog_fn: Callable[[str, float], str | None] | None = None,
         color_dialog_fn: Callable[[], str | None] | None = None,
+        range_dialog_fn: Callable[
+            [int, tuple[float, float] | None], tuple[float, float] | None
+        ]
+        | None = None,
+        offset_input_dialog_fn: Callable[[str, float], tuple[float, str] | None]
+        | None = None,
+        reset_dialog_fn: Callable[[str], str | None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.vm = vm
         self._apply_dialog_fn = apply_dialog_fn
         self._color_dialog_fn = color_dialog_fn or self._default_color_dialog
+        self._range_dialog_fn = range_dialog_fn
+        self._offset_input_dialog_fn = offset_input_dialog_fn
+        self._reset_dialog_fn = reset_dialog_fn
         # Curve items keyed by VM entry_id (a stable per-entry ID), NOT signal_key,
         # so the same signal on two axes draws as two independent items.
         self._items: dict[int, pg.PlotDataItem] = {}
@@ -2116,12 +2127,94 @@ class GraphPanelView(QWidget):
             )
         return menu
 
+    def build_axis_menu(self, axis_index: int) -> QMenu:
+        """Right-click menu for one Y-axis (spec §4.3: オートフィット/範囲指定/削除/曲線一覧)."""
+        menu = QMenu(self)
+        menu.addAction("この軸をオートフィット").triggered.connect(
+            lambda *_: self.vm.reset_axis_y(axis_index)
+        )
+        menu.addAction("範囲を指定…").triggered.connect(
+            lambda *_: self._prompt_axis_range(axis_index)
+        )
+        menu.addAction("軸を削除").triggered.connect(
+            lambda *_: self.vm.remove_axis(axis_index)
+        )
+        menu.addSeparator()
+        for entry_id, name, _color, visible in self.vm.entries_on_axis(axis_index):
+            act = menu.addAction(name)
+            act.setCheckable(True)
+            act.setChecked(visible)  # BEFORE toggled.connect (no spurious fire)
+            act.toggled.connect(
+                lambda _checked, eid=entry_id: self.vm.toggle_entry_visibility(eid)
+            )
+        return menu
+
+    def _prompt_axis_range(self, axis_index: int) -> None:
+        """Open the range dialog for *axis_index* and apply the chosen [lo, hi]."""
+        axes = self.vm.axes
+        if not (0 <= axis_index < len(axes)):
+            return
+        fn = self._range_dialog_fn or self._default_range_dialog
+        result = fn(axis_index, axes[axis_index].y_range)
+        if result is not None:
+            lo, hi = result
+            self.vm.set_axis_range(axis_index, lo, hi)
+
+    def _default_range_dialog(
+        self, axis_index: int, current: tuple[float, float] | None
+    ) -> tuple[float, float] | None:
+        """Modal Y-range dialog (DI default). Returns (lo, hi) or None on cancel.
+
+        OK is disabled while the inputs are non-finite or lo >= hi (§10). This
+        validation is exercised via realgui/manual — Layer B injects a stub fn.
+        """
+        from PySide6.QtWidgets import (
+            QDialog,
+            QDialogButtonBox,
+            QFormLayout,
+            QLineEdit,
+        )
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Y軸の範囲を指定")
+        form = QFormLayout(dlg)
+        lo_edit = QLineEdit("" if current is None else f"{current[0]:g}")
+        hi_edit = QLineEdit("" if current is None else f"{current[1]:g}")
+        form.addRow("下限", lo_edit)
+        form.addRow("上限", hi_edit)
+        box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        ok_btn = box.button(QDialogButtonBox.StandardButton.Ok)
+        box.accepted.connect(dlg.accept)
+        box.rejected.connect(dlg.reject)
+        form.addRow(box)
+
+        def _validate() -> None:
+            try:
+                lo = float(lo_edit.text())
+                hi = float(hi_edit.text())
+            except ValueError:
+                ok_btn.setEnabled(False)
+                return
+            ok_btn.setEnabled(math.isfinite(lo) and math.isfinite(hi) and lo < hi)
+
+        lo_edit.textChanged.connect(lambda *_: _validate())
+        hi_edit.textChanged.connect(lambda *_: _validate())
+        _validate()
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return (float(lo_edit.text()), float(hi_edit.text()))
+
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
-        # ルーティング優先順 (spec §4.3): 曲線 → 空白 (パネル)。
-        # 軸分岐は 増分2b、カーソル線分岐は 増分3 で先頭に差し込む。
+        # ルーティング優先順 (spec §4.3): 曲線 → Y軸 → 空白 (パネル)。
+        # カーソル線分岐は 増分3 で先頭に差し込む。
         pos = QPointF(event.pos())
         eid = self._curve_at(pos)
         if eid is not None:
             self.build_curve_menu(eid).exec(event.globalPos())
+            return
+        if self._zone_at(pos) in (ZONE_Y_INNER, ZONE_Y_OUTER):
+            self.build_axis_menu(self._axis_index_at(pos)).exec(event.globalPos())
             return
         self.build_context_menu().exec(event.globalPos())
