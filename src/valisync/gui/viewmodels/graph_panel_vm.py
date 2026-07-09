@@ -579,6 +579,75 @@ class GraphPanelVM(Observable):
         self._axes[axis_index].set_range(min(lo, hi), max(lo, hi))
         self._notify("axes")
 
+    def reset_axis_y(self, axis_index: int) -> None:
+        """Fit one Y-axis to the visible values of the signals assigned to it.
+
+        Single-axis version of reset_y (the axis-menu "この軸をオートフィット").
+        Invisible entries are excluded and the fit uses the aligned (sorted,
+        keep-last) view — the same window that is actually drawn. Clears to None
+        when nothing is fittable so a later add_signal can auto-fit.
+        """
+        if not (0 <= axis_index < len(self._axes)):
+            return
+        sig_map = self._signal_map()
+        lo: float | None = None
+        hi: float | None = None
+        for entry in self._plotted:
+            if entry.axis_index != axis_index or not entry.visible:
+                continue
+            sig = sig_map.get(entry.signal_key)
+            if sig is None or len(sig.values) == 0:
+                continue
+            vs = sig.sorted_view()[1]
+            finite_vals = vs[np.isfinite(vs)]
+            if len(finite_vals) == 0:
+                continue
+            v_lo = float(finite_vals.min())
+            v_hi = float(finite_vals.max())
+            lo = v_lo if lo is None else min(lo, v_lo)
+            hi = v_hi if hi is None else max(hi, v_hi)
+        self._axes[axis_index].set_range(lo, hi)
+        self._invalidate_cache()
+        self._notify("range")
+
+    def remove_axis(self, axis_index: int) -> None:
+        """Remove every entry on *axis_index* and reconcile axes (axis-menu 削除).
+
+        Mirrors remove_entry but targets a whole axis: survivors keep their
+        heights, the vacated band stays blank, and the panel collapses to a
+        placeholder only when the last entry is removed (via _compact_axes).
+        """
+        if not (0 <= axis_index < len(self._axes)):
+            return
+        self._plotted = [e for e in self._plotted if e.axis_index != axis_index]
+        self._compact_axes()
+        self._invalidate_cache()
+        self._notify("signals")
+
+    def move_entry_to_new_axis(self, entry_id: int) -> None:
+        """Re-assign the entry with *entry_id* to a fresh Y-axis (曲線「新しい軸へ移動」).
+
+        Mirrors create_new_axis's layout bookkeeping but moves an existing entry
+        instead of adding a signal: a new axis is appended in the inner column,
+        the entry is re-pointed to it, then _compact_axes prunes the now-empty
+        source axis (no empty axes are left behind) and _relayout_columns re-splits
+        equally. _invalidate_cache is explicit here because the render cache-key
+        omits axis_index (a stale-cache curve would keep drawing on the old axis).
+        """
+        entry = next((e for e in self._plotted if e.entry_id == entry_id), None)
+        if entry is None:
+            return
+        new_col = self._column_count - 1
+        same_col = [a.top_ratio for a in self._axes if a.column == new_col]
+        new_axis = YAxisVM(column=new_col)
+        new_axis.top_ratio = (max(same_col) + 1.0) if same_col else 0.0
+        self._axes.append(new_axis)
+        entry.axis_index = len(self._axes) - 1
+        self._compact_axes()
+        self._relayout_columns()
+        self._invalidate_cache()
+        self._notify("axes")
+
     def reset_x(self) -> None:
         """Fit x_range to the union of all plotted signals' time extents."""
         lo: float | None = None
@@ -960,6 +1029,18 @@ class GraphPanelVM(Observable):
             if e.entry_id == entry_id:
                 return e.axis_index
         return None
+
+    def entries_on_axis(self, axis_index: int) -> list[tuple[int, str, str, bool]]:
+        """Return (entry_id, signal_key, color, visible) for every entry on *axis_index*.
+
+        Drives the axis-menu curve list (checkable, includes hidden entries).
+        signal_key doubles as the display label. Pure read — no notify.
+        """
+        return [
+            (e.entry_id, e.signal_key, e.color, e.visible)
+            for e in self._plotted
+            if e.axis_index == axis_index
+        ]
 
     # ─── Introspection ────────────────────────────────────────────────────────
 
