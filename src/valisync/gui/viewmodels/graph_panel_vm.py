@@ -72,6 +72,7 @@ class CursorReading:
     value: float | None
     in_range: bool
     label: str | None = None  # value_labels 命中時のみ (LD-07)
+    unit: str = ""  # metadata['unit'] (PC-11)
 
 
 @dataclass
@@ -85,6 +86,7 @@ class DeltaReading:
     stats: StatisticsResult  # count==0 はデータなし
     in_range: bool
     label: str | None = None  # value_a の value_labels 命中時のみ (LD-07)
+    unit: str = ""  # metadata['unit'] (PC-11)
 
 
 def _resolve_value_label(sig: Signal | None, value: float | None) -> str | None:
@@ -154,6 +156,10 @@ class GraphPanelVM(Observable):
         # in Delta readout. GraphPanelView syncs this into CursorReadout on each
         # render so the VM is the single source of truth.
         self.visible_stat_cols: set[str] = {"mean", "max", "min", "std", "count"}
+
+        # 値・統計列の表示桁数(source of truth は VM。4/6/8 切替・既定 6・DP9)。
+        # 時刻ヘッダと count には適用しない(spec 増分3 readout 刷新)。
+        self.value_precision: int = 6
 
         # Time offsets (R14) — applied at render time to the ORIGINAL session
         # signal. signal_offsets keyed by namespaced name, file_offsets by group
@@ -919,6 +925,7 @@ class GraphPanelVM(Observable):
             if sig is None:
                 out.append(CursorReading(entry.signal_key, entry.color, None, False))
                 continue
+            unit = sig.metadata.get("unit", "") if sig.metadata else ""
             val = self._session.interpolate(sig, self.cursor_t, self.interp_method)
             out.append(
                 CursorReading(
@@ -927,6 +934,7 @@ class GraphPanelVM(Observable):
                     val,
                     val is not None,
                     label=_resolve_value_label(sig, val),
+                    unit=unit,
                 )
             )
         return out
@@ -1034,6 +1042,11 @@ class GraphPanelVM(Observable):
         self.visible_stat_cols = set(cols)
         self._notify("delta")
 
+    def set_value_precision(self, p: int) -> None:
+        """Set the displayed value/stat precision and notify so the readout re-renders."""
+        self.value_precision = p
+        self._notify("cursor")
+
     @property
     def delta_t(self) -> float | None:
         """Signed Δt = tB - tA (None unless both cursors are set)."""
@@ -1075,6 +1088,7 @@ class GraphPanelVM(Observable):
                     )
                 )
                 continue
+            unit = sig.metadata.get("unit", "") if sig.metadata else ""
             va = self._session.interpolate(sig, a, self.interp_method)
             vb = self._session.interpolate(sig, b, self.interp_method)
             dy = (vb - va) if (va is not None and vb is not None) else None
@@ -1088,6 +1102,7 @@ class GraphPanelVM(Observable):
                     stats,
                     va is not None,
                     label=_resolve_value_label(sig, va),
+                    unit=unit,
                 )
             )
         return out

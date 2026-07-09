@@ -111,6 +111,29 @@ def _register_signal(session: Session, sig: Signal, tmp_path: Path) -> str:
     return session.group_signals(key)[0].name
 
 
+def _loaded_vm(tmp_path: Path, unit: str = "km/h") -> GraphPanelVM:
+    """Return a GraphPanelVM with one hand-built, unit-bearing signal plotted.
+
+    Hand-builds the Signal (CSV loader cannot carry metadata) via
+    ``_register_signal`` so precision and unit-injection tests share one
+    fixture.
+    """
+    session = Session()
+    sig = Signal(
+        name="speed",
+        timestamps=np.array([0.0, 1.0, 2.0], dtype=np.float64),
+        values=np.array([0.0, 10.0, 20.0], dtype=np.float64),
+        file_format="CSV",
+        bus_type="",
+        source_file="",
+        metadata={"unit": unit},
+    )
+    key = _register_signal(session, sig, tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    return vm
+
+
 # ─── RenderCurve ─────────────────────────────────────────────────────────────
 
 
@@ -961,6 +984,30 @@ def test_cursor_readings_skips_invisible_signal(tmp_path: Path) -> None:
     readings = vm.cursor_readings()
 
     assert readings == []
+
+
+def test_value_precision_defaults_to_6(tmp_path: Path) -> None:
+    vm = _loaded_vm(tmp_path)
+    assert vm.value_precision == 6
+
+
+def test_set_value_precision_updates_and_notifies(tmp_path: Path) -> None:
+    vm = _loaded_vm(tmp_path)
+    seen: list[str] = []
+    vm.subscribe(lambda change: seen.append(change))
+    vm.set_value_precision(8)
+    assert vm.value_precision == 8
+    assert "cursor" in seen
+
+
+def test_cursor_readings_inject_unit(tmp_path: Path) -> None:
+    vm = _loaded_vm(tmp_path)  # 1 signal registered, metadata unit="km/h"
+    vm.x_range = (0.0, 1.0)
+    vm.set_cursor(0.5)
+    readings = vm.cursor_readings()
+    assert readings, "expected at least one reading"
+    assert all(hasattr(r, "unit") for r in readings)
+    assert readings[0].unit == "km/h"
 
 
 # ─── Delta cursor + range stats (R16/R17) ───────────────────────────────────
