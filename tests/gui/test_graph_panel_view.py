@@ -84,8 +84,8 @@ class TestDrawing:
 
         vm.add_signal(key)
 
-        assert key in view.curve_keys()  # type: ignore[attr-defined]
-        x, y = view.curve_xy(key)  # type: ignore[attr-defined]
+        assert key in view.signal_keys_drawn()  # type: ignore[attr-defined]
+        x, y = view.curve_xy(view.entry_id_for(key))  # type: ignore[attr-defined]
         assert len(x) > 0
         assert len(x) == len(y)
 
@@ -98,7 +98,10 @@ class TestDrawing:
         vm.add_signal(key)
 
         expected = vm.inspect()["plotted_signals"][0]["color"]
-        assert view.pen_color(key).lower() == expected.lower()  # type: ignore[attr-defined]
+        assert (
+            view.pen_color(view.entry_id_for(key)).lower()  # type: ignore[attr-defined]
+            == expected.lower()
+        )
 
     def test_overlay_multiple_signals(self, qtbot: QtBot, tmp_path: Path) -> None:
         session, _ = _loaded_session(tmp_path, n_signals=2)
@@ -109,7 +112,7 @@ class TestDrawing:
         vm.add_signal(k0)
         vm.add_signal(k1)
 
-        assert set(view.curve_keys()) == {k0, k1}  # type: ignore[attr-defined]
+        assert set(view.signal_keys_drawn()) == {k0, k1}  # type: ignore[attr-defined]
 
     def test_remove_signal_removes_curve(self, qtbot: QtBot, tmp_path: Path) -> None:
         session, _ = _loaded_session(tmp_path)
@@ -120,7 +123,7 @@ class TestDrawing:
         vm.add_signal(key)
         vm.remove_signal(key)
 
-        assert key not in view.curve_keys()  # type: ignore[attr-defined]
+        assert key not in view.signal_keys_drawn()  # type: ignore[attr-defined]
 
     def test_toggle_invisible_hides_curve(self, qtbot: QtBot, tmp_path: Path) -> None:
         session, _ = _loaded_session(tmp_path)
@@ -132,7 +135,7 @@ class TestDrawing:
         vm.toggle_visibility(key)
 
         # render_data omits invisible signals, so no curve is drawn for it.
-        assert key not in view.curve_keys()  # type: ignore[attr-defined]
+        assert key not in view.signal_keys_drawn()  # type: ignore[attr-defined]
 
     def test_unclipped_rendering(self, qtbot: QtBot, tmp_path: Path) -> None:
         session, _ = _loaded_session(tmp_path)
@@ -143,7 +146,7 @@ class TestDrawing:
         vm.add_signal(key)
 
         # Verify that clipToView is False (R4)
-        assert view.is_clipped(key) is False  # type: ignore[attr-defined]
+        assert view.is_clipped(view.entry_id_for(key)) is False  # type: ignore[attr-defined]
 
 
 # ─── Empty signal (R8.5) ──────────────────────────────────────────────────────
@@ -161,8 +164,8 @@ class TestEmptySignal:
         vm.add_signal(key)
         vm.set_x_range(1.0e9, 1.0e9 + 1.0)  # window with no samples
 
-        assert key in view.curve_keys()  # type: ignore[attr-defined]  # curve still registered
-        x, _y = view.curve_xy(key)  # type: ignore[attr-defined]
+        assert key in view.signal_keys_drawn()  # type: ignore[attr-defined]  # curve still registered
+        x, _y = view.curve_xy(view.entry_id_for(key))  # type: ignore[attr-defined]
         # RN-01: 境界サンプルが1点描かれ得るが、窓 [1e9, 1e9+1] 内には無い (可視域外)。
         xs = [] if x is None else list(x)
         assert all(not (1.0e9 <= xv <= 1.0e9 + 1.0) for xv in xs)
@@ -189,7 +192,7 @@ class TestDrop:
         view.dropEvent(event)  # type: ignore[attr-defined]
 
         assert any(p["signal_key"] == key for p in vm.inspect()["plotted_signals"])
-        assert key in view.curve_keys()  # type: ignore[attr-defined]
+        assert key in view.signal_keys_drawn()  # type: ignore[attr-defined]
 
     def test_first_drop_on_plot_fills_full_height(
         self, qtbot: QtBot, tmp_path: Path
@@ -344,3 +347,58 @@ class TestSmokeAndLifecycle:
 
         assert len(vm._callbacks) == 0
         vm.set_x_range(0.0, 1.0)  # a notify after destruction must not raise
+
+
+# ─── entry_id-keyed internals (PC-01 増分2a Task3) ─────────────────────────────
+
+
+class TestEntryIdAccessors:
+    def test_duplicate_signal_key_draws_independent_curves(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        # 同一 signal_key を 2 axis に載せると 2 本独立に描画される (entry_id 化の核心)
+        session, _ = _loaded_session(tmp_path, n_signals=1)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+
+        vm.add_signal(key)
+        vm.create_new_axis(key)
+
+        # curve_keys は entry_id 群 (2 本ぶん・重複しない)
+        assert len(view.curve_keys()) == 2  # type: ignore[attr-defined]
+        assert len(set(view.curve_keys())) == 2  # type: ignore[attr-defined]
+        # signal_keys_drawn は signal_key 群 (同名 2 本ぶん)
+        assert view.signal_keys_drawn() == [key, key]  # type: ignore[attr-defined]
+        # 各 entry のデータを独立に読める
+        for eid in view.curve_keys():  # type: ignore[attr-defined]
+            x, _y = view.curve_xy(eid)  # type: ignore[attr-defined]
+            assert len(x) > 0
+
+    def test_set_color_on_one_entry_repaints_only_it(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        session, _ = _loaded_session(tmp_path, n_signals=1)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal(key)
+        vm.create_new_axis(key)
+        e0, e1 = view.curve_keys()  # type: ignore[attr-defined]
+        vm.set_color(e1, "#123456")
+        view.refresh()  # VM notify 経由でも呼ばれるが、テストは明示的に
+        assert view.pen_color(e1).lower() == "#123456"  # type: ignore[attr-defined]
+        assert view.pen_color(e0).lower() != "#123456"  # type: ignore[attr-defined]
+
+    def test_entry_id_for_and_signal_keys_drawn(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        session, _ = _loaded_session(tmp_path, n_signals=2)
+        k0, k1 = _keys(session)[:2]
+        vm = GraphPanelVM(session)
+        view = _make_view(qtbot, vm)
+        vm.add_signal(k0)
+        vm.add_signal(k1)
+        assert set(view.signal_keys_drawn()) == {k0, k1}  # type: ignore[attr-defined]
+        eid0 = view.entry_id_for(k0)  # type: ignore[attr-defined]
+        assert view.signal_keys_drawn()[view.curve_keys().index(eid0)] == k0  # type: ignore[attr-defined]

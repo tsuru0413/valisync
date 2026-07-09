@@ -120,8 +120,10 @@ def test_real_offset_drag_shifts_both_panels(qtbot: QtBot, tmp_path) -> None:
 
     _view, panels, signal_key = _two_panel_area(qtbot)
     p0, p1 = panels[0], panels[1]
-    x0_before = np.asarray(p0.curve_xy(signal_key)[0]).copy()
-    x1_before = np.asarray(p1.curve_xy(signal_key)[0]).copy()
+    eid0 = p0.entry_id_for(signal_key)
+    eid1 = p1.entry_id_for(signal_key)
+    x0_before = np.asarray(p0.curve_xy(eid0)[0]).copy()
+    x1_before = np.asarray(p1.curve_xy(eid1)[0]).copy()
 
     # Grab p0's curve at the plot centre (linear v=t passes through it) and drag right.
     vb = p0._view_boxes[0]
@@ -158,8 +160,8 @@ def test_real_offset_drag_shifts_both_panels(qtbot: QtBot, tmp_path) -> None:
             str(tmp_path / "offset_cross.png")
         )
 
-    x0_after = np.asarray(p0.curve_xy(signal_key)[0])
-    x1_after = np.asarray(p1.curve_xy(signal_key)[0])
+    x0_after = np.asarray(p0.curve_xy(eid0)[0])
+    x1_after = np.asarray(p1.curve_xy(eid1)[0])
     # p0 (dragged) re-rendered with the committed offset → leftmost x moved right.
     assert float(x0_after.min()) > float(x0_before.min()) + 1e-3
     # p1 (the OTHER panel) re-rendered identically via the real 'offsets' broadcast

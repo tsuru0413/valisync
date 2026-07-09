@@ -658,10 +658,15 @@ class GraphPanelView(QWidget):
         super().__init__(parent)
         self.vm = vm
         self._apply_dialog_fn = apply_dialog_fn
-        self._items: dict[str, pg.PlotDataItem] = {}
-        # Which ViewBox each curve currently lives in (kept in sync by refresh).
+        # Curve items keyed by VM entry_id (a stable per-entry ID), NOT signal_key,
+        # so the same signal on two axes draws as two independent items.
+        self._items: dict[int, pg.PlotDataItem] = {}
+        # Which ViewBox each entry's curve lives in (kept in sync by refresh).
         # Used by the R14 curve hit-test to map candidate data points to scene px.
-        self._item_vb: dict[str, pg.ViewBox] = {}
+        self._item_vb: dict[int, pg.ViewBox] = {}
+        # entry_id -> signal_key, for legacy signal_key-addressed accessors and for
+        # resolving the offset-apply target (offsets apply per signal, not per entry).
+        self._item_signal_key: dict[int, str] = {}
         self._y_axes: list[pg.AxisItem] = []
         self._view_boxes: list[pg.ViewBox] = []
         # One empty width-reserving container per occupied column (root col = the
@@ -681,7 +686,7 @@ class GraphPanelView(QWidget):
         # Global cursor state (R15/R16)
         self._suppress_cursor_signal = False
         # R14 offset-drag transient state (None when no drag is active).
-        self._offset_drag_key: str | None = None
+        self._offset_drag_key: int | None = None  # entry_id of the dragged curve
         self._offset_drag_start_x: float | None = None
         self._offset_orig_xy: tuple[Any, Any] | None = None
         self._offset_orig_pen: Any = None
@@ -829,13 +834,14 @@ class GraphPanelView(QWidget):
 
         # 2. Get render curves from VM
         curves = self.vm.render_data()
-        desired = {c.name: c for c in curves}
+        desired = {c.entry_id: c for c in curves}
 
         # 3. Drop curves no longer present
-        for key in list(self._items):
-            if key not in desired:
-                item = self._items.pop(key)
-                self._item_vb.pop(key, None)
+        for eid in list(self._items):
+            if eid not in desired:
+                item = self._items.pop(eid)
+                self._item_vb.pop(eid, None)
+                self._item_signal_key.pop(eid, None)
                 # Find which ViewBox it was in and remove it
                 for vb in self._view_boxes:
                     if item in vb.addedItems:
@@ -844,10 +850,10 @@ class GraphPanelView(QWidget):
 
         # 4. Add or update remaining curves
         for curve in curves:
-            item = self._items.get(curve.name)
+            item = self._items.get(curve.entry_id)
             if item is None:
                 item = pg.PlotDataItem(name=curve.name)
-                self._items[curve.name] = item
+                self._items[curve.entry_id] = item
 
             item.setClipToView(False)
             # Add to correct ViewBox based on axis_index
@@ -860,7 +866,8 @@ class GraphPanelView(QWidget):
                     if vb != target_vb and item in vb.addedItems:
                         vb.removeItem(item)
                 target_vb.addItem(item)
-            self._item_vb[curve.name] = target_vb
+            self._item_vb[curve.entry_id] = target_vb
+            self._item_signal_key[curve.entry_id] = curve.name
 
             item.setData(curve.timestamps, curve.values)
             item.setPen(pg.mkPen(curve.color))
@@ -1048,6 +1055,7 @@ class GraphPanelView(QWidget):
         self._view_boxes.clear()
         self._items.clear()  # Clear items to force re-adding to new ViewBoxes
         self._item_vb.clear()  # No stale ViewBox refs after rebuild (spec §R14)
+        self._item_signal_key.clear()
         self._column_containers = {}
 
         # Root layout: columns 0..N-1 each reserve fixed Y-axis width (so empty
@@ -1176,21 +1184,42 @@ class GraphPanelView(QWidget):
         """Return the root grid column reserved for the plot ViewBox container."""
         return self.vm.column_count
 
-    def curve_keys(self) -> list[str]:
-        """Return the signal keys currently drawn (one PlotDataItem each)."""
+    def curve_keys(self) -> list[int]:
+        """Return the entry_ids of the curves currently drawn, in draw order."""
         return list(self._items)
 
-    def curve_xy(self, key: str) -> tuple[object, object]:
-        """Return the (x, y) arrays currently set on *key*'s curve."""
-        return self._items[key].getData()
+    def curve_xy(self, entry_id: int) -> tuple[object, object]:
+        """Return the (x, y) arrays currently set on *entry_id*'s curve."""
+        return self._items[entry_id].getData()
 
-    def pen_color(self, key: str) -> str:
-        """Return the hex colour of *key*'s curve pen (e.g. ``#1f77b4``)."""
-        return pg.mkPen(self._items[key].opts["pen"]).color().name()
+    def pen_color(self, entry_id: int) -> str:
+        """Return the hex colour of *entry_id*'s curve pen (e.g. ``#1f77b4``)."""
+        return pg.mkPen(self._items[entry_id].opts["pen"]).color().name()
 
-    def is_clipped(self, key: str) -> bool:
-        """Return whether *key*'s curve is clipped to its ViewBox."""
-        return bool(self._items[key].opts.get("clipToView", False))
+    def pen_width(self, entry_id: int) -> float:
+        """Return the pen width of *entry_id*'s curve (active curve = 2.5)."""
+        return float(pg.mkPen(self._items[entry_id].opts["pen"]).widthF())
+
+    def is_clipped(self, entry_id: int) -> bool:
+        """Return whether *entry_id*'s curve is clipped to its ViewBox."""
+        return bool(self._items[entry_id].opts.get("clipToView", False))
+
+    # ── signal_key resolution helpers (drawn curves are entry_id-addressed) ──
+    def entry_id_for(self, signal_key: str) -> int:
+        """Resolve the first drawn entry_id with *signal_key* (raises KeyError if none).
+
+        Curves are addressed by entry_id; callers that only know a signal_key
+        (tests, signal-level membership) resolve through here.  First-match is
+        exact when a signal_key is drawn once, which is the common case.
+        """
+        for eid, sk in self._item_signal_key.items():
+            if sk == signal_key:
+                return eid
+        raise KeyError(signal_key)
+
+    def signal_keys_drawn(self) -> list[str]:
+        """Return the signal_keys of the drawn curves, in draw order (may repeat)."""
+        return [self._item_signal_key[eid] for eid in self._items]
 
     # ─── Global cursor (R15) + Delta cursor (R16) ────────────────────────────────
 
@@ -1492,13 +1521,14 @@ class GraphPanelView(QWidget):
         except Exception:
             return None
 
-    def _curve_at(self, pos: QPointF) -> str | None:
-        """Return the signal key of the nearest curve within CURVE_HIT_TOL_PX of *pos*.
+    def _curve_at(self, pos: QPointF) -> int | None:
+        """Return the entry_id of the nearest curve within CURVE_HIT_TOL_PX of *pos*.
 
         Returns None when *pos* is within CURSOR_LINE_HIT_PX of a visible cursor
         line (priority: cursor line > curve, §4) or when no curve is close enough.
         Distance is measured in scene pixels via each item's own ViewBox, so the
-        check is correct under multi-axis layouts and any LOD level.
+        check is correct under multi-axis layouts and any LOD level. entry_id (not
+        signal_key) so duplicate signals on different axes are distinguishable.
         """
         if not self._view_boxes or not self._items:
             return None
@@ -1519,10 +1549,10 @@ class GraphPanelView(QWidget):
             if abs(scene_pos.x() - line_scene_x) <= CURSOR_LINE_HIT_PX:
                 return None
 
-        best_key: str | None = None
+        best_key: int | None = None
         best_dist = CURVE_HIT_TOL_PX
-        for key, item in self._items.items():
-            vb = self._item_vb.get(key)
+        for eid, item in self._items.items():
+            vb = self._item_vb.get(eid)
             if vb is None:
                 continue
             xs, ys = item.getData()
@@ -1541,25 +1571,26 @@ class GraphPanelView(QWidget):
                 dist = (dx * dx + dy * dy) ** 0.5
                 if dist <= best_dist:
                     best_dist = dist
-                    best_key = key
+                    best_key = eid
         return best_key
 
     # ─── R14 offset drag ────────────────────────────────────────────────────────
 
-    def _begin_offset_drag(self, key: str, pos: QPointF) -> None:
-        """Activate offset drag on *key*: capture origin, highlight, set cursor."""
+    def _begin_offset_drag(self, entry_id: int, pos: QPointF) -> None:
+        """Activate offset drag on *entry_id*: capture origin, highlight, set cursor."""
         start_x = self._data_value(pos, "x")
         if start_x is None:
             return
-        item = self._items[key]
+        item = self._items[entry_id]
         xs, ys = item.getData()
-        self._offset_drag_key = key
+        self._offset_drag_key = entry_id
         self._offset_drag_start_x = start_x
         self._offset_orig_xy = (np.asarray(xs).copy(), np.asarray(ys).copy())
         self._offset_orig_pen = item.opts.get("pen")
         self._offset_last_delta = 0.0
         # Highlight the active waveform (wider pen, same colour) per §12.
-        item.setPen(pg.mkPen(self.pen_color(key), width=3))
+        cur_color = pg.mkPen(item.opts["pen"]).color().name()
+        item.setPen(pg.mkPen(cur_color, width=3))
         self.setCursor(Qt.CursorShape.SizeHorCursor)
         # A real OS drag delivers MOVE events to the child GraphicsLayoutWidget
         # (a QGraphicsView), not to this parent QWidget — only the press/release
@@ -1597,13 +1628,17 @@ class GraphPanelView(QWidget):
         # (mirrors the axis-move deferred-drop pattern; avoids stale-scene hangs).
         QTimer.singleShot(0, lambda: self._finish_offset(key, delta_t))
 
-    def _finish_offset(self, key: str, delta_t: float) -> None:
+    def _finish_offset(self, entry_id: int, delta_t: float) -> None:
         """Show the apply dialog and emit / cancel based on the chosen scope."""
-        if key not in self._items:
+        if entry_id not in self._items:
+            self._reset_offset_state()
+            return
+        signal_key = self._item_signal_key.get(entry_id)
+        if signal_key is None:
             self._reset_offset_state()
             return
         fn = self._apply_dialog_fn or self._default_apply_dialog
-        scope = fn(key, delta_t)
+        scope = fn(signal_key, delta_t)
         if scope in ("signal", "group"):
             # Clear the drag state BEFORE emitting.  The emit synchronously drives
             # the offsets broadcast → this panel's refresh(); if _offset_drag_key
@@ -1612,7 +1647,7 @@ class GraphPanelView(QWidget):
             # desyncing the dragged panel from broadcast-only panels.  restore_data
             # is False: the broadcast refresh repaints from the committed offset.
             self._reset_offset_state(restore_data=False)
-            self.offset_apply_requested.emit(key, delta_t, scope)
+            self.offset_apply_requested.emit(signal_key, delta_t, scope)
         else:
             self._cancel_offset_drag()
 
@@ -1699,9 +1734,9 @@ class GraphPanelView(QWidget):
                 self._drag_zone = zone
                 self._drag_start = event.position()
             elif zone == ZONE_PLOT:
-                key = self._curve_at(event.position())
-                if key is not None:
-                    self._begin_offset_drag(key, event.position())
+                eid = self._curve_at(event.position())
+                if eid is not None:
+                    self._begin_offset_drag(eid, event.position())
         super().mousePressEvent(event)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:

@@ -186,7 +186,7 @@ def test_lod_render_after_resize(qtbot: QtBot, tmp_path) -> None:
     assert vm.panel_width_px <= 200
     assert vm.lod_active is True, "5000-pt signal at 200 px width should activate LOD"
 
-    item = view._items[key]
+    item = view._items[view.entry_id_for(key)]
     xs_narrow, _ = item.getData()
     assert xs_narrow is not None, "PlotDataItem has no data after narrow show"
     narrow_count = len(xs_narrow)
@@ -208,7 +208,7 @@ def test_lod_render_after_resize(qtbot: QtBot, tmp_path) -> None:
     for _ in range(3):
         QApplication.processEvents()
 
-    xs_wide, _ = view._items[key].getData()
+    xs_wide, _ = view._items[view.entry_id_for(key)].getData()
     assert xs_wide is not None, "PlotDataItem has no data after wide resize"
     wide_count = len(xs_wide)
     assert wide_count > narrow_count, (

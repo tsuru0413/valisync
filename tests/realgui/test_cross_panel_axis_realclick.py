@@ -18,7 +18,7 @@ cross-widget dropEvent -> GraphAreaView wiring chain that synthetic events canno
   5. WM_LBUTTONUP -> panel1's ``dropEvent`` -> ``cross_panel_axis_move_requested``
      (deferred via QTimer.singleShot(0)) -> GraphAreaView._wire_panel -> VM.
   6. VM removes the axis from panel0 and inserts it into panel1; both panel
-     views refresh() their _items -> panel1.curve_keys() gains k0.
+     views refresh() their _items -> panel1.signal_keys_drawn() gains k0.
 
 A watchdog (ESC + LEFTUP after 3 s) guarantees the drag never hangs the machine
 even if the synthetic drop fails to complete.
@@ -62,7 +62,7 @@ def test_axis_drag_cross_panel(qtbot: QtBot, tmp_path: Path) -> None:
       * GraphAreaView._wire_panel lambda -> GraphAreaVM.move_axis_across_panels
       * VM: src.extract_axis(0) + dst.insert_axis(...) -> both panel VMs notify
       * panel0.refresh() removes k0 from _items; panel1.refresh() adds k0 to _items
-      * Assertions: k0 in panel1.curve_keys() AND k0 not in panel0.curve_keys()
+      * Assertions: k0 in panel1.signal_keys_drawn() AND k0 not in panel0.signal_keys_drawn()
     """
     skip_unless_real_display()
 
@@ -178,7 +178,7 @@ def test_axis_drag_cross_panel(qtbot: QtBot, tmp_path: Path) -> None:
     drive_qdrag(
         (src_phys_x, src_phys_y),
         [(mid_phys_x, mid_phys_y), (tgt_phys_x, tgt_phys_y)],
-        done=lambda: k0 in panel1.curve_keys(),  # type: ignore[attr-defined]
+        done=lambda: k0 in panel1.signal_keys_drawn(),  # type: ignore[attr-defined]
     )
 
     # Settle the event loop: the QTimer.singleShot(0) in dropEvent may need one
@@ -195,12 +195,12 @@ def test_axis_drag_cross_panel(qtbot: QtBot, tmp_path: Path) -> None:
 
     # ─── Assertions ───────────────────────────────────────────────────────────
     # k0 must have moved INTO panel1 and be GONE from panel0.
-    assert k0 in panel1.curve_keys(), (  # type: ignore[attr-defined]
+    assert k0 in panel1.signal_keys_drawn(), (  # type: ignore[attr-defined]
         f"k0 ({k0!r}) did not appear in panel1 after cross-panel drag -- "
         f"the real-OS QDrag may not have reached panel1.dropEvent. "
         f"Screenshots saved to {tmp_path}"
     )
-    assert k0 not in panel0.curve_keys(), (  # type: ignore[attr-defined]
+    assert k0 not in panel0.signal_keys_drawn(), (  # type: ignore[attr-defined]
         f"k0 ({k0!r}) is still in panel0 after cross-panel drag -- "
         f"VM.move_axis_across_panels may not have removed it from the source. "
         f"Screenshots saved to {tmp_path}"
