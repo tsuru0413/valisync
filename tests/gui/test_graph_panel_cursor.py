@@ -765,3 +765,14 @@ def test_readout_header_shows_current_interp(qtbot: QtBot) -> None:
     view.vm.set_interp_method(InterpolationMethod.NEAREST)
     view.vm.set_cursor(0.005)
     assert "最近傍" in view._readout.header_text()
+
+
+def test_readout_close_clears_all_cursors(qtbot: QtBot) -> None:
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.toggle_main_cursor(True)
+    view.vm.toggle_delta(True)
+    assert view.vm.cursor_t is not None
+    view._readout.close_button().click()
+    assert view.vm.cursor_t is None  # 全消去 (A/B/Δ)
+    assert view._readout.isHidden()

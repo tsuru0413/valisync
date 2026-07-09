@@ -336,3 +336,21 @@ def test_table_tsv_delta_reflects_visible_stats(qtbot: QtBot):
     )
     header = ro.table_tsv().splitlines()[0].split("\t")
     assert header == ["信号", "A値", "Δy", "mean"]  # 表示中の列のみ
+
+
+def test_close_button_fires_on_clear(qtbot: QtBot):
+    ro = CursorReadout()
+    qtbot.addWidget(ro)
+    fired: list[bool] = []
+    ro._on_clear = lambda: fired.append(True)
+    ro.set_global(0.0, [CursorReading("a", "#fff", 1.0, True)])
+    ro.close_button().click()
+    assert fired == [True]
+
+
+def test_readout_has_move_cursor(qtbot: QtBot):
+    from PySide6.QtCore import Qt
+
+    ro = CursorReadout()
+    qtbot.addWidget(ro)
+    assert ro.cursor().shape() == Qt.CursorShape.SizeAllCursor

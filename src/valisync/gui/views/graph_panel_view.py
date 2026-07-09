@@ -853,6 +853,8 @@ class GraphPanelView(QWidget):
             vm_ref.set_visible_stats(cols)
 
         self._readout._on_stat_toggled = _on_stat_toggled
+        # X / readout メニュー「カーソルを消す」→ 全消去 (A/B/Δ・spec §4.3/§10)。
+        self._readout._on_clear = lambda: self.vm.toggle_main_cursor(False)
         # Track whether the readout has been placed at (8,8) for the current cursor
         # session, so subsequent syncs don't snap a user-dragged readout back to
         # the corner.  Reset to False whenever the readout is hidden (cursor cleared).
@@ -2400,6 +2402,9 @@ class GraphPanelView(QWidget):
         sub_act.setEnabled(self.vm.cursor_t is not None)  # greyed out until main ON
         # setChecked BEFORE toggled.connect so the initial state-set does not fire the handler
         sub_act.toggled.connect(lambda checked: self.vm.toggle_delta(checked))
+        if not sub_act.isEnabled():
+            sub_act.setToolTip("メインカーソルを有効化すると使えます")
+            menu.setToolTipsVisible(True)
         from PySide6.QtGui import QActionGroup
 
         interp = menu.addMenu("補間方式")

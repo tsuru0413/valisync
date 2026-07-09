@@ -11,9 +11,18 @@ from collections.abc import Callable
 
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QColor, QMouseEvent, QPixmap
-from PySide6.QtWidgets import QGridLayout, QLabel, QMenu, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from valisync.gui.viewmodels.graph_panel_vm import CursorReading, DeltaReading
+from valisync.gui.views.cursor_shapes import CursorKind, cursor
 
 _OUT_OF_RANGE = "範囲外"
 _NO_DATA = "データなし"
@@ -66,11 +75,28 @@ class CursorReadout(QWidget):
         outer.setContentsMargins(6, 5, 6, 5)
         outer.setSpacing(3)
 
-        # Visible time-position header (rich text, hidden until set_global/set_delta called).
+        # Header row: time-position label (left) + always-visible close X (right).
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(6)
         self._header = QLabel()
         self._header.setTextFormat(Qt.TextFormat.RichText)
         self._header.hide()
-        outer.addWidget(self._header)
+        header_row.addWidget(self._header)
+        header_row.addStretch(1)
+        self._close_btn = QToolButton()
+        self._close_btn.setText("✕")
+        self._close_btn.setToolTip("カーソルを消す")
+        self._close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._close_btn.setStyleSheet(
+            "QToolButton { color:#cdd6f4; border:none; padding:0 2px; }"
+            " QToolButton:hover { color:#f38ba8; }"
+        )
+        self._close_btn.clicked.connect(self._clear_cursors)
+        header_row.addWidget(self._close_btn)
+        outer.addLayout(header_row)
+        # 表全体は移動可能 (PC-18 移動アフォーダンス)。X ボタンは PointingHand を維持。
+        self.setCursor(cursor(CursorKind.MOVE))
 
         # Table grid — child of outer VBox, NOT directly of self.
         self._grid = QGridLayout()
@@ -109,6 +135,8 @@ class CursorReadout(QWidget):
         # the VM (spec §7: VM is the source of truth for visible_stat_cols).
         # When None, _toggle_stat updates _visible_stats directly (test/legacy path).
         self._on_stat_toggled: Callable[[str, bool], None] | None = None
+        # Wired by GraphPanelView: X / メニュー「カーソルを消す」で全消去 (全 A/B/Δ)。
+        self._on_clear: Callable[[], None] | None = None
 
     # ── R15 backward-compatible API ────────────────────────────────────────────
 
@@ -259,6 +287,15 @@ class CursorReadout(QWidget):
     def reset_user_moved(self) -> None:
         """Clear the user-moved flag so the readout re-anchors to the plot rect."""
         self._user_moved = False
+
+    def close_button(self) -> QToolButton:
+        """The always-visible X button (test introspection / realgui target)."""
+        return self._close_btn
+
+    def _clear_cursors(self) -> None:
+        """X / メニュー「カーソルを消す」→ VM 全消去 (wire 済みのときのみ)。"""
+        if self._on_clear is not None:
+            self._on_clear()
 
     # ── Column-selection menu ──────────────────────────────────────────────────
 
