@@ -161,6 +161,9 @@ class GraphPanelVM(Observable):
         # 時刻ヘッダと count には適用しない(spec 増分3 readout 刷新)。
         self.value_precision: int = 6
 
+        # X 方向グリッド線の表示 (パネルごと transient・PC-15/DP13)。
+        self.grid_enabled: bool = False
+
         # Time offsets (R14) — applied at render time to the ORIGINAL session
         # signal. signal_offsets keyed by namespaced name, file_offsets by group
         # key. Pushed in by GraphAreaVM on 'offsets' events; the authoritative
@@ -1046,6 +1049,11 @@ class GraphPanelVM(Observable):
         """Set the displayed value/stat precision and notify so the readout re-renders."""
         self.value_precision = p
         self._notify("cursor")
+
+    def toggle_grid(self, on: bool) -> None:
+        """Toggle the per-panel X-direction grid and notify the view to re-apply."""
+        self.grid_enabled = on
+        self._notify("grid")
 
     @property
     def delta_t(self) -> float | None:

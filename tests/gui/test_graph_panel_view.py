@@ -79,6 +79,16 @@ def _make_view(qtbot: QtBot, vm: GraphPanelVM) -> object:
     return view
 
 
+def _make_panel_view(qtbot: QtBot, tmp_path: Path) -> object:
+    """Minimal single-signal, qtbot-managed GraphPanelView (Grid tests, PC-15)."""
+    session, _ = _loaded_session(tmp_path)
+    key = _keys(session)[0]
+    vm = GraphPanelVM(session)
+    view = _make_view(qtbot, vm)
+    vm.add_signal(key)
+    return view
+
+
 def _session_with_signals(
     specs: dict[str, tuple[list[float], list[float]]],
 ) -> tuple[Session, dict[str, str]]:
@@ -1203,3 +1213,31 @@ class TestAxisContextMenu:
         act.trigger()
 
         assert vm.axes[0].y_range == (2.0, 8.0)
+
+
+# ─── Grid (PC-15/DP13) ───────────────────────────────────────────────────────
+
+
+def test_grid_menu_toggles_x_axis_grid(qtbot, tmp_path):
+    view = _make_panel_view(qtbot, tmp_path)  # 既存の最小 GraphPanelView 構築ヘルパ
+    # メニューの「グリッド」項目
+    menu = view.build_context_menu()
+    grid_act = next(a for a in menu.actions() if a.text() == "グリッド")
+    assert grid_act.isCheckable()
+    assert grid_act.isChecked() is False
+    # トグル ON → _x_axis に grid alpha が設定される
+    grid_act.setChecked(True)
+    assert view.vm.grid_enabled is True
+    assert view._x_axis.grid  # AxisItem.grid は setGrid の値(False→alpha)
+    # トグル OFF → grid 無効化
+    grid_act.setChecked(False)
+    assert view.vm.grid_enabled is False
+    assert view._x_axis.grid is False
+
+
+def test_grid_menu_reflects_current_state(qtbot, tmp_path):
+    view = _make_panel_view(qtbot, tmp_path)
+    view.vm.toggle_grid(True)
+    menu = view.build_context_menu()
+    grid_act = next(a for a in menu.actions() if a.text() == "グリッド")
+    assert grid_act.isChecked() is True

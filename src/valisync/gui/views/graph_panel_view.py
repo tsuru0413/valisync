@@ -105,6 +105,8 @@ AXZONE_PAN = "ax_pan"
 # automatic SI-prefix / scientific tick formatting.
 _Y_AXIS_FIXED_WIDTH = 72
 
+_GRID_ALPHA = 60  # X グリッド線のアルファ (0-255・淡色)
+
 # ─── Pure interaction helpers (headless-testable) ─────────────────────────────
 
 
@@ -871,7 +873,14 @@ class GraphPanelView(QWidget):
         if change in ("cursor", "delta"):
             self._sync_cursor_from_vm()
             return
+        if change == "grid":
+            self._apply_grid()
+            return
         self.refresh()
+
+    def _apply_grid(self) -> None:
+        """Reflect the VM's grid_enabled onto the shared X axis (vertical grid lines)."""
+        self._x_axis.setGrid(_GRID_ALPHA if self.vm.grid_enabled else False)
 
     def refresh(self) -> None:
         """Re-project vm.render_data() onto the plot, reconciling multiple axes."""
@@ -1187,6 +1196,10 @@ class GraphPanelView(QWidget):
         # without a VM change, since refresh() is not called in that case.
         master_vb.sigResized.connect(self._sync_overlay_geometry)
         self._build_signature = signature
+        # Re-adding _x_axis and relinking it to the new master_vb resets the
+        # grid's geometry binding, so re-apply the VM's grid state here to
+        # survive a structural rebuild (PC-15/DP13).
+        self._apply_grid()
 
     # ─── Active-axis state (Task 4) ────────────────────────────────────────────
 
@@ -2392,6 +2405,11 @@ class GraphPanelView(QWidget):
         menu.addAction("Reset All Axes").triggered.connect(
             lambda *_: self._reset_all_axes()
         )
+        grid_act = menu.addAction("グリッド")
+        grid_act.setCheckable(True)
+        grid_act.setChecked(self.vm.grid_enabled)
+        # setChecked BEFORE toggled.connect so the initial state-set does not fire the handler
+        grid_act.toggled.connect(lambda checked: self.vm.toggle_grid(checked))
         menu.addSeparator()
         main_act = menu.addAction("メインカーソル")
         main_act.setCheckable(True)
