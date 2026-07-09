@@ -20,6 +20,7 @@ drag-preview with a debounce timer is a noted refinement (R9.5).
 from __future__ import annotations
 
 import contextlib
+import math
 from collections.abc import Callable
 from typing import Any
 
@@ -640,6 +641,9 @@ class GraphPanelView(QWidget):
     # Emitted on offset-drag release when the user confirms a scope in the apply
     # dialog. The GraphAreaView wires this to GraphAreaVM.apply_offset (R14).
     offset_apply_requested = Signal(str, float, str)
+    # Emitted when the user confirms an offset-reset scope in the curve menu's
+    # "オフセットをリセット…" dialog. GraphAreaView wires this to GraphAreaVM.reset_offset.
+    offset_reset_requested = Signal(str, str)  # (signal_key, scope)
     # Emitted when an axis-move drop targets a different panel (Task 3).
     # Args: source_panel_index, axis_index, col, position (int | None).
     # Uses object so None ("append at end") survives the signal boundary.
@@ -659,11 +663,21 @@ class GraphPanelView(QWidget):
         parent: QWidget | None = None,
         apply_dialog_fn: Callable[[str, float], str | None] | None = None,
         color_dialog_fn: Callable[[], str | None] | None = None,
+        range_dialog_fn: Callable[
+            [int, tuple[float, float] | None], tuple[float, float] | None
+        ]
+        | None = None,
+        offset_input_dialog_fn: Callable[[str, float], tuple[float, str] | None]
+        | None = None,
+        reset_dialog_fn: Callable[[str], str | None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.vm = vm
         self._apply_dialog_fn = apply_dialog_fn
         self._color_dialog_fn = color_dialog_fn or self._default_color_dialog
+        self._range_dialog_fn = range_dialog_fn
+        self._offset_input_dialog_fn = offset_input_dialog_fn
+        self._reset_dialog_fn = reset_dialog_fn
         # Curve items keyed by VM entry_id (a stable per-entry ID), NOT signal_key,
         # so the same signal on two axes draws as two independent items.
         self._items: dict[int, pg.PlotDataItem] = {}
@@ -2051,9 +2065,10 @@ class GraphPanelView(QWidget):
             self.vm.set_color(entry_id, hex_color)
 
     def build_curve_menu(self, entry_id: int) -> QMenu:
-        """Right-click menu for one curve (PC-01: 非表示/色変更/削除).
+        """Right-click menu for one curve (spec §4.3).
 
-        The axis-move and offset items (spec §4.3) are added in 増分2b.
+        非表示/色変更▸/削除/新しい軸へ移動/──/時間オフセット…/
+        オフセットをリセット…/オフセット情報行(非ゼロ時のみ・disabled)。
         """
         menu = QMenu(self)
         menu.addAction("非表示").triggered.connect(
@@ -2070,11 +2085,134 @@ class GraphPanelView(QWidget):
         color_menu.addAction("その他…").triggered.connect(
             lambda *_: self._pick_custom_color(entry_id)
         )
-        menu.addSeparator()
         menu.addAction("削除").triggered.connect(
             lambda *_: self._remove_curve(entry_id)
         )
+        menu.addAction("新しい軸へ移動").triggered.connect(
+            lambda *_: self.vm.move_entry_to_new_axis(entry_id)
+        )
+        menu.addSeparator()
+        menu.addAction("時間オフセット…").triggered.connect(
+            lambda *_: self._prompt_offset_input(entry_id)
+        )
+        signal_key = self.vm.signal_key_for_entry(entry_id)
+        current_offset = (
+            self.vm.offset_for(signal_key) if signal_key is not None else 0.0
+        )
+        reset_act = menu.addAction("オフセットをリセット…")
+        reset_act.setEnabled(current_offset != 0.0)
+        reset_act.triggered.connect(lambda *_: self._prompt_offset_reset(entry_id))
+        if current_offset != 0.0:
+            info = menu.addAction(f"オフセット: {current_offset:+.3f}s")
+            info.setEnabled(False)
         return menu
+
+    def _prompt_offset_input(self, entry_id: int) -> None:
+        """Open the numeric offset dialog and emit offset_apply_requested (additive)."""
+        signal_key = self.vm.signal_key_for_entry(entry_id)
+        if signal_key is None:
+            return
+        fn = self._offset_input_dialog_fn or self._default_offset_input_dialog
+        result = fn(signal_key, self.vm.offset_for(signal_key))
+        if result is not None:
+            delta_t, scope = result
+            self.offset_apply_requested.emit(signal_key, delta_t, scope)
+
+    def _default_offset_input_dialog(
+        self, signal_key: str, current: float
+    ) -> tuple[float, str] | None:
+        """Modal numeric offset dialog (DI default). Returns (delta_t, scope) or None.
+
+        Extends the scope-selection dialog (_default_apply_dialog) with a Δt input.
+        OK is disabled while Δt is non-finite (§10). Enter applies the 'signal' scope.
+        """
+        from PySide6.QtWidgets import (
+            QDialog,
+            QDialogButtonBox,
+            QLabel,
+            QLineEdit,
+            QRadioButton,
+            QVBoxLayout,
+        )
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("時間オフセット")
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel(f"現在のオフセット: {current:+.3f} s"))
+        lay.addWidget(QLabel("追加する Δt (秒):"))
+        dt_edit = QLineEdit("0")
+        lay.addWidget(dt_edit)
+        sig_radio = QRadioButton("この信号のみ")
+        grp_radio = QRadioButton("同じファイルグループ全体")
+        sig_radio.setChecked(True)
+        lay.addWidget(sig_radio)
+        lay.addWidget(grp_radio)
+        box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        ok_btn = box.button(QDialogButtonBox.StandardButton.Ok)
+        box.accepted.connect(dlg.accept)
+        box.rejected.connect(dlg.reject)
+        lay.addWidget(box)
+
+        def _validate() -> None:
+            try:
+                val = float(dt_edit.text())
+            except ValueError:
+                ok_btn.setEnabled(False)
+                return
+            ok_btn.setEnabled(math.isfinite(val))
+
+        dt_edit.textChanged.connect(lambda *_: _validate())
+        ok_btn.setDefault(True)
+        _validate()
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return (float(dt_edit.text()), "signal" if sig_radio.isChecked() else "group")
+
+    def _prompt_offset_reset(self, entry_id: int) -> None:
+        """Open the reset-scope dialog and emit offset_reset_requested."""
+        signal_key = self.vm.signal_key_for_entry(entry_id)
+        if signal_key is None:
+            return
+        fn = self._reset_dialog_fn or self._default_reset_dialog
+        scope = fn(signal_key)
+        if scope in ("signal", "group"):
+            self.offset_reset_requested.emit(signal_key, scope)
+
+    def _default_reset_dialog(self, signal_key: str) -> str | None:
+        """Modal reset-scope dialog: 'signal' / 'group' / None (cancel).
+
+        Same shape as _default_apply_dialog minus the Δt (reset zeroes the offset).
+        """
+        from PySide6.QtWidgets import (
+            QDialog,
+            QDialogButtonBox,
+            QLabel,
+            QRadioButton,
+            QVBoxLayout,
+        )
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("時間オフセットのリセット")
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("オフセットを 0 に戻します。対象を選択してください。"))
+        sig_radio = QRadioButton("この信号のみ")
+        grp_radio = QRadioButton("同じファイルグループ全体")
+        sig_radio.setChecked(True)
+        lay.addWidget(sig_radio)
+        lay.addWidget(grp_radio)
+        box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        box.accepted.connect(dlg.accept)
+        box.rejected.connect(dlg.reject)
+        lay.addWidget(box)
+        ok_btn = box.button(QDialogButtonBox.StandardButton.Ok)
+        ok_btn.setDefault(True)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return "signal" if sig_radio.isChecked() else "group"
 
     def build_context_menu(self) -> QMenu:
         """Build the blank-area panel menu (add/remove panel, reset axes, interp)."""
@@ -2113,12 +2251,94 @@ class GraphPanelView(QWidget):
             )
         return menu
 
+    def build_axis_menu(self, axis_index: int) -> QMenu:
+        """Right-click menu for one Y-axis (spec §4.3: オートフィット/範囲指定/削除/曲線一覧)."""
+        menu = QMenu(self)
+        menu.addAction("この軸をオートフィット").triggered.connect(
+            lambda *_: self.vm.reset_axis_y(axis_index)
+        )
+        menu.addAction("範囲を指定…").triggered.connect(
+            lambda *_: self._prompt_axis_range(axis_index)
+        )
+        menu.addAction("軸を削除").triggered.connect(
+            lambda *_: self.vm.remove_axis(axis_index)
+        )
+        menu.addSeparator()
+        for entry_id, name, _color, visible in self.vm.entries_on_axis(axis_index):
+            act = menu.addAction(name)
+            act.setCheckable(True)
+            act.setChecked(visible)  # BEFORE toggled.connect (no spurious fire)
+            act.toggled.connect(
+                lambda _checked, eid=entry_id: self.vm.toggle_entry_visibility(eid)
+            )
+        return menu
+
+    def _prompt_axis_range(self, axis_index: int) -> None:
+        """Open the range dialog for *axis_index* and apply the chosen [lo, hi]."""
+        axes = self.vm.axes
+        if not (0 <= axis_index < len(axes)):
+            return
+        fn = self._range_dialog_fn or self._default_range_dialog
+        result = fn(axis_index, axes[axis_index].y_range)
+        if result is not None:
+            lo, hi = result
+            self.vm.set_axis_range(axis_index, lo, hi)
+
+    def _default_range_dialog(
+        self, axis_index: int, current: tuple[float, float] | None
+    ) -> tuple[float, float] | None:
+        """Modal Y-range dialog (DI default). Returns (lo, hi) or None on cancel.
+
+        OK is disabled while the inputs are non-finite or lo >= hi (§10). This
+        validation is exercised via realgui/manual — Layer B injects a stub fn.
+        """
+        from PySide6.QtWidgets import (
+            QDialog,
+            QDialogButtonBox,
+            QFormLayout,
+            QLineEdit,
+        )
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Y軸の範囲を指定")
+        form = QFormLayout(dlg)
+        lo_edit = QLineEdit("" if current is None else f"{current[0]:g}")
+        hi_edit = QLineEdit("" if current is None else f"{current[1]:g}")
+        form.addRow("下限", lo_edit)
+        form.addRow("上限", hi_edit)
+        box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        ok_btn = box.button(QDialogButtonBox.StandardButton.Ok)
+        box.accepted.connect(dlg.accept)
+        box.rejected.connect(dlg.reject)
+        form.addRow(box)
+
+        def _validate() -> None:
+            try:
+                lo = float(lo_edit.text())
+                hi = float(hi_edit.text())
+            except ValueError:
+                ok_btn.setEnabled(False)
+                return
+            ok_btn.setEnabled(math.isfinite(lo) and math.isfinite(hi) and lo < hi)
+
+        lo_edit.textChanged.connect(lambda *_: _validate())
+        hi_edit.textChanged.connect(lambda *_: _validate())
+        _validate()
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return (float(lo_edit.text()), float(hi_edit.text()))
+
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
-        # ルーティング優先順 (spec §4.3): 曲線 → 空白 (パネル)。
-        # 軸分岐は 増分2b、カーソル線分岐は 増分3 で先頭に差し込む。
+        # ルーティング優先順 (spec §4.3): 曲線 → Y軸 → 空白 (パネル)。
+        # カーソル線分岐は 増分3 で先頭に差し込む。
         pos = QPointF(event.pos())
         eid = self._curve_at(pos)
         if eid is not None:
             self.build_curve_menu(eid).exec(event.globalPos())
+            return
+        if self._zone_at(pos) in (ZONE_Y_INNER, ZONE_Y_OUTER):
+            self.build_axis_menu(self._axis_index_at(pos)).exec(event.globalPos())
             return
         self.build_context_menu().exec(event.globalPos())

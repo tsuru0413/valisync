@@ -8,9 +8,11 @@ in different outcomes:
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import cast
 
+import numpy as np
 import pytest
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QDropEvent
@@ -24,6 +26,8 @@ from tests.gui.test_graph_panel_view import (
     _make_view,
     _write_csv,
 )
+from valisync.core.models import Signal, SignalGroup
+from valisync.core.session import Session
 from valisync.gui.adapters.qt_signal_models import encode_axis_move, encode_signal_keys
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 from valisync.gui.viewmodels.y_axis_vm import YAxisVM
@@ -1199,3 +1203,189 @@ def test_no_dividers_created(qtbot: QtBot) -> None:
     assert not hasattr(panel, "_dividers") or panel._dividers == []
     # _AlignedAxisItems still present for each axis
     assert len(panel._y_axes) == len(panel.vm.axes)
+
+
+# ─── Task 1: axis-menu VM API ────────────────────────────────────────────────
+# reset_axis_y / remove_axis / entries_on_axis / move_entry_to_new_axis
+
+
+def _session_with_signals(
+    specs: dict[str, tuple[list[float], list[float]]],
+) -> tuple[Session, dict[str, str]]:
+    """Build a Session with one directly-injected signal per (name, (ts, vs)).
+
+    Bypasses the CSV loader (mirrors ``_register_signal`` in
+    test_graph_panel_vm.py) so callers can hand-pick exact values without
+    writing a CSV. ``source_path`` only needs to be absolute (SignalGroup's
+    __post_init__ check) — it is never read from disk here — so a path under
+    this test file's own directory is used without needing a tmp_path fixture.
+    Returns (session, name_map): the group key SignalGroupManager assigns is
+    auto-generated (e.g. "csv_1"), so the literal *specs* name is never the
+    final Session key — name_map recovers the real namespaced key for each.
+    """
+    session = Session()
+    base_dir = Path(__file__).resolve().parent
+    name_map: dict[str, str] = {}
+    for i, (name, (ts, vs)) in enumerate(specs.items()):
+        sig = Signal(
+            name=name,
+            timestamps=np.array(ts, dtype=np.float64),
+            values=np.array(vs, dtype=np.float64),
+            file_format="CSV",
+            bus_type="",
+            source_file="",
+        )
+        key = session._groups.add(
+            SignalGroup(
+                signals=(sig,),
+                source_path=base_dir / f"_synthetic_{name}_{i}.csv",
+                file_format="CSV",
+                loaded_at=datetime.now(),
+            )
+        )
+        name_map[name] = session.group_signals(key)[0].name
+    return session, name_map
+
+
+def test_reset_axis_y_fits_only_target_axis(qtbot: QtBot) -> None:
+    """reset_axis_y は指定軸だけを可視値にフィットし、他軸の range は不変。"""
+    session, keys = _session_with_signals(
+        {
+            "a": ([0.0, 1.0, 2.0], [10.0, 30.0, 20.0]),
+            "b": ([0.0, 1.0, 2.0], [-5.0, -1.0, -3.0]),
+        }
+    )
+    vm = GraphPanelVM(session)
+    vm.add_signal_to_axis(keys["a"], 0)
+    vm.create_new_axis(keys["b"])  # -> axis 1
+    # 軸1を故意に別レンジへ
+    vm.set_axis_range(1, 100.0, 200.0)
+    vm.reset_axis_y(0)
+    assert vm.axes[0].y_range == (10.0, 30.0)
+    assert vm.axes[1].y_range == (100.0, 200.0)  # 他軸不変
+
+
+def test_reset_axis_y_excludes_invisible_entries(qtbot: QtBot) -> None:
+    session, keys = _session_with_signals(
+        {"a": ([0.0, 1.0], [10.0, 30.0]), "b": ([0.0, 1.0], [0.0, 999.0])}
+    )
+    vm = GraphPanelVM(session)
+    vm.add_signal_to_axis(keys["a"], 0)
+    vm.add_signal_to_axis(keys["b"], 0)  # 同じ軸0に2本
+    # b を非表示にすると fit は a のみ
+    eid_b = next(e.entry_id for e in vm._plotted if e.signal_key == keys["b"])
+    vm.toggle_entry_visibility(eid_b)
+    vm.reset_axis_y(0)
+    assert vm.axes[0].y_range == (10.0, 30.0)  # 999 は入らない
+
+
+def test_reset_axis_y_out_of_range_is_noop(qtbot: QtBot) -> None:
+    session, keys = _session_with_signals({"a": ([0.0], [1.0])})
+    vm = GraphPanelVM(session)
+    vm.add_signal_to_axis(keys["a"], 0)
+    vm.reset_axis_y(5)  # 範囲外 → 例外を投げず no-op
+    vm.reset_axis_y(-1)
+
+
+def test_remove_axis_removes_all_entries_and_compacts(qtbot: QtBot) -> None:
+    session, keys = _session_with_signals(
+        {"a": ([0.0], [1.0]), "b": ([0.0], [2.0]), "c": ([0.0], [3.0])}
+    )
+    vm = GraphPanelVM(session)
+    vm.add_signal_to_axis(keys["a"], 0)
+    vm.create_new_axis(keys["b"])  # axis 1
+    vm.create_new_axis(keys["c"])  # axis 2
+    assert len(vm.axes) == 3
+    vm.remove_axis(1)  # b の軸を削除
+    remaining = {e.signal_key for e in vm._plotted}
+    assert remaining == {keys["a"], keys["c"]}
+    assert len(vm.axes) == 2  # compact 後
+
+
+def test_remove_last_axis_collapses_to_placeholder(qtbot: QtBot) -> None:
+    session, keys = _session_with_signals({"a": ([0.0], [1.0])})
+    vm = GraphPanelVM(session)
+    vm.add_signal_to_axis(keys["a"], 0)
+    vm.remove_axis(0)
+    assert vm._plotted == []
+    assert len(vm.axes) == 1  # 空プレースホルダへ collapse (_compact_axes 既存挙動)
+
+
+def test_remove_axis_out_of_range_is_noop(qtbot: QtBot) -> None:
+    session, keys = _session_with_signals({"a": ([0.0], [1.0])})
+    vm = GraphPanelVM(session)
+    vm.add_signal_to_axis(keys["a"], 0)
+    vm.remove_axis(9)
+    assert {e.signal_key for e in vm._plotted} == {keys["a"]}
+
+
+def test_entries_on_axis_returns_tuples_for_that_axis(qtbot: QtBot) -> None:
+    session, keys = _session_with_signals({"a": ([0.0], [1.0]), "b": ([0.0], [2.0])})
+    vm = GraphPanelVM(session)
+    vm.add_signal_to_axis(keys["a"], 0)
+    vm.add_signal_to_axis(keys["b"], 0)
+    vm.create_new_axis(keys["b"])  # b をもう1本、別軸1にも
+    rows0 = vm.entries_on_axis(0)
+    keys0 = {sk for _eid, sk, _c, _v in rows0}
+    assert keys0 == {keys["a"], keys["b"]}
+    # 返り値は (entry_id:int, signal_key:str, color:str, visible:bool)
+    for eid, sk, color, visible in rows0:
+        assert isinstance(eid, int)
+        assert isinstance(sk, str)
+        assert color.startswith("#")
+        assert visible is True
+
+
+def test_entries_on_axis_reflects_visibility(qtbot: QtBot) -> None:
+    session, keys = _session_with_signals({"a": ([0.0], [1.0])})
+    vm = GraphPanelVM(session)
+    vm.add_signal_to_axis(keys["a"], 0)
+    eid = vm._plotted[0].entry_id
+    vm.toggle_entry_visibility(eid)
+    rows = vm.entries_on_axis(0)
+    assert rows[0][0] == eid
+    assert rows[0][3] is False  # visible 反映
+
+
+def test_move_entry_to_new_axis_reassigns_and_compacts(qtbot: QtBot) -> None:
+    session, keys = _session_with_signals({"a": ([0.0], [1.0]), "b": ([0.0], [2.0])})
+    vm = GraphPanelVM(session)
+    vm.add_signal_to_axis(keys["a"], 0)
+    vm.add_signal_to_axis(keys["b"], 0)  # a,b 同じ軸0
+    assert len(vm.axes) == 1
+    eid_b = next(e.entry_id for e in vm._plotted if e.signal_key == keys["b"])
+    vm.move_entry_to_new_axis(eid_b)
+    # b が新軸へ、a は元軸に残る → 2軸
+    assert len(vm.axes) == 2
+    ax_a = next(e.axis_index for e in vm._plotted if e.signal_key == keys["a"])
+    ax_b = next(e.axis_index for e in vm._plotted if e.signal_key == keys["b"])
+    assert ax_a != ax_b
+
+
+def test_move_entry_to_new_axis_busts_render_cache(qtbot: QtBot) -> None:
+    """cache-key に axis_index は含まれない → invalidate 漏れは render_data の
+    RenderCurve.axis_index が古いまま、という形で現れる (サボタージュ検出点)。"""
+    session, keys = _session_with_signals(
+        {"a": ([0.0, 1.0], [1.0, 2.0]), "b": ([0.0, 1.0], [3.0, 4.0])}
+    )
+    vm = GraphPanelVM(session)
+    vm.add_signal_to_axis(keys["a"], 0)
+    vm.add_signal_to_axis(keys["b"], 0)
+    _ = vm.render_data()  # キャッシュを温める
+    eid_b = next(e.entry_id for e in vm._plotted if e.signal_key == keys["b"])
+    vm.move_entry_to_new_axis(eid_b)
+    curves = {c.entry_id: c for c in vm.render_data()}
+    eid_a = next(e.entry_id for e in vm._plotted if e.signal_key == keys["a"])
+    ax_a = next(e.axis_index for e in vm._plotted if e.signal_key == keys["a"])
+    assert curves[eid_b].axis_index != curves[eid_a].axis_index
+    ax_b = next(e.axis_index for e in vm._plotted if e.signal_key == keys["b"])
+    assert curves[eid_b].axis_index == ax_b
+    assert curves[eid_a].axis_index == ax_a
+
+
+def test_move_entry_unknown_id_is_noop(qtbot: QtBot) -> None:
+    session, keys = _session_with_signals({"a": ([0.0], [1.0])})
+    vm = GraphPanelVM(session)
+    vm.add_signal_to_axis(keys["a"], 0)
+    vm.move_entry_to_new_axis(9999)
+    assert len(vm.axes) == 1

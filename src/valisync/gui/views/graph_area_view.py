@@ -220,6 +220,7 @@ class GraphAreaView(QWidget):
         widget.offset_apply_requested.connect(
             lambda k, dt, sc: self.vm.apply_offset(k, dt, sc)
         )
+        widget.offset_reset_requested.connect(lambda k, sc: self.vm.reset_offset(k, sc))
         widget.activate_requested.connect(
             lambda *_: self.vm.set_active_panel(tab_index, panel_index)
         )

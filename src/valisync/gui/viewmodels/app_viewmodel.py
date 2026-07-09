@@ -80,6 +80,25 @@ class AppViewModel(Observable):
             raise ValueError(f"scope must be 'signal' or 'group', got {scope!r}")
         self._notify("offsets")
 
+    def reset_offset(self, signal_key: str, scope: str) -> None:
+        """Zero the time offset for *signal_key* and notify ('offsets').
+
+        Symmetric to apply_offset: ``scope="signal"`` drops the per-signal offset;
+        ``scope="group"`` drops the per-group (file) offset AND every sibling
+        per-signal offset under the group prefix (whole group back to zero). Emits
+        the same 'offsets' notification, so the existing GraphAreaVM broadcast
+        re-renders every panel.
+        """
+        if scope == "signal":
+            self._signal_offsets.pop(signal_key, None)
+        elif scope == "group":
+            group_key = signal_key.split("::", 1)[0]
+            self._file_offsets.pop(group_key, None)
+            self._purge_signal_offsets_under(group_key)
+        else:
+            raise ValueError(f"scope must be 'signal' or 'group', got {scope!r}")
+        self._notify("offsets")
+
     def _purge_signal_offsets_under(self, group_key: str) -> None:
         """Drop every per-signal offset whose key is under *group_key* (``"<group>::"`` prefix)."""
         prefix = f"{group_key}::"

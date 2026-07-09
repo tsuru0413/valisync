@@ -56,6 +56,24 @@ def _first_panel_view(area_view) -> GraphPanelView:
     raise AssertionError("no GraphPanelView found")
 
 
+def test_offset_reset_requested_reaches_app_viewmodel(qtbot: QtBot) -> None:
+    """Real emit (not a spy) proves the routing, not just the wiring call itself."""
+    view, app, _area_vm, signal_key = _area_view(qtbot)
+    panel_view = _first_panel_view(view)
+
+    app.apply_offset(signal_key, 0.5, "signal")
+    for _ in range(3):
+        QApplication.processEvents()
+    assert panel_view.vm.offset_for(signal_key) == 0.5
+
+    panel_view.offset_reset_requested.emit(signal_key, "signal")
+    for _ in range(3):
+        QApplication.processEvents()
+
+    assert app.signal_offsets.get(signal_key) is None
+    assert panel_view.vm.offset_for(signal_key) == 0.0
+
+
 def test_offset_request_updates_app_and_rerenders(qtbot: QtBot) -> None:
     view, app, _area_vm, signal_key = _area_view(qtbot)
     panel_view = _first_panel_view(view)

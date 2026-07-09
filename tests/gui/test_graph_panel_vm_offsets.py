@@ -82,3 +82,11 @@ def test_set_offsets_invalidates_cache() -> None:
     # If set_offsets did not invalidate, the stale cached (un-shifted) curve
     # would be returned and this would fail.
     np.testing.assert_allclose(shifted, base0 + 1.0)
+
+
+def test_offset_for_combines_signal_and_file_offsets() -> None:
+    vm = GraphPanelVM(Session())
+    vm.set_offsets({"csv::a": 0.25}, {"csv": 0.1})
+    assert vm.offset_for("csv::a") == 0.35
+    assert vm.offset_for("csv::b") == 0.1  # same-group file offset only
+    assert vm.offset_for("other::x") == 0.0

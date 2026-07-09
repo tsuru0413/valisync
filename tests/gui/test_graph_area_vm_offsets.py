@@ -68,3 +68,14 @@ def test_apply_offset_proxy_updates_app_state() -> None:
     area, app, signal_key = _area_with_signal()
     area.apply_offset(signal_key, 0.25, "signal")
     assert app.signal_offsets == {signal_key: 0.25}
+
+
+def test_reset_offset_forwards_to_app_and_broadcasts() -> None:
+    area, app, signal_key = _area_with_signal()
+    panel = area.panels(0)[0]
+    _plot_signal_on(panel, signal_key)
+    app.apply_offset(signal_key, 0.5, "signal")
+    assert panel.offset_for(signal_key) == 0.5  # broadcast already delivered it
+    area.reset_offset(signal_key, "signal")
+    assert app.signal_offsets.get(signal_key) is None
+    assert panel.offset_for(signal_key) == 0.0  # broadcast carries the reset to 0
