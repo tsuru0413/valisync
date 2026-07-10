@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import MappingProxyType
 
 import numpy as np
 import pytest
@@ -34,7 +35,11 @@ def _vm_two(tmp_path: Path) -> tuple[GraphPanelVM, list[str], Session]:
 def test_no_offset_returns_base_wrappers(tmp_path: Path) -> None:
     vm, keys, session = _vm_two(tmp_path)
     sm = vm._signal_map()
-    assert sm[keys[0]] is session.signal_map()[keys[0]]  # ゼロコピー(同一ラッパー)
+    # ゼロコピー: オフセット無しでは Session のキャッシュ済み読取専用ビューを
+    # そのまま返す(毎回の dict 再構築をしない=FU-08)。旧実装は plain dict を
+    # 作り直して返したため、この isinstance が「再構築へ revert」検出のガードになる。
+    assert isinstance(sm, MappingProxyType)
+    assert sm[keys[0]] is session.signal_map()[keys[0]]  # 同一ラッパー
 
 
 def test_signal_offset_applies_to_target_only(tmp_path: Path) -> None:
