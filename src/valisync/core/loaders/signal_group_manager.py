@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
+
 from valisync.core.models import Signal, SignalGroup
 
 _FORMAT_KEY_PREFIX: dict[str, str] = {"MDF4": "mf4", "CSV": "csv"}
@@ -20,6 +23,8 @@ class SignalGroupManager:
     def __init__(self) -> None:
         self._groups: dict[str, SignalGroup] = {}
         self._counters: dict[str, int] = {}
+        self._namespaced_list: list[Signal] | None = None
+        self._namespaced_map: dict[str, Signal] | None = None
 
     def add(self, group: SignalGroup) -> str:
         """Register a Signal_Group and return its assigned key.
@@ -32,6 +37,7 @@ class SignalGroupManager:
         self._counters[prefix] = self._counters.get(prefix, 0) + 1
         key = f"{prefix}_{self._counters[prefix]}"
         self._groups[key] = group
+        self._invalidate_namespaced()
         return key
 
     def remove(self, key: str) -> SignalGroup:
@@ -41,9 +47,11 @@ class SignalGroupManager:
         responsibility; this method removes unconditionally.
         """
         try:
-            return self._groups.pop(key)
+            group = self._groups.pop(key)
         except KeyError:
             raise KeyError(f"no Signal_Group registered under key: {key!r}") from None
+        self._invalidate_namespaced()
+        return group
 
     @property
     def keys(self) -> list[str]:
@@ -89,6 +97,29 @@ class SignalGroupManager:
             result.append(ns_sig)
         return result
 
+    def _invalidate_namespaced(self) -> None:
+        """Drop the namespaced caches; rebuilt lazily on next access."""
+        self._namespaced_list = None
+        self._namespaced_map = None
+
+    def _ensure_namespaced(self) -> None:
+        """Build and cache the namespaced signal list/map once (idempotent).
+
+        The expensive work — creating one namespaced Signal wrapper per signal
+        across all groups — happens here a single time per load/unload, not on
+        every ``signals()``/``signal_map()`` call (FU-08). The list preserves
+        every signal (duplicate namespaced names included); the map is keyed by
+        name with last-wins dedupe, matching the historical ``signals()``-to-dict
+        behaviour its callers relied on.
+        """
+        if self._namespaced_list is not None:
+            return
+        result: list[Signal] = []
+        for key, group in self._groups.items():
+            result.extend(self._namespaced(key, group))
+        self._namespaced_list = result
+        self._namespaced_map = {sig.name: sig for sig in result}
+
     def group_signals(self, key: str) -> list[Signal]:
         """Namespaced signals for a single group (KeyError if key is unknown).
 
@@ -98,7 +129,17 @@ class SignalGroupManager:
 
     def signals(self) -> list[Signal]:
         """Return every signal across all groups, name-spaced by its group key."""
-        result: list[Signal] = []
-        for key, group in self._groups.items():
-            result.extend(self._namespaced(key, group))
-        return result
+        self._ensure_namespaced()
+        assert self._namespaced_list is not None
+        return list(self._namespaced_list)
+
+    def signal_map(self) -> Mapping[str, Signal]:
+        """Read-only ``{namespaced_name: Signal}`` view, cached (FU-08).
+
+        Last-wins on duplicate namespaced names (same as building a dict from
+        ``signals()``). Returned as a ``MappingProxyType`` so callers cannot
+        mutate — and corrupt — the shared cache.
+        """
+        self._ensure_namespaced()
+        assert self._namespaced_map is not None
+        return MappingProxyType(self._namespaced_map)
