@@ -145,9 +145,9 @@
 |---|---|---|---|---|
 | RN-01 | 🔴 | ✅**解消** X 窓スライスを窓外の隣接サンプル1点ずつ（`lo_idx-1`/`hi_idx+1`・両端クランプ）まで拡張し、窓を横切る線分の端点を保持。窓内にサンプルが無くても線が描かれ、疎信号のズーム時消失を解消（窓が信号域外なら境界1点は可視域外でクリップ＝外挿の捏造なし） | `gui/viewmodels/graph_panel_vm.py` `render_data` | 低頻度信号がズームで消失（サイレント失敗） |
 | RN-02 | 🟠 | ✅**解消** `_x_range_is_auto` フラグを導入し、自動フィット中は追加信号のたび x_range を全信号の時間和集合へ拡張（`None` チェックだけだと初回オートフィット後の非 None を手動と誤認していた）。手動ズーム後（`set_x_range`）は尊重し `reset_x` が受け皿。X 同期は `set_x_range` 経由で手動追従 | `gui/viewmodels/graph_panel_vm.py` `_auto_fit_ranges`/`set_x_range`/`reset_x` | 別録画/2本目の信号が見えない |
-| RN-03 | 🟡 | リサイズ毎に全曲線 LOD 再計算（キャッシュ全破棄） | `gui/views/graph_panel_view.py:1760` | 高さ変更だけで無駄に再計算 |
-| RN-04 | 🟡 | X 同期が全パネルへ扇状展開・UI スレッドで同期的に全 LOD 再計算 | `gui/viewmodels/graph_area_vm.py:247` | 多パネルで同期操作が重い |
-| RN-05 | 🟡 | 定数信号が零幅 `y_range=(v,v)` で Y 軸目盛り退化 | `gui/viewmodels/y_axis_vm.py:49` | 定数信号の軸が情報を持たない |
+| RN-03 | 🟡 | ✅**解消（PR #72）** リサイズ毎に全曲線 LOD 再計算（キャッシュ全破棄）→ `set_panel_width` に幅変化ガード（LOD キャッシュキーは高さ非依存＝高さのみリサイズは no-op） | `gui/views/graph_panel_view.py:1760` | 高さ変更だけで無駄に再計算 |
+| RN-04 | 🟡 | ✅**解消（PR #73）** X 同期が全パネルへ扇状展開・UI スレッドで同期的に全 LOD 再計算 → 計測で根本原因はダウンサンプラのバケット毎 Python ループと判明し `_minmax_indices` へベクトル化（`reduceat`・狭窓 ~53×・出力不変。±inf は描画不能のため**有限極値を優先**＝LOD 選択から意図的除外）＋`set_x_range` 不変ガードで冗長 render 除去 | `gui/viewmodels/graph_area_vm.py:247` | 多パネルで同期操作が重い |
+| RN-05 | 🟡 | ✅**解消（PR #72）** 定数信号が零幅 `y_range=(v,v)` で Y 軸目盛り退化 → auto-fit 経路で `_padded_range` 対称拡張（v±50%／v==0 は [-1,1]・手動 set_y_range は非 pad） | `gui/viewmodels/y_axis_vm.py:49` | 定数信号の軸が情報を持たない |
 | RN-06 | ✅解消 | **✅解消（2026-07-05・増分①・PR #49）: 計測で「Global=interpolate は実質タダ／Delta の範囲統計だけが計算量ボトルネック（20信号×1M=191ms）」と判明。範囲統計を平方分割 O(√n) 化（`RangeStatIndex`・並列分散マージ Chan/Welford で数値安定・命題1-6＋property-based で数学的正当性を実証）し `compute_statistics` へ透過委譲、`cursor_readout` を全 QLabel 破棄再生成から `setText` 差分更新へ。スレッド/間引き不採用で遅延ゼロの真リアルタイムを維持（20信号×1M で 191ms→<1ms）。** 〔元課題〕**（ユーザー実機発見 2026-07-05・PERF）** カーソルドラッグ移動が重くスムーズに更新されない（更新自体は維持したい）。根因: `InfiniteLine.sigPositionChanged` がドラッグ中の移動ごとに発火 → `set_cursor` → **A カーソルは全兄弟パネルへブロードキャスト**（`propagate_cursor:252`）→ 各パネルで**可視全信号を毎フレーム `interpolate`**（Global）／さらに **`compute_statistics` を範囲全区間で毎フレーム**（Delta）→ `cursor_readout._rebuild` で**全 QLabel 破棄再生成**。throttle/debounce/差分更新は皆無 | `graph_panel_view.py:1127,1175-1183,1138`・`graph_panel_vm.py:747-774,822-871`・`cursor_readout.py:236-274`・`graph_area_vm.py:252` | カーソル計測のスムーズさが損なわれ主要操作が重い |
 
 ---
