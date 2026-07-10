@@ -86,7 +86,7 @@ gantt
 | `valisync-gui-views` | R9, R10, R11 | 未着手 | ① | Table / 棒グラフ / コンタープロット |
 | `valisync-gui-script` | R20 | 未着手 | ① | Python Script Console（スクリプティング統合） |
 
-**② 改善サブスペック（実装済みだが不足）** — 一次情報源: [audit-findings-catalog.md](audit-findings-catalog.md)（実ユーザージャーニー監査で確定した 64 課題・補遺 LD-12/LD-13 で 66 課題・ユーザー実機発見 2026-07-05 で PC-21/PC-22/RN-06 追加し計 69 課題を割当。全6サブスペック完了後の実使用フォローアップ FU-01〜06 を catalog `SS-FOLLOWUP` に登録＝未着手。FU-01〜04 不具合・FU-05/06 ボタン廃止 UX リファイン）
+**② 改善サブスペック（実装済みだが不足）** — 一次情報源: [audit-findings-catalog.md](audit-findings-catalog.md)（実ユーザージャーニー監査で確定した 64 課題・補遺 LD-12/LD-13 で 66 課題・ユーザー実機発見 2026-07-05 で PC-21/PC-22/RN-06 追加し計 69 課題を割当。全6サブスペック完了後の実使用フォローアップ FU-01〜07 を catalog `SS-FOLLOWUP` に登録＝未着手。FU-01〜04 不具合・FU-05/06 ボタン廃止 UX リファイン・FU-07 デモデータ tooling 強化）
 
 | 改善サブスペック | 主眼 | 件数 | 優先 | 代表課題（catalog ID） |
 |------|------|------|------|------|
