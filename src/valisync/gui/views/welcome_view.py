@@ -23,7 +23,7 @@ from valisync.gui.views.recent_files import RecentFiles
 # minimumSizeHint がパス長に比例し、中央 QStackedWidget (全ページ最大) 経由で
 # ウィンドウ最小幅が画面幅を超え、再レイアウト時に右側ドックが画面外へ
 # 押し出される。ラベル側の有界化が根本解決 (spec 2026-07-11-fu04 参照)。
-_RECENT_LABEL_MAX_W = 400
+_RECENT_LABEL_MAX_W = 360
 
 
 class WelcomeView(QWidget):

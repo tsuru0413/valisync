@@ -115,7 +115,7 @@ class _FakeRecent:
         return list(self._paths)
 
 
-_LONG_PATH = "C:/" + "d" * 400 + "/measurement.mf4"
+_LONG_PATH = "C:/" + "d" * 400 + "/m.mf4"
 
 
 def test_recent_button_min_width_bounded_for_long_path(qtbot: QtBot) -> None:
@@ -143,7 +143,7 @@ def test_recent_button_label_elided_but_click_and_tooltip_keep_full_path(
     assert isinstance(row0, QPushButton)
     assert row0.text() != _LONG_PATH  # 省略されている
     assert "…" in row0.text()  # ElideMiddle の省略記号
-    assert row0.text().endswith("measurement.mf4")  # 末尾のファイル名は保持
+    assert row0.text().endswith("m.mf4")  # 末尾のファイル名は保持
     assert row0.toolTip() == _LONG_PATH  # フルパスは tooltip で提供
     row0.click()
     assert got == [_LONG_PATH]  # クリックは表示テキストでなくフルパスを emit
