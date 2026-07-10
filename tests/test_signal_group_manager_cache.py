@@ -84,7 +84,7 @@ def test_build_runs_once_across_calls(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_build_runs_once_at_scale(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 大 group でも構築は1回のみ（O(N) 再構築の回帰を決定的に検出）
+    # 大 group でも構築は1回のみ(O(N) 再構築の回帰を決定的に検出)
     m = SignalGroupManager()
     calls: list[str] = []
     orig = SignalGroupManager._namespaced
