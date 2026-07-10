@@ -598,6 +598,11 @@ class GraphPanelVM(Observable):
 
     def set_x_range(self, lo: float, hi: float) -> None:
         """Set the horizontal view range and invalidate the render cache."""
+        # X-sync fan-out re-applies the current range to the source panel and pushes
+        # already-synced ranges to siblings. Skip the redundant re-render when the
+        # range is unchanged (RN-04); a real change proceeds as before.
+        if self.x_range == (lo, hi):
+            return
         self.x_range = (lo, hi)
         self._x_range_is_auto = False  # RN-02: 手動ズーム/パン/同期由来は auto を外す
         self._invalidate_cache()

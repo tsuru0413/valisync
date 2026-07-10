@@ -5,6 +5,52 @@ import numpy as np
 from valisync.core.models import Signal
 
 
+def _minmax_indices(
+    vs: np.ndarray, seg_starts: np.ndarray, seg_ends: np.ndarray
+) -> np.ndarray:
+    """Per-segment min-max sample selection, vectorized (non-finite-aware).
+
+    For each contiguous segment [seg_starts[i], seg_ends[i]) return the FIRST
+    index attaining that segment's min and the FIRST attaining its max (leading-tie
+    preference). Result is sorted, de-duplicated input indices.
+
+    Non-finite values (NaN and ±inf) are excluded from the min/max selection: they
+    are not plottable (pyqtgraph drops non-finite vertices when drawing, and Y
+    auto-fit uses finite values only), so an LOD bucket spends its two slots on the
+    FINITE extrema whenever a finite value exists. A segment with NO finite value
+    keeps its first index (seg start). This DELIBERATELY diverges from the historic
+    np.nanargmin/np.nanargmax loop, which excluded only NaN and could pick a real
+    ±inf as an extremum — see test_minmax_indices_excludes_real_inf.
+
+    seg_starts must be strictly increasing (distinct bucket boundaries) so
+    reduceat treats each as its own segment. seg_ends[i] == seg_starts[i+1].
+    """
+    n_seg = len(seg_starts)
+    m = len(vs)
+
+    # 非有限(NaN/±inf)を極値へ退避: min には +inf、max には -inf を割り当て決して勝たせない。
+    finite = np.isfinite(vs)
+    v_min = np.where(finite, vs, np.inf)
+    v_max = np.where(finite, vs, -np.inf)
+
+    # 各要素 -> 所属セグメント id(セグメント長で arange を反復)。
+    seg_id = np.repeat(np.arange(n_seg), seg_ends - seg_starts)
+    idx = np.arange(m)
+
+    # セグメントごとの min/max 値(reduceat で一括縮約)。
+    seg_min = np.minimum.reduceat(v_min, seg_starts)
+    seg_max = np.maximum.reduceat(v_max, seg_starts)
+
+    # 各セグメントで min/max を達成する「最初の」インデックス(非達成は番兵 m)。
+    # 全非有限セグメントは seg_min=+inf に全要素が一致 -> 先頭 index を選ぶ。
+    min_hit = np.where(v_min == seg_min[seg_id], idx, m)
+    max_hit = np.where(v_max == seg_max[seg_id], idx, m)
+    argmin_seg = np.minimum.reduceat(min_hit, seg_starts)
+    argmax_seg = np.minimum.reduceat(max_hit, seg_starts)
+
+    return np.unique(np.concatenate([argmin_seg, argmax_seg]))
+
+
 class Downsampler:
     """Min-max LOD downsampler for rendering large signals."""
 
@@ -64,16 +110,7 @@ class Downsampler:
         seg_starts = np.concatenate(([0], np.nonzero(np.diff(bucket))[0] + 1))
         seg_ends = np.concatenate((seg_starts[1:], [len(bucket)]))
 
-        result: set[int] = set()
-        for lo, hi in zip(seg_starts.tolist(), seg_ends.tolist(), strict=True):
-            seg = vs[lo:hi]
-            if np.any(np.isfinite(seg)):
-                result.add(lo + int(np.nanargmin(seg)))
-                result.add(lo + int(np.nanargmax(seg)))
-            else:
-                result.add(lo)  # all-NaN bucket: keep one sample
-
-        sorted_idx = np.array(sorted(result))
+        sorted_idx = _minmax_indices(vs, seg_starts, seg_ends)
         return Signal(
             name=signal.name,
             timestamps=ts[sorted_idx],
