@@ -431,6 +431,28 @@ def _ctrl_internal_signals() -> list[SigDef]:
     return sigs
 
 
+def estimate_profile_size(groups: list[GroupDef], duration_s: float) -> tuple[int, int]:
+    """(推定バイト数, 展開後チャンネル数) を実生成せず算出する純関数.
+
+    - bytes ≈ Σ_group[ n * (8[float64 時刻] + Σ_sig 列数*dtype_bytes) ]
+      n = ceil(duration_s / rate_s)、アレイ(ndim>1)は _pack_array_channel で
+      uint8(1B)格納・スカラーは dtype.itemsize。
+    - 展開後 ch ≈ Σ_sig (ndim if ndim>1 else 1)  # LD-14 の (N,k)→k 展開に対応。
+    """
+    total_bytes = 0
+    total_channels = 0
+    for g in groups:
+        n = max(int(np.ceil(duration_s / g.rate_s)), 1)
+        group_bytes = n * 8  # float64 時刻チャンネル
+        for sd in g.signals:
+            cols = sd.ndim if sd.ndim > 1 else 1
+            dtype_bytes = 1 if sd.ndim > 1 else np.dtype(sd.dtype).itemsize
+            group_bytes += n * cols * dtype_bytes
+            total_channels += cols
+        total_bytes += group_bytes
+    return total_bytes, total_channels
+
+
 def _build_groups() -> list[GroupDef]:
     xcp_1ms_main = [
         SigDef("ACC.TargetAccel", lambda t, rng: acc_target_accel(t), "m/s^2"),

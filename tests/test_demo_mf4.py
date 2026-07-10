@@ -370,3 +370,28 @@ def test_clean_multichunk_load_yields_only_2d_info(tmp_path):
         d for d in outcome.diagnostics if d.level == "info" and "ObjMatrix" in d.message
     ]
     assert len(infos) == 2
+
+
+def test_estimate_profile_size_arithmetic():
+    from generate_demo_mf4 import GroupDef, SigDef, estimate_profile_size
+
+    g = GroupDef(
+        name="G",
+        rate_s=0.01,  # 10ms
+        jitter_pct=0.0,
+        bus=None,
+        signals=[
+            SigDef("s1", lambda t, rng: t, dtype=np.float64),  # scalar float64
+            SigDef(
+                "arr", lambda t, rng: np.zeros((len(t), 100)), dtype=np.uint8, ndim=100
+            ),  # array 100 列
+        ],
+        group_id=0,
+    )
+    est_bytes, est_channels = estimate_profile_size(
+        [g], 10.0
+    )  # 10s / 10ms = 1000 sample
+    # 展開後: scalar 1 + array 100 = 101
+    assert est_channels == 101
+    # bytes: n=1000. 時刻 1000*8=8000 + scalar 1000*1*8=8000 + array 1000*100*1=100000
+    assert est_bytes == 8000 + 8000 + 100000
