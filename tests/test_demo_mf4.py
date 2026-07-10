@@ -403,3 +403,33 @@ def test_estimate_profile_size_arithmetic():
     # bytes: n=1000. 時刻 1000*8=8000 + scalar(float64) 1000*8=8000
     #        + array(dtype=float64 でも uint8 固定) 1000*100*1=100000
     assert est_bytes == 8000 + 8000 + 100000
+
+
+def test_bulk_array_shape_and_determinism():
+    from generate_demo_mf4 import _bulk_array
+
+    t = np.arange(0.0, 1.0, 0.01)  # 100 sample
+    a = _bulk_array(t, cols=50, arr_idx=3)
+    assert a.shape == (100, 50)
+    b = _bulk_array(t, cols=50, arr_idx=3)
+    assert np.array_equal(a, b)  # 決定的
+    c = _bulk_array(t, cols=50, arr_idx=4)
+    assert not np.array_equal(a, c)  # arr_idx でずれる
+
+
+def test_bulk_array_signals_are_uint8_arrays():
+    from generate_demo_mf4 import _bulk_array_signals
+
+    sigs = _bulk_array_signals("Prod10", n_arrays=5, cols=1000, start_idx=0)
+    assert len(sigs) == 5
+    assert all(sd.ndim == 1000 and sd.dtype == np.uint8 for sd in sigs)
+    assert sigs[0].name == "Prod10_0000" and sigs[4].name == "Prod10_0004"
+
+
+def test_bulk_scalar_signals_count_and_names():
+    from generate_demo_mf4 import _bulk_scalar_signals
+
+    sigs = _bulk_scalar_signals(n=7, start_idx=0)
+    assert len(sigs) == 7
+    assert all(sd.ndim == 1 for sd in sigs)
+    assert sigs[0].name == "Prod_Scalar_00000"

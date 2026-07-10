@@ -431,6 +431,49 @@ def _ctrl_internal_signals() -> list[SigDef]:
     return sigs
 
 
+def _bulk_array(t: np.ndarray, cols: int, arr_idx: int) -> np.ndarray:
+    """(len(t), cols) の決定的バルク配列 — 物理的意味なし・arr_idx で位相をずらす.
+
+    下流 _pack_array_channel で 0-255 uint8 に量子化されるため物理精度は不要。
+    列ループを避けベクトル化する (cols が大きいため)。
+    """
+    base = veh_spd(t - arr_idx * 0.7) + 5.0 * ttc(t - arr_idx * 1.3)  # (N,)
+    col_scale = 1.0 + 0.017 * np.arange(cols)  # (cols,)
+    return base[:, None] * col_scale[None, :]  # (N, cols)
+
+
+def _bulk_array_signals(
+    prefix: str, n_arrays: int, cols: int, start_idx: int
+) -> list[SigDef]:
+    """n_arrays 本の (N, cols) uint8 アレイ SigDef を生成 (loader が要素展開)."""
+    sigs: list[SigDef] = []
+    for i in range(n_arrays):
+        idx = start_idx + i
+        sigs.append(
+            SigDef(
+                name=f"{prefix}_{i:04d}",
+                fn=lambda t, rng, c=cols, ai=idx: _bulk_array(t, c, ai),
+                dtype=np.uint8,
+                ndim=cols,
+            )
+        )
+    return sigs
+
+
+def _bulk_scalar_signals(n: int, start_idx: int) -> list[SigDef]:
+    """n 本の平坦スカラー SigDef (XCP 内部変数風・ctrl_internal 流用・float64)."""
+    sigs: list[SigDef] = []
+    for i in range(n):
+        idx = start_idx + i
+        sigs.append(
+            SigDef(
+                name=f"Prod_Scalar_{i:05d}",
+                fn=lambda t, rng, ai=idx: add_noise(ctrl_internal(t, ai), 0.5, rng),
+            )
+        )
+    return sigs
+
+
 def estimate_profile_size(groups: list[GroupDef], duration_s: float) -> tuple[int, int]:
     """(推定バイト数, 展開後チャンネル数) を実生成せず算出する純関数.
 
