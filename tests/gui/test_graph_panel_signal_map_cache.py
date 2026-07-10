@@ -4,7 +4,7 @@ from types import MappingProxyType
 import numpy as np
 import pytest
 
-from valisync.core.models import Delimiter, FormatDefinition
+from valisync.core.models import Delimiter, FormatDefinition, Signal
 from valisync.core.session import Session
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 
@@ -71,21 +71,25 @@ def test_reset_y_covers_signal_range(tmp_path: Path) -> None:
     assert lo <= 0.0 and hi >= 14.0
 
 
-def test_map_built_once_across_add_and_reset(
+def test_autofit_loop_avoids_full_signal_walk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from valisync.core.loaders.signal_group_manager import SignalGroupManager
-
+    # FU-08: no-offset の _signal_map はキャッシュ済み signal_map() をゼロコピーで
+    # 返し、旧実装のような session.signals() の全信号 list-walk をしない。autofit
+    # ループ(reset_y/reset_axis_y を5回)で signals() が一度も呼ばれないことを spy で
+    # 保証する。旧 _signal_map(signals() を回す実装)へ revert するとここが RED になる。
+    # test_no_offset_returns_base_wrappers の isinstance ガードと相補的
+    # (あちらは「dict でなく MappingProxyType を返す」、こちらは「全走査を呼ばない」)。
     vm, _keys, _ = _vm_two(tmp_path)
     calls: list[str] = []
-    orig = SignalGroupManager._namespaced
+    orig = Session.signals
 
-    def spy(key: str, group: object) -> list:  # type: ignore[type-arg]
-        calls.append(key)
-        return orig(key, group)  # type: ignore[arg-type]
+    def spy(self: Session) -> list[Signal]:
+        calls.append("signals")
+        return orig(self)
 
-    monkeypatch.setattr(SignalGroupManager, "_namespaced", staticmethod(spy))
+    monkeypatch.setattr(Session, "signals", spy)
     for _ in range(5):
         vm.reset_y()
         vm.reset_axis_y(0)
-    assert calls == []  # add_signal 時点で構築済み→autofit 群では再構築ゼロ
+    assert calls == []  # ゼロコピー経路は signals() の全走査を一度も呼ばない
