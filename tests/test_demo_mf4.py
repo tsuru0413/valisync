@@ -51,7 +51,7 @@ def test_signals_deterministic_for_same_time():
 
 
 def test_profiles_defined():
-    assert set(gen.PROFILES) == {"hils", "quick", "smoke"}
+    assert set(gen.PROFILES) == {"hils", "quick", "smoke", "prod"}
     assert gen.PROFILES["hils"].duration_s == 3600.0
     assert gen.PROFILES["smoke"].duration_s <= 15.0
 
@@ -433,3 +433,33 @@ def test_bulk_scalar_signals_count_and_names():
     assert len(sigs) == 7
     assert all(sd.ndim == 1 for sd in sigs)
     assert sigs[0].name == "Prod_Scalar_00000"
+
+
+def test_prod_profile_registered_and_within_targets():
+    from generate_demo_mf4 import PROFILES, _build_prod_groups, estimate_profile_size
+
+    assert "prod" in PROFILES
+    prof = PROFILES["prod"]
+    assert prof.duration_s == 120.0
+    assert prof.groups_builder is not None
+
+    groups = _build_prod_groups()
+    est_bytes, est_channels = estimate_profile_size(groups, prof.duration_s)
+    # 1.5GB ±20% / 32万ch ±20%
+    assert 1.2e9 <= est_bytes <= 1.8e9, f"{est_bytes / 1e9:.2f}GB out of range"
+    assert 256_000 <= est_channels <= 384_000, f"{est_channels} ch out of range"
+
+    # FU-01 用: >1024 列アレイが数十本ある
+    wide = [sd for g in groups for sd in g.signals if sd.ndim > 1024]
+    assert len(wide) >= 30
+
+    # 複数レートの group (10ms/100ms/500ms)
+    rates = {g.rate_s for g in groups}
+    assert {0.01, 0.1, 0.5} <= rates
+
+
+def test_prod_profile_does_not_disturb_existing():
+    from generate_demo_mf4 import PROFILES
+
+    assert PROFILES["hils"].duration_s == 3600.0
+    assert PROFILES["hils"].groups_builder is None  # 既存は GROUPS 経由のまま

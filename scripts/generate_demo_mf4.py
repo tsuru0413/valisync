@@ -21,6 +21,7 @@ CYCLE_S = 300.0  # ACC 追従シナリオの1サイクル (spec §4.3)
 class Profile:
     duration_s: float
     chunk_s: float  # extend 1回分 (ピークメモリの上限を決める)
+    groups_builder: Callable[[], list[GroupDef]] | None = None
 
 
 PROFILES: dict[str, Profile] = {
@@ -646,6 +647,44 @@ def _build_groups() -> list[GroupDef]:
 GROUPS: list[GroupDef] = _build_groups()
 
 
+def _build_prod_groups(
+    n_10ms_arrays: int = 30,
+    n_wide_arrays: int = 60,
+    n_100ms_arrays: int = 150,
+    n_500ms_arrays: int = 80,
+    cols: int = 1000,
+    wide_cols: int = 1100,  # >1024 で LD-14 ダイアログを発火 (FU-01)
+    n_scalars: int = 4000,
+) -> list[GroupDef]:
+    """prod プロファイルの大規模 group 群 — アレイ主体で展開後 ~33万ch/~1.36GB/120s.
+
+    引数は縮小版 (CI 構造テスト) 用にパラメータ化。デフォルトは目標±20%内。
+    """
+    scenario = [
+        SigDef("VehSpd", lambda t, rng: add_noise(veh_spd(t), 0.2, rng), "km/h"),
+        SigDef("AEB.TTC", lambda t, rng: ttc(t), "s"),
+        SigDef("LeadDist", lambda t, rng: lead_dist(t), "m"),
+        SigDef("Radar.Obj0.dx", lambda t, rng: radar_obj(t, 0, "dx"), "m"),
+    ]
+    g10 = _bulk_array_signals("Prod10", n_10ms_arrays, cols, 0)
+    g10_wide = _bulk_array_signals("Prod10Wide", n_wide_arrays, wide_cols, 100_000)
+    g100 = _bulk_array_signals("Prod100", n_100ms_arrays, cols, 200_000)
+    g500 = _bulk_array_signals("Prod500", n_500ms_arrays, cols, 300_000)
+    scalars = _bulk_scalar_signals(n_scalars, 400_000)
+    return [
+        GroupDef("Prod_Scenario_10ms", 0.01, 0.0, None, scenario, 0),
+        GroupDef("Prod_Bulk10ms", 0.01, 0.0, None, [*g10, *g10_wide], 1),
+        GroupDef("Prod_Bulk100ms", 0.1, 0.0, None, g100, 2),
+        GroupDef("Prod_Bulk500ms", 0.5, 0.0, None, g500, 3),
+        GroupDef("Prod_Scalars_500ms", 0.5, 0.0, None, scalars, 4),
+    ]
+
+
+PROFILES["prod"] = Profile(
+    duration_s=120.0, chunk_s=5.0, groups_builder=_build_prod_groups
+)
+
+
 def _group_timestamps(
     t0: float, t1: float, rate_s: float, jitter_pct: float, rng: np.random.Generator
 ) -> np.ndarray:
@@ -786,10 +825,11 @@ def write_mf4(
     out.parent.mkdir(parents=True, exist_ok=True)
     mdf = MDF(version="4.10")
     n_chunks = int(np.ceil(profile.duration_s / profile.chunk_s))
+    groups = profile.groups_builder() if profile.groups_builder is not None else GROUPS
     for ci in range(n_chunks):
         t0 = ci * profile.chunk_s
         t1 = min(t0 + profile.chunk_s, profile.duration_s)
-        for gi, g in enumerate(GROUPS):
+        for gi, g in enumerate(groups):
             ts, sigs = build_group_signals(g, t0, t1, seed, ci)
             if dirty and g.name == "VehDyn_10ms":
                 ts = _inject_dirty(ts, seed, ci)
@@ -837,7 +877,11 @@ def main(argv: list[str] | None = None) -> int:
     if a.duration is not None:
         # chunk_s > duration を Profile に作らないための整合性維持 —
         # 境界計算は write_mf4 側でもクランプされる (n_chunks = ceil(...))
-        prof = Profile(duration_s=a.duration, chunk_s=min(prof.chunk_s, a.duration))
+        prof = Profile(
+            duration_s=a.duration,
+            chunk_s=min(prof.chunk_s, a.duration),
+            groups_builder=prof.groups_builder,
+        )
     out = write_mf4(out=a.out, profile=prof, seed=a.seed, dirty=a.dirty, progress=True)
     print(f"wrote {out} ({out.stat().st_size / 1e9:.2f} GB)")
     return 0
