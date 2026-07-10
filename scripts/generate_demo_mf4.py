@@ -21,6 +21,7 @@ CYCLE_S = 300.0  # ACC 追従シナリオの1サイクル (spec §4.3)
 class Profile:
     duration_s: float
     chunk_s: float  # extend 1回分 (ピークメモリの上限を決める)
+    groups_builder: Callable[[], list[GroupDef]] | None = None
 
 
 PROFILES: dict[str, Profile] = {
@@ -431,6 +432,80 @@ def _ctrl_internal_signals() -> list[SigDef]:
     return sigs
 
 
+def _bulk_array(t: np.ndarray, cols: int, arr_idx: int) -> np.ndarray:
+    """(len(t), cols) の決定的バルク配列 — 物理的意味なし・arr_idx で位相をずらす.
+
+    下流 _pack_array_channel で 0-255 uint8 に量子化されるため物理精度は不要。
+    列ループを避けベクトル化する (cols が大きいため)。
+    """
+    base = veh_spd(t - arr_idx * 0.7) + 5.0 * ttc(t - arr_idx * 1.3)  # (N,)
+    col_scale = 1.0 + 0.017 * np.arange(cols)  # (cols,)
+    return base[:, None] * col_scale[None, :]  # (N, cols)
+
+
+def _bulk_array_signals(
+    prefix: str, n_arrays: int, cols: int, start_idx: int
+) -> list[SigDef]:
+    """n_arrays 本の (N, cols) uint8 アレイ SigDef を生成 (loader が要素展開).
+
+    名前 (`{prefix}_{i:04d}`) は呼び出しごとに `_0000` から振り直すため、
+    グローバルな名前一意性は呼び出し側が **distinct な prefix を渡すこと**に依存する。
+    `start_idx` は名前でなくデータ位相 (`arr_idx`) のみをずらす。
+    """
+    sigs: list[SigDef] = []
+    for i in range(n_arrays):
+        idx = start_idx + i
+        sigs.append(
+            SigDef(
+                name=f"{prefix}_{i:04d}",
+                fn=lambda t, rng, c=cols, ai=idx: _bulk_array(t, c, ai),
+                dtype=np.uint8,
+                ndim=cols,
+            )
+        )
+    return sigs
+
+
+def _bulk_scalar_signals(n: int, start_idx: int) -> list[SigDef]:
+    """n 本の平坦スカラー SigDef (XCP 内部変数風・ctrl_internal 流用・float64).
+
+    名前 (`Prod_Scalar_{i:05d}`) は prefix を持たず 1 ファイルにつき単一呼び出し前提
+    (複数回呼ぶと名前衝突する)。`start_idx` はデータ位相のみをずらす。
+    """
+    sigs: list[SigDef] = []
+    for i in range(n):
+        idx = start_idx + i
+        sigs.append(
+            SigDef(
+                name=f"Prod_Scalar_{i:05d}",
+                fn=lambda t, rng, ai=idx: add_noise(ctrl_internal(t, ai), 0.5, rng),
+            )
+        )
+    return sigs
+
+
+def estimate_profile_size(groups: list[GroupDef], duration_s: float) -> tuple[int, int]:
+    """(推定バイト数, 展開後チャンネル数) を実生成せず算出する純関数.
+
+    - bytes ≈ Σ_group[ n * (8[float64 時刻] + Σ_sig 列数*dtype_bytes) ]
+      n = ceil(duration_s / rate_s)、アレイ(ndim>1)は _pack_array_channel で
+      uint8(1B)格納・スカラーは dtype.itemsize。
+    - 展開後 ch ≈ Σ_sig (ndim if ndim>1 else 1)  # LD-14 の (N,k)→k 展開に対応。
+    """
+    total_bytes = 0
+    total_channels = 0
+    for g in groups:
+        n = max(int(np.ceil(duration_s / g.rate_s)), 1)
+        group_bytes = n * 8  # float64 時刻チャンネル
+        for sd in g.signals:
+            cols = sd.ndim if sd.ndim > 1 else 1
+            dtype_bytes = 1 if sd.ndim > 1 else np.dtype(sd.dtype).itemsize
+            group_bytes += n * cols * dtype_bytes
+            total_channels += cols
+        total_bytes += group_bytes
+    return total_bytes, total_channels
+
+
 def _build_groups() -> list[GroupDef]:
     xcp_1ms_main = [
         SigDef("ACC.TargetAccel", lambda t, rng: acc_target_accel(t), "m/s^2"),
@@ -581,6 +656,44 @@ def _build_groups() -> list[GroupDef]:
 GROUPS: list[GroupDef] = _build_groups()
 
 
+def _build_prod_groups(
+    n_10ms_arrays: int = 30,
+    n_wide_arrays: int = 60,
+    n_100ms_arrays: int = 150,
+    n_500ms_arrays: int = 80,
+    cols: int = 1000,
+    wide_cols: int = 1100,  # >1024 で LD-14 ダイアログを発火 (FU-01)
+    n_scalars: int = 4000,
+) -> list[GroupDef]:
+    """prod プロファイルの大規模 group 群 — アレイ主体で展開後 ~33万ch/~1.36GB/120s.
+
+    引数は縮小版 (CI 構造テスト) 用にパラメータ化。デフォルトは目標±20%内。
+    """
+    scenario = [
+        SigDef("VehSpd", lambda t, rng: add_noise(veh_spd(t), 0.2, rng), "km/h"),
+        SigDef("AEB.TTC", lambda t, rng: ttc(t), "s"),
+        SigDef("LeadDist", lambda t, rng: lead_dist(t), "m"),
+        SigDef("Radar.Obj0.dx", lambda t, rng: radar_obj(t, 0, "dx"), "m"),
+    ]
+    g10 = _bulk_array_signals("Prod10", n_10ms_arrays, cols, 0)
+    g10_wide = _bulk_array_signals("Prod10Wide", n_wide_arrays, wide_cols, 100_000)
+    g100 = _bulk_array_signals("Prod100", n_100ms_arrays, cols, 200_000)
+    g500 = _bulk_array_signals("Prod500", n_500ms_arrays, cols, 300_000)
+    scalars = _bulk_scalar_signals(n_scalars, 400_000)
+    return [
+        GroupDef("Prod_Scenario_10ms", 0.01, 0.0, None, scenario, 0),
+        GroupDef("Prod_Bulk10ms", 0.01, 0.0, None, [*g10, *g10_wide], 1),
+        GroupDef("Prod_Bulk100ms", 0.1, 0.0, None, g100, 2),
+        GroupDef("Prod_Bulk500ms", 0.5, 0.0, None, g500, 3),
+        GroupDef("Prod_Scalars_500ms", 0.5, 0.0, None, scalars, 4),
+    ]
+
+
+PROFILES["prod"] = Profile(
+    duration_s=120.0, chunk_s=5.0, groups_builder=_build_prod_groups
+)
+
+
 def _group_timestamps(
     t0: float, t1: float, rate_s: float, jitter_pct: float, rng: np.random.Generator
 ) -> np.ndarray:
@@ -721,10 +834,11 @@ def write_mf4(
     out.parent.mkdir(parents=True, exist_ok=True)
     mdf = MDF(version="4.10")
     n_chunks = int(np.ceil(profile.duration_s / profile.chunk_s))
+    groups = profile.groups_builder() if profile.groups_builder is not None else GROUPS
     for ci in range(n_chunks):
         t0 = ci * profile.chunk_s
         t1 = min(t0 + profile.chunk_s, profile.duration_s)
-        for gi, g in enumerate(GROUPS):
+        for gi, g in enumerate(groups):
             ts, sigs = build_group_signals(g, t0, t1, seed, ci)
             if dirty and g.name == "VehDyn_10ms":
                 ts = _inject_dirty(ts, seed, ci)
@@ -772,7 +886,11 @@ def main(argv: list[str] | None = None) -> int:
     if a.duration is not None:
         # chunk_s > duration を Profile に作らないための整合性維持 —
         # 境界計算は write_mf4 側でもクランプされる (n_chunks = ceil(...))
-        prof = Profile(duration_s=a.duration, chunk_s=min(prof.chunk_s, a.duration))
+        prof = Profile(
+            duration_s=a.duration,
+            chunk_s=min(prof.chunk_s, a.duration),
+            groups_builder=prof.groups_builder,
+        )
     out = write_mf4(out=a.out, profile=prof, seed=a.seed, dirty=a.dirty, progress=True)
     print(f"wrote {out} ({out.stat().st_size / 1e9:.2f} GB)")
     return 0

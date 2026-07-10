@@ -51,7 +51,7 @@ def test_signals_deterministic_for_same_time():
 
 
 def test_profiles_defined():
-    assert set(gen.PROFILES) == {"hils", "quick", "smoke"}
+    assert set(gen.PROFILES) == {"hils", "quick", "smoke", "prod"}
     assert gen.PROFILES["hils"].duration_s == 3600.0
     assert gen.PROFILES["smoke"].duration_s <= 15.0
 
@@ -370,3 +370,197 @@ def test_clean_multichunk_load_yields_only_2d_info(tmp_path):
         d for d in outcome.diagnostics if d.level == "info" and "ObjMatrix" in d.message
     ]
     assert len(infos) == 2
+
+
+def test_estimate_profile_size_arithmetic():
+    from generate_demo_mf4 import GroupDef, SigDef, estimate_profile_size
+
+    g = GroupDef(
+        name="G",
+        rate_s=0.01,  # 10ms
+        jitter_pct=0.0,
+        bus=None,
+        signals=[
+            SigDef("s1", lambda t, rng: t, dtype=np.float64),  # scalar float64
+            # dtype=float64 を宣言しても配列は _pack_array_channel で uint8 化される
+            # ため estimate も 1 バイト固定であるべき — この非 uint8 宣言で「配列は
+            # 宣言 dtype 非依存で 1 バイト」を弁別する (uint8 宣言だと itemsize 無条件
+            # 適用の変異体と区別できない)。
+            SigDef(
+                "arr",
+                lambda t, rng: np.zeros((len(t), 100)),
+                dtype=np.float64,
+                ndim=100,
+            ),  # array 100 列
+        ],
+        group_id=0,
+    )
+    est_bytes, est_channels = estimate_profile_size(
+        [g], 10.0
+    )  # 10s / 10ms = 1000 sample
+    # 展開後: scalar 1 + array 100 = 101
+    assert est_channels == 101
+    # bytes: n=1000. 時刻 1000*8=8000 + scalar(float64) 1000*8=8000
+    #        + array(dtype=float64 でも uint8 固定) 1000*100*1=100000
+    assert est_bytes == 8000 + 8000 + 100000
+
+
+def test_bulk_array_shape_and_determinism():
+    from generate_demo_mf4 import _bulk_array
+
+    t = np.arange(0.0, 1.0, 0.01)  # 100 sample
+    a = _bulk_array(t, cols=50, arr_idx=3)
+    assert a.shape == (100, 50)
+    b = _bulk_array(t, cols=50, arr_idx=3)
+    assert np.array_equal(a, b)  # 決定的
+    c = _bulk_array(t, cols=50, arr_idx=4)
+    assert not np.array_equal(a, c)  # arr_idx でずれる
+
+
+def test_bulk_array_signals_are_uint8_arrays():
+    from generate_demo_mf4 import _bulk_array_signals
+
+    sigs = _bulk_array_signals("Prod10", n_arrays=5, cols=1000, start_idx=0)
+    assert len(sigs) == 5
+    assert all(sd.ndim == 1000 and sd.dtype == np.uint8 for sd in sigs)
+    assert sigs[0].name == "Prod10_0000" and sigs[4].name == "Prod10_0004"
+
+
+def test_bulk_scalar_signals_count_and_names():
+    from generate_demo_mf4 import _bulk_scalar_signals
+
+    sigs = _bulk_scalar_signals(n=7, start_idx=0)
+    assert len(sigs) == 7
+    assert all(sd.ndim == 1 for sd in sigs)
+    assert sigs[0].name == "Prod_Scalar_00000"
+
+
+def test_prod_profile_registered_and_within_targets():
+    from generate_demo_mf4 import PROFILES, _build_prod_groups, estimate_profile_size
+
+    assert "prod" in PROFILES
+    prof = PROFILES["prod"]
+    assert prof.duration_s == 120.0
+    assert prof.groups_builder is not None
+
+    groups = _build_prod_groups()
+    est_bytes, est_channels = estimate_profile_size(groups, prof.duration_s)
+    # 1.5GB ±20% / 32万ch ±20%
+    assert 1.2e9 <= est_bytes <= 1.8e9, f"{est_bytes / 1e9:.2f}GB out of range"
+    assert 256_000 <= est_channels <= 384_000, f"{est_channels} ch out of range"
+
+    # FU-01 用: >1024 列アレイが数十本ある
+    wide = [sd for g in groups for sd in g.signals if sd.ndim > 1024]
+    assert len(wide) >= 30
+
+    # 複数レートの group (10ms/100ms/500ms)
+    rates = {g.rate_s for g in groups}
+    assert {0.01, 0.1, 0.5} <= rates
+
+
+def test_prod_profile_does_not_disturb_existing():
+    from generate_demo_mf4 import PROFILES
+
+    assert PROFILES["hils"].duration_s == 3600.0
+    assert PROFILES["hils"].groups_builder is None  # 既存は GROUPS 経由のまま
+
+
+def test_prod_tiny_structure_loads(tmp_path):
+    # prod と同じコード経路の極小版 (広幅は 1100 列で >1024 を維持).
+    builder = lambda: gen._build_prod_groups(  # noqa: E731
+        n_10ms_arrays=2,
+        n_wide_arrays=1,
+        n_100ms_arrays=2,
+        n_500ms_arrays=2,
+        cols=6,
+        wide_cols=1100,  # >1024 を維持 (FU-01 対象)
+        n_scalars=3,
+    )
+    prof = gen.Profile(duration_s=0.5, chunk_s=0.5, groups_builder=builder)
+    out = gen.write_mf4(
+        out=tmp_path / "prod_tiny.mf4",
+        profile=prof,
+        seed=1,
+        dirty=False,
+        progress=False,
+    )
+
+    from valisync.core.session import Session
+
+    session = Session()
+    outcome = session.load(out)
+    by_name = {s.name.split("::", 1)[1]: s for s in session.group_signals(outcome.key)}
+    names = set(by_name)
+
+    # シナリオ実信号が見える + 値が物理レンジ (cruise ≈ 80km/h・既存 smoke と同流儀)
+    assert "VehSpd" in names
+    assert 70.0 < float(np.nanmean(by_name["VehSpd"].values)) < 90.0
+    # ≤1024 列アレイは要素展開される (cols=6 → [0..5])
+    assert "Prod10_0000[0]" in names and "Prod10_0000[5]" in names
+    # >1024 列の広幅アレイはヘッドレスでは展開されない (LD-14 全スキップ=FU-01 対象)
+    assert not any(n.startswith("Prod10Wide_0000[") for n in names)
+    # 非展開だけでは「無関係な理由で消えた」場合も緑になる。LD-14 の >1024 ガードが
+    # 実際に発火し警告診断を出した (=FU-01 の展開ダイアログ候補になる) ことを弁別する。
+    assert any(
+        d.level == "warning" and "Prod10Wide_0000" in (d.message or "")
+        for d in outcome.diagnostics
+    )
+    # error 診断はゼロ
+    assert not any(d.level == "error" for d in outcome.diagnostics)
+
+
+def test_prod_tiny_has_multiple_rate_groups(tmp_path):
+    builder = lambda: gen._build_prod_groups(  # noqa: E731
+        n_10ms_arrays=1,
+        n_wide_arrays=1,
+        n_100ms_arrays=1,
+        n_500ms_arrays=1,
+        cols=4,
+        wide_cols=1100,
+        n_scalars=2,
+    )
+    prof = gen.Profile(duration_s=1.0, chunk_s=1.0, groups_builder=builder)
+    out = gen.write_mf4(
+        out=tmp_path / "prod_rates.mf4",
+        profile=prof,
+        seed=1,
+        dirty=False,
+        progress=False,
+    )
+    from asammdf import MDF
+
+    with MDF(str(out)) as mdf:
+        # Prod10_0000 (10ms) と Prod500_0000 (500ms) のサンプル数比が rate 比 (~50x) を反映
+        n_10 = len(mdf.get("Prod10_0000").timestamps)
+        n_500 = len(mdf.get("Prod500_0000").timestamps)
+        assert n_10 > n_500 * 10  # 10ms は 500ms の 50 倍レート
+
+
+def test_prod_duration_override_keeps_groups_builder(tmp_path, monkeypatch):
+    # Task3 レビュー Minor #1 の回帰ロック: main の --duration 上書きは Profile を
+    # 再構築するため groups_builder を明示継承しないと hils GROUPS へ暗黙フォールバック
+    # する。prod ビルダー固有チャンネル(Prod10_0000)の存在と GROUPS 専用チャンネル
+    # (EngTrq)の不在で弁別する。monkeypatch は main() 内で choices=sorted(PROFILES) が
+    # 評価される前 (呼び出し前) に setitem するので "prodtiny" が有効な選択肢になる。
+    def tiny():
+        return gen._build_prod_groups(
+            n_10ms_arrays=1,
+            n_wide_arrays=1,
+            n_100ms_arrays=1,
+            n_500ms_arrays=1,
+            cols=4,
+            wide_cols=1100,
+            n_scalars=1,
+        )
+
+    monkeypatch.setitem(gen.PROFILES, "prodtiny", gen.Profile(0.5, 0.5, tiny))
+    out = tmp_path / "pd.mf4"
+    gen.main(
+        ["--out", str(out), "--profile", "prodtiny", "--duration", "1.0", "--seed", "1"]
+    )
+    from asammdf import MDF
+
+    with MDF(str(out)) as mdf:
+        names = {ch.name for group in mdf.groups for ch in group.channels}
+    assert "Prod10_0000" in names  # prod ビルダーが --duration 上書き後も効いている
+    assert "EngTrq" not in names  # hils GROUPS へフォールバックしていない
