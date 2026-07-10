@@ -88,10 +88,12 @@ class SignalGroupManager:
                 source_file=sig.source_file,
                 metadata=sig.metadata,
             )
-            # namespaced ラッパーは呼び出しごとに新規生成される(signals() は
-            # 毎回リストを作り直す)ので、sorted_view の単調性スキャン結果を
-            # 元の長寿命 Signal に委譲して共有する。委譲は timestamps/values の
-            # 配列オブジェクトが元 Signal と同一であることが前提
+            # namespaced ラッパーは FU-08 でキャッシュされ、add()/remove() の
+            # 無効化までは再生成されない。無効化のたびにラッパーは作り直されるため、
+            # sorted_view/finite_view の単調・非有限スキャン結果は長寿命の元 Signal に
+            # 委譲して共有する — スキャンはラッパーが何度作り直されても元 Signal で
+            # 1回だけ走る(render/カーソルのホットパス対策)。委譲は timestamps/values
+            # の配列オブジェクトが元 Signal と同一であることが前提
             # (offset 適用後の別配列 Signal には絶対に付けないこと)。
             object.__setattr__(ns_sig, "_sorted_view_delegate", sig)
             result.append(ns_sig)
