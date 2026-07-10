@@ -463,3 +463,98 @@ def test_prod_profile_does_not_disturb_existing():
 
     assert PROFILES["hils"].duration_s == 3600.0
     assert PROFILES["hils"].groups_builder is None  # 既存は GROUPS 経由のまま
+
+
+def test_prod_tiny_structure_loads(tmp_path):
+    # prod と同じコード経路の極小版 (広幅は 1100 列で >1024 を維持).
+    builder = lambda: gen._build_prod_groups(  # noqa: E731
+        n_10ms_arrays=2,
+        n_wide_arrays=1,
+        n_100ms_arrays=2,
+        n_500ms_arrays=2,
+        cols=6,
+        wide_cols=1100,  # >1024 を維持 (FU-01 対象)
+        n_scalars=3,
+    )
+    prof = gen.Profile(duration_s=0.5, chunk_s=0.5, groups_builder=builder)
+    out = gen.write_mf4(
+        out=tmp_path / "prod_tiny.mf4",
+        profile=prof,
+        seed=1,
+        dirty=False,
+        progress=False,
+    )
+
+    from valisync.core.session import Session
+
+    session = Session()
+    outcome = session.load(out)
+    by_name = {s.name.split("::", 1)[1]: s for s in session.group_signals(outcome.key)}
+    names = set(by_name)
+
+    # シナリオ実信号が見える + 値が物理レンジ (cruise ≈ 80km/h・既存 smoke と同流儀)
+    assert "VehSpd" in names
+    assert 70.0 < float(np.nanmean(by_name["VehSpd"].values)) < 90.0
+    # ≤1024 列アレイは要素展開される (cols=6 → [0..5])
+    assert "Prod10_0000[0]" in names and "Prod10_0000[5]" in names
+    # >1024 列の広幅アレイはヘッドレスでは展開されない (LD-14 全スキップ=FU-01 対象)
+    assert not any(n.startswith("Prod10Wide_0000[") for n in names)
+    # error 診断はゼロ
+    assert not any(d.level == "error" for d in outcome.diagnostics)
+
+
+def test_prod_tiny_has_multiple_rate_groups(tmp_path):
+    builder = lambda: gen._build_prod_groups(  # noqa: E731
+        n_10ms_arrays=1,
+        n_wide_arrays=1,
+        n_100ms_arrays=1,
+        n_500ms_arrays=1,
+        cols=4,
+        wide_cols=1100,
+        n_scalars=2,
+    )
+    prof = gen.Profile(duration_s=1.0, chunk_s=1.0, groups_builder=builder)
+    out = gen.write_mf4(
+        out=tmp_path / "prod_rates.mf4",
+        profile=prof,
+        seed=1,
+        dirty=False,
+        progress=False,
+    )
+    from asammdf import MDF
+
+    with MDF(str(out)) as mdf:
+        # Prod10_0000 (10ms) と Prod500_0000 (500ms) のサンプル数比が rate 比 (~50x) を反映
+        n_10 = len(mdf.get("Prod10_0000").timestamps)
+        n_500 = len(mdf.get("Prod500_0000").timestamps)
+        assert n_10 > n_500 * 10  # 10ms は 500ms の 50 倍レート
+
+
+def test_prod_duration_override_keeps_groups_builder(tmp_path, monkeypatch):
+    # Task3 レビュー Minor #1 の回帰ロック: main の --duration 上書きは Profile を
+    # 再構築するため groups_builder を明示継承しないと hils GROUPS へ暗黙フォールバック
+    # する。prod ビルダー固有チャンネル(Prod10_0000)の存在と GROUPS 専用チャンネル
+    # (EngTrq)の不在で弁別する。monkeypatch は main() 内で choices=sorted(PROFILES) が
+    # 評価される前 (呼び出し前) に setitem するので "prodtiny" が有効な選択肢になる。
+    def tiny():
+        return gen._build_prod_groups(
+            n_10ms_arrays=1,
+            n_wide_arrays=1,
+            n_100ms_arrays=1,
+            n_500ms_arrays=1,
+            cols=4,
+            wide_cols=1100,
+            n_scalars=1,
+        )
+
+    monkeypatch.setitem(gen.PROFILES, "prodtiny", gen.Profile(0.5, 0.5, tiny))
+    out = tmp_path / "pd.mf4"
+    gen.main(
+        ["--out", str(out), "--profile", "prodtiny", "--duration", "1.0", "--seed", "1"]
+    )
+    from asammdf import MDF
+
+    with MDF(str(out)) as mdf:
+        names = {ch.name for group in mdf.groups for ch in group.channels}
+    assert "Prod10_0000" in names  # prod ビルダーが --duration 上書き後も効いている
+    assert "EngTrq" not in names  # hils GROUPS へフォールバックしていない
