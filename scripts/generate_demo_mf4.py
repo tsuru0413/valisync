@@ -446,7 +446,12 @@ def _bulk_array(t: np.ndarray, cols: int, arr_idx: int) -> np.ndarray:
 def _bulk_array_signals(
     prefix: str, n_arrays: int, cols: int, start_idx: int
 ) -> list[SigDef]:
-    """n_arrays 本の (N, cols) uint8 アレイ SigDef を生成 (loader が要素展開)."""
+    """n_arrays 本の (N, cols) uint8 アレイ SigDef を生成 (loader が要素展開).
+
+    名前 (`{prefix}_{i:04d}`) は呼び出しごとに `_0000` から振り直すため、
+    グローバルな名前一意性は呼び出し側が **distinct な prefix を渡すこと**に依存する。
+    `start_idx` は名前でなくデータ位相 (`arr_idx`) のみをずらす。
+    """
     sigs: list[SigDef] = []
     for i in range(n_arrays):
         idx = start_idx + i
@@ -462,7 +467,11 @@ def _bulk_array_signals(
 
 
 def _bulk_scalar_signals(n: int, start_idx: int) -> list[SigDef]:
-    """n 本の平坦スカラー SigDef (XCP 内部変数風・ctrl_internal 流用・float64)."""
+    """n 本の平坦スカラー SigDef (XCP 内部変数風・ctrl_internal 流用・float64).
+
+    名前 (`Prod_Scalar_{i:05d}`) は prefix を持たず 1 ファイルにつき単一呼び出し前提
+    (複数回呼ぶと名前衝突する)。`start_idx` はデータ位相のみをずらす。
+    """
     sigs: list[SigDef] = []
     for i in range(n):
         idx = start_idx + i
