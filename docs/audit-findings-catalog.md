@@ -154,7 +154,7 @@
 
 ## SS-FOLLOWUP — 実使用フォローアップ（全サブスペック完了後のユーザー実機発見・2026-07-10）
 
-バケット②6サブスペック完了後、実使用で見つかった課題。未着手。着手時は該当箇所を再確認のうえ `brainstorming`→`writing-plans`。FU-01〜04 は不具合（FU-03/04 は根因が仮説段階＝要プロファイル/再現条件特定）、FU-05/06 は既存ボタン（SH-07/PC-02 で追加）の廃止 UX リファイン要望（他の開く/追加導線あり・廃止で発見性を失わないか確認）。
+バケット②6サブスペック完了後、実使用で見つかった課題。未着手。着手時は該当箇所を再確認のうえ `brainstorming`→`writing-plans`。FU-01〜04 は不具合（FU-03/04 は根因が仮説段階＝要プロファイル/再現条件特定）、FU-05/06 は既存ボタン（SH-07/PC-02 で追加）の廃止 UX リファイン要望（他の開く/追加導線あり・廃止で発見性を失わないか確認）。FU-07 はデモデータ tooling 強化（本番想定 mf4・アプリ不具合ではない）。FU-08 は perf 不具合、FU-09 は右クリックにズーム/引きを追加する UX 要望。
 
 | ID | 重要度 | 課題 | 場所 | ユーザー影響 |
 |---|---|---|---|---|
@@ -164,6 +164,9 @@
 | FU-04 | 🟠 | ツールバーから Diagnostics 表示切替を行うと、表示中だった File/Channel Browser ドックが非表示になることがある（ドックの tabify/エリア相互作用またはレイアウト復元の副作用の疑い・要再現条件特定） | `gui/views/main_window.py:124-128,193-195` | 意図せず他ドックが消え作業面を失う |
 | FU-05 | 🟡 UX | 〔UX リファイン〕File Browser ヘッダの「開く...」「閉じる」ボタン（SH-07・増分1a で追加）を廃止したい。開くは File>Open/Ctrl+O/ツールバー、閉じるは DataExplorer ソース一覧の Remove 等の代替導線あり（廃止で空リストからの発見性を失わないか確認） | `gui/views/file_browser_view.py:73,76` | ヘッダのボタンを整理したい |
 | FU-06 | 🟡 UX | 〔UX リファイン〕Channel Browser の「アクティブパネルへ追加」ボタン（PC-02・増分1 で追加）を廃止したい。ダブルクリック/Enter/D&D の追加導線あり（廃止で可視の追加導線を失わないか確認） | `gui/views/channel_browser_view.py:71` | ボタンを整理したい |
+| FU-07 | 🟡 tooling | 〔デモデータ tooling〕デモ mf4 をより本番想定に。目標 **1.5GB／32万変数（要素展開済み＝LD-14 多次元フラット展開後のスカラー channel 数）／ロード ~120秒**。現行 `hils` プロファイル（duration 3600s・≈2GB）を目標へ調整 or 新プロファイル追加（多次元/物標行列チャンネルを増やし展開後 32万へ）。FU-01（1024列超ダイアログ）・FU-03（大容量ロードのドック切替フリーズ）の再現/検証にも資する | `scripts/generate_demo_mf4.py:26`（PROFILES）・spec/plan [gen-spec](superpowers/specs/2026-07-04-hils-demo-mf4-generator-design.md)/[gen-plan](superpowers/plans/2026-07-04-hils-demo-mf4-generator.md) | 本番相当の負荷で実機確認/性能検証ができる |
+| FU-08 | 🟠 | Y軸オートフィット（`reset_axis_y`／`reset_y`／`_auto_fit_ranges`）が軸上全信号の全サンプルに対し毎回 `vs[np.isfinite(vs)]` コピー＋`.min()/.max()` を O(N) 再計算し重い。大容量信号で軸オートフィット/信号追加のたびに全走査 → `Signal` に finite min/max キャッシュ（`sorted_view`/`finite_view` 同型）or `RangeStatIndex`（[[range_stats_sqrt_decomp_parallel_variance]]）再利用で償却 | `gui/viewmodels/graph_panel_vm.py:653-657,746-750,1282-1285` | 大容量データで軸オートフィット・信号追加が重い |
+| FU-09 | 🟡 UX | 〔UX 要望〕右クリックメニュー（Y軸 `build_axis_menu` 等）にズームイン/ズームアウト（引き）の離散操作を追加したい。現状ズームは inner ゾーンのドラッグのみ。中心基準で軸レンジを拡大/縮小するアクション | `gui/views/graph_panel_view.py:2445`（`build_axis_menu`） | メニューから素早くズーム/引きできる |
 
 ---
 
