@@ -499,6 +499,12 @@ def test_prod_tiny_structure_loads(tmp_path):
     assert "Prod10_0000[0]" in names and "Prod10_0000[5]" in names
     # >1024 列の広幅アレイはヘッドレスでは展開されない (LD-14 全スキップ=FU-01 対象)
     assert not any(n.startswith("Prod10Wide_0000[") for n in names)
+    # 非展開だけでは「無関係な理由で消えた」場合も緑になる。LD-14 の >1024 ガードが
+    # 実際に発火し警告診断を出した (=FU-01 の展開ダイアログ候補になる) ことを弁別する。
+    assert any(
+        d.level == "warning" and "Prod10Wide_0000" in (d.message or "")
+        for d in outcome.diagnostics
+    )
     # error 診断はゼロ
     assert not any(d.level == "error" for d in outcome.diagnostics)
 
