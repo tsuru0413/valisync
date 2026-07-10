@@ -25,6 +25,8 @@
 
 ### Task 1: ラベル省略＋tooltip 化と Layer A 有界性テスト
 
+> **実装ノート（Task 1 完了・commits 7778660+19cbfac）**: レビューで brief 内部の非整合（360px 予算 vs 15字サフィックス assert）を検出。production は仕様値 360 のまま、テスト側を頑健化（`_LONG_PATH` のファイル名を `m.mf4` 5字に短縮し `endswith("m.mf4")` へ）。ElideMiddle の末尾保持は約半予算（~180px）のため、長いファイル名の全文保持は保証されない。
+
 **Files:**
 - Modify: `src/valisync/gui/views/welcome_view.py`（`refresh()` のボタン生成＋モジュール定数）
 - Test: `tests/gui/test_welcome_view.py`（有界性・省略/保持・短パス無変化）
@@ -34,7 +36,7 @@
 - Consumes: `WelcomeView._recent.existing() -> list[str]`（既存・変更しない）／`RecentFiles`（既存・変更しない）
 - Produces: `valisync.gui.views.welcome_view._RECENT_LABEL_MAX_W: int = 360`（モジュール定数。テストが import して単一の真実として使う）。Recent ボタンの不変条件: `btn.text()` は省略済み（描画幅 ≤ `_RECENT_LABEL_MAX_W`）・`btn.toolTip() == フルパス`・クリックは `open_requested(フルパス)` を emit。
 
-- [ ] **Step 1: 定数だけ先に追加（挙動不変）**
+- [x] **Step 1: 定数だけ先に追加（挙動不変）**
 
 `src/valisync/gui/views/welcome_view.py` の import 群の直後（`class WelcomeView` の前）に追加:
 
@@ -46,7 +48,7 @@
 _RECENT_LABEL_MAX_W = 360
 ```
 
-- [ ] **Step 2: 失敗するテストを書く（WelcomeView 単体）**
+- [x] **Step 2: 失敗するテストを書く（WelcomeView 単体）**
 
 `tests/gui/test_welcome_view.py` の import に `_RECENT_LABEL_MAX_W` を追加:
 
@@ -120,7 +122,7 @@ def test_short_recent_path_label_not_elided(qtbot: QtBot) -> None:
     assert row0.toolTip() == short
 ```
 
-- [ ] **Step 3: 失敗するテストを書く（MainWindow 最小幅の不変性）**
+- [x] **Step 3: 失敗するテストを書く（MainWindow 最小幅の不変性）**
 
 `tests/gui/test_main_window.py` の末尾に追加（`MainWindow` / `AppViewModel` はモジュール先頭で import 済みのものを使う。無ければ関数内 import）:
 
@@ -174,7 +176,7 @@ def test_window_can_still_be_resized_beyond_screen(qtbot) -> None:
     assert mw.width() == 3000
 ```
 
-- [ ] **Step 4: RED を確認**
+- [x] **Step 4: RED を確認**
 
 Run: `uv run pytest tests/gui/test_welcome_view.py tests/gui/test_main_window.py -v`
 Expected: 新規5テスト中4つが FAIL —
@@ -184,7 +186,7 @@ Expected: 新規5テスト中4つが FAIL —
 - `test_window_min_width_does_not_scale_with_recent_path_length`: 差 ~1700 > 16 で AssertionError
 - `test_window_can_still_be_resized_beyond_screen` と既存テストは PASS（回帰ガードは最初から緑で正しい — 現状も上限は無いため）
 
-- [ ] **Step 5: 最小実装（elide + tooltip）**
+- [x] **Step 5: 最小実装（elide + tooltip）**
 
 `src/valisync/gui/views/welcome_view.py` の `refresh()` 内ループを変更:
 
@@ -205,16 +207,16 @@ Expected: 新規5テスト中4つが FAIL —
 
 （変更点は `QPushButton(path)` → `QPushButton()`＋`setText(elidedText(...))`＋`setToolTip(path)` のみ。`clicked` 配線・`setFlat`・追加順は不変。）
 
-- [ ] **Step 6: GREEN を確認**
+- [x] **Step 6: GREEN を確認**
 
 Run: `uv run pytest tests/gui/test_welcome_view.py tests/gui/test_main_window.py -v`
 Expected: 全 PASS（既存の `test_recent_row_click_emits_its_path` 等の無回帰を含む）
 
-- [ ] **Step 7: 品質ゲート**
+- [x] **Step 7: 品質ゲート**
 
 Run: `uv run pytest` → 0 failures ／ `uv run ruff check` → clean ／ `uv run ruff format --check` → clean（差分が出たら `uv run ruff format` 後に再確認）／ `uv run mypy src/` → clean
 
-- [ ] **Step 8: コミット**
+- [x] **Step 8: コミット**
 
 ```bash
 git add src/valisync/gui/views/welcome_view.py tests/gui/test_welcome_view.py tests/gui/test_main_window.py
