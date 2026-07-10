@@ -321,21 +321,29 @@ def test_source_info_time_range_non_monotonic(tmp_path):
 
 
 def test_namespaced_wrappers_share_sorted_view_cache(tmp_path):
-    # signals() がマテリアライズする namespaced ラッパーは呼び出しごとに別オブジェクト
-    # だが、render ホットパスで毎 tick 単調性スキャンを繰り返さないよう、
-    # sorted_view() のキャッシュは長寿命の元 Signal に委譲共有される (Fix 1)。
-    # 単調な信号だと sorted_view() が生配列をそのまま返すため委譲の効果が
-    # 自明に隠れてしまう — 非単調にして初めて「委譲先で計算した同一オブジェクト」
-    # であることを検証できる。
+    # signals() が返す namespaced ラッパーは FU-08 でキャッシュされ、無効化
+    # (add/remove)までは呼び出しごとに同じオブジェクトを返す。無効化で作り直された
+    # 「別オブジェクト」のラッパーでも、sorted_view の単調性スキャン結果は元の長寿命
+    # Signal に委譲され共有される — これが render/カーソルのホットパスでラッパーが
+    # 作り直されてもスキャンが1回で済む理由(委譲を外すと下の is 共有 assert が落ちる)。
     session = Session()
     messy = _derived("x", [0.0, 2.0, 1.0], [10.0, 30.0, 20.0])
     session._groups.add(_group_of([messy], tmp_path / "messy.csv"))
 
     sigs_a = session.signals()
     sigs_b = session.signals()
+    # キャッシュされ、無効化までは同じオブジェクト(FU-08)
+    assert sigs_a[0] is sigs_b[0]
 
-    assert sigs_a[0] is not sigs_b[0]  # ラッパーは毎回新規生成される(前提)
-    assert sigs_a[0].sorted_view()[0] is sigs_b[0].sorted_view()[0]  # キャッシュ共有
+    # 別グループ add でキャッシュ無効化 → 先頭ラッパーも作り直される
+    other = _derived("y", [0.0, 1.0], [5.0, 6.0])
+    session._groups.add(_group_of([other], tmp_path / "other.csv"))
+    sigs_c = session.signals()
+
+    # 無効化で作り直された「別オブジェクト」であること(tautology 回避の要)
+    assert sigs_c[0] is not sigs_a[0]
+    # それでも元 Signal への委譲で sorted_view のキャッシュ配列は共有される
+    assert sigs_a[0].sorted_view()[0] is sigs_c[0].sorted_view()[0]
 
 
 def test_session_is_csv_true_for_csv_false_for_mdf() -> None:

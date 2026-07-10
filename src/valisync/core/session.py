@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -188,6 +188,14 @@ class Session:
     def signals(self) -> list[Signal]:
         """Every loaded signal, name-spaced by its group key."""
         return self._groups.signals()
+
+    def signal_map(self) -> Mapping[str, Signal]:
+        """Read-only ``{namespaced_name: Signal}`` view over all loaded signals.
+
+        Cached at the SignalGroupManager level and rebuilt only on load/unload
+        (FU-08) — callers on the autofit hot path avoid re-walking every signal.
+        """
+        return self._groups.signal_map()
 
     def source_name(self, key: str) -> str:
         """Original source filename (basename) for the group under ``key``.

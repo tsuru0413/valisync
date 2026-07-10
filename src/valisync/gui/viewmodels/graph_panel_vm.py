@@ -14,6 +14,7 @@ LOD pipeline (render_data):
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -1217,24 +1218,29 @@ class GraphPanelVM(Observable):
 
     # ─── Private helpers ──────────────────────────────────────────────────────
 
-    def _signal_map(self) -> dict[str, Signal]:
+    def _signal_map(self) -> Mapping[str, Signal]:
         """Return {signal.name: signal} with stored time offsets applied (R14).
 
-        Offsets are applied to the ORIGINAL session signal via the pure
-        Session.apply_offset; a zero total returns the original object unchanged.
+        Fast path (no offsets, the norm): return the Session's cached read-only
+        map unchanged — no per-call rebuild of the 264k-entry map (FU-08). Only
+        when an offset is set do we shallow-overlay the affected signals via the
+        pure Session.apply_offset; a zero total leaves the base wrapper in place.
         Group key is the prefix before '::' (same convention as Session).
         """
+        base = self._session.signal_map()
+        if not self._file_offsets and not self._signal_offsets:
+            return base
         result: dict[str, Signal] = {}
-        for sig in self._session.signals():
-            group_key = sig.name.split("::", 1)[0]
+        for name, sig in base.items():
+            group_key = name.split("::", 1)[0]
             file_off = self._file_offsets.get(group_key, 0.0)
-            sig_off = self._signal_offsets.get(sig.name, 0.0)
+            sig_off = self._signal_offsets.get(name, 0.0)
             if file_off or sig_off:
-                result[sig.name] = self._session.apply_offset(
+                result[name] = self._session.apply_offset(
                     sig, file_offset=file_off, signal_offset=sig_off
                 )
             else:
-                result[sig.name] = sig
+                result[name] = sig
         return result
 
     def _auto_fit_ranges(self) -> None:
