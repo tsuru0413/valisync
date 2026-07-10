@@ -382,8 +382,15 @@ def test_estimate_profile_size_arithmetic():
         bus=None,
         signals=[
             SigDef("s1", lambda t, rng: t, dtype=np.float64),  # scalar float64
+            # dtype=float64 を宣言しても配列は _pack_array_channel で uint8 化される
+            # ため estimate も 1 バイト固定であるべき — この非 uint8 宣言で「配列は
+            # 宣言 dtype 非依存で 1 バイト」を弁別する (uint8 宣言だと itemsize 無条件
+            # 適用の変異体と区別できない)。
             SigDef(
-                "arr", lambda t, rng: np.zeros((len(t), 100)), dtype=np.uint8, ndim=100
+                "arr",
+                lambda t, rng: np.zeros((len(t), 100)),
+                dtype=np.float64,
+                ndim=100,
             ),  # array 100 列
         ],
         group_id=0,
@@ -393,5 +400,6 @@ def test_estimate_profile_size_arithmetic():
     )  # 10s / 10ms = 1000 sample
     # 展開後: scalar 1 + array 100 = 101
     assert est_channels == 101
-    # bytes: n=1000. 時刻 1000*8=8000 + scalar 1000*1*8=8000 + array 1000*100*1=100000
+    # bytes: n=1000. 時刻 1000*8=8000 + scalar(float64) 1000*8=8000
+    #        + array(dtype=float64 でも uint8 固定) 1000*100*1=100000
     assert est_bytes == 8000 + 8000 + 100000
