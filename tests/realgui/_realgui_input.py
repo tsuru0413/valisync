@@ -22,6 +22,7 @@ from PySide6.QtWidgets import QApplication
 # Win32 mouse_event / keybd_event フラグ
 MOVE, LDOWN, LUP = 0x0001, 0x0002, 0x0004
 RDOWN, RUP = 0x0008, 0x0010
+WHEEL = 0x0800  # MOUSEEVENTF_WHEEL — dwData に ±WHEEL_DELTA(120) の倍数 (正=上)
 KEYDOWN, KEYUP = 0x0000, 0x0002
 VK_RETURN, VK_ESCAPE, VK_CONTROL, VK_SHIFT = 0x0D, 0x1B, 0x11, 0x10
 # Arrow keys (Win32 virtual-key codes) for cursor stepping realgui (PC-08).
@@ -75,6 +76,18 @@ def key(vk: int, *, down: bool = True, up: bool = True) -> None:
         _user32.keybd_event(vk, 0, KEYDOWN, 0)
     if up:
         _user32.keybd_event(vk, 0, KEYUP, 0)
+
+
+def wheel(x: float, y: float, delta: int) -> None:
+    """カーソルを物理 (x, y) へ置き、実 OS ホイールを delta だけ回す。
+
+    delta は WHEEL_DELTA(120) の倍数 (負=下スクロール)。ホイールはカーソル下の
+    ウィジェットへ配送されるため、対象 viewport 上に置いてから発行する。QDrag と
+    違い OLE モーダルループは無く、processEvents の pump だけで配送される
+    (FU-01 で確立・repo 初の実ホイール)。
+    """
+    _user32.SetCursorPos(int(x), int(y))
+    _user32.mouse_event(WHEEL, 0, 0, delta, 0)
 
 
 def double_click_interval_s() -> float:

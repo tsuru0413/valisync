@@ -6,7 +6,7 @@
 ガードとして担保する。本テスト自体は headless(ソースを読むだけ)で CI で常時走る。
 
 Layer C の定義境界は「入力の出所」: 実 OS 入力プリミティブ
-(`tests/realgui/_realgui_input.py` の `at`/`key`/`drive_qdrag`)または画面取得
+(`tests/realgui/_realgui_input.py` の `at`/`key`/`wheel`/`drive_qdrag`)または画面取得
 (`grabWindow`)を使うのが Layer C。合成入力しか使わないなら Layer B の偽装。
 memory: gui_realgui_synthetic_click_mislabeled_layer_c。
 """
@@ -18,10 +18,10 @@ from pathlib import Path
 
 _REALGUI_DIR = Path(__file__).resolve().parent.parent / "realgui"
 
-# 実 OS 入力プリミティブ(at/key/drive_qdrag)or 画面取得(grabWindow)を使っていれば
+# 実 OS 入力プリミティブ(at/key/wheel/drive_qdrag)or 画面取得(grabWindow)を使っていれば
 # Layer C とみなす。`\bkey\(` は実 key() にマッチし合成 `qtbot.keyClick(` には
 # マッチしない(key の後が Click で ( が来ないため)。
-_REAL_INPUT = re.compile(r"\b(?:at|key|drive_qdrag)\(|\.grabWindow\(")
+_REAL_INPUT = re.compile(r"\b(?:at|key|wheel|drive_qdrag)\(|\.grabWindow\(")
 
 # 実入力へ未移行の既知合成 realgui。新規追加は禁止・移行して空にするのが目標。
 # 2026-07-08: open/export/tab_ui/panel_source_flow を実 OS 入力へ移行し空にした
@@ -42,7 +42,7 @@ def test_realgui_tests_drive_real_os_input() -> None:
         and f.name not in _KNOWN_SYNTHETIC
     ]
     assert not offenders, (
-        f"tests/realgui/ の realgui テストが実 OS 入力(at/key/drive_qdrag)や "
+        f"tests/realgui/ の realgui テストが実 OS 入力(at/key/wheel/drive_qdrag)や "
         f"grabWindow を使わず合成入力(qtbot/QTest)に依存している: {offenders}. "
         "tests/realgui/ は Layer C(実 OS 入力). 合成入力の配線検証は tests/gui/(Layer B)へ "
         "移すか、_realgui_input の実入力プリミティブで駆動すること. "
