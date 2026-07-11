@@ -37,7 +37,7 @@ ADAS ソフトウェア開発向けの時系列信号データ統合・同期・
 
 - **main は本番ブランチ** — 直接編集は禁止 (緊急 hotfix を除く)
 - **新機能・修正は `feature/<topic>` ブランチで実装**
-- **フロー**: feature ブランチで実装 → ローカル品質ゲート通過 → push → `gh pr create` → CI 通過 → `gh pr merge --auto` → `git fetch --prune`
+- **フロー**: feature ブランチで実装 → ローカル品質ゲート通過 → push → `gh pr create` → CI 通過（`gh pr checks <num> --watch`）→ `gh pr merge <num> --squash` → `git fetch --prune`
 - **着手時**: 新規作業は brainstorming から始め、feature ブランチを切って実装する
 
 ## Phase 状況

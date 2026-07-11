@@ -45,7 +45,7 @@
    ↓
 [CI (GitHub Actions) が品質ゲートを再実行]
    ↓
-[gh pr merge --auto] (CI 通過後に自動 squash merge)
+[gh pr checks <num> --watch で CI 緑を確認 → gh pr merge <num> --squash]
    ↓
 [merge 後の cleanup]
    - git checkout main
@@ -133,15 +133,16 @@ gh pr create --base main --head feature/<name> --title "<タイトル>" --body @
 '@
 ```
 
-### Auto-merge (推奨)
+### Merge (CI 緑を確認して squash)
 
 ```powershell
-gh pr merge <num> --squash --delete-branch --auto
+gh pr checks <num> --watch --fail-fast    # CI 完了まで待機 (失敗は即中断)
+gh pr merge <num> --squash --delete-branch
 ```
 
 - `--squash`: squash merge で履歴を 1 commit に集約
 - `--delete-branch`: マージ後に remote の feature ブランチを自動削除
-- `--auto`: CI 通過まで待ってから自動マージ (CI 失敗時は手動介入が必要)
+- **`--auto` は使えない**: リポジトリ設定で auto-merge が無効のため `gh pr merge --auto` は `GraphQL: Auto merge is not allowed for this repository` で失敗する (2026-07-11・PR #80 で確認)。設定 (Settings > General > Allow auto-merge) を有効化した場合のみ `--auto` 併用に戻してよい
 
 ### マージ後の cleanup
 
