@@ -1,5 +1,11 @@
 # FU-16: prod クローズの prune perf 根治 — 設計 spec
 
+> **⚠️ 実測による訂正（2026-07-12）— 本 spec の真因（prune）は e2e 再現で棄却された。**
+> 本 spec は「クローズ後フリーズの真因は `prune_missing_signals` の session 全走査」という**静的コード読解の仮説**に基づいて書かれた。しかし実装後、実アプリ経路（`_load_file` オフスレッド＋`ExpansionConfirmer` 全展開→330,004ch・~10GB ライブ配列）で実 close を e2e 再現した結果、**フリーズの 99.6% は `Session.remove_group`（session.py:260）が捨てる SignalGroup の同期 ~10GB refcount dealloc**であり、prune は 6秒と無関係と判明した（config B=7.32s／C=8.19s で再現）。
+> - **本ブランチの成果物（Task 1-3）の位置づけ**: `Session.group_keys()` ＋ `prune_missing_signals` の生存 group_key フィルタ化は、6秒フリーズの根治ではなく、**複数ファイル生存シナリオで session 全走査を避ける独立した小改善**として完結・マージする（別 follow-up）。
+> - **FU-16 本体（6秒フリーズ）の根治**: `remove_group` の chunked deferred teardown を**新規 brainstorming→spec→plan** で対応（実装前に PoC で UI ブロック解消を検証）。真因の実測記録は catalog FU-16 行・memory [[gui_perf_e2e_repro_must_drive_real_load_path]]。
+> 以降の本文は当初仮説のままアーカイブとして残す（トレーサビリティ）。
+
 - **日付**: 2026-07-12
 - **課題**: FU-16（`docs/audit-findings-catalog.md` SS-FOLLOWUP）
 - **重要度**: 🟠 perf（真因確定・実測は着手時に prod で締める）
