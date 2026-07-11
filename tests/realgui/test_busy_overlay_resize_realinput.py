@@ -4,8 +4,10 @@
 `--realgui` opt-in・実ディスプレイ+Windows 必須。リサイズは Win32
 `SetWindowPos` (repo 初のプリミティブ・Qt 外部からの実 OS ウィンドウ操作 =
 WM_SIZE -> QResizeEvent の実変換経路) で駆動する — `widget.resize()` は
-Qt 内部経路のため WM を経由せず、この経路の代理にならない。クリックは
-実マウス (`at()`)。オーバーレイの表示は先行例
+アプリ発で headless でも同様に動き OS/ユーザー発のリサイズを証明しない
+のに対し、外部 `SetWindowPos` は OS 発 = ユーザーのフレームドラッグと
+同方向の実経路を証明する。クリックは実マウス (`at()`)。
+オーバーレイの表示は先行例
 tests/realgui/test_busy_cancel_realclick.py と同じ LoadController +
 blocking callable パターン (MainWindow と同一配線)。
 

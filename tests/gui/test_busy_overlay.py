@@ -36,7 +36,7 @@ def test_visible_overlay_tracks_parent_resize(qtbot: QtBot) -> None:
 
     parent.resize(640, 480)  # 拡大
     QApplication.processEvents()
-    assert parent.size() == QSize(640, 480)  # イベント非消費 (親の resize は成立)
+    assert parent.size() == QSize(640, 480)  # 親の resize が成立している前提確認
     assert overlay.geometry() == parent.rect()  # 追従 (修正前はここで RED)
 
     parent.resize(320, 240)  # 縮小 (実機で観測された方向)
@@ -60,3 +60,34 @@ def test_parentless_overlay_show_does_not_crash(qtbot: QtBot) -> None:
     qtbot.addWidget(overlay)
     overlay.show()
     assert overlay.isVisible()
+
+
+def test_filter_does_not_consume_parent_events_for_other_filters(qtbot: QtBot) -> None:
+    """イベント非消費の honest 検証 (最終レビュー指摘の再設計版)。
+
+    子ジオメトリは native setGeometry の副作用で再配置されるため観測点に
+    ならない (実測でトートロジーと判明)。真の観測点はフィルタチェーン:
+    overlay のフィルタ (後着 = 先実行) が False を返す限り、先に install
+    された別フィルタにも Resize が届く。return True 回帰では届かず RED。
+    """
+    from PySide6.QtCore import QEvent, QObject
+
+    class _Spy(QObject):
+        def __init__(self) -> None:
+            super().__init__()
+            self.resizes = 0
+
+        def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+            if event.type() == QEvent.Type.Resize:
+                self.resizes += 1
+            return False
+
+    parent = _shown_parent(qtbot)
+    spy = _Spy()
+    parent.installEventFilter(spy)  # overlay より先に install = overlay の後に実行
+    overlay = BusyOverlay(parent)  # overlay のフィルタが後着 = 先に実行される
+    overlay.show()
+    before = spy.resizes
+    parent.resize(640, 480)
+    QApplication.processEvents()
+    assert spy.resizes > before  # overlay が Resize を消費していない証明

@@ -64,8 +64,9 @@
 
 ## 実 WM 経由のウィンドウリサイズ（SetWindowPos）
 
-`_realgui_input.set_window_pos(hwnd, x, y, w, h)`＋`window_rect(hwnd)`（FU-02 で確立）: Qt の外から `user32.SetWindowPos`（SWP_NOZORDER）を発行し、WM_SIZE → QResizeEvent の実変換経路を通す。`widget.resize()` は Qt 内部経路のため WM を経由せず、この経路の代理にならない。
+`_realgui_input.set_window_pos(hwnd, x, y, w, h)`＋`window_rect(hwnd)`（FU-02 で確立）: Qt の外から `user32.SetWindowPos`（SWP_NOZORDER）を発行し、WM_SIZE → QResizeEvent の実変換経路を通す。`widget.resize()` はアプリ発で headless でも同様に動く（生成済みトップレベルでは内部的に platform 経由で SetWindowPos を通るが、OS/ユーザー発のリサイズを証明しない）。外部 `SetWindowPos` は OS 発＝ユーザーのフレームドラッグと同方向の実経路を証明する。
 
 - hwnd は `int(widget.winId())`。座標は**物理ピクセル・外枠基準** — 現在値を `window_rect()` で取得して差分リサイズすると DPR 換算が不要。
 - OLE ループは無い — `processEvents` の pump で配送される。到達確認は `qtbot.waitUntil(lambda: parent.width() が変化)` を挟んでからジオメトリを assert する。
 - 実例: `tests/realgui/test_busy_overlay_resize_realinput.py`。
+- 契約ガード（tests/gui/test_realgui_layer_c_contract.py）の正規表現は set_window_pos( を実入力プリミティブとして認識する。

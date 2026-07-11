@@ -70,3 +70,7 @@
 - 変更: `src/valisync/gui/views/busy_overlay.py` のみ。
 - 新規テスト: resize 追従の Layer A/B、実 WM リサイズ＋Cancel 実クリックの realgui（＋実 WM リサイズ手法の共有化があれば `tests/realgui/_realgui_input.py`）。
 - 他ファイル・他挙動への影響なし（`LoadController`/`ExportController` 経由の利用契約不変）。
+
+## 実装ノート（最終レビュー＋実測で判明・2026-07-11）
+
+「イベント非消費」の検証は当初案（親サイズ assert・レイアウト子の追従 assert）がいずれも**トートロジー**と実測で判明した — `QResizeEvent` は変更後通知であり、レイアウト子も native `setGeometry` の副作用で再配置されるため、フィルタが True を返しても通る。真の観測点は**フィルタチェーン伝播**（先着フィルタに Resize が届くか）で、`tests/gui/test_busy_overlay.py` のスパイフィルタテストが `return True` 回帰で RED になることをサボタージュで実証済み。受け入れ基準・要件に変更なし。

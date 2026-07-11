@@ -110,8 +110,10 @@ def set_window_pos(hwnd: int, x: int, y: int, w: int, h: int) -> None:
     """実 OS の WM 経由でトップレベルウィンドウを移動/リサイズする。
 
     user32.SetWindowPos (SWP_NOZORDER) を Qt の外から発行し、WM_SIZE ->
-    QResizeEvent の実変換経路を通す (widget.resize() は Qt 内部経路のため
-    WM を経由しない・FU-02 で確立)。座標は物理ピクセル・外枠基準 —
+    QResizeEvent の実変換経路を通す (FU-02 で確立)。widget.resize() は
+    アプリ発で headless でも同様に動き OS/ユーザー発のリサイズを証明しない
+    のに対し、外部 SetWindowPos は OS 発＝ユーザーのフレームドラッグと
+    同方向の実経路を証明する。座標は物理ピクセル・外枠基準 —
     現在値は window_rect() で取得して差分リサイズすると DPR 換算が不要。
     """
     swp_nozorder = 0x0004
