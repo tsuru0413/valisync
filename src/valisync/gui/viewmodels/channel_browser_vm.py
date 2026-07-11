@@ -60,34 +60,63 @@ class ChannelBrowserVM(Observable):
         # Subscribe to AppViewModel events to react to file selection changes
         self._unsubscribe = self._app_vm.subscribe(self._on_app_change)
 
+        # FU-11: active_key ごと 1 度だけ作る (orig, lower, unit, key) タプル列と、
+        # (active_key, filter) でメモした結果。生存キーは counter 非減で不変信号集合に
+        # 対応するため stale 化しない。無効化は _on_app_change("active_file") で行う。
+        self._prep_key: str | None = None
+        self._prep: list[tuple[str, str, str, str]] = []
+        self._memo_key: tuple[str, str] | None = None
+        self._memo_result: list[SignalItem] = []
+
     @property
     def signals(self) -> list[SignalItem]:
-        """Return the flat list of signals for the active file, filtered."""
+        """Return the flat list of signals for the active file, filtered.
+
+        Memoised by (active_key, filter) so the three per-keystroke consumers
+        (model reset + header_text + empty_state) share a single filter pass.
+        """
         active_key = self._app_vm.active_file_key
         if not active_key:
             return []
+        sig_key = (active_key, self._filter_text)
+        if self._memo_key != sig_key:
+            try:
+                self._memo_result = self._filtered()
+            except KeyError:
+                self._memo_result = []
+            self._memo_key = sig_key
+        return self._memo_result
 
-        # Fetch only the active file's signals (no full-session scan).
-        try:
-            group_sigs = self._app_vm.session.group_signals(active_key)
-        except KeyError:
-            return []
-
-        filter_lower = self._filter_text.lower()
-        results: list[SignalItem] = []
-
+    def _ensure_prep(self) -> None:
+        """Build the filter-independent (orig, lower, unit, key) tuples once per
+        active file (FU-11). Reads session.group_signals dynamically so a
+        monkeypatched session (tests) is honoured on the first lazy access."""
+        active_key = self._app_vm.active_file_key
+        if self._prep_key == active_key:
+            return
+        if not active_key:
+            self._prep = []
+            self._prep_key = active_key
+            return
+        group_sigs = self._app_vm.session.group_signals(active_key)  # Part A: cached
+        prep: list[tuple[str, str, str, str]] = []
         for sig in group_sigs:
-            # sig.name is "{active_key}::{orig}"; strip the known prefix.
-            orig_name = sig.name.split(_SEP, 1)[1] if _SEP in sig.name else sig.name
+            orig = sig.name.split(_SEP, 1)[1] if _SEP in sig.name else sig.name
+            unit = str(sig.metadata.get("unit", "")) if sig.metadata else ""
+            prep.append((orig, orig.lower(), unit, sig.name))
+        self._prep = prep
+        self._prep_key = active_key
 
-            if filter_lower and filter_lower not in orig_name.lower():
-                continue
-
-            unit = sig.metadata.get("unit", "") if sig.metadata else ""
-
-            results.append(SignalItem(name=orig_name, unit=str(unit), key=sig.name))
-
-        return results
+    def _filtered(self) -> list[SignalItem]:
+        """Apply the current substring filter over the precomputed tuples,
+        building a SignalItem only for matches (FU-11)."""
+        self._ensure_prep()
+        fl = self._filter_text.lower()
+        if not fl:
+            return [SignalItem(name=n, unit=u, key=k) for n, _lo, u, k in self._prep]
+        return [
+            SignalItem(name=n, unit=u, key=k) for n, lo, u, k in self._prep if fl in lo
+        ]
 
     # ─── Header / empty-state (FB-05/09) ────────────────────────────────────
 
@@ -97,11 +126,11 @@ class ChannelBrowserVM(Observable):
         if not active_key:
             return None
         try:
-            total = len(self._app_vm.session.group_signals(active_key))
+            self._ensure_prep()  # prep hit なら追加 fetch なし
             name = self._app_vm.session.source_name(active_key)
         except KeyError:
             return None
-        return name, total
+        return name, len(self._prep)
 
     def header_text(self) -> str:
         """One-line context header: which file, how many shown of how many."""
@@ -132,6 +161,8 @@ class ChannelBrowserVM(Observable):
 
     def refresh(self) -> None:
         """Manually trigger a refresh notification."""
+        self._prep_key = None  # FU-11: manually clear cache on explicit refresh
+        self._memo_key = None
         self._notify("signals")
 
     # ─── Filter ──────────────────────────────────────────────────────────────
@@ -206,6 +237,8 @@ class ChannelBrowserVM(Observable):
     def _on_app_change(self, change: str) -> None:
         """Handle notifications from AppViewModel."""
         if change == "active_file":
+            self._prep_key = None  # FU-11: 別ファイルの prep/memo を捨てる
+            self._memo_key = None
             self._notify("signals")
 
     # ─── Introspection ───────────────────────────────────────────────────────

@@ -336,3 +336,58 @@ def test_no_channels_state(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(app_vm.session, "group_signals", lambda _key: [])
     assert vm.empty_state() == "no_channels"
     assert vm.header_text() == "d.csv — 0 ch"
+
+
+# ─── FU-11 Performance: Precompute + Memo Tests ──────────────────────────────
+
+
+def test_one_keystroke_fetches_group_at_most_once(tmp_path: Path) -> None:
+    """FU-11: 1 打鍵(model reset + header_text + empty_state)で group_signals は
+    高々 1 回(prep 構築時のみ)。同一 active_file の 2 打鍵目は 0 回。per-access
+    再取得への回帰を防ぐ構造アサート(既存 no-full-scan spy パターンの延長)。"""
+    vm, app_vm, key = _setup_vm(tmp_path)
+    session = app_vm.session
+    real_group_signals = session.group_signals
+    calls: list[str] = []
+
+    def spy(k: str) -> list[Signal]:
+        calls.append(k)
+        return real_group_signals(k)
+
+    session.group_signals = spy  # type: ignore[method-assign]
+    app_vm.set_active_file(key)  # 遅延ビルド: ここでは fetch しない
+
+    calls.clear()
+    # 1 打鍵目: View/Model 相当の 3 消費
+    vm.set_filter("s")
+    _ = list(vm.signals)  # SignalTableModel._on_vm_change
+    vm.header_text()  # _refresh_state 1
+    vm.empty_state()  # _refresh_state 2
+    assert len(calls) == 1  # prep を 1 度だけ構築し全消費で共有
+
+    calls.clear()
+    # 2 打鍵目: 同一 active_file → prep/memo で完全充足
+    vm.set_filter("si")
+    _ = list(vm.signals)
+    vm.header_text()
+    vm.empty_state()
+    assert calls == []
+
+
+def test_active_file_switch_invalidates_prep_no_leak(tmp_path: Path) -> None:
+    """FU-11: active file 切替で precompute を作り直す。前ファイルの信号が stale
+    キャッシュ経由で漏れないことを保証。"""
+    app_vm = AppViewModel()
+    fa = tmp_path / "a.csv"
+    fa.write_text("t,alpha,gamma\n0,1,2\n1,3,4\n", encoding="utf-8")
+    fb = tmp_path / "b.csv"
+    fb.write_text("t,beta,delta\n0,1,2\n1,3,4\n", encoding="utf-8")
+    ka = app_vm.request_load(fa, _csv_format())
+    kb = app_vm.request_load(fb, _csv_format())
+    vm = ChannelBrowserVM(app_vm)
+
+    app_vm.set_active_file(ka)
+    assert {s.name for s in vm.signals} == {"alpha", "gamma"}
+
+    app_vm.set_active_file(kb)
+    assert {s.name for s in vm.signals} == {"beta", "delta"}  # alpha/gamma を漏らさない
