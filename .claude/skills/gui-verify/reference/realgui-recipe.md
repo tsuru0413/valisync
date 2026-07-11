@@ -1,6 +1,6 @@
 # realgui 駆動レシピ（Layer C 実装の落とし穴と確立パターン）
 
-> `/gui-verify` および手書きで `tests/realgui/` を書くときの**操作知識（HOW）**。方針（WHEN）は `docs/gui-testing-layers.md`。
+> `/gui-verify` および手書きで `tests/realgui/` を書くときの**操作知識（HOW）**。方針（WHEN）は本スキル `SKILL.md` ＋ `reference/gate-and-pitfalls.md`。
 
 ## 実 D&D は別 OS スレッド＋watchdog で駆動する
 
