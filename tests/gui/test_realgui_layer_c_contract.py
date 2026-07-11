@@ -18,10 +18,10 @@ from pathlib import Path
 
 _REALGUI_DIR = Path(__file__).resolve().parent.parent / "realgui"
 
-# 実 OS 入力プリミティブ(at/key/drive_qdrag)or 画面取得(grabWindow)を使っていれば
+# 実 OS 入力プリミティブ(at/key/wheel/drive_qdrag)or 画面取得(grabWindow)を使っていれば
 # Layer C とみなす。`\bkey\(` は実 key() にマッチし合成 `qtbot.keyClick(` には
 # マッチしない(key の後が Click で ( が来ないため)。
-_REAL_INPUT = re.compile(r"\b(?:at|key|drive_qdrag)\(|\.grabWindow\(")
+_REAL_INPUT = re.compile(r"\b(?:at|key|wheel|drive_qdrag)\(|\.grabWindow\(")
 
 # 実入力へ未移行の既知合成 realgui。新規追加は禁止・移行して空にするのが目標。
 # 2026-07-08: open/export/tab_ui/panel_source_flow を実 OS 入力へ移行し空にした
