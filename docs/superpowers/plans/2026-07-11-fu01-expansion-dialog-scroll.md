@@ -438,7 +438,7 @@ git commit -m "test(realgui): FU-01 実ホイールで最下段到達 E2E (wheel
 `docs/audit-findings-catalog.md` の FU-01 行（`| FU-01 | 🟠 |` で始まる行）の先頭2セルを `| FU-01 | ✅ |` に変え、**説明セル（第3セル）の冒頭に**次を追記する。既存の説明文は一字一句そのまま残し（歴史）、場所セル（第4セル）・影響セル（第5セル）は**変更しない**。テーブル行構造（`|` セル数・1行）を壊さない:
 
 ```
-**✅解消（2026-07-11・PR #XX）**: チェックボックス列を `QScrollArea`（widgetResizable・AdjustToContents）でラップし、内容が画面超のときのみ `availableGeometry − _SCREEN_MARGIN(80px)` へ高さクランプ（少数時は従来コンパクト・`ask()` 契約/初期全未チェック不変）。Layer A=クランプ/コンパクト性/buttonBox 内包、Layer C=実ホイール（repo 初のプリミティブ `wheel` を `_realgui_input` に確立・契約ガード正規表現へ追加）で最下段到達→実クリック→OK 実クリックの E2E（sabotage-RED 実証・`visibleRegion`+画面内ジオメトリ判定）。
+**✅解消（2026-07-11・PR #XX）**: チェックボックス列を `QScrollArea`（widgetResizable・AdjustToContents）でラップ（ヘッダ/合計/一括ボタン/OK-Cancel はスクロール外の常時可視）。Qt の `QScrollArea.sizeHint()` は約 36×24 × フォント高で bound されるため通常画面は**スクロール化だけで**画面内に収まり、bound が画面高を超える環境（大フォント/低解像度）向けの `availableGeometry − _SCREEN_MARGIN(80px)` 高さクランプを防御層として保持（純関数 `_clamped_size` で直接テスト・spec 実装ノート参照）。少数時は従来コンパクト・`ask()` 契約/初期全未チェック不変。Layer A=有界性/コンパクト性/buttonBox 内包/純関数、Layer C=実ホイール（repo 初のプリミティブ `wheel` を `_realgui_input` に確立・契約ガード正規表現へ追加）で最下段到達→実クリック→OK 実クリックの E2E（sabotage-RED=スクロール化解除で実証・`visibleRegion`+画面内ジオメトリ判定）。
 ```
 
 （`#XX` は PR 作成後の追いコミットで実番号へ置換。）
