@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from PySide6.QtCore import QSize
 from PySide6.QtWidgets import QDialog, QScrollArea
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from valisync.core.loaders.mdf_loader import ExpansionRequest, OversizedChannel
-from valisync.gui.views.expansion_dialog import ExpansionDialog
+from valisync.gui.views.expansion_dialog import ExpansionDialog, _clamped_size
 
 
 def _req() -> ExpansionRequest:
@@ -89,6 +90,20 @@ def test_buttonbox_stays_within_dialog_for_many_channels(qtbot: QtBot) -> None:
     tl = box.mapTo(dlg, box.rect().topLeft())
     br = box.mapTo(dlg, box.rect().bottomRight())
     assert dlg.rect().contains(tl) and dlg.rect().contains(br)
+
+
+def test_clamped_size_returns_none_when_content_fits() -> None:
+    """収まる場合は resize 不要 (None) — コンパクト表示の根拠。"""
+    assert _clamped_size(QSize(400, 500), cap=600, vsb_w=16) is None
+
+
+def test_clamped_size_caps_height_and_widens_for_scrollbar() -> None:
+    """cap 超は高さを cap に制限し、縦スクロールバーぶん幅を広げる。
+
+    統合レベルでは QScrollArea.sizeHint の bound により通常発火しない
+    防御層のため、ロジックを純関数で直接検証する (Task 2 で判明したギャップ)。
+    """
+    assert _clamped_size(QSize(400, 2000), cap=600, vsb_w=16) == QSize(416, 600)
 
 
 def test_dialog_compact_for_few_channels(qtbot: QtBot) -> None:
