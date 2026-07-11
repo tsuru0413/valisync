@@ -19,6 +19,12 @@ from PySide6.QtWidgets import (
 
 from valisync.gui.views.recent_files import RecentFiles
 
+# FU-04: Recent ボタンのラベル省略予算 (px)。フルパスをそのままラベルにすると
+# minimumSizeHint がパス長に比例し、中央 QStackedWidget (全ページ最大) 経由で
+# ウィンドウ最小幅が画面幅を超え、再レイアウト時に右側ドックが画面外へ
+# 押し出される。ラベル側の有界化が根本解決 (spec 2026-07-11-fu04 参照)。
+_RECENT_LABEL_MAX_W = 360
+
 
 class WelcomeView(QWidget):
     open_requested = Signal(object)  # None=CTA / str=recent path
@@ -62,8 +68,15 @@ class WelcomeView(QWidget):
                 if w is not None:
                     w.deleteLater()
         for path in self._recent.existing():
-            btn = QPushButton(path)
+            btn = QPushButton()
             btn.setFlat(True)
+            # ラベルだけ中央省略で有界化 (FU-04)。ElideMiddle はドライブ名と
+            # 末尾ファイル名を残す。フルパスは tooltip とクリック emit に保持。
+            fm = btn.fontMetrics()
+            btn.setText(
+                fm.elidedText(path, Qt.TextElideMode.ElideMiddle, _RECENT_LABEL_MAX_W)
+            )
+            btn.setToolTip(path)
             btn.clicked.connect(lambda _=False, p=path: self._emit_recent(p))
             self._recent_box.addWidget(btn)
 

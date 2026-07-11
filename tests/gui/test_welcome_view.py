@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QPushButton
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from valisync.gui.views.recent_files import RecentFiles
-from valisync.gui.views.welcome_view import WelcomeView
+from valisync.gui.views.welcome_view import _RECENT_LABEL_MAX_W, WelcomeView
 
 
 def _recent(tmp_path: Path) -> RecentFiles:
@@ -99,3 +99,66 @@ def test_drop_without_urls_emits_nothing(qtbot: QtBot, tmp_path: Path) -> None:
     )
     view.dropEvent(ev)
     assert got == []
+
+
+class _FakeRecent:
+    """existing() だけを使う WelcomeView への duck-type 注入。
+
+    超長パスは Windows MAX_PATH(260) で実ファイル化できないため、
+    実在しないパス文字列を直接返して最小幅膨張(FU-04)を再現する。
+    """
+
+    def __init__(self, paths: list[str]) -> None:
+        self._paths = paths
+
+    def existing(self) -> list[str]:
+        return list(self._paths)
+
+
+_LONG_PATH = "C:/" + "d" * 400 + "/m.mf4"
+
+
+def test_recent_button_min_width_bounded_for_long_path(qtbot: QtBot) -> None:
+    """FU-04: 超長パスでもボタン/ビューの最小幅が省略予算+余白に収まる。
+
+    修正前 (QPushButton(path)) はパス長に比例して ~2800px となり RED。
+    """
+    view = WelcomeView(_FakeRecent([_LONG_PATH]))  # type: ignore[arg-type]
+    qtbot.addWidget(view)
+    row0 = view._recent_box.itemAt(0).widget()
+    assert isinstance(row0, QPushButton)
+    assert row0.minimumSizeHint().width() <= _RECENT_LABEL_MAX_W + 100
+    assert view.minimumSizeHint().width() <= _RECENT_LABEL_MAX_W + 150
+
+
+def test_recent_button_label_elided_but_click_and_tooltip_keep_full_path(
+    qtbot: QtBot,
+) -> None:
+    """表示は省略・保持は完全: tooltip とクリック emit はフルパスのまま。"""
+    view = WelcomeView(_FakeRecent([_LONG_PATH]))  # type: ignore[arg-type]
+    qtbot.addWidget(view)
+    got: list[object] = []
+    view.open_requested.connect(got.append)
+    row0 = view._recent_box.itemAt(0).widget()
+    assert isinstance(row0, QPushButton)
+    assert row0.text() != _LONG_PATH  # 省略されている
+    assert "…" in row0.text()  # ElideMiddle の省略記号
+    assert row0.text().endswith("m.mf4")  # 末尾のファイル名は保持
+    assert row0.toolTip() == _LONG_PATH  # フルパスは tooltip で提供
+    row0.click()
+    assert got == [_LONG_PATH]  # クリックは表示テキストでなくフルパスを emit
+
+
+def test_short_recent_path_label_not_elided(qtbot: QtBot) -> None:
+    """予算内の短パスは従来どおり全文表示 (省略の副作用ガード)。
+
+    注意: tmp_path の実パスは 70-90 字 (~600px) で省略予算 360px を超えるため
+    「短い」の代表に使えない。真に短い偽パスを stub で注入する。
+    """
+    short = "C:/data/a.mf4"
+    view = WelcomeView(_FakeRecent([short]))  # type: ignore[arg-type]
+    qtbot.addWidget(view)
+    row0 = view._recent_box.itemAt(0).widget()
+    assert isinstance(row0, QPushButton)
+    assert row0.text() == short  # elidedText は予算内の文字列を無変更で返す
+    assert row0.toolTip() == short

@@ -639,3 +639,59 @@ def test_load_file_mdf_skips_resolver(qtbot, monkeypatch, tmp_path):
     window._load_file(tmp_path / "x.mf4")
     assert called == []  # CSV 判定を通らない
     assert "cb" in captured  # submit された
+
+
+# ─── FU-04: Recent ボタンのラベル省略 + window 最小幅不変性 ──────────────────────
+
+
+class _FakeRecentForMinWidth:
+    """existing() だけの duck-stub (test_welcome_view.py と同型。タスク独立性のため重複可)。"""
+
+    def __init__(self, paths: list[str]) -> None:
+        self._paths = paths
+
+    def existing(self) -> list[str]:
+        return list(self._paths)
+
+
+def test_window_min_width_does_not_scale_with_recent_path_length(qtbot) -> None:
+    """FU-04: Recent のパス長がウィンドウ最小幅を駆動しない。
+
+    修正前は 150 文字→400 文字で最小幅が ~1700px 増える (RED)。修正後は
+    どちらも同じ省略予算に収まり差は省略粒度 (数 px) 以内。絶対値でなく
+    不変性で assert するのでスタイル/フォント差に頑健。
+    """
+    from PySide6.QtWidgets import QApplication
+
+    from valisync.gui.views.main_window import MainWindow
+
+    def min_width_with(path: str) -> int:
+        mw = MainWindow(AppViewModel())
+        qtbot.addWidget(mw)
+        mw.welcome_view._recent = _FakeRecentForMinWidth([path])  # type: ignore[assignment]
+        mw.welcome_view.refresh()
+        # spec の実シナリオ: グラフエリア表示中 (WelcomeView は QStackedWidget の
+        # 隠れページ) でも「全ページ最大」経由で最小幅を支配する経路を再現する。
+        mw._workbench_started = True
+        mw._update_central()
+        assert not mw.showing_welcome()
+        QApplication.processEvents()
+        return mw.minimumSizeHint().width()
+
+    w_mid = min_width_with("C:/" + "d" * 150 + "/m.mf4")
+    w_long = min_width_with("C:/" + "d" * 400 + "/m.mf4")
+    assert w_long <= w_mid + 16
+
+
+def test_window_can_still_be_resized_beyond_screen(qtbot) -> None:
+    """spec 受け入れ 3: 意図的な大画面表示は不変 (最大幅制約を導入していない)。
+
+    offscreen は WM クランプが無いので、resize がそのまま通る=コード側に
+    上限が無いことの回帰ガード。
+    """
+    from valisync.gui.views.main_window import MainWindow
+
+    mw = MainWindow(AppViewModel())
+    qtbot.addWidget(mw)
+    mw.resize(3000, 700)
+    assert mw.width() == 3000
