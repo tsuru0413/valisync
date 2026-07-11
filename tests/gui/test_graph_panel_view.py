@@ -67,6 +67,28 @@ def _loaded_session(
     return session, key
 
 
+def _multi_group_session(tmp_path: Path, n_groups: int) -> tuple[Session, list[str]]:
+    """Load *n_groups* single-signal files into one Session — one group each.
+
+    Returns the session and the per-group signal keys (``csv_1::s1`` …) in load
+    order. Prune tests use this to simulate a real *group* unload
+    (``session.remove_group``): prune drops a plotted entry only when its whole
+    group is gone (files load/unload atomically), so each prunable signal needs
+    its own group — a single multi-signal file cannot express "drop one, keep
+    its siblings".
+    """
+    session = Session()
+    keys: list[str] = []
+    for i in range(n_groups):
+        gkey = session.load(
+            _write_csv(tmp_path / f"g{i}.csv", 100, 1), _csv_format(1)
+        ).key
+        keys.append(
+            next(s.name for s in session.signals() if s.name.startswith(f"{gkey}::"))
+        )
+    return session, keys
+
+
 def _keys(session: Session) -> list[str]:
     return [s.name for s in session.signals()]
 
