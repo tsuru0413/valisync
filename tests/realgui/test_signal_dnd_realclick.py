@@ -5,7 +5,7 @@ QDrag from a ChannelBrowser tree row (Qt's built-in startDrag) and drops it on a
 GraphPanel zone, exercising the OS → QDrag.exec → dropEvent child→parent bubbling
 that a synthesized event cannot reproduce (memory gui_drag_drop_not_sendevent_reproducible).
 The QDrag is driven from a background OS thread with a watchdog (drive_qdrag) so
-the OLE modal loop cannot hang the machine. See docs/gui-testing-layers.md (Layer C).
+the OLE modal loop cannot hang the machine. See .claude/skills/gui-verify/ (Layer C).
 """
 
 from __future__ import annotations

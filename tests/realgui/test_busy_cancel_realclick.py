@@ -3,7 +3,7 @@
 Opt-in — run with ``--realgui`` on a real display + Windows. BusyOverlay's
 cancel_button sits under a semi-transparent overlay that covers the whole
 parent (``cover()``); hit-testing it goes through the real OS -> Qt hit-test
-chain that a synthesized click cannot exercise (see docs/gui-testing-layers.md,
+chain that a synthesized click cannot exercise (see .claude/skills/gui-verify/,
 Layer C). This is the sole new input route in this batch — spec §7 marks it
 Layer C required.
 

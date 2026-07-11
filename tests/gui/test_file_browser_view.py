@@ -25,7 +25,7 @@ def _send_context_menu_event(list_view: QListView, pos: QPoint) -> None:
     ``CustomContextMenu`` policy → ``customContextMenuRequested`` — instead of
     emitting the signal directly. A regression in that routing (e.g. the context
     menu policy being dropped) is therefore caught here, not silently passed by a
-    direct ``emit`` (see docs/gui-testing-layers.md, Layer B).
+    direct ``emit`` (see .claude/skills/gui-test-plan/, Layer B).
     """
     global_pos = list_view.viewport().mapToGlobal(pos)
     QApplication.sendEvent(

@@ -22,7 +22,7 @@ chain that synthetic events cannot:
 A watchdog (ESC + LEFTUP after 3 s) guarantees the drag can never hang the
 machine even if the synthetic drop fails to complete.
 
-Excluded from the default run and CI — see ``docs/gui-testing-layers.md`` (Layer C).
+Excluded from the default run and CI — see ``.claude/skills/gui-verify/`` (Layer C).
 
 Run deliberately (e.g. before release, or after touching axis-move / drag routing)
 on a Windows machine with a real display::

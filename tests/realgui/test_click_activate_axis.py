@@ -6,7 +6,7 @@ existing realgui suite bypasses by calling view.set_active_axis(0) directly. Thi
 drives a genuine left press+release (no movement → below pyqtgraph's drag threshold →
 mouseClickEvent, not mouseDragEvent) on a non-active spine and asserts it activates
 (via _AlignedAxisItem.mouseClickEvent → set_active_axis) and that a subsequent real
-grip drag then acts on the now-active axis. See docs/gui-testing-layers.md (Layer C).
+grip drag then acts on the now-active axis. See .claude/skills/gui-verify/ (Layer C).
 """
 
 from __future__ import annotations

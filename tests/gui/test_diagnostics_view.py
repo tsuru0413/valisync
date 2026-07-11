@@ -101,7 +101,7 @@ def test_order_column_shows_seq_for_each_row(qtbot):
 # Real input-event paths (Layer B) — qtbot.mouseClick / mouseDClick drive the
 # SAME routing a real click/dblclick takes (QPushButton.clicked / QTableWidget
 # viewport hit-test → cellDoubleClicked), not a programmatic .click()/.emit()
-# (see docs/gui-testing-layers.md, Layer B honest-layering note).
+# (see .claude/skills/gui-test-plan/, Layer B honest-layering note).
 # ---------------------------------------------------------------------------
 
 

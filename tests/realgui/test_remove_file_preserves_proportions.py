@@ -19,7 +19,7 @@ deadline so a stray real click that opens an OS-native modal can never hang the
 run — it fails cleanly instead. faulthandler dumps every thread's stack if the
 test exceeds its budget, to pinpoint a block.
 
-Excluded from CI — see docs/gui-testing-layers.md (Layer C). Hijacks the mouse
+Excluded from CI — see .claude/skills/gui-verify/ (Layer C). Hijacks the mouse
 cursor for ~2 s. Coordinates/timing are environment sensitive; on a miss inspect
 the screenshots saved under tmp_path.
 """

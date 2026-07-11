@@ -5,7 +5,7 @@ physical cursor and issues a genuine right-click via Win32 ``SendInput``/
 ``mouse_event``, then asserts the context menu actually popped up. This is the
 only tier that exercises the OS → Qt event translation (WM_CONTEXTMENU →
 QContextMenuEvent) that a synthesized event cannot. Excluded from the default run
-and from CI — see ``docs/gui-testing-layers.md`` (Layer C).
+and from CI — see ``.claude/skills/gui-verify/`` (Layer C).
 
 Run deliberately (e.g. before release, or after touching context-menu / event
 routing) on a Windows machine with a real display::
