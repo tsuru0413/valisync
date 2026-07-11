@@ -18,7 +18,7 @@ from valisync.core.loaders.mdf_loader import (
     OversizedChannel,
 )
 from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR, SignalGroupManager
-from valisync.core.models import FormatDefinition, Signal
+from valisync.core.models import FormatDefinition, Signal, SignalGroup
 from valisync.core.models.load_result import Diagnostic, LoadCancelled
 from valisync.core.statistics.range_stats import RangeStatistics, StatisticsResult
 from valisync.core.sync.synchronizer import TimeSynchronizer
@@ -78,10 +78,13 @@ class RemovalResult:
 
     ``removed`` is False when dependent Derived_Signals exist and removal was not
     forced; ``dependent_signals`` then names the blocking Derived_Signals.
+    ``removed_group`` carries the popped Signal_Group on success so the GUI can
+    defer its dealloc off the UI thread (FU-16); None when removal was refused.
     """
 
     removed: bool
     dependent_signals: tuple[str, ...] = ()
+    removed_group: SignalGroup | None = None
 
 
 @dataclass(frozen=True)
@@ -272,8 +275,10 @@ class Session:
         if dependents and not force:
             return RemovalResult(removed=False, dependent_signals=dependents)
 
-        self._groups.remove(key)
-        return RemovalResult(removed=True, dependent_signals=dependents)
+        group = self._groups.remove(key)
+        return RemovalResult(
+            removed=True, dependent_signals=dependents, removed_group=group
+        )
 
     # ─── Pure-computation pass-throughs (Session is the only gateway) ──────────
 
