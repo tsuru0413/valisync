@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from valisync.core.models import Delimiter, FormatDefinition
+from valisync.core.models import Delimiter, FormatDefinition, Signal
 from valisync.core.session import Session
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
@@ -536,6 +536,43 @@ def test_graph_area_prunes_panels_when_file_unloaded(tmp_path: Path) -> None:
     app_vm.unload_file(key)  # AppViewModel notifies "unloaded"; GraphAreaVM reacts
 
     assert [p["signal_key"] for p in panel.inspect()["plotted_signals"]] == []
+
+
+def test_unload_prunes_every_panel_without_scanning_all_session_signals(
+    tmp_path: Path,
+) -> None:
+    """FU-16: unloading a file must prune plotted signals in every panel via
+    group-key membership, NEVER calling session.signals() (which forces a
+    namespaced rebuild of all remaining signals at prod scale). Multiple
+    panels must not multiply the scan. Sabotage-RED: reverting prune to
+    `{s.name for s in session.signals()}` makes call-count == panel-count > 0.
+    """
+    app_vm = AppViewModel()
+    key = app_vm.request_load(_write_csv(tmp_path / "a.csv"), _csv_format())
+    key2 = app_vm.request_load(_write_csv(tmp_path / "b.csv"), _csv_format())
+    vm = GraphAreaVM(app_vm)
+    vm.add_panel(0)  # tab 0 に 2 panel (NxP の乗数を exercise)
+    for panel in vm.panels(0):
+        panel.add_signal(f"{key}::speed")
+        panel.add_signal(f"{key2}::speed")
+
+    calls = 0
+    real_signals = app_vm.session.signals
+
+    def spy_signals() -> list[Signal]:
+        nonlocal calls
+        calls += 1
+        return real_signals()
+
+    app_vm.session.signals = spy_signals  # type: ignore[method-assign]
+
+    app_vm.unload_file(key)  # unloaded broadcast → every panel prunes
+
+    assert calls == 0, f"prune walked all session signals {calls} times"
+    # 正当性: 消えたファイルの信号だけ落ち、生存ファイルの信号は残る
+    for panel in vm.panels(0):
+        keys = [p["signal_key"] for p in panel.inspect()["plotted_signals"]]
+        assert keys == [f"{key2}::speed"]
 
 
 # ─── active panel (PC-07: click-to-activate foundation) ─────────────────────

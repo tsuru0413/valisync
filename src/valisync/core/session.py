@@ -197,6 +197,16 @@ class Session:
         """
         return self._groups.signal_map()
 
+    def group_keys(self) -> list[str]:
+        """Keys of all loaded groups, in insertion order.
+
+        Delegates to SignalGroupManager.keys. Lets callers test whether a
+        namespaced signal_key's group is still loaded without walking every
+        signal (FU-16: prune reconciliation avoids forcing a namespaced
+        rebuild at prod scale).
+        """
+        return self._groups.keys
+
     def source_name(self, key: str) -> str:
         """Original source filename (basename) for the group under ``key``.
 

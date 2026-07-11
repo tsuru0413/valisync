@@ -24,6 +24,7 @@ from tests.gui.test_graph_panel_view import (
     _keys,
     _loaded_session,
     _make_view,
+    _multi_group_session,
     _write_csv,
 )
 from valisync.core.models import Signal, SignalGroup
@@ -533,16 +534,14 @@ class TestMultiAxisLayout:
     def test_prune_missing_signals_drops_signals_absent_from_session(
         self, qtbot: QtBot, tmp_path: Path
     ) -> None:
-        """prune_missing_signals removes plotted entries no longer in the Session."""
-        session, _ = _loaded_session(tmp_path, n_signals=2)
-        keys = _keys(session)
+        """prune_missing_signals removes plotted entries whose group is unloaded."""
+        session, keys = _multi_group_session(tmp_path, n_groups=2)
         vm = GraphPanelVM(session)
         vm.create_new_axis(keys[0])
         vm.create_new_axis(keys[1])
 
-        # Simulate keys[0] no longer existing in the Session.
-        remaining = [s for s in session.signals() if s.name != keys[0]]
-        session.signals = lambda: remaining  # type: ignore[method-assign]
+        # Unload the group backing keys[0] (the real close path) -> its entry drops.
+        session.remove_group(keys[0].split("::", 1)[0])
         vm.prune_missing_signals()
 
         plotted = [p["signal_key"] for p in vm.inspect()["plotted_signals"]]
@@ -957,8 +956,8 @@ def test_prune_missing_signals_keeps_absolute_heights_with_blank_gap(
 ) -> None:
     """File-unload prune leaves survivors at their absolute heights; the removed
     band becomes blank (heights sum < 1)."""
-    session, _ = _loaded_session(tmp_path, n_signals=3)
-    keys = sorted(_keys(session))  # 3 namespaced signal names, deterministic order
+    session, keys = _multi_group_session(tmp_path, n_groups=3)
+    keys = sorted(keys)  # csv_1::s1 / csv_2::s1 / csv_3::s1 — deterministic order
     vm = GraphPanelVM(session)
     vm.create_new_axis(keys[0])
     vm.create_new_axis(keys[1])
@@ -967,8 +966,8 @@ def test_prune_missing_signals_keeps_absolute_heights_with_blank_gap(
     vm.axes[1].top_ratio, vm.axes[1].height_ratio = 0.5, 0.3
     vm.axes[2].top_ratio, vm.axes[2].height_ratio = 0.8, 0.2
 
-    remaining = [s for s in session.signals() if s.name != keys[1]]
-    session.signals = lambda: remaining  # type: ignore[method-assign]
+    # Unload the middle signal's group -> only its band drops.
+    session.remove_group(keys[1].split("::", 1)[0])
     vm.prune_missing_signals()
 
     assert len(vm.axes) == 2

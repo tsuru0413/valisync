@@ -21,6 +21,7 @@ from typing import Any
 import numpy as np
 
 from valisync.core.interpolation import InterpolationMethod
+from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
 from valisync.core.models import Signal
 from valisync.core.session import Session
 from valisync.core.statistics.range_stats import StatisticsResult
@@ -480,15 +481,20 @@ class GraphPanelVM(Observable):
         self._notify("signals")
 
     def prune_missing_signals(self) -> None:
-        """Drop plotted signals no longer present in the Session, reconcile axes.
+        """Drop plotted signals whose source group is no longer loaded.
 
-        Keyed on the Session (not on any specific unloaded key), so it is correct
-        regardless of why a signal disappeared.  ``render_data`` already skips
-        absent signals; this clears the lingering bookkeeping and prunes empty
-        axes. Survivors keep their heights/positions; removed bands stay blank.
+        Filters by *group key* membership (O(#files)) instead of walking every
+        Session signal — the latter forced a namespaced rebuild of all
+        remaining signals on the first call after unload and re-scanned O(n)
+        per panel, freezing the app on close at prod scale (FU-16). A
+        signal_key ``{group_key}::{name}`` survives iff its group_key is still
+        loaded; whole groups load/unload together so per-signal matching is
+        unnecessary. Survivors keep heights/positions; removed bands stay blank.
         """
-        present = {s.name for s in self._session.signals()}
-        kept = [e for e in self._plotted if e.signal_key in present]
+        live = set(self._session.group_keys())
+        kept = [
+            e for e in self._plotted if e.signal_key.split(KEY_SEPARATOR, 1)[0] in live
+        ]
         if len(kept) == len(self._plotted):
             return
         self._plotted = kept

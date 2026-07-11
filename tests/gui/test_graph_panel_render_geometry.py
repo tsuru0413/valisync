@@ -10,7 +10,12 @@ from typing import cast
 import pytest
 from pytestqt.qtbot import QtBot
 
-from tests.gui.test_graph_panel_view import _keys, _loaded_session, _make_view
+from tests.gui.test_graph_panel_view import (
+    _keys,
+    _loaded_session,
+    _make_view,
+    _multi_group_session,
+)
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 from valisync.gui.views.graph_panel_view import GraphPanelView
 
@@ -58,8 +63,8 @@ def test_axis_spines_render_at_absolute_strips_with_blank_gap(
 
     A fresh GraphPanelVM(session) has zero axes; three create_new_axis calls
     stack three regions in the inner column (column_count-1)."""
-    session, _ = _loaded_session(tmp_path, n_signals=3)
-    keys = sorted(_keys(session))
+    session, keys = _multi_group_session(tmp_path, n_groups=3)
+    keys = sorted(keys)
     vm = GraphPanelVM(session)
     vm.create_new_axis(keys[0])
     vm.create_new_axis(keys[1])
@@ -69,9 +74,8 @@ def test_axis_spines_render_at_absolute_strips_with_blank_gap(
     vm.axes[2].top_ratio, vm.axes[2].height_ratio = 0.8, 0.2
 
     view = _mounted(qtbot, vm)
-    # Prune the middle signal -> VM leaves A(0,0.5)/C(0.8,0.2) with a blank gap.
-    remaining = [s for s in session.signals() if s.name != keys[1]]
-    session.signals = lambda: remaining  # type: ignore[method-assign]
+    # Unload the middle signal's group -> VM leaves A(0,0.5)/C(0.8,0.2) with a blank gap.
+    session.remove_group(keys[1].split("::", 1)[0])
     vm.prune_missing_signals()
     view.refresh()
     qtbot.waitUntil(lambda: len(view._y_axes) == 2, timeout=2000)
@@ -144,8 +148,8 @@ def test_waveform_data_band_coincides_with_axis_spine_strip(
     """
     from PySide6.QtCore import QPointF
 
-    session, _ = _loaded_session(tmp_path, n_signals=3)
-    keys = sorted(_keys(session))
+    session, keys = _multi_group_session(tmp_path, n_groups=3)
+    keys = sorted(keys)
     vm = GraphPanelVM(session)
     vm.create_new_axis(keys[0])
     vm.create_new_axis(keys[1])
@@ -176,10 +180,9 @@ def test_waveform_data_band_coincides_with_axis_spine_strip(
 
     _assert_waveform_aligned_with_spine()  # 3 contiguous regions
 
-    # Prune the middle: survivors keep absolute strips; the waveform must still
-    # coincide with its (repositioned) spine, leaving a real blank gap between.
-    remaining = [s for s in session.signals() if s.name != keys[1]]
-    session.signals = lambda: remaining  # type: ignore[method-assign]
+    # Unload the middle signal's group: survivors keep absolute strips; the
+    # waveform must still coincide with its (repositioned) spine, blank gap between.
+    session.remove_group(keys[1].split("::", 1)[0])
     vm.prune_missing_signals()
     view.refresh()
     qtbot.waitUntil(lambda: len(view._y_axes) == 2, timeout=2000)
