@@ -37,6 +37,8 @@ def _clamped_size(hint: QSize, cap: int, vsb_w: int) -> QSize | None:
     bound はフォント/スケール依存のため、大フォント・低解像度環境で
     bound > 画面高になったときの防御層として残す (Task 2 実測で判明)。
     幅は縦スクロールバーぶん広げ、ラベルの水平クリップを防ぐ。
+    cap は正値を前提とする (負値でも QSize は返るが、呼び出し側の resize が
+    Qt のレイアウト最小サイズでクランプされ優雅に劣化する — 実測確認済み)。
     """
     if hint.height() <= cap:
         return None

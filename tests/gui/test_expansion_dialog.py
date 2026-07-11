@@ -106,6 +106,11 @@ def test_clamped_size_caps_height_and_widens_for_scrollbar() -> None:
     assert _clamped_size(QSize(400, 2000), cap=600, vsb_w=16) == QSize(416, 600)
 
 
+def test_clamped_size_boundary_exact_fit_is_not_clamped() -> None:
+    """境界 hint==cap は「ちょうど収まる」= resize 不要 (< と <= の書き換えガード)。"""
+    assert _clamped_size(QSize(400, 600), cap=600, vsb_w=16) is None
+
+
 def test_dialog_compact_for_few_channels(qtbot: QtBot) -> None:
     """少数チャンネルでは従来同等のコンパクト表示 (不要なスクロールを出さない)。
 

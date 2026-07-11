@@ -121,6 +121,12 @@ def test_bottom_checkbox_reachable_by_real_wheel_then_ok(
         for _ in range(4):
             QApplication.processEvents()
             time.sleep(0.02)
+
+    # 部分可視で抜けた場合に中心クリックが viewport 外へ落ちないよう念押しで1回
+    wheel(vp_x, vp_y, -120)
+    for _ in range(4):
+        QApplication.processEvents()
+        time.sleep(0.02)
     shot_scrolled = tmp_path / "fu01_scrolled_bottom.png"
     QApplication.primaryScreen().grabWindow(0).save(str(shot_scrolled))
     assert not last_cb.visibleRegion().isEmpty(), (
