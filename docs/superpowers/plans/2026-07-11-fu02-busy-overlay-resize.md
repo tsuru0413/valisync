@@ -33,7 +33,7 @@
 - Consumes: `BusyOverlay.cover()`／`show()`（既存・変更しない）
 - Produces: `BusyOverlay.eventFilter(watched: QObject, event: QEvent) -> bool`（Qt override・常に False 返し）。不変条件: `cover()`/`show()`/`set_message()`/`cancel_requested` 配線・`parent=None` 構築の no-op は従来どおり。
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 `tests/gui/test_busy_overlay.py` を新規作成:
 
@@ -102,14 +102,14 @@ def test_parentless_overlay_show_does_not_crash(qtbot: QtBot) -> None:
     assert overlay.isVisible()
 ```
 
-- [ ] **Step 2: RED を確認**
+- [x] **Step 2: RED を確認**
 
 Run: `uv run pytest tests/gui/test_busy_overlay.py -v`
 Expected: 新規3テスト中1つが FAIL —
 - `test_visible_overlay_tracks_parent_resize`: 拡大後の `overlay.geometry() == parent.rect()` で AssertionError（overlay は 400x300 のまま）
 - `test_hidden_overlay_covers_on_next_show_after_resize` と `test_parentless_overlay_show_does_not_crash` は PASS（既存挙動の回帰ガードで最初から緑が正しい）
 
-- [ ] **Step 3: 最小実装（eventFilter）**
+- [x] **Step 3: 最小実装（eventFilter）**
 
 `src/valisync/gui/views/busy_overlay.py` — import 行を変更:
 
@@ -139,16 +139,16 @@ from PySide6.QtCore import QEvent, QObject, Qt, Signal
         return False
 ```
 
-- [ ] **Step 4: GREEN を確認**
+- [x] **Step 4: GREEN を確認**
 
 Run: `uv run pytest tests/gui/test_busy_overlay.py tests/gui/test_load_worker.py -v`
 Expected: 全 PASS（test_load_worker.py＝controller 駆動の show/hide/メッセージ既存挙動を含む）
 
-- [ ] **Step 5: 品質ゲート**
+- [x] **Step 5: 品質ゲート**
 
 Run: `uv run pytest` → 0 failures ／ `uv run ruff check` ／ `uv run ruff format --check` ／ `uv run mypy src/` → 全 clean。加えて `git -C D:/Programming/projects/valisync status --short` が clean（親チェックアウト非汚染）。
 
-- [ ] **Step 6: コミット**
+- [x] **Step 6: コミット**
 
 ```bash
 git add src/valisync/gui/views/busy_overlay.py tests/gui/test_busy_overlay.py
