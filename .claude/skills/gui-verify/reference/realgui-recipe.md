@@ -52,3 +52,12 @@
 - ドロップ**ロジック**（ゾーン→VM メソッド）= ハンドラ直叩きで Layer A/B 検証可（`view.dropEvent(event)` を直接呼ぶ）。
 - **実配送経路**（`QDrag.exec` ＋ヒットテスト＋子→親バブリング＋`setAcceptDrops` 配線）= **Layer C のみ**。
 - context-menu（`QContextMenuEvent`）は viewport に届くので Layer B で再現可 — **D&D だけの特性**。
+
+## 実ホイールスクロール（MOUSEEVENTF_WHEEL）
+
+`_realgui_input.wheel(x, y, delta)`（FU-01・PR #81 で確立）: カーソルを物理 (x, y) へ置き `mouse_event(0x0800, 0, 0, delta, 0)` を発行する。delta は WHEEL_DELTA(120) の倍数（負=下スクロール）。
+
+- ホイールは**カーソル下のウィジェット**へ配送される — 対象 viewport 上に置いてから発行（`wheel()` が `SetCursorPos` を内包）。
+- QDrag と違い OLE モーダルループは無い — `QApplication.processEvents()` の pump だけで配送され、別 OS スレッド・watchdog は不要。
+- 到達判定は `visibleRegion()` 非空で行うが、**部分可視で抜けると中心クリックが viewport 外へ落ちる**ため、ループ後に念押しで 1 ノッチ回す（実例: `tests/realgui/test_expansion_dialog_realinput.py`）。
+- 合成代替（`verticalScrollBar().setValue()`・`QWheelEvent` 送出）は Layer B であり Layer C を騙れない。契約ガード（`tests/gui/test_realgui_layer_c_contract.py`）の正規表現は `wheel(` を実入力プリミティブとして認識する。
