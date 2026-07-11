@@ -65,7 +65,7 @@ uv run pytest -k "test_name"           # 名前一致で絞り込み
 
 GUI は `pytest-qt` + `QT_QPA_PLATFORM=offscreen`（`tests/gui/conftest.py` で設定）でヘッドレス実行する。MVVM 境界の一次情報源は `.kiro/specs/valisync-gui-mvp/design.md`。
 
-**テストレイヤー（必須運用）**: 入力イベント系は「ヘッドレス状態検証（Layer A）」だけでなく「実イベント経路を `sendEvent` で通すヘッドレス検証（Layer B）」を必須とし、経路を新規/変更したときは実 OS 入力（Layer C, `--realgui`）でローカル実機確認する。詳細・早見表: `docs/gui-testing-layers.md`。
+**テストレイヤー（必須運用）**: 入力イベント系は「ヘッドレス状態検証（Layer A）」だけでなく「実イベント経路を `sendEvent` で通すヘッドレス検証（Layer B）」を必須とし、経路を新規/変更したときは実 OS 入力（Layer C, `--realgui`）でローカル実機確認する。詳細・早見表（E2E スペクトル・レイヤー A/B/C・①/②）: `/gui-test-plan`（`.claude/skills/gui-test-plan/reference/e2e-model.md`）・`/gui-verify`（`.claude/skills/gui-verify/reference/gate-and-pitfalls.md`）。
 
 **原則: ピクセルでなく構造化状態を assert する**（VM の `inspect()` / View が公開する投影状態）。実装で確立したパターン:
 

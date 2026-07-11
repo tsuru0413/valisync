@@ -2,7 +2,7 @@
 
 `qtbot.mouseClick`/`keyClick` 等の合成入力(Layer B)を `tests/realgui/` に置き
 `@pytest.mark.realgui` を付けて Layer C を騙る false-green を、機械的に防ぐ。
-散文の警告(docs/gui-testing-layers.md)だけでは現に見落とされたため、CI で落ちる
+散文の警告(.claude/skills/gui-verify/)だけでは現に見落とされたため、CI で落ちる
 ガードとして担保する。本テスト自体は headless(ソースを読むだけ)で CI で常時走る。
 
 Layer C の定義境界は「入力の出所」: 実 OS 入力プリミティブ
@@ -50,7 +50,7 @@ def test_realgui_tests_drive_real_os_input() -> None:
         f"{offenders}. "
         "tests/realgui/ は Layer C(実 OS 入力). 合成入力の配線検証は tests/gui/(Layer B)へ "
         "移すか、_realgui_input の実入力プリミティブで駆動すること. "
-        "詳細: docs/gui-testing-layers.md の Layer C 判定基準."
+        "詳細: .claude/skills/gui-verify/ の Layer C 判定基準."
     )
 
 

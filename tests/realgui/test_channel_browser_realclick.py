@@ -2,7 +2,7 @@
 
 Opt-in — run with ``--realgui`` on Windows + a real display. Issues a genuine
 right-click via Win32 and asserts the application's own QMenu pops up (the OS →
-Qt path a synthesized event cannot exercise). See ``docs/gui-testing-layers.md``.
+Qt path a synthesized event cannot exercise). See ``.claude/skills/gui-verify/``.
 """
 
 from __future__ import annotations

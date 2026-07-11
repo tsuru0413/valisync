@@ -12,7 +12,7 @@
 4. **finishing-a-development-branch** — テスト確認 → merge / PR。
 
 - 完了済み Phase 1/2 の計画は `.kiro/specs/`（アーカイブ・歴史）。新規には使わない。
-- GUI 入力経路の実装では `docs/gui-testing-layers.md` のテストレイヤーに従い、計画時に `/gui-test-plan`、merge 前に `/gui-verify` を使う。
+- GUI 入力経路の実装では `/gui-test-plan`・`/gui-verify` スキル（`.claude/skills/gui-{test-plan,verify}/`）のテストレイヤー方針に従い、計画時に `/gui-test-plan`、merge 前に `/gui-verify` を使う。
 
 ## 1. ブランチモデル
 
@@ -170,12 +170,12 @@ git fetch --prune origin    # stale な remote tracking ref を掃除
 
 ## 7. GUI 実装時のテストレイヤー（必須）
 
-GUI（PySide6 / pyqtgraph）の機能・ユーザー操作を実装/変更するときは、**テストレイヤー方針に従うことを必須**とする。詳細・必須早見表: `docs/gui-testing-layers.md`。
+GUI（PySide6 / pyqtgraph）の機能・ユーザー操作を実装/変更するときは、**テストレイヤー方針に従うことを必須**とする。詳細・必須早見表（E2E スペクトル・レイヤー A/B/C 定義・①/②）: `/gui-test-plan`（`.claude/skills/gui-test-plan/reference/e2e-model.md`）・`/gui-verify`（`.claude/skills/gui-verify/reference/gate-and-pitfalls.md`）。
 
 - **Layer A（ヘッドレス状態検証）**: 常に必須（CI）。
 - **Layer B（ヘッドレス実イベント経路検証 / `sendEvent`）**: **入力イベント（右クリック・D&D・キー・ドロップ等）に関わる変更では必須**（CI）。シグナルを直接 `emit` して済ませない（経路破壊を見逃すため）。
 - **Layer C（実 OS 入力 / `--realgui`）**: イベント経路を新規実装/変更したときはローカルで実機確認（`uv run pytest --realgui tests/realgui/`）。CI 除外。
-- **realgui 証拠ゲート（①）**: GUI 入力経路の変更は、該当 realgui の実行証拠（視覚項目は `/verify` 観測）を **merge 前に要求**。非 Windows 等で実行不可なら「ゲート未充足」扱い（`skipped` を検証済みと誤認しない）。実行は `/gui-verify`。詳細: `docs/gui-testing-layers.md`。
+- **realgui 証拠ゲート（①）**: GUI 入力経路の変更は、該当 realgui の実行証拠（視覚項目は `/verify` 観測）を **merge 前に要求**。非 Windows 等で実行不可なら「ゲート未充足」扱い（`skipped` を検証済みと誤認しない）。実行は `/gui-verify`。詳細: `.claude/skills/gui-verify/reference/gate-and-pitfalls.md`。
 - **realgui 実質性（②）**: realgui のアサートは実経路でしか証明できない結果を検証する（VM 再チェック・スクショ保存だけは不可）。計画時の受け入れ要件設計は `/gui-test-plan`。
 
 > 背景: PR #11 で「テストは緑だが実 GUI で右クリックメニューが出ない」false green が発生したため、入力系は実経路（Layer B）を必ず通す運用とした。
@@ -183,6 +183,6 @@ GUI（PySide6 / pyqtgraph）の機能・ユーザー操作を実装/変更する
 ## 8. 関連ドキュメント
 
 - `docs/development.md` — ローカル開発コマンド・品質ゲート詳細
-- `docs/gui-testing-layers.md` — GUI テストレイヤー（必須運用）
+- `/gui-test-plan`・`/gui-verify` スキル（`.claude/skills/gui-{test-plan,verify}/`）— GUI テストレイヤー（必須運用・自己完結。E2E スペクトル・レイヤー定義・①/②）
 - `docs/policies.md` — プロジェクト方針・Architecture 原則・言語標準
 - `CLAUDE.md` — エントリポイント（情報の探し方）

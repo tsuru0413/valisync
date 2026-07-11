@@ -7,7 +7,7 @@
 | 順位 | 場所 | 内容 |
 |---|---|---|
 | 1 | `docs/superpowers/specs/` ＋ `docs/superpowers/plans/` | 計画の一次情報源（brainstorming 設計 spec / writing-plans 実装プラン）— **新規作業はここ** |
-| 2 | `docs/<topic>.md`（`product` / `development` / `structure` / `policies` / `workflow` / `gui-testing-layers`） | プロダクト・技術/品質ゲート・構造・方針・開発フロー・GUI テスト |
+| 2 | `docs/<topic>.md`（`product` / `development` / `structure` / `policies` / `workflow`）＋ GUI テストは `/gui-test-plan`・`/gui-verify` スキル | プロダクト・技術/品質ゲート・構造・方針・開発フロー・GUI テスト（レイヤー／E2E は両スキルの `reference/` が一次情報源） |
 | 3 | `.kiro/specs/<spec>/{requirements,design,tasks}.md` | **完了済み Phase 1/2 のアーカイブ**（歴史・トレーサビリティ。新規には使わない） |
 | 4 | このファイル | 上記で発見できないハマりどころと方針概要 |
 
@@ -78,7 +78,7 @@ uv run mypy src/             # 型チェック
 
 コミット前に上記全てを通すのが本プロジェクトの品質ゲート。詳細は `docs/development.md` を参照。
 
-GUI 機能・操作を実装するときは **GUI テストレイヤー（Layer A/B 必須・CI / Layer C はローカル `--realgui`）** に従う。詳細: `docs/gui-testing-layers.md`（`docs/workflow.md` の計画・実装フローで必須化）。計画時は `/gui-test-plan`（②実質的な受け入れ要件の設計）、merge 前は `/gui-verify`（①realgui 証拠ゲート）を使う。
+GUI 機能・操作を実装するときは **GUI テストレイヤー（Layer A/B 必須・CI / Layer C はローカル `--realgui`）** に従う。詳細は `/gui-test-plan`・`/gui-verify` スキル（`.claude/skills/gui-{test-plan,verify}/`。E2E スペクトル・レイヤー定義・①/② を自己完結で保持。`docs/workflow.md` の計画・実装フローで必須化）。計画時は `/gui-test-plan`（②十分な E2E 受け入れ要件の設計）、merge 前は `/gui-verify`（①realgui 証拠ゲート＋E2E 十分性 contract 点検）を使う。
 
 ## 実機確認用デモデータ (本番相当 mf4)
 

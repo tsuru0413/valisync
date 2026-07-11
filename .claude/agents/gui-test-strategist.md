@@ -9,7 +9,7 @@ tools: Read, Grep, Glob
 ## 手順
 1. `tests/gui/` と `tests/realgui/` から類似の入力経路テストを Grep/Glob で探す。
 2. 各々が Layer A/B/C のどれか、どんなアサートをしているか、再利用できるヘルパ（例 `_send_context_menu_event`、別 OS スレッド駆動）を特定する。
-3. `docs/gui-testing-layers.md` と `.claude/skills/gui-verify/reference/realgui-recipe.md` を読み、当該経路が `sendEvent` 再現可（Layer B）か Layer C 専用かを判断する。
+3. `.claude/skills/gui-verify/reference/gate-and-pitfalls.md`（E2E スペクトル・入力の出所・Layer C）と `.claude/skills/gui-verify/reference/realgui-recipe.md` を読み、当該経路が `sendEvent` 再現可（Layer B）か Layer C 専用かを判断する。
 
 ## 返す内容
 - 類似テストのパス＋レイヤー＋再利用可能ヘルパ

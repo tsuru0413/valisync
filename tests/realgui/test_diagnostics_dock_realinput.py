@@ -7,7 +7,7 @@ already cover the handler and the *synthetic* dblclick event routing
 (``tests/gui/test_diagnostics_view.py``), but only a genuine OS double-click
 exercises the OS → Qt ``WM_LBUTTONDBLCLK`` translation and the real item-view
 hit-test — neither is re-checkable from Layer A/B (see
-``docs/gui-testing-layers.md``, Layer C).
+``.claude/skills/gui-verify/``, Layer C).
 
 Doubled-click formation is a repo-first technique for realgui: two press+release
 pairs at the *same* point (no MOVE, extending the pure-click precedent in
