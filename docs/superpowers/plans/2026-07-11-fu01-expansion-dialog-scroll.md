@@ -33,7 +33,7 @@
 - Consumes: `ExpansionRequest(channels: tuple[OversizedChannel, ...])`／`OversizedChannel(name: str, column_count: int)`（frozen dataclass・`mdf_loader`・変更しない）
 - Produces: `ExpansionDialog._scroll: QScrollArea`（Task 2 の realgui が viewport 座標取得に使う）／モジュール定数 `_SCREEN_MARGIN: int = 80`。不変条件: `_checks: list[QCheckBox]`・`result_indices`・`ask()` 契約・初期全未チェックは従来どおり。
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 `tests/gui/test_expansion_dialog.py` の import に `QScrollArea` を追加し、ファイル末尾に追加:
 
@@ -103,7 +103,7 @@ import 追加（既存 import 行に併合）:
 from PySide6.QtWidgets import QDialog, QScrollArea
 ```
 
-- [ ] **Step 2: RED を確認**
+- [x] **Step 2: RED を確認**
 
 Run: `uv run pytest tests/gui/test_expansion_dialog.py -v`
 Expected: 新規3テスト中2つが FAIL —
@@ -111,7 +111,7 @@ Expected: 新規3テスト中2つが FAIL —
 - `test_dialog_compact_for_few_channels`: `findChild(QScrollArea)` が None で AssertionError
 - `test_buttonbox_stays_within_dialog_for_many_channels` と既存4本は PASS（buttonBox テストは post-fix ガードであり最初から緑で正しい）
 
-- [ ] **Step 3: 最小実装（QScrollArea＋クランプ）**
+- [x] **Step 3: 最小実装（QScrollArea＋クランプ）**
 
 `src/valisync/gui/views/expansion_dialog.py` — import へ `QAbstractScrollArea`・`QScrollArea` を追加し、モジュール定数を import 群の直後に追加:
 
@@ -160,16 +160,16 @@ _SCREEN_MARGIN = 80
             self.resize(hint.width() + vsb_w, cap)
 ```
 
-- [ ] **Step 4: GREEN を確認**
+- [x] **Step 4: GREEN を確認**
 
 Run: `uv run pytest tests/gui/test_expansion_dialog.py tests/gui/test_expansion_confirmer.py -v`
 Expected: 全 PASS（既存4本＝`_checks` 直接操作・`ask()` reject 契約を含む）
 
-- [ ] **Step 5: 品質ゲート**
+- [x] **Step 5: 品質ゲート**
 
 Run: `uv run pytest` → 0 failures ／ `uv run ruff check` ／ `uv run ruff format --check`（差分が出たら `uv run ruff format` 後に再確認）／ `uv run mypy src/` → 全て clean
 
-- [ ] **Step 6: コミット**
+- [x] **Step 6: コミット**
 
 ```bash
 git add src/valisync/gui/views/expansion_dialog.py tests/gui/test_expansion_dialog.py
