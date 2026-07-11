@@ -106,6 +106,32 @@ def test_group_signals_returns_namespaced_signals_for_one_group(tmp_path):
         session.group_signals("nope_99")
 
 
+def test_group_signals_caches_wrappers_until_invalidated(tmp_path):
+    """FU-11: group_signals はキャッシュ済ラッパーを返し、呼び出し毎に 330k 個の
+    Signal を再生成しない。オブジェクト同一性(連続呼び出しで同じ Signal)と、
+    add() 無効化後の再構築で証明する。"""
+    a = tmp_path / "a.csv"
+    _write_csv(a, "t,speed", ["0.0,1.0"])
+    session = Session()
+    ka = session.load(a, format_def=_FMT).key
+
+    first = session.group_signals(ka)
+    second = session.group_signals(ka)
+    # 防御コピー: リストオブジェクトは別物…
+    assert first is not second
+    # …だが中身の Signal ラッパーは同一(再構築されていない)。
+    assert len(first) == len(second) == 1
+    assert first[0] is second[0]
+
+    # 別ファイルのロード(add)はキャッシュを無効化 → ラッパー再構築。
+    b = tmp_path / "b.csv"
+    _write_csv(b, "t,rpm", ["0.0,2.0"])
+    session.load(b, format_def=_FMT)
+    after = session.group_signals(ka)
+    assert after[0] is not first[0]  # 無効化後は作り直される
+    assert [s.name for s in after] == [f"{ka}::speed"]  # 内容は不変
+
+
 def test_load_many_reports_partial_failure(tmp_path):
     good = tmp_path / "good.csv"
     _write_csv(good, "t,v", ["0.0,1.0", "1.0,2.0"])
