@@ -8,6 +8,12 @@
 
 **Tech Stack:** Python 3 / PySide6 / pyqtgraph / pytest / uv。
 
+> **⚠️ 実測による再スコープ（2026-07-12）— 本プランの前提（prune が真因）は e2e 再現で棄却された。**
+> - **Task 1-3 は出荷済み**（`d3af9c4` group_keys／`76f2bb9` 計測ハーネス／`376a26c` prune group_key フィルタ／`9d45212` prune テストをグループ単位アンロード契約へ整合）。**成果物は「複数ファイル生存シナリオで session 全走査を避ける独立改善」**であり、FU-16 の 6秒フリーズ根治ではない。
+> - **Task 4-5 は再スコープ**: after 実測（`91a1a75` 直前）で真因が `Session.remove_group` の同期 ~10GB dealloc（e2e 再現 99.6%・prune は無関係）と判明。Task 4 の「prune 修正で体感改善実証」は達成不能→代わりに真因を e2e 再現で確定。Task 5 は catalog を「真因=remove_group」へ**訂正**（`91a1a75`）。FU-03 相乗りは remove_group 新規タスクへ引継ぎ。
+> - **FU-16 本体の根治**は remove_group の byte-budget chunked deferred teardown で新規 brainstorming→spec→plan（PoC で UI ブロック解消を検証済み: 同期クローズ 7322ms→38ms・byte 予算分割が必要）。
+> 以下の Task 本文・チェックボックスは当初計画のままアーカイブとして残す（トレーサビリティ）。詳細は spec 冒頭注記・catalog FU-16 行・`.superpowers/sdd/fu16-poc-report.md`。
+
 ## Global Constraints
 
 - 抽出は VM 側 `signal_key.split(KEY_SEPARATOR, 1)[0]`（既存 `graph_panel_vm.py:535` と同一パターン）。`KEY_SEPARATOR` は `graph_panel_vm.py:20` で import 済み。SGM に新ヘルパは追加しない。
