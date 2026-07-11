@@ -1,31 +1,36 @@
 ---
 name: gui-test-plan
-description: Use when PySide6/pyqtgraph の GUI 入力経路機能のテストを計画/レビューするとき（writing-plans 中、または tasks.md の監査時）。レイヤー（A/B/C）判定や、realgui を含む実経路でしか証明できない実質的な受け入れ要件の設計が要る場面。
+description: Use when planning tests for a PySide6/pyqtgraph GUI feature or any user-facing change (widgets, plots, docks, filters, drag-and-drop, perf, rendering) — before implementing. Also when a task touches src/valisync/gui/ and you need to decide what proves it works for a real user at real scale.
 ---
 
-# gui-test-plan — GUI テスト戦略＆実質的受け入れ要件（課題②対策）
+# gui-test-plan — 十分な E2E 検証を設計する（課題②対策）
 
-GUI タスクごとに「どのレイヤーをどう書くか」と「実経路でしか証明できない**実質的な**受け入れ要件」を設計し、writing-plans が織り込める**分析ブロック**を返す（非破壊。プランの所有は writing-plans）。
+GUI 変更ごとに「**十分な E2E 検証**とは何か」をタスク単位で設計し、writing-plans が織り込める**分析ブロック**を返す（非破壊・プランの所有は writing-plans）。
 
-`docs/gui-testing-layers.md`（必須運用表・②実質性ルール・①証拠ゲート）を **enforce** する。出力形式は `reference/output-template.md`。
+**核心**: FU-01〜17 は「headless は緑だが、実アプリを実スケールで操作していないので見えなかった」。真面目に回しても不十分な E2E を防ぐため、**十分な E2E の必須構成要素を設計で規定する**（禁止形でなく positive な設計）。
 
-## 入力
-spec 名 / `tasks.md` / writing-plans の下書きプラン / 自由記述のタスク。
+**REQUIRED BACKGROUND:** `reference/e2e-model.md`（E2E スペクトル・レイヤー A/B/C・入力の出所判定・②実質性・計画関連 false-green 落とし穴の権威リファレンス）。
+
+## 十分な E2E の必須構成要素（`reference/e2e-model.md` 参照）
+1. **ジャーニー同定**（diff でなくユーザー視点）。
+2. **効果ごとに E2E タイプ＋実 observable**（入力=realgui スクショ／perf=**prod スケール実測**／描画=**スクショ**）。
+3. **prod スケール必須**（perf/描画・`prod_demo.mf4` 330k。小データは FU-11/12/16 を隠す）。
+4. **observable はユーザーが実際に見る終状態**（嘘プロキシ＝`isVisible`/`setText`1回/小データ perf を使わない）。
+5. **カバレッジ完全性**（変更挙動を実経路で exercise。同名別コードは不可）。
 
 ## 手順（タスクごと）
+1. **変更種別を分類**: VM/純ロジック | ウィジェット構成・状態 | 入力イベント→ハンドラ | perf | 描画。
+2. **触れるユーザージャーニー**を特定（開く→ブラウズ→フィルタ→プロット→解析→閉じる のどの区間か）。
+3. **E2E 受け入れを設計**: ユーザー可視の各効果に E2E タイプ＋実 observable＋prod スケール要否を割当。
+4. **レイヤー判定**（`reference/e2e-model.md` 必須運用表）: A 必須／B 要否／入力経路 E2E(C)・perf E2E・描画 E2E の要否＋根拠。
+5. **②実質性割当**: 「人間が何を見て合格と判断するか」→自動アサート可／視覚・実測 に割当（naive をフラグ）。
+6. **バグなら真因の実測確定計画**: 適切な E2E タイプで真因を実測/再現してから直す（コード読解の仮説を確定扱いしない）。
+7. **①証拠ゲート仕様を埋め込む**: 該当 realgui を scoped 実行＋証拠添付を必須チェックボックス化（実行は `/gui-verify`）。
 
-1. **変更種別を分類**: VM/純ロジック | ウィジェット構成・状態 | 入力イベント→ハンドラ。
-2. **必要レイヤー判定**（`docs/gui-testing-layers.md` の必須運用表）: A 必須 / B 要否 / C 要否＋根拠。
-3. **入力経路の再現可否**: `sendEvent` で実経路再現可（`QContextMenuEvent` 等）か、**Layer C 専用**（`QDrag` D&D は合成イベントで配送不可）か。新規/不明な経路は「**手法を確立せよ**」とフラグし `.claude/skills/gui-verify/reference/realgui-recipe.md` へ誘導。
-   - **realgui の掴み点はゾーン境界からマージンを取り、マジック比率でなくゾーン幾何から導出する**。掴み点が move/QDrag ゾーンへ誤侵入すると assert 失敗ではなく**ハング**になる（実例: pan テストの `spine.width()*0.10` が frame 3→8px 拡幅で move 帯に侵入しハング）。
-   - **ゾーン境界を動かす変更**（frame 幅・grip 寸法・軸幅 等）には「**既存 realgui の全掴み点を再監査せよ**」を分析ブロックに必ず出す（後追い破綻防止）。
-4. **②実質性ルーブリック適用**: 「人間が何を見て合格と判断するか」を列挙→各項目を「自動アサート可（`activePopupWidget()`・可視/ジオメトリ・要素数）」か「視覚（スクショ＋`/verify` 観測）」に割当。**スクショ保存だけ・VM 再チェックだけは naive としてフラグ**。
-5. **受け入れ要件 Red/Green/Verify**: Verify 段は `/run`・`/verify` がそのまま食える観測チェックリスト（起動 `uv run valisync` ＋手順＋観測項目）。
-6. **①証拠ゲート仕様**: 「該当 realgui を scoped 実行＋証拠添付」を**必須チェックボックス**としてプランに埋める仕様を出す（実行は `/gui-verify`）。
-7. **honest layering note**: 経路を実検証しない近道（ハンドラ直叩きを Layer B と誤称する等）を明示。
+**ゾーン境界を動かす変更**（frame 幅/grip 寸法/軸幅 等）には「既存 realgui の全掴み点を境界マージンで再監査せよ」を必ず出す（掴み点の move/QDrag ゾーン誤侵入は assert 失敗でなくハング）。
 
 ## ノイジーな調査の委譲（任意）
-似た既存入力経路テストの走査・再利用パターン抽出は `gui-test-strategist` サブエージェントに dispatch し、**結論だけ**受け取る（計画コンテキストを汚さない）。単純ケースはスキル内で完結。
+似た既存入力経路テストの走査・再利用パターン抽出は `gui-test-strategist` サブエージェントに dispatch し**結論だけ**受け取る（計画コンテキストを汚さない）。
 
 ## 出力
-`reference/output-template.md` に従い、タスクごとの分析ブロックを返す。非 GUI タスクは「Layer A のみ・realgui 不要・標準 Red/Green」と返す。
+`reference/output-template.md` に従いタスクごとの分析ブロックを返す。非 GUI・可視挙動不変のタスクは「Layer A のみ・E2E 不要・標準 Red/Green」と返す。
