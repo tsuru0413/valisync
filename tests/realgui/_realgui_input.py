@@ -90,6 +90,34 @@ def wheel(x: float, y: float, delta: int) -> None:
     _user32.mouse_event(WHEEL, 0, 0, delta, 0)
 
 
+class _RECT(ctypes.Structure):
+    _fields_ = [
+        ("left", ctypes.c_long),
+        ("top", ctypes.c_long),
+        ("right", ctypes.c_long),
+        ("bottom", ctypes.c_long),
+    ]
+
+
+def window_rect(hwnd: int) -> tuple[int, int, int, int]:
+    """トップレベルウィンドウの外枠 (left, top, width, height)・物理ピクセル。"""
+    r = _RECT()
+    _user32.GetWindowRect(hwnd, ctypes.byref(r))
+    return r.left, r.top, r.right - r.left, r.bottom - r.top
+
+
+def set_window_pos(hwnd: int, x: int, y: int, w: int, h: int) -> None:
+    """実 OS の WM 経由でトップレベルウィンドウを移動/リサイズする。
+
+    user32.SetWindowPos (SWP_NOZORDER) を Qt の外から発行し、WM_SIZE ->
+    QResizeEvent の実変換経路を通す (widget.resize() は Qt 内部経路のため
+    WM を経由しない・FU-02 で確立)。座標は物理ピクセル・外枠基準 —
+    現在値は window_rect() で取得して差分リサイズすると DPR 換算が不要。
+    """
+    swp_nozorder = 0x0004
+    _user32.SetWindowPos(hwnd, 0, int(x), int(y), int(w), int(h), swp_nozorder)
+
+
 def double_click_interval_s() -> float:
     """OS のダブルクリック窓の半分（上限 150ms）— 確実に窓内に収める。"""
     ms = _user32.GetDoubleClickTime() if _user32 is not None else 500
