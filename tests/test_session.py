@@ -378,3 +378,21 @@ def test_session_is_csv_true_for_csv_false_for_mdf() -> None:
     assert s.is_csv(Path("a.csv")) is True
     assert s.is_csv(Path("a.CSV")) is True
     assert s.is_csv(Path("a.mf4")) is False
+
+
+def test_group_keys_returns_loaded_group_keys_in_insertion_order(
+    tmp_path: Path,
+) -> None:
+    """Session.group_keys() delegates to SignalGroupManager.keys: the keys of
+    all loaded groups in insertion order. Used by prune to test signal
+    membership by file without walking every signal (FU-16)."""
+    session = Session()
+    a = tmp_path / "a.csv"
+    _write_csv(a, "t,speed", ["0.0,10.0"])
+    k1 = session.load(a, format_def=_FMT).key
+    b = tmp_path / "b.csv"
+    _write_csv(b, "t,rpm", ["0.0,20.0"])
+    k2 = session.load(b, format_def=_FMT).key
+    assert session.group_keys() == [k1, k2]
+    session.remove_group(k1)
+    assert session.group_keys() == [k2]
