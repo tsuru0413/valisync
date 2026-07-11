@@ -25,6 +25,7 @@ class SignalGroupManager:
         self._counters: dict[str, int] = {}
         self._namespaced_list: list[Signal] | None = None
         self._namespaced_map: dict[str, Signal] | None = None
+        self._namespaced_by_key: dict[str, list[Signal]] = {}
 
     def add(self, group: SignalGroup) -> str:
         """Register a Signal_Group and return its assigned key.
@@ -103,6 +104,7 @@ class SignalGroupManager:
         """Drop the namespaced caches; rebuilt lazily on next access."""
         self._namespaced_list = None
         self._namespaced_map = None
+        self._namespaced_by_key = {}
 
     def _ensure_namespaced(self) -> None:
         """Build and cache the namespaced signal list/map once (idempotent).
@@ -126,8 +128,16 @@ class SignalGroupManager:
         """Namespaced signals for a single group (KeyError if key is unknown).
 
         Lets callers fetch one file's signals without scanning every group.
+        Cached per key on the same invalidation lifecycle as the whole-session
+        caches (FU-08); rebuilt only after add()/remove(). Prevents the
+        per-call rebuild of every namespaced wrapper (FU-11).
         """
-        return self._namespaced(key, self._groups[key])
+        group = self._groups[key]  # 未知 key は従来どおり KeyError
+        cached = self._namespaced_by_key.get(key)
+        if cached is None:
+            cached = self._namespaced(key, group)
+            self._namespaced_by_key[key] = cached
+        return list(cached)  # 防御コピー(signals() と同契約) — Signal は共有
 
     def signals(self) -> list[Signal]:
         """Return every signal across all groups, name-spaced by its group key."""
