@@ -11,7 +11,7 @@ it to fill the parent so it reads as an overlay.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtWidgets import QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
 
 
@@ -40,6 +40,12 @@ class BusyOverlay(QWidget):
 
         self.hide()
 
+        # FU-02: 表示中に親が resize されると cover() が stale になり、透過
+        # overlay のラベル/キャンセルが旧矩形の中心へズレて届きにくくなる。
+        # 親の Resize を購読して追従する (親側の変更なしで自己完結)。
+        if parent is not None:
+            parent.installEventFilter(self)
+
     def set_message(self, text: str) -> None:
         """Show *text* as the load description (FB-04 label)."""
         self._label.setText(text)
@@ -62,3 +68,11 @@ class BusyOverlay(QWidget):
         """Show the overlay, first sizing it to cover the parent if any."""
         self.cover()
         super().show()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        # 親の resize へ追従 (可視時のみ — 非表示時は show() が cover する)。
+        # False を返しイベントは消費しない (親の通常の resize 処理を妨げない)。
+        # filter は親にのみ install しているため watched は常に親。
+        if event.type() == QEvent.Type.Resize and self.isVisible():
+            self.cover()
+        return False
