@@ -930,7 +930,20 @@ class GraphPanelView(QWidget):
             self._item_vb[curve.entry_id] = target_vb
             self._item_signal_key[curve.entry_id] = curve.name
 
-            item.setData(curve.timestamps, curve.values)
+            # FU-12 クリップ: インセット余白帯を空に保つため、この軸のデータ範囲外の
+            # 点を NaN にして描かない。オートフィット(range==データ extents)では
+            # 全点が範囲内ゆえ no-op。範囲外セグメントは非ヒット化する(描かれない箇所は
+            # クリックできない=正しい)。
+            vals = np.asarray(curve.values, dtype=float)
+            ax = (
+                self.vm.axes[curve.axis_index]
+                if curve.axis_index < len(self.vm.axes)
+                else None
+            )
+            if ax is not None and ax.y_range is not None:
+                y_lo, y_hi = ax.y_range
+                vals = np.where((vals < y_lo) | (vals > y_hi), np.nan, vals)
+            item.setData(curve.timestamps, vals)
             width = 2.5 if curve.entry_id == self._active_curve_id else 1.0
             item.setPen(pg.mkPen(curve.color, width=width))
 

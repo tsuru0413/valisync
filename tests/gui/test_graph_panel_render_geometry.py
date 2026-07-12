@@ -242,3 +242,34 @@ def test_boundary_data_lifts_off_frame_manual_range(
     data_bot = vb.mapViewToScene(QPointF(0.0, y_lo)).y()
     frame_bot = R.y() + R.height()
     assert frame_bot - data_bot >= 0.5 * AXIS_INSET_MARGIN * R.height()
+
+
+def test_curve_clipped_to_axis_range_keeps_margins_empty(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """手動ズームで範囲外点が NaN マスクされ、インセット余白帯に範囲外データが
+    滲まない(FU-12 honest margins)。オートフィットではマスク無し(no-op)。"""
+    import numpy as np
+
+    session, _ = _loaded_session(tmp_path, n_signals=1)
+    keys = sorted(_keys(session))
+    vm = GraphPanelVM(session)
+    vm.create_new_axis(keys[0])
+    view = _mounted(qtbot, vm)
+
+    eid = view.curve_keys()[0]
+    _, ys0 = view.curve_xy(eid)  # auto-fit: 全点有限(マスク無し)
+    ys0 = np.asarray(ys0, dtype=float)
+    assert np.isfinite(ys0).all(), "オートフィットで点がマスクされた(no-op のはず)"
+
+    lo, hi = float(np.nanmin(ys0)), float(np.nanmax(ys0))
+    mid = (lo + hi) / 2.0
+    vm.set_axis_range(0, mid, hi)  # 上半分へズーム -> 下半分が範囲外
+    view.refresh()
+
+    _, ys1 = view.curve_xy(eid)
+    ys1 = np.asarray(ys1, dtype=float)
+    assert np.isnan(ys1).any(), "範囲外点が未マスク=余白帯に範囲外データが滲む"
+    finite = ys1[np.isfinite(ys1)]
+    assert finite.size > 0
+    assert finite.min() >= mid - 1e-9  # 残った点は全て範囲内
