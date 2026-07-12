@@ -466,19 +466,21 @@ class MdfLoader:
             )
 
             for out_name, col in pairs:
-                try:
-                    values = col.astype(np.float64, copy=False)
-                except (ValueError, TypeError) as exc:
+                # FU-20: native dtype を保持し float64 膨張 (wide uint8 の 8x) を避ける。
+                # 数値 (int/uint/float/bool) 以外は Signal が扱えないため従来どおり skip。
+                # float64 化は計算境界 Signal.sorted_view() で行う。
+                if col.dtype.kind not in "iufb":
                     diagnostics.append(
                         Diagnostic(
                             level="warning",
                             message=(
                                 f"Signal '{out_name}' has non-numeric values,"
-                                f" skipped: {exc}"
+                                f" skipped: dtype {col.dtype}"
                             ),
                         )
                     )
                     continue
+                values = col
                 values.flags.writeable = False
 
                 n_backward, n_dup = master_diffs_warn or (0, 0)
