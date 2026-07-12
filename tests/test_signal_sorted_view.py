@@ -175,3 +175,29 @@ def test_linear_interp_no_uint8_wraparound():
     sig = _native_sig(np.array([200, 10], dtype=np.uint8), timestamps=[0.0, 1.0])
     v = Interpolator().interpolate(sig, 0.5, InterpolationMethod.LINEAR)
     assert v == 105.0
+
+
+# ─── time_range() (FU-18: ガードレール sorted_view 非誘発) ──────────────────────
+
+
+def test_time_range_returns_raw_min_max():
+    sig = _sig([0.0, 1.0, 2.0], [10.0, 20.0, 30.0])
+    assert sig.time_range() == (0.0, 2.0)
+
+
+def test_time_range_non_monotonic_uses_raw_extremes():
+    # 非単調でも生 min/max (ソート不要)
+    sig = _sig([5.0, 1.0, 3.0], [1.0, 2.0, 3.0])
+    assert sig.time_range() == (1.0, 5.0)
+
+
+def test_time_range_empty_is_none():
+    sig = _sig([], [])
+    assert sig.time_range() is None
+
+
+def test_time_range_does_not_trigger_sorted_view():
+    # ガードレールの核: 範囲取得が float64 値キャッシュを materialize しない (非誘発)
+    sig = _sig([5.0, 1.0, 3.0], [1.0, 2.0, 3.0])
+    sig.time_range()
+    assert getattr(sig, "_sorted_view_cache", None) is None
