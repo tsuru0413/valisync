@@ -232,13 +232,19 @@ class Session:
             size: int | None = group.source_path.stat().st_size
         except OSError:
             size = None  # moved/deleted after load — show what we still know
-        t_mins = [s.sorted_view()[0][0] for s in group.signals if len(s.timestamps)]
-        t_maxs = [s.sorted_view()[0][-1] for s in group.signals if len(s.timestamps)]
+        # t_min/t_max は範囲のみ必要 — sorted_view() を呼ぶと FU-20 の native
+        # dtype 値を全信号ぶん float64 へ upcast + キャッシュし prod(264k)で +数GB
+        # 膨張する(FU-18)。channel-group 内は master timestamps を共有するので
+        # id() で dedup し、unique master ごとに1回だけ生 min/max を取る。
+        reps = {id(s.timestamps): s for s in group.signals if len(s.timestamps)}
+        ranges = [r for s in reps.values() if (r := s.time_range()) is not None]
+        t_min = min(r[0] for r in ranges) if ranges else None
+        t_max = max(r[1] for r in ranges) if ranges else None
         return SourceInfo(
             full_path=group.source_path,
             size_bytes=size,
-            t_min=min(t_mins) if t_mins else None,
-            t_max=max(t_maxs) if t_maxs else None,
+            t_min=t_min,
+            t_max=t_max,
             n_channels=len(group.signals),
             file_format=group.file_format,
         )

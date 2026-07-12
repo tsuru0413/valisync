@@ -384,6 +384,58 @@ def test_source_info_time_range_non_monotonic(tmp_path):
     assert info.t_min == 1.0 and info.t_max == 5.0
 
 
+def test_source_info_does_not_pollute_sorted_view_cache(tmp_path):
+    # source_info は範囲のみ必要 — sorted_view() を呼ぶと全信号の値を float64 へ
+    # upcast + キャッシュし prod で +GB 膨張(FU-18)。sabotage(sorted_view()[0][0]
+    # へ復帰)でこの assert が RED になる honest observable。
+    master = np.arange(5.0, dtype=np.float64)
+    master.flags.writeable = False  # __post_init__ は read-only 配列を共有保持
+    sigs = [
+        Signal(
+            name=f"s{i}",
+            timestamps=master,
+            values=(np.arange(5, dtype=np.uint8) + i),
+            file_format="Derived",
+            bus_type="",
+            source_file="",
+            metadata={},
+        )
+        for i in range(4)
+    ]
+    session = Session()
+    key = session._groups.add(_group_of(sigs, tmp_path / "shared.csv"))
+    session.source_info(key)
+    grp = session._groups.group(key)
+    assert all(getattr(s, "_sorted_view_cache", None) is None for s in grp.signals)
+
+
+def test_source_info_time_range_spans_multiple_masters(tmp_path):
+    # 独立 master 2本 + 片方は非単調 → 全体の min/max を跨いで集計
+    session = Session()
+    a = _derived("a", [2.0, 5.0], [1.0, 2.0])
+    b = _derived("b", [0.0, 3.0, 1.0], [3.0, 4.0, 5.0])
+    key = session._groups.add(_group_of([a, b], tmp_path / "multi.csv"))
+    info = session.source_info(key)
+    assert info.t_min == 0.0 and info.t_max == 5.0
+
+
+def test_source_info_ignores_empty_signals_but_counts_them(tmp_path):
+    session = Session()
+    empty = _derived("e", [], [])
+    real = _derived("r", [1.0, 4.0], [10.0, 20.0])
+    key = session._groups.add(_group_of([empty, real], tmp_path / "mix.csv"))
+    info = session.source_info(key)
+    assert info.t_min == 1.0 and info.t_max == 4.0
+    assert info.n_channels == 2  # 空信号も channel 数には数える
+
+
+def test_source_info_time_range_none_when_all_empty(tmp_path):
+    session = Session()
+    key = session._groups.add(_group_of([_derived("e", [], [])], tmp_path / "e.csv"))
+    info = session.source_info(key)
+    assert info.t_min is None and info.t_max is None
+
+
 def test_namespaced_wrappers_share_sorted_view_cache(tmp_path):
     # signals() が返す namespaced ラッパーは FU-08 でキャッシュされ、無効化
     # (add/remove)までは呼び出しごとに同じオブジェクトを返す。無効化で作り直された
