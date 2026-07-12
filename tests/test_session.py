@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import gc
+import weakref
 from datetime import datetime
 from pathlib import Path
 
@@ -179,6 +181,42 @@ def test_remove_group_with_dependent_derived_requires_confirmation(tmp_path):
     forced = session.remove_group(key, force=True)
     assert forced.removed is True
     assert session.signals() == []
+
+
+def test_remove_group_hands_off_group_and_defers_dealloc(tmp_path: Path) -> None:
+    """remove_group returns the popped SignalGroup so the caller can defer its
+    (potentially huge) dealloc off the calling thread. While the caller holds
+    the returned group, core does NOT free it (FU-16)."""
+    session = Session()
+    csv = tmp_path / "a.csv"
+    _write_csv(csv, "t,speed", ["0.0,10.0", "1.0,20.0"])
+    key = session.load(csv, format_def=_FMT).key
+    result = session.remove_group(key)
+    assert result.removed is True
+    assert result.removed_group is not None
+    ref = weakref.ref(result.removed_group)
+    # Caller holds it -> alive (core did not synchronously dealloc it).
+    assert ref() is not None
+    # Dropping the only strong ref frees it (proves it was the caller's to free).
+    del result
+    gc.collect()
+    assert ref() is None
+
+
+def test_remove_group_refused_has_no_removed_group(tmp_path: Path) -> None:
+    """When removal is refused (dependent Derived_Signal, not forced),
+    removed_group is None."""
+    csv = tmp_path / "a.csv"
+    _write_csv(csv, "t,speed", ["0.0,10.0", "1.0,20.0"])
+    session = Session()
+    key = session.load(csv, format_def=_FMT).key
+    src = session.signals()[0]  # csv_1::speed
+    session.evaluate_formula("csv_1::speed * 2", {"csv_1::speed": src})
+
+    # Req 4.5: a dependent Derived_Signal blocks removal until confirmed.
+    result = session.remove_group(key)
+    assert result.removed is False
+    assert result.removed_group is None
 
 
 # ─── Pure-computation pass-throughs ───────────────────────────────────────────

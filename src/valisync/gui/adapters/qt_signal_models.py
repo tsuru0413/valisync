@@ -18,6 +18,7 @@ from PySide6.QtCore import (
     QPersistentModelIndex,
     Qt,
 )
+from PySide6.QtGui import QColor
 
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM, SignalItem
 from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
@@ -68,6 +69,8 @@ def decode_axis_move(md: QMimeData) -> tuple[int, int] | None:
 class FileListModel(QAbstractListModel):
     """QAbstractListModel mirroring :meth:`FileBrowserVM.files`."""
 
+    ReleasingRole = Qt.ItemDataRole.UserRole + 1
+
     def __init__(self, vm: FileBrowserVM, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._vm = vm
@@ -88,7 +91,20 @@ class FileListModel(QAbstractListModel):
             return self._vm.files[index.row()]
         if role == Qt.ItemDataRole.ToolTipRole:
             return self._vm.tooltip_text(index.row())
+        if role == FileListModel.ReleasingRole:
+            return self._vm.is_releasing(index.row())
+        if role == Qt.ItemDataRole.ForegroundRole and self._vm.is_releasing(
+            index.row()
+        ):
+            return QColor(128, 128, 128)  # 淡色(解放中の行はグレーアウト)
         return None
+
+    def flags(self, index: _Index) -> Qt.ItemFlag:
+        base = super().flags(index)
+        if index.isValid() and self._vm.is_releasing(index.row()):
+            # 解放中の行は選択も操作も不可(スピナーのプレースホルダ)。
+            return base & ~Qt.ItemFlag.ItemIsSelectable & ~Qt.ItemFlag.ItemIsEnabled
+        return base
 
 
 class SignalTableModel(QAbstractTableModel):

@@ -39,6 +39,8 @@ class AppViewModel(Observable):
         # deltas applied to the ORIGINAL session signal at render time.
         self._signal_offsets: dict[str, float] = {}
         self._file_offsets: dict[str, float] = {}
+        self._teardown: object | None = None  # duck-typed: enqueue(key, group)
+        self._releasing: dict[str, str] = {}  # key -> display name (capture at unload)
 
     @property
     def session(self) -> Session:
@@ -120,13 +122,30 @@ class AppViewModel(Observable):
         self._active_file_key = key
         self._notify("active_file")
 
-    def unload_file(self, key: str) -> None:
-        """Unload a loaded file: remove its group from the Session and reconcile.
+    def set_teardown(self, service: object) -> None:
+        """Inject the GUI-thread teardown service (duck-typed ``enqueue(key, group)``)."""
+        self._teardown = service
 
-        Refused without side effects when a Derived_Signal depends on the group
-        (``Session.remove_group`` returns ``removed=False``). Currently
-        unreachable — Derived_Signals are out of scope until valisync-gui-derived.
+    @property
+    def releasing_files(self) -> list[tuple[str, str]]:
+        """(key, display name) of files whose data is still draining, in order."""
+        return list(self._releasing.items())
+
+    def mark_released(self, key: str) -> None:
+        """Called by the teardown service when *key*'s data is fully freed."""
+        if self._releasing.pop(key, None) is not None:
+            self._notify("releasing")
+
+    def unload_file(self, key: str) -> None:
+        """Unload a loaded file: remove its group and defer the ~10 GB dealloc.
+
+        The heavy dealloc of the removed group is handed to the injected teardown
+        service (byte-budget background drain) so the UI thread returns at once
+        (FU-16). Logical close (loaded list / active file / offsets / prune) stays
+        synchronous. Refused without side effects when a Derived_Signal depends on
+        the group.
         """
+        name = self._safe_source_name(key)
         result = self._session.remove_group(key)
         if not result.removed:
             return
@@ -135,10 +154,20 @@ class AppViewModel(Observable):
         if self._active_file_key == key:
             self._active_file_key = None
             self._notify("active_file")
-        # Drop any offsets tied to the removed group so stale dicts don't linger.
         self._file_offsets.pop(key, None)
         self._purge_signal_offsets_under(key)
         self._notify("unloaded")
+        if result.removed_group is not None and self._teardown is not None:
+            self._releasing[key] = name
+            self._teardown.enqueue(key, result.removed_group)  # type: ignore[attr-defined]
+            self._notify("releasing")
+        # else: removed_group falls out of scope here -> immediate sync free.
+
+    def _safe_source_name(self, key: str) -> str:
+        try:
+            return self._session.source_name(key)
+        except KeyError:
+            return key
 
     # ─── Load ────────────────────────────────────────────────────────────────
 

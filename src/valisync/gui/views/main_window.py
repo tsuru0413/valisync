@@ -53,6 +53,7 @@ from valisync.gui.views.welcome_view import WelcomeView
 from valisync.gui.workers.expansion_confirmer import ExpansionConfirmer
 from valisync.gui.workers.export_worker import ExportController
 from valisync.gui.workers.load_worker import LoadController
+from valisync.gui.workers.teardown_service import TeardownService
 
 _ORG = "ValiSync"
 _APP = "ValiSync"
@@ -72,6 +73,14 @@ class MainWindow(QMainWindow):
     def __init__(self, app_vm: AppViewModel) -> None:
         super().__init__()
         self.app_vm = app_vm
+        # FU-16: hand a closed file's ~10 GB group to a GUI-thread byte-budget
+        # background drain so close returns at once; on_finished (mark_released)
+        # clears the File Browser's releasing (spinner) row once a file's data
+        # is fully freed.
+        self.teardown_service = TeardownService(
+            on_finished=self.app_vm.mark_released, parent=self
+        )
+        self.app_vm.set_teardown(self.teardown_service)
         self._update_window_title()
 
         # ── Shared ViewModels (one Session) ──────────────────────────────────

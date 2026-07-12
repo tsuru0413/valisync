@@ -177,3 +177,53 @@ def test_unload_file_removes_group_clears_active_and_notifies(tmp_path: Path) ->
     assert vm.signals() == []
     assert "unloaded" in notifications
     assert "active_file" in notifications
+
+
+class _FakeTeardown:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object]] = []
+
+    def enqueue(self, key, group) -> None:
+        self.calls.append((key, group))
+
+
+def test_unload_defers_removed_group_to_teardown_and_marks_releasing(tmp_path) -> None:
+    app_vm = AppViewModel()
+    fake = _FakeTeardown()
+    app_vm.set_teardown(fake)
+    key = app_vm.request_load(_write_csv(tmp_path / "a.csv"), _csv_format())
+    name = app_vm.session.source_name(key)
+
+    app_vm.unload_file(key)
+
+    # remove_group の削除グループが service へ渡る（core は同期解放しない）。  # noqa: RUF003
+    assert len(fake.calls) == 1 and fake.calls[0][0] == key
+    assert fake.calls[0][1] is not None
+    # releasing にマーク（名前は unload 時にキャプチャ＝session から消えても表示可）。  # noqa: RUF003
+    assert app_vm.releasing_files == [(key, name)]
+    # 論理クローズは同期で完了（loaded から消える）。  # noqa: RUF003
+    assert key not in app_vm.loaded_file_keys
+
+
+def test_mark_released_removes_from_releasing(tmp_path) -> None:
+    app_vm = AppViewModel()
+    fake = _FakeTeardown()
+    app_vm.set_teardown(fake)
+    key = app_vm.request_load(_write_csv(tmp_path / "a.csv"), _csv_format())
+    app_vm.unload_file(key)
+    seen: list[str] = []
+    app_vm.subscribe(lambda tag: seen.append(tag) if tag == "releasing" else None)
+
+    app_vm.mark_released(key)
+
+    assert app_vm.releasing_files == []
+    assert "releasing" in seen
+
+
+def test_unload_without_teardown_frees_immediately_no_releasing(tmp_path) -> None:
+    """teardown 未注入（ヘッドレス既定）では releasing にせず即時解放（現行挙動保存）。"""  # noqa: RUF002
+    app_vm = AppViewModel()
+    key = app_vm.request_load(_write_csv(tmp_path / "a.csv"), _csv_format())
+    app_vm.unload_file(key)
+    assert app_vm.releasing_files == []
+    assert key not in app_vm.loaded_file_keys

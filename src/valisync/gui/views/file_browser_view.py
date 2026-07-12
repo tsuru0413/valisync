@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from valisync.gui.adapters.qt_signal_models import FileListModel
+from valisync.gui.views.file_row_spinner import ReleasingSpinnerDelegate
 
 if TYPE_CHECKING:
     from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
@@ -57,6 +58,16 @@ class FileBrowserView(QWidget):
         # contextMenuEvent on this container does not fire reliably from the child
         # item view, so the menu would not appear in the real GUI.
         self.list_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+
+        # Spinner animation: advance an angle and repaint releasing rows only.
+        self._spin_angle = 0
+        self.list_view.setItemDelegate(
+            ReleasingSpinnerDelegate(lambda: self._spin_angle, self)
+        )
+        self._spin_timer = QTimer(self)
+        self._spin_timer.setInterval(80)
+        self._spin_timer.timeout.connect(self._advance_spinner)
+        self._spin_timer.start()
 
         self.placeholder_label = QLabel(
             "ファイルが読み込まれていません\n\nウィンドウへファイルをドロップして追加",
@@ -166,3 +177,9 @@ class FileBrowserView(QWidget):
             self._stack.setCurrentWidget(self.list_view)
         else:
             self._stack.setCurrentWidget(self.placeholder_label)
+
+    def _advance_spinner(self) -> None:
+        self._spin_angle = (self._spin_angle + 30) % 360
+        # releasing 行がある時だけ再描画(無ければ無駄描画しない)。
+        if any(self._vm.is_releasing(r) for r in range(len(self._vm.files))):
+            self.list_view.viewport().update()
