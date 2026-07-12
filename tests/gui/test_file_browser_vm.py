@@ -137,3 +137,27 @@ def test_tooltip_omits_size_when_file_gone(tmp_path: Path) -> None:
 
 def test_tooltip_none_for_out_of_range() -> None:
     assert FileBrowserVM(AppViewModel()).tooltip_text(0) is None
+
+
+def test_releasing_file_stays_after_loaded_rows_until_released(tmp_path: Path) -> None:
+    app_vm = AppViewModel()
+
+    class _Fake:
+        def enqueue(self, key: str, group: object) -> None:
+            pass
+
+    app_vm.set_teardown(_Fake())
+    k1 = app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())
+    k2 = app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
+    vm = FileBrowserVM(app_vm)
+    n1, n2 = app_vm.session.source_name(k1), app_vm.session.source_name(k2)
+
+    app_vm.unload_file(k1)  # k1 -> releasing (loaded から消え、末尾に releasing 行)
+
+    assert vm.files == [n2, n1]  # loaded(n2) の後ろに releasing(n1)
+    assert vm.is_releasing(0) is False  # loaded 行
+    assert vm.is_releasing(1) is True  # releasing 行
+
+    app_vm.mark_released(k1)
+    assert vm.files == [n2]
+    assert vm.is_releasing(0) is False

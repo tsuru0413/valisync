@@ -38,6 +38,7 @@ class FileBrowserVM(Observable):
         super().__init__()
         self._app_vm = app_vm
         self._files: list[str] = []
+        self._loaded_count = 0
         self._refresh()
 
         # Subscribe to AppViewModel events to stay in sync
@@ -98,22 +99,28 @@ class FileBrowserVM(Observable):
 
     def _on_app_change(self, change: str) -> None:
         """Handle notifications from AppViewModel."""
-        if change in ("loaded", "unloaded"):
+        if change in ("loaded", "unloaded", "releasing"):
             self._refresh()
 
     def _refresh(self) -> None:
-        """Rebuild the filenames list from the AppViewModel state.
+        """Rebuild the row list: loaded files first, then still-releasing files.
 
-        Recovers each file's display name via the Session public API
-        (``source_name``) — never reaching into Session internals.
+        Releasing rows sit AFTER loaded rows so the existing index guards in
+        select_file/unload (index < len(loaded_file_keys)) make them no-op —
+        i.e. non-interactive by construction (FU-16).
         """
-        files: list[str] = []
+        loaded: list[str] = []
         for key in self._app_vm.loaded_file_keys:
             try:
-                files.append(self._app_vm.session.source_name(key))
+                loaded.append(self._app_vm.session.source_name(key))
             except KeyError:
                 # Fallback to the key if the name cannot be recovered.
-                files.append(key)
-
-        self._files = files
+                loaded.append(key)
+        releasing = [name for _key, name in self._app_vm.releasing_files]
+        self._loaded_count = len(loaded)
+        self._files = loaded + releasing
         self._notify("files")
+
+    def is_releasing(self, row: int) -> bool:
+        """True when the row at *row* is a still-releasing (spinner) placeholder."""
+        return row >= getattr(self, "_loaded_count", len(self._files))
