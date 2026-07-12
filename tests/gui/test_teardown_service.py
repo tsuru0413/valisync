@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import gc
 import weakref
+from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 
@@ -21,9 +23,6 @@ def _sig(name: str, n: int) -> Signal:
 
 
 def _group(sigs: tuple[Signal, ...]) -> SignalGroup:
-    from datetime import datetime
-    from pathlib import Path
-
     return SignalGroup(
         signals=sigs,
         source_path=Path("x.csv").resolve(),
@@ -96,3 +95,48 @@ def test_empty_group_finishes_immediately(qtbot) -> None:
     svc.enqueue("g", _group(()))
     assert done == ["g"]
     assert svc.pending_bytes() == 0
+
+
+class _CountingArr:
+    """ndarray-like whose .nbytes read is counted (proves WHO touches bytes)."""
+
+    def __init__(self, nbytes: int, counter: list[int]) -> None:
+        self._n = nbytes
+        self._c = counter
+
+    @property
+    def nbytes(self) -> int:
+        self._c[0] += 1
+        return self._n
+
+
+class _SpySignal:
+    """Signal-like carrying counting arrays; not a real Signal (SignalGroup does
+    not type-check its members, so this rides through unmodified)."""
+
+    def __init__(self, nbytes: int, counter: list[int]) -> None:
+        self.timestamps = _CountingArr(nbytes // 2, counter)
+        self.values = _CountingArr(nbytes // 2, counter)
+
+
+def test_enqueue_is_o1_defers_byte_access_to_drain(qtbot) -> None:
+    """enqueue must not touch any signal's arrays (O(1) in signal count).
+
+    Summing nbytes over every signal at enqueue time was a ~320 ms UI freeze at
+    prod scale (264k) -- the residual the perf E2E caught. This locks the fix:
+    enqueue reads ZERO signal arrays; all per-signal byte work happens in drain.
+    """
+    counter = [0]
+    spies = tuple(_SpySignal(8, counter) for _ in range(100))
+    grp = SignalGroup(
+        signals=spies,  # type: ignore[arg-type]
+        source_path=Path("x.csv").resolve(),
+        file_format="CSV",
+        loaded_at=datetime(2026, 1, 1),
+    )
+    svc = TeardownService()
+    svc.enqueue("g", grp)
+    assert counter[0] == 0  # enqueue touched no signal arrays
+    assert svc.pending_signals() == 100
+    qtbot.waitUntil(lambda: svc.pending_signals() == 0, timeout=5000)
+    assert counter[0] > 0  # drain is what reads nbytes

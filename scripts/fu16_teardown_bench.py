@@ -146,9 +146,11 @@ def main() -> None:
     sync_close_ms = (time.perf_counter() - t0) * 1000
 
     # drain 完了まで event loop を回す (fix 後は背景 drain。fix 前は teardown None で即抜け)。
+    # ポーリングは O(1) の pending_signals() で行う (pending_bytes() は残余を都度合算する
+    # O(n) なので、drain-wait ループで呼ぶと drain_total_ms を汚染する)。
     drain_start = time.perf_counter()
     teardown = getattr(window, "teardown_service", None)
-    while teardown is not None and teardown.pending_bytes() > 0:
+    while teardown is not None and teardown.pending_signals() > 0:
         app.processEvents()
         if time.perf_counter() - drain_start > 120:
             break
