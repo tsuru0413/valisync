@@ -8,14 +8,59 @@ Tests verify:
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint
-from PySide6.QtGui import QContextMenuEvent
+from pathlib import Path
+
+from PySide6.QtCore import QEvent, QPoint, Qt
+from PySide6.QtGui import QContextMenuEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication, QListView
 from pytestqt.qtbot import QtBot
 
+from valisync.core.models import Delimiter, FormatDefinition
+from valisync.gui.adapters.qt_signal_models import FileListModel
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
 from valisync.gui.views.file_browser_view import FileBrowserView
+
+
+def _fmt() -> FormatDefinition:
+    """CSV format for tests."""
+    return FormatDefinition(
+        name="test_fmt",
+        delimiter=Delimiter.COMMA,
+        timestamp_column=0,
+        timestamp_unit="sec",
+        signal_start_column=1,
+        signal_end_column=1,
+        has_header=True,
+    )
+
+
+def _write_csv(path: Path) -> Path:
+    """Write a minimal valid CSV and return its path."""
+    path.write_text("t,speed\n0.0,10.0\n1.0,20.0\n2.0,30.0\n")
+    return path
+
+
+def _two_file_app_vm_with_fake_teardown(
+    tmp_path: Path,
+) -> tuple[AppViewModel, str, str]:
+    """AppViewModel with 2 loaded files and a fake teardown (no real GC drain).
+
+    Modeled on test_releasing_file_stays_after_loaded_rows_until_released
+    (tests/gui/test_file_browser_vm.py) — the fake teardown makes unload_file
+    mark the group releasing without an actual background release, so tests
+    can assert on the releasing row deterministically.
+    """
+
+    class _Fake:
+        def enqueue(self, key: str, group: object) -> None:
+            pass
+
+    app_vm = AppViewModel()
+    app_vm.set_teardown(_Fake())
+    k1 = app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())
+    k2 = app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
+    return app_vm, k1, k2
 
 
 def _send_context_menu_event(list_view: QListView, pos: QPoint) -> None:
@@ -273,3 +318,41 @@ def test_model_provides_tooltip_role(qtbot: QtBot, tmp_path) -> None:
     index = view.model.index(0, 0)
     tip = view.model.data(index, Qt.ItemDataRole.ToolTipRole)
     assert tip and "チャンネル:" in tip
+
+
+def test_releasing_row_is_non_interactive(qtbot: QtBot, tmp_path: Path) -> None:
+    """releasing 行は選択不可・有効フラグ無し(クリックしても選択/close されない)。"""
+    app_vm, k1, _k2 = _two_file_app_vm_with_fake_teardown(tmp_path)
+    vm = FileBrowserVM(app_vm)
+    view = FileBrowserView(vm)
+    qtbot.addWidget(view)
+    app_vm.unload_file(k1)  # k1 -> releasing(末尾行)
+
+    releasing_row = 1
+    idx = view.model.index(releasing_row, 0)
+    flags = view.model.flags(idx)
+    assert not (flags & Qt.ItemFlag.ItemIsSelectable)
+    assert not (flags & Qt.ItemFlag.ItemIsEnabled)
+
+    # 実 Qt クリック(Layer B): releasing 行を押しても選択されない。
+    rect = view.list_view.visualRect(idx)
+    ev = QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        rect.center(),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    QApplication.sendEvent(view.list_view.viewport(), ev)
+    assert not view.list_view.selectionModel().isSelected(idx)
+
+
+def test_releasing_row_exposes_spinner_state(qtbot: QtBot, tmp_path: Path) -> None:
+    """delegate が読む custom role が releasing 行で True・loaded 行で False。"""
+    app_vm, k1, _k2 = _two_file_app_vm_with_fake_teardown(tmp_path)
+    vm = FileBrowserVM(app_vm)
+    view = FileBrowserView(vm)
+    qtbot.addWidget(view)
+    app_vm.unload_file(k1)
+    assert view.model.data(view.model.index(1, 0), FileListModel.ReleasingRole) is True
+    assert view.model.data(view.model.index(0, 0), FileListModel.ReleasingRole) is False
