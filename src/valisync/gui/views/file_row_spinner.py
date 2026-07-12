@@ -32,7 +32,7 @@ class ReleasingSpinnerDelegate(QStyledItemDelegate):
         super().paint(painter, option, index)
         if not index.data(FileListModel.ReleasingRole):
             return
-        d = min(option.rect.height() - 8, 16)
+        d = max(0, min(option.rect.height() - 8, 16))  # never negative (tiny rows)
         x = option.rect.left() + 6
         y = option.rect.center().y() - d / 2
         rect = QRectF(x, y, d, d)

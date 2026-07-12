@@ -275,6 +275,12 @@ class Session:
         if dependents and not force:
             return RemovalResult(removed=False, dependent_signals=dependents)
 
+        # remove() drops the namespaced-wrapper caches, deallocating ~1 wrapper
+        # Signal per channel synchronously (shared arrays, so cheap per object but
+        # O(signal-count) overall). The heavy ~10 GB array dealloc is NOT here:
+        # the caller hands `removed_group` to the GUI teardown service (FU-16).
+        # This bookkeeping is the term most likely to grow toward the sync-close
+        # budget at very high channel counts.
         group = self._groups.remove(key)
         return RemovalResult(
             removed=True, dependent_signals=dependents, removed_group=group

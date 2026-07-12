@@ -123,4 +123,4 @@ class FileBrowserVM(Observable):
 
     def is_releasing(self, row: int) -> bool:
         """True when the row at *row* is a still-releasing (spinner) placeholder."""
-        return row >= getattr(self, "_loaded_count", len(self._files))
+        return row >= self._loaded_count
