@@ -234,8 +234,10 @@ class Session:
             size = None  # moved/deleted after load — show what we still know
         # t_min/t_max は範囲のみ必要 — sorted_view() を呼ぶと FU-20 の native
         # dtype 値を全信号ぶん float64 へ upcast + キャッシュし prod(264k)で +数GB
-        # 膨張する(FU-18)。channel-group 内は master timestamps を共有するので
-        # id() で dedup し、unique master ごとに1回だけ生 min/max を取る。
+        # 膨張する(FU-18)。MDF は channel-group 内で read-only master を共有する
+        # (mdf_loader) ので id() dedup が unique master ごと1回に潰す(264k->数本)。
+        # CSV は writeable timestamps を per-signal コピーするため dedup は効かない
+        # が、blowup 撤去(sorted_view 不使用)は全ローダー無条件・値も dedup 非依存。
         reps = {id(s.timestamps): s for s in group.signals if len(s.timestamps)}
         ranges = [r for s in reps.values() if (r := s.time_range()) is not None]
         t_min = min(r[0] for r in ranges) if ranges else None

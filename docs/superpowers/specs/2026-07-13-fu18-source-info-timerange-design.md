@@ -14,9 +14,10 @@ hover 経路確定: `qt_signal_models.data(ToolTipRole)`（`:92`）→ `FileBrow
 |---|---|---|---|
 | **現状（sorted_view）** | **7,689 ms** | **+4.69 GB** | 264k 全 populate |
 | A（生 min/max・per-signal） | 2,047 ms | 0 GB | 0 |
-| **A+B（master id dedup）** | **0 ms** | **0 GB** | **0** |
+| **A+B（master id dedup・分離マイクロ測定）** | **0 ms** | **0 GB** | **0** |
+| **A+B（実装後の統合実測）** | **41 ms** | **+0.00 GB** | **0** |
 
-**unique master timestamp 配列は 5 本のみ**（264k 信号が channel-group ごとの master を共有＝`mdf_loader.py:506 timestamps=master`＋`signal_group_manager.py:85` pass-through で id 同一）。id() dedup で 264k→5 reduction に潰れ初回 0ms。t_min/t_max は現状と一致（0.0/119.99）。**full 330k 展開なら float64 キャッシュ blowup は ~10.8GB で再 OOM**。
+**unique master timestamp 配列は 5 本のみ**（264k 信号が channel-group ごとの master を共有＝`mdf_loader.py:506 timestamps=master`＋`signal_group_manager.py:85` pass-through で id 同一）。id() dedup で 264k→5 reduction に潰れる。上表の「0ms」は dedup 済み 5 本の min/max のみを測った分離値で、**実装後の実コードは `{id(s.timestamps): s for s in group.signals}` の O(n) dict 内包（264k の id/len 走査）ぶんで 41ms**（フリーズ閾値を遥かに下回り体感ゼロ・2回目 44ms でキャッシュ非増加）。t_min/t_max は現状と一致（0.0/119.99）。**full 330k 展開なら float64 キャッシュ blowup は ~10.8GB で再 OOM**。
 
 `sorted_view()[0][0]`=min timestamp・`[0][-1]`=max timestamp の等価性: sorted_view は ts 昇順ソート＋keep-last dedup だが **dedup は内部重複のみ除去し端点を保存**するので raw `timestamps.min()/.max()` と厳密に等価。timestamps は `Signal.__post_init__` の isfinite ガード（`signal.py:32`）で有限保証 → min/max が NaN 化する懸念なし。
 
@@ -35,7 +36,7 @@ group 内で timestamps を `id()` で dedup し、**unique master ごとに1回
 `engine.py:322-323` も `sorted_view()[0][0/-1]` の同型パターンだが、**line 328 `ts = signals[n].sorted_view()[0]` が結果グリッド構築に refs の sorted_view を本当に使う**ため、322-323 をヘルパ化しても refs の float64 キャッシュ materialize は 328 で起き**回避されない**（一次情報で確認）。よって engine.py 変更は blowup を先回りできずスコープクリープ＝**本 spec では触れない**。formula refs は少数で bounded なので緊急性もない。
 
 ### C（メモ化）棄却
-A+B で初回 0ms のため YAGNI。仮に将来メモ化するなら不変フィールド（t_min/t_max/n_channels/format）のみ・`size_bytes`（`source_path.stat().st_size`）は揮発値なので毎回 re-stat。本 spec では非採用。
+A+B で実測 41ms（体感ゼロ・一度きりの O(n) 走査）のため YAGNI。仮に将来メモ化するなら不変フィールド（t_min/t_max/n_channels/format）のみ・`size_bytes`（`source_path.stat().st_size`）は揮発値なので毎回 re-stat。本 spec では非採用。
 
 ### 影響範囲（負の契約）
 - **VM・GUI・hover 経路の配線は不変**（source_info の内部計算のみ変更・戻り値 `SourceInfo` の型/フィールドは不変）。
