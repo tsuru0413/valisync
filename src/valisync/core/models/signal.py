@@ -151,6 +151,23 @@ class Signal:
         object.__setattr__(self, "_range_stat_index_cache", cache)
         return cache
 
+    def time_range(self) -> tuple[float, float] | None:
+        """Raw ``(min, max)`` timestamp without materialising ``sorted_view()``.
+
+        Cheap time-range accessor for metadata surfaces (e.g. ``source_info``).
+        Reads the raw timestamps deliberately — NOT ``sorted_view()[0][0]/[-1]``
+        — so it never upcasts values to float64 or populates the per-Signal
+        cache. That matters at prod scale: ``source_info`` walks every signal
+        (264k), and routing that through ``sorted_view`` would re-inflate the
+        native dtype 8x and undo FU-20 (FU-18). Timestamps are finite by
+        construction (``__post_init__`` guard), so min/max are finite. Returns
+        None for an empty signal.
+        """
+        ts = self.timestamps
+        if len(ts) == 0:
+            return None
+        return (float(ts.min()), float(ts.max()))
+
     @property
     def is_monotonic(self) -> bool:
         """True when the sorted view is the raw arrays (zero-copy fast path)."""
