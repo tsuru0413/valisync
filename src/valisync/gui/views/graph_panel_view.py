@@ -107,6 +107,12 @@ _Y_AXIS_FIXED_WIDTH = 72
 
 _GRID_ALPHA = 60  # X グリッド線のアルファ (0-255・淡色)
 
+# FU-12: 各 Y 軸リージョンをその高さの 3% だけ上下に内側へ寄せる。どの軸も真の
+# フルハイトにしないことで、レンジ境界に一致するデータがプロット枠に張り付いて
+# 見えなくなるのを防ぐ。calculate_virtual_range と _sync_overlay_geometry の両方が
+# この単一の値を YAxisVM.effective_region 経由で消費する(片側だけの適用は禁止)。
+AXIS_INSET_MARGIN: float = 0.03
+
 # ─── Pure interaction helpers (headless-testable) ─────────────────────────────
 
 
@@ -924,7 +930,24 @@ class GraphPanelView(QWidget):
             self._item_vb[curve.entry_id] = target_vb
             self._item_signal_key[curve.entry_id] = curve.name
 
-            item.setData(curve.timestamps, curve.values)
+            # FU-12 クリップ: インセット余白帯を空に保つため、この軸のデータ範囲外の
+            # 点を NaN にして描かない。オートフィット(range==データ extents)では
+            # 全点が範囲内ゆえ no-op。範囲外セグメントは非ヒット化する(描かれない箇所は
+            # クリックできない=正しい)。
+            vals = np.asarray(curve.values, dtype=float)
+            # axis_index can transiently point past the end (mid axis-removal) or
+            # have no y_range yet (unmapped/new axis) -- in either case there is no
+            # inset region to clip against, so draw this frame unclipped rather than
+            # NaN-ing out otherwise-valid data.
+            ax = (
+                self.vm.axes[curve.axis_index]
+                if curve.axis_index < len(self.vm.axes)
+                else None
+            )
+            if ax is not None and ax.y_range is not None:
+                y_lo, y_hi = ax.y_range
+                vals = np.where((vals < y_lo) | (vals > y_hi), np.nan, vals)
+            item.setData(curve.timestamps, vals)
             width = 2.5 if curve.entry_id == self._active_curve_id else 1.0
             item.setPen(pg.mkPen(curve.color, width=width))
 
@@ -954,7 +977,7 @@ class GraphPanelView(QWidget):
         for i, axis_vm in enumerate(self.vm.axes):
             if axis_vm.y_range is not None:
                 y_lo, y_hi = axis_vm.y_range
-                full_lo, full_hi = axis_vm.calculate_virtual_range()
+                full_lo, full_hi = axis_vm.calculate_virtual_range(AXIS_INSET_MARGIN)
                 self._view_boxes[i].setYRange(full_lo, full_hi, padding=0)
                 self._y_axes[i].setRange(y_lo, y_hi)
 
@@ -994,11 +1017,12 @@ class GraphPanelView(QWidget):
             if container is None:
                 continue
             band = container.sceneBoundingRect()
+            eff_top, eff_height = axis_vm.effective_region(AXIS_INSET_MARGIN)
             strip = QRectF(
                 band.x(),
-                R.y() + axis_vm.top_ratio * R.height(),
+                R.y() + eff_top * R.height(),
                 band.width(),
-                axis_vm.height_ratio * R.height(),
+                eff_height * R.height(),
             )
             self._y_axes[i].setGeometry(strip)
 

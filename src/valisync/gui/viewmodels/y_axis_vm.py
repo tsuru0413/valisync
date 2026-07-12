@@ -36,24 +36,38 @@ class YAxisVM(Observable):
             self.y_range = None
         self._notify("range")
 
-    def calculate_virtual_range(self) -> tuple[float, float]:
+    def effective_region(self, margin: float = 0.0) -> tuple[float, float]:
+        """このリージョンを各辺 *margin* (自身の高さの割合) だけ内側へ寄せた
+        ``(top, height)`` を返す。
+
+        どの軸も真のフルハイトにしないことで、境界値データがプロット枠に乗らない
+        (FU-12)。高さは**乗算** ``height*(1-2m)`` ── ``height-2m`` は
+        ``height < 2*margin`` で負になり仮想スパンが爆発する。margin=0.0 は
+        model 比率をそのまま返す (後方互換)。
+        """
+        eff_top = self.top_ratio + margin * self.height_ratio
+        eff_height = max(self.height_ratio * (1.0 - 2.0 * margin), 1e-9)
+        return (eff_top, eff_height)
+
+    def calculate_virtual_range(self, margin: float = 0.0) -> tuple[float, float]:
         """Calculate the full ViewBox Y-range to map [y_lo, y_hi] to this region.
 
         This implements the 'unclipped overlay' mapping. The full ViewBox
         occupies the entire panel; we set its Y-range such that the data range
         [y_min, y_max] corresponds to the vertical strip [top_ratio, top_ratio+height].
 
+        *margin* insets the strip (FU-12): with margin>0 the data band lands
+        ``margin`` of the strip's height inside each edge, so boundary-valued
+        data never coincides with the plot frame.
+
         top_ratio is 0.0 at the top of the panel and 1.0 at the bottom.
         Pyqtgraph Y-axis increases upwards (0.0 at bottom).
         """
         y_min, y_max = self.y_range if self.y_range is not None else (0.0, 1.0)
         span = max(y_max - y_min, 1e-9)
-        h_ratio = max(self.height_ratio, 1e-9)
+        eff_top, eff_height = self.effective_region(margin)
 
-        # Formula:
-        # full_hi = y_hi + top_ratio * span / height_ratio
-        # full_lo = y_hi - (1 - top_ratio) * span / height_ratio
-        v_hi = y_max + self.top_ratio * span / h_ratio
-        v_lo = y_max - (1.0 - self.top_ratio) * span / h_ratio
+        v_hi = y_max + eff_top * span / eff_height
+        v_lo = y_max - (1.0 - eff_top) * span / eff_height
 
         return (v_lo, v_hi)

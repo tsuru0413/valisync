@@ -94,6 +94,9 @@ def test_click_activation_enables_grip_resize(qtbot: QtBot, tmp_path: Path) -> N
     R = view._view_boxes[0].sceneBoundingRect()
 
     def strip_h(i: int) -> float:
+        # Rendered spine height, i.e. the m-inset effective_region(AXIS_INSET_MARGIN)
+        # ratio (FU-12) -- NOT the VM's raw height_ratio. Only used as a before/after
+        # delta below, so the inset's constant scale factor doesn't affect the check.
         return view._y_axes[i].sceneBoundingRect().height() / R.height()
 
     h1_before = strip_h(1)
