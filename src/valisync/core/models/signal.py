@@ -17,7 +17,9 @@ class Signal:
     timestamps: (
         np.ndarray
     )  # float64, shape=(n,), all finite; 記録どおり(非単調・重複あり得る)
-    values: np.ndarray  # float64, shape=(n,)
+    values: (
+        np.ndarray
+    )  # native 数値 dtype, shape=(n,); float64 は sorted_view()/finite_view() で
     file_format: str  # "MDF4" | "CSV" | "Derived"
     bus_type: str  # "CAN" | "XCP" | "Ethernet" | "" (empty for CSV and Derived)
     source_file: str  # absolute path; empty string for Derived signals
@@ -48,13 +50,17 @@ class Signal:
         self.values.flags.writeable = False
 
     def sorted_view(self) -> tuple[np.ndarray, np.ndarray]:
-        """Strictly-monotonic view for computation and rendering (spec §4.1).
+        """Strictly-monotonic float64 view for computation and rendering (spec §4.1).
 
         Stable-sorts by timestamp and keeps the last-recorded value for equal
-        timestamps (CAN "last received wins"). Already-monotonic signals get
-        the raw arrays back untouched (zero-copy), so the common case costs
-        one O(n) diff check. Cached after the first call; the computation is
-        idempotent, so racing initialisations are harmless.
+        timestamps (CAN "last received wins"). Values are upcast to float64
+        here (the single computation boundary), so ``Signal.values`` can be
+        stored in its native dtype (FU-20: avoids the 8x float64 inflation of
+        wide uint8 array channels) while every consumer still receives float64.
+        Timestamps are already float64 and are returned untouched, so
+        ``is_monotonic`` (a timestamp-identity check) is unaffected. Cached
+        after the first call; the computation is idempotent, so racing
+        initialisations are harmless.
         """
         cache = getattr(self, "_sorted_view_cache", None)
         if cache is not None:
@@ -69,7 +75,10 @@ class Signal:
             return cache
         ts, vs = self.timestamps, self.values
         if len(ts) < 2 or bool(np.all(np.diff(ts) > 0)):
-            cache = (ts, vs)
+            # 値を float64 へ (既に float64 なら copy=False で無コピー)。
+            vs64 = vs.astype(np.float64, copy=False)
+            vs64.flags.writeable = False
+            cache = (ts, vs64)
         else:
             order = np.argsort(ts, kind="stable")
             ts_s = ts[order]
@@ -78,7 +87,7 @@ class Signal:
             # 末尾(次の ts が大きくなる位置)だけ残せば「最後の記録」が勝つ
             keep = np.concatenate((np.diff(ts_s) > 0, [True]))
             ts_s = ts_s[keep]
-            vs_s = vs_s[keep]
+            vs_s = vs_s[keep].astype(np.float64, copy=False)
             ts_s.flags.writeable = False
             vs_s.flags.writeable = False
             cache = (ts_s, vs_s)

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 
+import hypothesis.extra.numpy as hnp
 import numpy as np
 import pytest
 from hypothesis import given
@@ -102,6 +103,28 @@ def test_pbt_sorted_view_monotonic_and_keep_last(ts: list[float]) -> None:
         # v は元配列で t が最後に現れた index
         assert int(v) == max(i for i, x in enumerate(ts) if x == t)
     assert sig.timestamps.tolist() == ts  # 生データ無改変
+
+
+@given(
+    hnp.arrays(
+        dtype=st.sampled_from([np.uint8, np.int16, np.int32]),
+        shape=st.integers(min_value=1, max_value=64),
+    )
+)
+def test_sorted_view_float64_upcast_is_exact_for_integers(vals):
+    ts = np.arange(len(vals), dtype=np.float64)  # 単調 → fast path
+    sig = Signal(
+        name="s",
+        timestamps=ts,
+        values=vals,
+        file_format="MDF4",
+        bus_type="",
+        source_file="",
+    )
+    _, vs = sig.sorted_view()
+    assert vs.dtype == np.float64
+    # uint8/int16/int32 は |値|<2^53 で float64 に厳密表現できるので値は不変。
+    assert np.array_equal(vs, vals.astype(np.float64))
 
 
 # ─── Property 2: immutability ─────────────────────────────────────────────────
