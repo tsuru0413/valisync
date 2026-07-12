@@ -256,6 +256,13 @@ class GraphAreaView(QWidget):
         (GraphAreaView)自身またはその子孫でなければ subtree 外とみなし
         clear_active_axis()。押下対象が非 QWidget/解決不能なら誤解除を避けて何もしない。
         常に False を返しイベントを消費しない。
+
+        注: QMenu popup は別トップレベルウィンドウなので、コンテキストメニュー項目の
+        クリックも subtree 外=解除トリガになる(意図的・spec 想定内で無害)。無害なのは
+        メニューアクションが対象軸を build 時に束縛する(例 build_axis_menu(_axis_index_at(pos))
+        は具体 index を capture)ためで、実行時に _active_axis_index を読むメニューハンドラを
+        将来足すと、項目クリックで解除された後の None を読んで壊れる — その場合はこの
+        解除を該当メニュー中は抑制するか、ハンドラを build 時束縛にすること。
         """
         if event.type() == QEvent.Type.MouseButtonPress:
             # obj = イベント配送先。実クリックでは押下対象ウィジェット(その viewport)で
