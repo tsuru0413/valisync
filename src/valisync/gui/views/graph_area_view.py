@@ -129,7 +129,7 @@ class GraphAreaView(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.sync_checkbox)
+        layout.addWidget(self.sync_checkbox, 0, Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self.tabs)
 
         unsubscribe = self.vm.subscribe(self._on_vm_change)
