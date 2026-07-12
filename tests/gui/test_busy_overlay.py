@@ -91,3 +91,26 @@ def test_filter_does_not_consume_parent_events_for_other_filters(qtbot: QtBot) -
     parent.resize(640, 480)
     QApplication.processEvents()
     assert spy.resizes > before  # overlay が Resize を消費していない証明
+
+
+def test_show_raises_overlay_above_later_created_sibling(qtbot: QtBot) -> None:
+    """FU-19: overlay は central/dock より先に生成され兄弟 z-order で背面に沈む。
+    show() は overlay を後生成の兄弟より前面へ raise しなければならない。"""
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    overlay = BusyOverlay(
+        parent
+    )  # 先に生成 (MainWindow の busy_overlay と同じ早期生成)
+    sibling = QWidget(parent)  # 後で生成 = 既定では overlay より上に積まれる
+    parent.setGeometry(0, 0, 400, 300)
+    sibling.setGeometry(0, 0, 400, 300)  # overlay と同一矩形を覆う不透明兄弟の代役
+    parent.show()
+    qtbot.waitExposed(parent)
+
+    overlay.show()
+
+    kids = parent.children()
+    assert kids.index(overlay) > kids.index(sibling), (
+        "FU-19 再発: show() 後も overlay が後生成の兄弟の背面にある "
+        f"(overlay idx={kids.index(overlay)}, sibling idx={kids.index(sibling)})"
+    )

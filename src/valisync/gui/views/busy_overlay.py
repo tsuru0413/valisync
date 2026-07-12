@@ -65,9 +65,12 @@ class BusyOverlay(QWidget):
             self.setGeometry(parent.rect())
 
     def show(self) -> None:
-        """Show the overlay, first sizing it to cover the parent if any."""
+        """Show the overlay, covering the parent and raising it above siblings."""
         self.cover()
         super().show()
+        # FU-19: central_stack/ドックは overlay より後に生成され Qt 兄弟 z-order で
+        # 上に積まれる。表示のたび最前面へ持ち上げないと不透明なプロット背景に隠れる。
+        self.raise_()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         # 親の resize へ追従 (可視時のみ — 非表示時は show() が cover する)。
