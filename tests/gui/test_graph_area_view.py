@@ -211,3 +211,89 @@ class TestLifecycle:
 
         assert len(vm._callbacks) == 0
         vm.add_tab()  # a notify after destruction must not raise
+
+
+# ─── FU-15: centralized click-away deselect ───────────────────────────────────
+
+
+class TestClickAwayDeselect:
+    def _panels(self, view: object) -> list:
+        return [w for _t, _p, w in view._panel_views]  # type: ignore[attr-defined]
+
+    def test_press_outside_plot_subtree_clears_active_axis(self, qtbot: QtBot) -> None:
+        """FU-15: プロット subtree 外のウィジェットへの MouseButtonPress で全パネルの
+        アクティブ軸が解除される(clear_active_axis 経由)。"""
+        from PySide6.QtCore import QEvent, QPoint, Qt
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtWidgets import QApplication, QWidget
+
+        view = _make_area(qtbot)
+        panels = self._panels(view)
+        assert panels, "no panel views"
+        for p in panels:
+            p.set_active_axis(0)
+        assert any(p._active_axis_index == 0 for p in panels)
+
+        # プロット subtree 外の兄弟ウィジェットへ press を配送。
+        outsider = QWidget()
+        qtbot.addWidget(outsider)
+        ev = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            QPoint(1, 1).toPointF()
+            if hasattr(QPoint(1, 1), "toPointF")
+            else QPoint(1, 1),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        # app フィルタ経路を駆動(GraphAreaView.eventFilter(outsider, ev))。
+        QApplication.instance().notify(outsider, ev)
+
+        assert all(p._active_axis_index is None for p in panels), (
+            "プロット外クリックで軸が解除されていない"
+        )
+
+    def test_press_inside_plot_subtree_does_not_clear(self, qtbot: QtBot) -> None:
+        """誤解除ガード: subtree 内(パネル自身/子)への press では解除しない
+        (パネル/軸/曲線の既存ハンドラがローカル処理する)。"""
+        from PySide6.QtCore import QEvent, QPoint, Qt
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtWidgets import QApplication
+
+        view = _make_area(qtbot)
+        panels = self._panels(view)
+        panels[0].set_active_axis(0)
+
+        ev = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            QPoint(1, 1).toPointF()
+            if hasattr(QPoint(1, 1), "toPointF")
+            else QPoint(1, 1),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        # subtree 内オブジェクト(パネル widget)への press。
+        QApplication.instance().notify(panels[0], ev)
+
+        assert panels[0]._active_axis_index == 0, "subtree 内 press で誤って解除された"
+
+    def test_event_filter_is_observation_only(self, qtbot: QtBot) -> None:
+        """フィルタはイベントを消費しない(常に False を返す)。"""
+        from PySide6.QtCore import QEvent, QPoint, Qt
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtWidgets import QWidget
+
+        view = _make_area(qtbot)
+        outsider = QWidget()
+        qtbot.addWidget(outsider)
+        ev = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            QPoint(1, 1).toPointF()
+            if hasattr(QPoint(1, 1), "toPointF")
+            else QPoint(1, 1),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        assert view.eventFilter(outsider, ev) is False  # type: ignore[attr-defined]
