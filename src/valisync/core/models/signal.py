@@ -19,7 +19,7 @@ class Signal:
     )  # float64, shape=(n,), all finite; 記録どおり(非単調・重複あり得る)
     values: (
         np.ndarray
-    )  # native 数値 dtype, shape=(n,); float64 は sorted_view()/finite_view() で
+    )  # native 数値 dtype, shape=(n,); float64 化は sorted_view()/finite_view() が担う
     file_format: str  # "MDF4" | "CSV" | "Derived"
     bus_type: str  # "CAN" | "XCP" | "Ethernet" | "" (empty for CSV and Derived)
     source_file: str  # absolute path; empty string for Derived signals

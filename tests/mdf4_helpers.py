@@ -118,7 +118,8 @@ def write_mdf4_all_channels_bad(tmp_path: Path) -> Path:
     per-column signals instead of skipping them, so that fixture no longer
     yields an "all bad" file. A byte-string channel (non-numeric dtype)
     stays genuinely unusable regardless of LD-12 — it survives asammdf's
-    round-trip as 1D but fails the ``astype(float64)`` conversion.
+    round-trip as 1D but is rejected by the loader's numeric ``dtype.kind``
+    gate (FU-20: non-numeric channels are skipped with a warning).
     """
     path = tmp_path / "allbad.mf4"
     mdf = MDF()
