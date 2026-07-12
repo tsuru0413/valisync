@@ -107,6 +107,12 @@ _Y_AXIS_FIXED_WIDTH = 72
 
 _GRID_ALPHA = 60  # X グリッド線のアルファ (0-255・淡色)
 
+# FU-12: 各 Y 軸リージョンをその高さの 3% だけ上下に内側へ寄せる。どの軸も真の
+# フルハイトにしないことで、レンジ境界に一致するデータがプロット枠に張り付いて
+# 見えなくなるのを防ぐ。calculate_virtual_range と _sync_overlay_geometry の両方が
+# この単一の値を YAxisVM.effective_region 経由で消費する(片側だけの適用は禁止)。
+AXIS_INSET_MARGIN: float = 0.03
+
 # ─── Pure interaction helpers (headless-testable) ─────────────────────────────
 
 
@@ -954,7 +960,7 @@ class GraphPanelView(QWidget):
         for i, axis_vm in enumerate(self.vm.axes):
             if axis_vm.y_range is not None:
                 y_lo, y_hi = axis_vm.y_range
-                full_lo, full_hi = axis_vm.calculate_virtual_range()
+                full_lo, full_hi = axis_vm.calculate_virtual_range(AXIS_INSET_MARGIN)
                 self._view_boxes[i].setYRange(full_lo, full_hi, padding=0)
                 self._y_axes[i].setRange(y_lo, y_hi)
 
@@ -994,11 +1000,12 @@ class GraphPanelView(QWidget):
             if container is None:
                 continue
             band = container.sceneBoundingRect()
+            eff_top, eff_height = axis_vm.effective_region(AXIS_INSET_MARGIN)
             strip = QRectF(
                 band.x(),
-                R.y() + axis_vm.top_ratio * R.height(),
+                R.y() + eff_top * R.height(),
                 band.width(),
-                axis_vm.height_ratio * R.height(),
+                eff_height * R.height(),
             )
             self._y_axes[i].setGeometry(strip)
 

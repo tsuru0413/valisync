@@ -83,10 +83,12 @@ def test_axis_spines_render_at_absolute_strips_with_blank_gap(
     # Survivors sorted by rendered top.
     strips = sorted(_strip_of_axis(view, i) for i in range(len(view._y_axes)))
     (a_top, a_h), (c_top, c_h) = strips
-    assert a_top == pytest.approx(0.0, abs=0.03)
-    assert a_h == pytest.approx(0.5, abs=0.03)
-    assert c_top == pytest.approx(0.8, abs=0.03)
-    assert c_h == pytest.approx(0.2, abs=0.03)
+    # インセット後(FU-12): 各リージョンは自高さの AXIS_INSET_MARGIN=0.03 だけ内側。
+    # A: top 0.0+0.03*0.5=0.015, h 0.5*0.94=0.47 / C: top 0.8+0.03*0.2=0.806, h 0.2*0.94=0.188
+    assert a_top == pytest.approx(0.015, abs=0.01)
+    assert a_h == pytest.approx(0.47, abs=0.01)
+    assert c_top == pytest.approx(0.806, abs=0.01)
+    assert c_h == pytest.approx(0.188, abs=0.01)
     # The middle band [0.5,0.8] must contain NO axis spine rect.
     R = _plot_rect(view)
     gap_lo, gap_hi = R.y() + 0.55 * R.height(), R.y() + 0.75 * R.height()
@@ -108,10 +110,11 @@ def test_axis_spine_renders_at_absolute_strip(qtbot: QtBot, tmp_path: Path) -> N
     vm.axes[1].top_ratio, vm.axes[1].height_ratio = 0.7, 0.3
 
     view = _mounted(qtbot, vm)
-    for i, expected_top in ((0, 0.0), (1, 0.7)):
+    # インセット位置(top + 0.03*height)。axis0: 0.0+0.03*0.7=0.021 / axis1: 0.7+0.03*0.3=0.709
+    for i, expected_top in ((0, 0.021), (1, 0.709)):
         top_frac, _h = _strip_of_axis(view, i)
-        assert top_frac == pytest.approx(expected_top, abs=0.03), (
-            f"axis {i} spine not at its absolute strip (got {top_frac})"
+        assert top_frac == pytest.approx(expected_top, abs=0.01), (
+            f"axis {i} spine not at its inset strip (got {top_frac})"
         )
 
 
@@ -129,11 +132,11 @@ def test_region_geometry_follows_resize(qtbot: QtBot, tmp_path: Path) -> None:
     view.resize(1200, 900)
     qtbot.waitUntil(lambda: _plot_rect(view).height() > 100, timeout=2000)
     top0, h0 = _strip_of_axis(view, 0)
-    assert top0 == pytest.approx(0.0, abs=0.03)
-    assert h0 == pytest.approx(0.7, abs=0.03)
+    assert top0 == pytest.approx(0.021, abs=0.01)  # 0.0 + 0.03*0.7
+    assert h0 == pytest.approx(0.7 * 0.94, abs=0.01)  # 0.658
     top1, h1 = _strip_of_axis(view, 1)
-    assert top1 == pytest.approx(0.7, abs=0.03)
-    assert h1 == pytest.approx(0.3, abs=0.03)
+    assert top1 == pytest.approx(0.709, abs=0.01)  # 0.7 + 0.03*0.3
+    assert h1 == pytest.approx(0.3 * 0.94, abs=0.01)  # 0.282
 
 
 def test_waveform_data_band_coincides_with_axis_spine_strip(
@@ -171,10 +174,10 @@ def test_waveform_data_band_coincides_with_axis_spine_strip(
             data_bot = (vb.mapViewToScene(QPointF(0.0, y_lo)).y() - R.y()) / R.height()
             spine_top, spine_h = _strip_of_axis(view, i)
             spine_bot = spine_top + spine_h
-            assert data_top == pytest.approx(spine_top, abs=0.03), (
+            assert data_top == pytest.approx(spine_top, abs=0.005), (
                 f"axis {i}: waveform top {data_top:.3f} != spine top {spine_top:.3f}"
             )
-            assert data_bot == pytest.approx(spine_bot, abs=0.03), (
+            assert data_bot == pytest.approx(spine_bot, abs=0.005), (
                 f"axis {i}: waveform bot {data_bot:.3f} != spine bot {spine_bot:.3f}"
             )
 
@@ -187,3 +190,55 @@ def test_waveform_data_band_coincides_with_axis_spine_strip(
     view.refresh()
     qtbot.waitUntil(lambda: len(view._y_axes) == 2, timeout=2000)
     _assert_waveform_aligned_with_spine()  # 2 survivors with a blank gap
+
+
+def test_boundary_data_lifts_off_frame_autofit(qtbot: QtBot, tmp_path: Path) -> None:
+    """FU-12: フルハイト軸のオートフィットで、データ最小値がプロット下枠に張り付かず
+    strip の m 内側に描かれる(報告バグそのもの)。"""
+    from PySide6.QtCore import QPointF
+
+    from valisync.gui.views.graph_panel_view import AXIS_INSET_MARGIN
+
+    session, _ = _loaded_session(tmp_path, n_signals=1)
+    keys = sorted(_keys(session))
+    vm = GraphPanelVM(session)
+    vm.create_new_axis(keys[0])  # 単一フルハイト軸・auto-fit
+    view = _mounted(qtbot, vm)
+
+    assert vm.axes[0].y_range is not None
+    y_lo, y_hi = vm.axes[0].y_range
+    R = _plot_rect(view)
+    vb = view._view_boxes[0]
+    data_bot = vb.mapViewToScene(QPointF(0.0, y_lo)).y()
+    data_top = vb.mapViewToScene(QPointF(0.0, y_hi)).y()
+    frame_bot = R.y() + R.height()
+    frame_top = R.y()
+    # 下枠・上枠の双方から少なくとも nominal margin の半分は浮く(full-height h=1)。
+    assert frame_bot - data_bot >= 0.5 * AXIS_INSET_MARGIN * R.height()
+    assert data_top - frame_top >= 0.5 * AXIS_INSET_MARGIN * R.height()
+
+
+def test_boundary_data_lifts_off_frame_manual_range(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """C は手動ズームも救う(A/_padded_range は救えない): set_axis_range で min が
+    データ値と一致する正確レンジを与えても、その値はフレームから浮く。"""
+    from PySide6.QtCore import QPointF
+
+    from valisync.gui.views.graph_panel_view import AXIS_INSET_MARGIN
+
+    session, _ = _loaded_session(tmp_path, n_signals=1)
+    keys = sorted(_keys(session))
+    vm = GraphPanelVM(session)
+    vm.create_new_axis(keys[0])
+    view = _mounted(qtbot, vm)
+    assert vm.axes[0].y_range is not None
+    y_lo, y_hi = vm.axes[0].y_range
+    vm.set_axis_range(0, y_lo, y_hi)  # 正確値(pad なし)を手動設定
+    view.refresh()
+
+    R = _plot_rect(view)
+    vb = view._view_boxes[0]
+    data_bot = vb.mapViewToScene(QPointF(0.0, y_lo)).y()
+    frame_bot = R.y() + R.height()
+    assert frame_bot - data_bot >= 0.5 * AXIS_INSET_MARGIN * R.height()
