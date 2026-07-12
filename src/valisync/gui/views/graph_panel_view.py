@@ -935,6 +935,10 @@ class GraphPanelView(QWidget):
             # 全点が範囲内ゆえ no-op。範囲外セグメントは非ヒット化する(描かれない箇所は
             # クリックできない=正しい)。
             vals = np.asarray(curve.values, dtype=float)
+            # axis_index can transiently point past the end (mid axis-removal) or
+            # have no y_range yet (unmapped/new axis) -- in either case there is no
+            # inset region to clip against, so draw this frame unclipped rather than
+            # NaN-ing out otherwise-valid data.
             ax = (
                 self.vm.axes[curve.axis_index]
                 if curve.axis_index < len(self.vm.axes)
