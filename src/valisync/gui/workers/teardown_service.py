@@ -10,6 +10,7 @@ Slicing by BYTES (not signal count) bounds a single huge array to one tick.
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable
 
 from PySide6.QtCore import QObject, QTimer
@@ -30,7 +31,7 @@ class TeardownService(QObject):
         super().__init__(parent)
         self._on_finished = on_finished
         self._budget = byte_budget
-        self._graveyard: list[tuple[str, Signal]] = []
+        self._graveyard: deque[tuple[str, Signal]] = deque()
         self._pending_count: dict[str, int] = {}
         self._pending_bytes = 0
         self._timer = QTimer(self)
@@ -57,9 +58,10 @@ class TeardownService(QObject):
     def _drain(self) -> None:
         freed = 0
         while self._graveyard:
-            key, sig = self._graveyard.pop()
-            freed += sig.timestamps.nbytes + sig.values.nbytes
-            self._pending_bytes -= sig.timestamps.nbytes + sig.values.nbytes
+            key, sig = self._graveyard.popleft()
+            nbytes = sig.timestamps.nbytes + sig.values.nbytes
+            freed += nbytes
+            self._pending_bytes -= nbytes
             self._pending_count[key] -= 1
             if self._pending_count[key] == 0:
                 del self._pending_count[key]

@@ -87,7 +87,7 @@ def test_multiple_keys_fifo_each_finishes(qtbot) -> None:
     svc.enqueue("a", _group((_sig("a1", 500_000), _sig("a2", 500_000))))
     svc.enqueue("b", _group((_sig("b1", 500_000),)))
     _drain_all(svc, qtbot)
-    assert sorted(done) == ["a", "b"]
+    assert done == ["a", "b"]
 
 
 def test_empty_group_finishes_immediately(qtbot) -> None:
