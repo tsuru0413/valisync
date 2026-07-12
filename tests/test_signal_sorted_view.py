@@ -5,6 +5,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from valisync.core.interpolation.interpolator import (
+    InterpolationMethod,
+    Interpolator,
+)
 from valisync.core.models import Signal
 
 
@@ -125,3 +129,49 @@ def test_finite_view_delegate_shared_with_namespaced_wrapper() -> None:
     wrapper = _sig([0.0, 1.0, 2.0], [1.0, np.nan, 3.0])
     object.__setattr__(wrapper, "_sorted_view_delegate", orig)
     assert wrapper.finite_view()[0] is orig.finite_view()[0]
+
+
+# ─── FU-20: sorted_view の float64 upcast (native dtype 保持の単一境界) ────────
+
+
+def _native_sig(values: np.ndarray, timestamps: list[float] | None = None) -> Signal:
+    ts = np.asarray(
+        timestamps if timestamps is not None else np.arange(len(values)),
+        dtype=np.float64,
+    )
+    return Signal(
+        name="s",
+        timestamps=ts,
+        values=np.asarray(values),
+        file_format="MDF4",
+        bus_type="",
+        source_file="",
+    )
+
+
+def test_sorted_view_upcasts_native_uint8_to_float64():
+    sig = _native_sig(np.array([10, 20, 30], dtype=np.uint8))
+    _, vs = sig.sorted_view()
+    assert vs.dtype == np.float64
+    assert np.array_equal(vs, [10.0, 20.0, 30.0])
+
+
+def test_finite_view_is_float64_for_native_uint8():
+    sig = _native_sig(np.array([10, 20, 30], dtype=np.uint8))
+    _, vs = sig.finite_view()
+    assert vs.dtype == np.float64
+
+
+def test_is_monotonic_unchanged_for_native_uint8_monotonic_signal():
+    sig = _native_sig(np.array([1, 2, 3], dtype=np.uint8))
+    # 単調 ts なので fast path: sorted_view()[0] は timestamps 同一オブジェクト。
+    assert sig.is_monotonic is True
+    assert sig.sorted_view()[0] is sig.timestamps
+
+
+def test_linear_interp_no_uint8_wraparound():
+    # vs=[200,10] uint8。float64 なら中点=105.0。uint8 減算 (10-200) は 66 に wrap し
+    # 233.0 になる (sorted_view が upcast しないと FAIL する discriminating テスト)。
+    sig = _native_sig(np.array([200, 10], dtype=np.uint8), timestamps=[0.0, 1.0])
+    v = Interpolator().interpolate(sig, 0.5, InterpolationMethod.LINEAR)
+    assert v == 105.0

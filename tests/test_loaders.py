@@ -731,3 +731,29 @@ def test_oversized_skipped_headless_without_callback(tmp_path: Path) -> None:
     names = {s.name for s in result.signal_group.signals}
     assert "Clean" in names and not any(n.startswith("Wide") for n in names)
     assert any(d.level == "warning" and "Wide" in d.message for d in result.diagnostics)
+
+
+# ─── MdfLoader: native dtype 保持 (FU-20 Task 2) ─────────────────────────────
+
+
+def test_loader_preserves_native_uint8_dtype(tmp_path: Path) -> None:
+    # write_mdf4_2d: 4x3 uint8 の "Mat" (3 列に展開) + float64 の "Clean"。
+    path = write_mdf4_2d(tmp_path)
+    result = MdfLoader().load(path)
+    sigs = {s.name: s for s in result.signal_group.signals}
+    mat_cols = [s for name, s in sigs.items() if name.startswith("Mat")]
+    assert len(mat_cols) == 3
+    # native uint8 を保持 — 現行の astype(float64) なら float64 になり FAIL。
+    assert all(s.values.dtype == np.uint8 for s in mat_cols)
+    # float64 元データ (Clean) は float64 のまま。
+    assert sigs["Clean"].values.dtype == np.float64
+
+
+def test_loader_skips_non_numeric_channel_with_warning(tmp_path: Path) -> None:
+    # byte-string (S4) チャンネルのみ = 全滅。dtype.kind 'S' はスキップ対象。
+    path = write_mdf4_all_channels_bad(tmp_path)
+    result = MdfLoader().load(path)
+    assert result.signal_group.signals == ()
+    assert any(
+        d.level == "warning" and "non-numeric" in d.message for d in result.diagnostics
+    )
