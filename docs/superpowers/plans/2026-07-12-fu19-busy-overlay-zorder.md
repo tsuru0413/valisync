@@ -249,7 +249,9 @@ def test_overlay_raised_above_plots_during_real_load(
     print(f"[FU-19] overlay raised above plots; widgetAt={type(w_at).__name__}. shot: {shot}")
 
     release.set()  # blocking ワーカーを排水しスレッドを残さない
-    qtbot.waitUntil(lambda: discards == ["late_result"], timeout=3000)
+    # 注: このテストは cancel しないため on_discard は発火せず discards は空のまま。
+    # 排水完了は count-based busy 解除で観測する (実装時に確定した逸脱・SOUND)。
+    qtbot.waitUntil(lambda: overlay.isHidden(), timeout=3000)
 ```
 
 - [ ] **Step 2: honest-RED を sabotage で実証**

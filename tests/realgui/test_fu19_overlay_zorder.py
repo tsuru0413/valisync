@@ -127,16 +127,18 @@ def test_overlay_raised_above_plots_during_real_load(
     with contextlib.suppress(Exception):
         QApplication.primaryScreen().grabWindow(0).save(str(shot))
 
-    assert _is_overlay_or_descendant(w_at, overlay), (
-        f"FU-19 再発: ロード中に widgetAt(中心)={type(w_at).__name__} が overlay "
-        f"子孫でない = overlay が不透明プロット背面に隠れている。screenshot: {shot}"
-    )
+    try:
+        assert _is_overlay_or_descendant(w_at, overlay), (
+            f"FU-19 再発: ロード中に widgetAt(中心)={type(w_at).__name__} が overlay "
+            f"子孫でない = overlay が不透明プロット背面に隠れている。screenshot: {shot}"
+        )
+        print(
+            f"[FU-19] overlay raised above plots; widgetAt={type(w_at).__name__}. shot: {shot}"
+        )
+    finally:
+        # assert 失敗時も blocking ワーカーを必ず排水しスレッドを残さない。
+        release.set()
 
-    print(
-        f"[FU-19] overlay raised above plots; widgetAt={type(w_at).__name__}. shot: {shot}"
-    )
-
-    release.set()  # blocking ワーカーを排水しスレッドを残さない
     # このテストはキャンセルしない (cancel_active 未呼び出し) ため on_discard は
     # 発火しない — discards は本番シグネチャ整合のための wiring として残すのみ。
     # 排水完了の観測は count-based busy 解除 (_pop -> _refresh_busy が0件で hide)。
