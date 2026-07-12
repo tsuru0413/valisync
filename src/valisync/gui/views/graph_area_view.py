@@ -18,7 +18,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Callable
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtGui import (
     QDragEnterEvent,
     QDragLeaveEvent,
@@ -30,6 +30,7 @@ from PySide6.QtGui import (
     QShortcut,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QLineEdit,
     QSplitter,
@@ -129,7 +130,7 @@ class GraphAreaView(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.sync_checkbox)
+        layout.addWidget(self.sync_checkbox, 0, Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self.tabs)
 
         unsubscribe = self.vm.subscribe(self._on_vm_change)
@@ -137,6 +138,18 @@ class GraphAreaView(QWidget):
         # The VM outlives this widget; drop the subscription when the C++ object
         # is destroyed so a later notify never calls into a deleted view.
         self.destroyed.connect(lambda *_: unsubscribe())
+
+        # FU-15: centralized click-away — プロット subtree 外の押下でアクティブ Y 軸を
+        # 解除する。単一介入点なので新ドック/エリアはゼロ配線で対応。app にフィルタを
+        # 設置する。明示 removeEventFilter は不要かつ有害: Qt はフィルタ登録先(app)より
+        # フィルタ自身(self)が先に破棄された場合、self の destroyed 時点で自動的に
+        # フィルタ登録を解除する(実測で確認済み — 破棄後は app 経由のイベントが
+        # 二度と self.eventFilter に届かない)。逆に self を自身の destroyed スロットで
+        # 使うと shiboken が signal 発火と同時に self のラッパーを無効化済みのため
+        # RuntimeError("already deleted") になる。
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
         self._rebuild()
 
     # ─── VM reactions ──────────────────────────────────────────────────────────
@@ -229,6 +242,42 @@ class GraphAreaView(QWidget):
                 tab_index, src, ax, panel_index, col, pos
             )
         )
+
+    def clear_active_axis(self) -> None:
+        """全パネルのアクティブ Y 軸(view-transient)を解除する。FU-15 の単一解除点。"""
+        for _tab, _panel, widget in self._panel_views:
+            if isinstance(widget, GraphPanelView):
+                widget.set_active_axis(None)
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        """FU-15: プロット subtree 外の左押下でアクティブ軸を解除する(観測のみ)。
+
+        MouseButtonPress 以外は即スルー。押下対象ウィジェットを解決し、self
+        (GraphAreaView)自身またはその子孫でなければ subtree 外とみなし
+        clear_active_axis()。押下対象が非 QWidget/解決不能なら誤解除を避けて何もしない。
+        常に False を返しイベントを消費しない。
+
+        注: QMenu popup は別トップレベルウィンドウなので、コンテキストメニュー項目の
+        クリックも subtree 外=解除トリガになる(意図的・spec 想定内で無害)。無害なのは
+        メニューアクションが対象軸を build 時に束縛する(例 build_axis_menu(_axis_index_at(pos))
+        は具体 index を capture)ためで、実行時に _active_axis_index を読むメニューハンドラを
+        将来足すと、項目クリックで解除された後の None を読んで壊れる — その場合はこの
+        解除を該当メニュー中は抑制するか、ハンドラを build 時束縛にすること。
+        """
+        if event.type() == QEvent.Type.MouseButtonPress:
+            # obj = イベント配送先。実クリックでは押下対象ウィジェット(その viewport)で
+            # あり、合成テストでも notify(target, ev) の target になるため主経路に使う。
+            # widgetAt は obj が非 QWidget のときの fallback(globalPos はここでのみ触る)。
+            target = obj if isinstance(obj, QWidget) else None
+            if target is None:
+                target = QApplication.widgetAt(
+                    event.globalPosition().toPoint()  # type: ignore[attr-defined]
+                )
+            if isinstance(target, QWidget) and not (
+                target is self or self.isAncestorOf(target)
+            ):
+                self.clear_active_axis()
+        return False
 
     def _sync_current(self) -> None:
         self._syncing = True

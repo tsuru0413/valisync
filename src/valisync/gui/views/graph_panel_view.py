@@ -1917,6 +1917,7 @@ class GraphPanelView(QWidget):
                     self.grabMouse()
                 else:
                     self._deactivate_curve()  # empty-plot click -> deactivate
+                    self.set_active_axis(None)  # FU-15: 空白クリックで軸選択も解除
             else:
                 self._deactivate_curve()
         super().mousePressEvent(event)

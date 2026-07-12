@@ -700,6 +700,44 @@ class TestCurveActivation:
         qtbot.keyClick(view, Qt.Key.Key_H)
         assert all(not e["visible"] for e in vm.inspect()["plotted_signals"])
 
+    def test_empty_plot_click_deselects_active_axis(
+        self, qtbot: QtBot, tmp_path: Path
+    ) -> None:
+        """FU-15a: 曲線のない空プロット面をクリックするとアクティブ Y 軸が解除される
+        (_active_axis_index -> None). 空プロットクリックが _deactivate_curve に
+        届く既存経路 (mousePressEvent の ZONE_PLOT no-curve 分岐, :1919) に軸解除
+        を追加する — 同じ分岐が到達する座標/イベント合成は _curve_click_setup /
+        _press_event と同じパターン(widget 空間の QPointF・_press_event 経由の
+        QMouseEvent)を流用する。
+        """
+        session, _ = _loaded_session(tmp_path, n_signals=1)
+        key = _keys(session)[0]
+        vm = GraphPanelVM(session)
+        vm.create_new_axis(key)
+        view = _make_view(qtbot, vm)
+        view.resize(800, 600)  # type: ignore[attr-defined]
+        view.show()  # type: ignore[attr-defined]
+        qtbot.waitExposed(view)  # type: ignore[attr-defined]
+        view.refresh()  # type: ignore[attr-defined]
+
+        view.set_active_axis(0)  # type: ignore[attr-defined]
+        assert view._active_axis_index == 0  # type: ignore[attr-defined]
+
+        # 曲線データは row index が中央付近 (i % 50 == 0) で値0付近になる
+        # (_write_csv の生成規則) ため、widget 空間でのプロット矩形上端寄りの
+        # 中央 x は _curve_at の許容誤差 (CURVE_HIT_TOL_PX) 圏外 = ZONE_PLOT
+        # かつ曲線なし、の空点になる。_zone_at と同じ _plot_rect_in_widget()
+        # を使って算出するので zone 判定と食い違わない。
+        plot_rect = view._plot_rect_in_widget()  # type: ignore[attr-defined]
+        empty_pt = QPointF(plot_rect.center().x(), plot_rect.top() + 3)
+        assert view._curve_at(empty_pt) is None  # type: ignore[attr-defined]
+
+        view.mousePressEvent(_press_event(view, empty_pt))  # type: ignore[attr-defined]
+
+        assert view._active_axis_index is None, (  # type: ignore[attr-defined]
+            "空プロットクリックで軸が解除されていない"
+        )
+
 
 # ─── Task 6: 曲線右クリックメニュー (非表示/色変更/削除) + ルーティング骨格 ────────
 

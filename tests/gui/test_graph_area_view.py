@@ -156,6 +156,28 @@ class TestPanelFactory:
 # ─── Lifecycle: no leaks, clean unsubscribe ────────────────────────────────────
 
 
+class TestSyncCheckboxHitArea:
+    def test_sync_checkbox_not_stretched_to_full_width(self, qtbot: QtBot) -> None:
+        """FU-17: Sync X チェックボックスは内容幅に固定され、右余白が
+        クリック判定に含まれない (全幅ストレッチしない)."""
+        from PySide6.QtWidgets import QCheckBox
+
+        view = _make_area(qtbot)
+        view.resize(900, 600)  # type: ignore[attr-defined]
+        view.show()  # type: ignore[attr-defined]
+        qtbot.waitExposed(view)  # type: ignore[arg-type]
+
+        cb = view.sync_checkbox  # type: ignore[attr-defined]
+        # 内容幅 (sizeHint) 近傍に固定 = 全幅 900 まで伸びない。
+        assert cb.width() <= cb.sizeHint().width() + 8, (
+            f"checkbox stretched to {cb.width()} (sizeHint {cb.sizeHint().width()})"
+        )
+        # content 端よりはるか右の余白は checkbox 本体を返さない (dead margin 消失)。
+        far_right = view.width() - 20  # type: ignore[attr-defined]
+        hit = view.childAt(far_right, cb.y() + cb.height() // 2)  # type: ignore[attr-defined]
+        assert not isinstance(hit, QCheckBox), "right margin still hits the checkbox"
+
+
 class TestLifecycle:
     def test_rebuild_does_not_leak_pages(self, qtbot: QtBot) -> None:
         """Each _rebuild must dispose old pages; QTabWidget.clear() alone leaks
@@ -189,3 +211,89 @@ class TestLifecycle:
 
         assert len(vm._callbacks) == 0
         vm.add_tab()  # a notify after destruction must not raise
+
+
+# ─── FU-15: centralized click-away deselect ───────────────────────────────────
+
+
+class TestClickAwayDeselect:
+    def _panels(self, view: object) -> list:
+        return [w for _t, _p, w in view._panel_views]  # type: ignore[attr-defined]
+
+    def test_press_outside_plot_subtree_clears_active_axis(self, qtbot: QtBot) -> None:
+        """FU-15: プロット subtree 外のウィジェットへの MouseButtonPress で全パネルの
+        アクティブ軸が解除される(clear_active_axis 経由)。"""
+        from PySide6.QtCore import QEvent, QPoint, Qt
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtWidgets import QApplication, QWidget
+
+        view = _make_area(qtbot)
+        panels = self._panels(view)
+        assert panels, "no panel views"
+        for p in panels:
+            p.set_active_axis(0)
+        assert any(p._active_axis_index == 0 for p in panels)
+
+        # プロット subtree 外の兄弟ウィジェットへ press を配送。
+        outsider = QWidget()
+        qtbot.addWidget(outsider)
+        ev = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            QPoint(1, 1).toPointF()
+            if hasattr(QPoint(1, 1), "toPointF")
+            else QPoint(1, 1),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        # app フィルタ経路を駆動(GraphAreaView.eventFilter(outsider, ev))。
+        QApplication.instance().notify(outsider, ev)
+
+        assert all(p._active_axis_index is None for p in panels), (
+            "プロット外クリックで軸が解除されていない"
+        )
+
+    def test_press_inside_plot_subtree_does_not_clear(self, qtbot: QtBot) -> None:
+        """誤解除ガード: subtree 内(パネル自身/子)への press では解除しない
+        (パネル/軸/曲線の既存ハンドラがローカル処理する)。"""
+        from PySide6.QtCore import QEvent, QPoint, Qt
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtWidgets import QApplication
+
+        view = _make_area(qtbot)
+        panels = self._panels(view)
+        panels[0].set_active_axis(0)
+
+        ev = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            QPoint(1, 1).toPointF()
+            if hasattr(QPoint(1, 1), "toPointF")
+            else QPoint(1, 1),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        # subtree 内オブジェクト(パネル widget)への press。
+        QApplication.instance().notify(panels[0], ev)
+
+        assert panels[0]._active_axis_index == 0, "subtree 内 press で誤って解除された"
+
+    def test_event_filter_is_observation_only(self, qtbot: QtBot) -> None:
+        """フィルタはイベントを消費しない(常に False を返す)。"""
+        from PySide6.QtCore import QEvent, QPoint, Qt
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtWidgets import QWidget
+
+        view = _make_area(qtbot)
+        outsider = QWidget()
+        qtbot.addWidget(outsider)
+        ev = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            QPoint(1, 1).toPointF()
+            if hasattr(QPoint(1, 1), "toPointF")
+            else QPoint(1, 1),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        assert view.eventFilter(outsider, ev) is False  # type: ignore[attr-defined]
