@@ -156,21 +156,20 @@ def test_view_uses_signal_tree_model(qtbot: QtBot, tmp_path: Path) -> None:
 
     _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
     assert isinstance(view.model, SignalTreeModel)
-    # top-level に配列親が居り、展開で子が見える
-    proxy = view.proxy
-    top0 = proxy.index(0, 0)
-    assert view.model.rowCount(proxy.mapToSource(top0)) >= 1
+    assert not hasattr(view, "proxy")  # proxy 撤去(FU-22 B: 遅延保持)
+    assert view.tree.model() is view.model  # model 直結
+    top0 = view.model.index(0, 0, QModelIndex())
+    assert view.model.rowCount(top0) >= 1  # array 親に子
 
 
 def test_selected_leaf_resolves_source_key(qtbot: QtBot, tmp_path: Path) -> None:
     """親を展開しリーフを選択すると selected_signal_keys が源 key を返す(親スレッド grab)。"""
     _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
-    proxy, model = view.proxy, view.model
-    parent_src = model.index(0, 0, QModelIndex())  # array parent
-    parent_proxy = proxy.mapFromSource(parent_src)
-    child_proxy = proxy.index(0, 0, parent_proxy)  # thread the parent
+    model = view.model
+    parent = model.index(0, 0, QModelIndex())  # array parent
+    child = model.index(0, 0, parent)  # first leaf child (no proxy threading)
     view.tree.selectionModel().select(
-        child_proxy,
+        child,
         QItemSelectionModel.SelectionFlag.Select
         | QItemSelectionModel.SelectionFlag.Rows,
     )
@@ -183,10 +182,9 @@ def test_selecting_parent_yields_no_leaf_keys_in_incr1(
 ) -> None:
     """増分①: 親選択は源 key を持たない(親追加は増分④)。"""
     _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
-    proxy, model = view.proxy, view.model
-    parent_proxy = proxy.mapFromSource(model.index(0, 0, QModelIndex()))
+    parent = view.model.index(0, 0, QModelIndex())
     view.tree.selectionModel().select(
-        parent_proxy,
+        parent,
         QItemSelectionModel.SelectionFlag.Select
         | QItemSelectionModel.SelectionFlag.Rows,
     )
@@ -379,10 +377,8 @@ def test_double_click_emits_add(qtbot: QtBot, tmp_path: Path) -> None:
     emitted: list[list[str]] = []
     view.add_to_panel_requested.connect(emitted.append)
 
-    # PC-20: view.tree's model is now view.proxy (not view.model directly), so
-    # the index fed to tree.visualRect() must belong to the proxy -- an index
-    # from the source model silently mismatches (empty rect, no exception).
-    index = view.proxy.index(0, 0)
+    # view.tree is bound directly to view.model (no proxy, FU-22 B).
+    index = view.model.index(0, 0)
     qtbot.waitUntil(lambda: view.tree.visualRect(index).height() > 0)
     rect_center = view.tree.visualRect(index).center()
 
@@ -397,14 +393,14 @@ def test_double_click_emits_add(qtbot: QtBot, tmp_path: Path) -> None:
 
 
 # ─── Header-click Column Sort (PC-20/DP2) ────────────────────────────────────
-# QSortFilterProxyModel sits between SignalTreeModel (source) and the tree,
-# for sorting only (filtering stays VM-truth). selected_signal_keys() must
-# mapToSource the (post-sort, reordered) proxy index before resolving the key
-# -- otherwise the sorted view would select/drag whatever row is at that
-# source position, not the row the user actually sees (honest layering note
-# in the plan: this only shows up once a sort has actually been applied).
+# FU-22 B increment 1 dropped the QSortFilterProxyModel that used to sit
+# between SignalTreeModel (source) and the tree -- it forced eager
+# materialization of all array children on every reset (~456ms at prod scale),
+# defeating the lazy tree built in Tasks 1-4. Sort moves VM-side in increment
+# 3 (proxy dropped); the tests below are skipped until then.
 
 
+@pytest.mark.skip(reason="FU-22 B: sort moves VM-side in increment 3 (proxy dropped)")
 def test_default_order_is_source_order(qtbot: QtBot, tmp_path: Path) -> None:
     # ソート未クリックの既定は源順(登録順)を保つ(sortByColumn(-1) パススルー)。
     view = _cb_view_with_signals(qtbot, tmp_path, ["zed", "alpha", "mid"])
@@ -412,6 +408,7 @@ def test_default_order_is_source_order(qtbot: QtBot, tmp_path: Path) -> None:
     assert names == ["zed", "alpha", "mid"]  # 名前昇順に勝手に並び替えない
 
 
+@pytest.mark.skip(reason="FU-22 B: sort moves VM-side in increment 3 (proxy dropped)")
 def test_header_click_sorts_by_name(qtbot: QtBot, tmp_path: Path) -> None:
     # 登録順 "zed","alpha","mid" → 名前昇順ソートで alpha,mid,zed
     view = _cb_view_with_signals(qtbot, tmp_path, ["zed", "alpha", "mid"])
@@ -420,6 +417,7 @@ def test_header_click_sorts_by_name(qtbot: QtBot, tmp_path: Path) -> None:
     assert names == ["alpha", "mid", "zed"]
 
 
+@pytest.mark.skip(reason="FU-22 B: sort moves VM-side in increment 3 (proxy dropped)")
 def test_selected_keys_correct_after_sort(qtbot: QtBot, tmp_path: Path) -> None:
     view = _cb_view_with_signals(qtbot, tmp_path, ["zed", "alpha", "mid"])
     view.proxy.sort(0, Qt.SortOrder.AscendingOrder)
@@ -437,6 +435,7 @@ def test_selected_keys_correct_after_sort(qtbot: QtBot, tmp_path: Path) -> None:
     )  # 見た目どおり alpha(源 index ずれで zed にならない)
 
 
+@pytest.mark.skip(reason="FU-22 B: sort moves VM-side in increment 3 (proxy dropped)")
 def test_dnd_mime_keys_correct_after_sort(qtbot: QtBot, tmp_path: Path) -> None:
     view = _cb_view_with_signals(qtbot, tmp_path, ["zed", "alpha", "mid"])
     view.proxy.sort(0, Qt.SortOrder.AscendingOrder)
@@ -453,6 +452,7 @@ def test_dnd_mime_keys_correct_after_sort(qtbot: QtBot, tmp_path: Path) -> None:
     assert keys and keys[0].endswith("::alpha")
 
 
+@pytest.mark.skip(reason="FU-22 B: sort moves VM-side in increment 3 (proxy dropped)")
 def test_sort_is_case_insensitive(qtbot: QtBot, tmp_path: Path) -> None:
     # 実 ADAS 信号名は大小混在 (EngineSpeed/vehSpd) -- QSortFilterProxyModel の
     # 既定 CaseSensitive のままだと大文字始まりが全て小文字始まりより前に来て
