@@ -151,6 +151,32 @@ def test_active_file_state_updates_and_notifies() -> None:
     assert "active_file" in notifications
 
 
+def test_set_active_file_same_key_is_noop() -> None:
+    """FU-22: 同一キー再選択は state 不変・'active_file' notify 無し (264k リビルド重複の根絶)."""
+    vm = AppViewModel()
+    vm.set_active_file("k")  # None -> k (genuine change)
+    notifications: list[str] = []
+    vm.subscribe(notifications.append)
+
+    vm.set_active_file("k")  # same key -> guarded no-op
+
+    assert notifications == []  # no 'active_file' re-fire
+    assert vm.active_file_key == "k"  # state unchanged
+
+
+def test_set_active_file_genuine_change_still_notifies() -> None:
+    """FU-22 ガードが genuine 変更 (None->key, key->other, key->None) を塞がない無回帰."""
+    vm = AppViewModel()
+    notifications: list[str] = []
+    vm.subscribe(notifications.append)
+
+    vm.set_active_file("a")  # None -> a
+    vm.set_active_file("b")  # a -> b
+    vm.set_active_file(None)  # b -> None
+
+    assert notifications.count("active_file") == 3
+
+
 def test_loaded_file_keys_exposes_list(tmp_path: Path) -> None:
     """loaded_file_keys property returns the list of group keys."""
     vm = AppViewModel()

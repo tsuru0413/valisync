@@ -51,6 +51,69 @@ def test_row_count_matches_signals(qtbot: QtBot, tmp_path: Path) -> None:
     assert model.rowCount(QModelIndex()) == 2
 
 
+def test_same_key_activation_does_not_rebuild_model(qtbot: QtBot) -> None:
+    """FU-22: 同一キー再 activate は model reset を起こさない (5s フリーズ源の除去).
+
+    honest observable = SignalTableModel.modelReset の発火回数。ガードを外すと
+    同一キー再 activate で reset が再発火し RED (sabotage 検証)。
+    """
+    import numpy as np
+
+    app_vm = AppViewModel()
+    vm = ChannelBrowserVM(app_vm)
+    model = SignalTableModel(vm)
+
+    sig = Signal(
+        name="k::a",
+        timestamps=np.array([0.0]),
+        values=np.array([1.0]),
+        file_format="MDF4",
+        bus_type="",
+        source_file="",
+        metadata={},
+    )
+    app_vm.session.group_signals = lambda key: [sig]
+
+    resets: list[int] = []
+    model.modelReset.connect(lambda: resets.append(1))
+
+    app_vm.set_active_file("k")  # genuine activate -> 1 rebuild
+    assert len(resets) == 1
+    assert model.rowCount(QModelIndex()) == 1
+
+    app_vm.set_active_file("k")  # same key -> guarded -> NO rebuild
+    assert len(resets) == 1  # unchanged (no second reset)
+
+
+def test_genuine_switch_rebuilds_model(qtbot: QtBot) -> None:
+    """FU-22 ガード下でも別キーへの切替は model reset される (無回帰)."""
+    import numpy as np
+
+    app_vm = AppViewModel()
+    vm = ChannelBrowserVM(app_vm)
+    model = SignalTableModel(vm)
+
+    def _sig(name: str) -> Signal:
+        return Signal(
+            name=name,
+            timestamps=np.array([0.0]),
+            values=np.array([1.0]),
+            file_format="MDF4",
+            bus_type="",
+            source_file="",
+            metadata={},
+        )
+
+    app_vm.session.group_signals = lambda key: [_sig(f"{key}::a")]
+
+    resets: list[int] = []
+    model.modelReset.connect(lambda: resets.append(1))
+
+    app_vm.set_active_file("ka")  # reset 1
+    app_vm.set_active_file("kb")  # reset 2 (genuine switch)
+    assert len(resets) == 2
+
+
 def test_column_count_is_two(qtbot: QtBot) -> None:
     app_vm = AppViewModel()
     vm = ChannelBrowserVM(app_vm)

@@ -119,6 +119,10 @@ class AppViewModel(Observable):
 
     def set_active_file(self, key: str | None) -> None:
         """Set the active file and notify subscribers ('active_file')."""
+        if key == self._active_file_key:
+            # FU-22: 同一キー再選択は state 不変。無条件 notify は ChannelBrowser の
+            # 264k 行モデルを重複リビルドする (prod 実測 ~5s)。同一キーは no-op で根絶。
+            return
         self._active_file_key = key
         self._notify("active_file")
 
