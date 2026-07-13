@@ -132,7 +132,15 @@ class ChannelBrowserVM(Observable):
         Returns [(base, [(orig, unit, key), ...]), ...] in base first-seen order.
         Arrays (LD-14 Name[i]/.field) bucket under their base; scalars are a
         single-leaf group. Filter is NOT applied here (increment 2)."""
-        self._ensure_prep()
+        try:
+            self._ensure_prep()
+        except KeyError:
+            # set_active_file() does not validate the key exists (FU-22 A), so a
+            # notify can still be in flight for a key the session already
+            # dropped. Same guard as signals/_group_total (FU-22 B: this became
+            # production-reachable once ChannelBrowserView switched to
+            # SignalTreeModel, whose _on_vm_change calls tree_groups() directly).
+            return []
         groups: dict[str, list[tuple[str, str, str]]] = {}
         order: list[str] = []
         for orig, _lower, unit, key in self._prep:

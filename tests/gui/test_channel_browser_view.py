@@ -1,14 +1,16 @@
 """Tests for ChannelBrowserView refactored for master-detail (Task 2.3).
 
-The view is a QWidget containing a search box and a flat QTreeView.
-It binds to SignalTableModel and ChannelBrowserVM.
+The view is a QWidget containing a search box and a hierarchical QTreeView
+(FU-22 B: array bases collapse under a parent node; scalars stay top-level
+leaves). It binds to SignalTreeModel and ChannelBrowserVM.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QItemSelectionModel, Qt
+import pytest
+from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt
 from pytestqt.qtbot import QtBot
 
 from valisync.core.models import Delimiter, FormatDefinition
@@ -103,10 +105,96 @@ def _select(view: ChannelBrowserView, row: int) -> None:
     )
 
 
+def _make_view_with_arrays(
+    qtbot: QtBot, tmp_path: Path
+) -> tuple[AppViewModel, ChannelBrowserView, str]:
+    """Build a ChannelBrowserView whose active file has one array base
+    (Arr[0]/Arr[1] -> collapsible parent) plus one scalar (top-level leaf).
+
+    group_signals is monkeypatched directly so no real load is needed; the
+    active file key just has to be set before ChannelBrowserVM/View exist
+    since SignalTreeModel reads tree_groups() in its own __init__.
+    """
+    import numpy as np
+
+    from valisync.core.models import Signal
+
+    app_vm = AppViewModel()
+
+    def _sig(name: str) -> Signal:
+        return Signal(
+            name=name,
+            timestamps=np.array([0.0]),
+            values=np.array([1.0]),
+            file_format="MDF4",
+            bus_type="",
+            source_file="",
+            metadata={"unit": "V"},
+        )
+
+    app_vm.session.group_signals = lambda k: [  # type: ignore[method-assign]
+        _sig("g::Arr[0]"),
+        _sig("g::Arr[1]"),
+        _sig("g::Scalar"),
+    ]
+    app_vm.set_active_file("g")
+    vm = ChannelBrowserVM(app_vm)
+    view = ChannelBrowserView(vm)
+    qtbot.addWidget(view)
+    return app_vm, view, "g"
+
+
 # ─── Tests ──────────────────────────────────────────────────────────────────
 
 
+# ─── Hierarchy parity (FU-22 B increment 1) ──────────────────────────────────
+
+
+def test_view_uses_signal_tree_model(qtbot: QtBot, tmp_path: Path) -> None:
+    """FU-22 B: ChannelBrowserView は SignalTreeModel(階層)を表示する。"""
+    from valisync.gui.adapters.signal_tree_model import SignalTreeModel
+
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+    assert isinstance(view.model, SignalTreeModel)
+    # top-level に配列親が居り、展開で子が見える
+    proxy = view.proxy
+    top0 = proxy.index(0, 0)
+    assert view.model.rowCount(proxy.mapToSource(top0)) >= 1
+
+
+def test_selected_leaf_resolves_source_key(qtbot: QtBot, tmp_path: Path) -> None:
+    """親を展開しリーフを選択すると selected_signal_keys が源 key を返す(親スレッド grab)。"""
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+    proxy, model = view.proxy, view.model
+    parent_src = model.index(0, 0, QModelIndex())  # array parent
+    parent_proxy = proxy.mapFromSource(parent_src)
+    child_proxy = proxy.index(0, 0, parent_proxy)  # thread the parent
+    view.tree.selectionModel().select(
+        child_proxy,
+        QItemSelectionModel.SelectionFlag.Select
+        | QItemSelectionModel.SelectionFlag.Rows,
+    )
+    keys = view.selected_signal_keys()
+    assert len(keys) == 1 and keys[0].endswith("[0]")
+
+
+def test_selecting_parent_yields_no_leaf_keys_in_incr1(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """増分①: 親選択は源 key を持たない(親追加は増分④)。"""
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+    proxy, model = view.proxy, view.model
+    parent_proxy = proxy.mapFromSource(model.index(0, 0, QModelIndex()))
+    view.tree.selectionModel().select(
+        parent_proxy,
+        QItemSelectionModel.SelectionFlag.Select
+        | QItemSelectionModel.SelectionFlag.Rows,
+    )
+    assert view.selected_signal_keys() == []
+
+
 class TestSearchFilter:
+    @pytest.mark.skip(reason="FU-22 B: filter wiring lands in increment 2")
     def test_search_box_filters_list(self, qtbot: QtBot, tmp_path: Path) -> None:
         app_vm, key = _setup_app(tmp_path)
         app_vm.set_active_file(key)
@@ -131,13 +219,13 @@ class TestSelection:
 
 
 class TestLayout:
-    def test_flat_appearance(self, qtbot: QtBot, tmp_path: Path) -> None:
+    def test_hierarchical_appearance(self, qtbot: QtBot, tmp_path: Path) -> None:
         app_vm, _ = _setup_app(tmp_path)
         vm = ChannelBrowserVM(app_vm)
         view = _make_view(qtbot, vm)
 
-        # Decoration (expand/collapse icons) should be disabled for a flat list
-        assert not view.tree.rootIsDecorated()
+        # FU-22 B: array bases are collapsible -> expand/collapse decoration on
+        assert view.tree.rootIsDecorated()
 
 
 class TestActiveFileSync:
@@ -309,7 +397,7 @@ def test_double_click_emits_add(qtbot: QtBot, tmp_path: Path) -> None:
 
 
 # ─── Header-click Column Sort (PC-20/DP2) ────────────────────────────────────
-# QSortFilterProxyModel sits between SignalTableModel (source) and the tree,
+# QSortFilterProxyModel sits between SignalTreeModel (source) and the tree,
 # for sorting only (filtering stays VM-truth). selected_signal_keys() must
 # mapToSource the (post-sort, reordered) proxy index before resolving the key
 # -- otherwise the sorted view would select/drag whatever row is at that

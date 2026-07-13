@@ -1,7 +1,9 @@
 """Channel_Browser view — refactored for master-detail (Task 2.3).
 
-A search box atop a flat QTreeView. User gestures are forwarded to the VM.
-Displays signals for the currently active file in AppViewModel.
+A search box atop a hierarchical QTreeView. Array bases (LD-14 Name[i]/.field)
+collapse under a parent node; scalars stay top-level leaves (FU-22 B). User
+gestures are forwarded to the VM. Displays signals for the currently active
+file in AppViewModel.
 """
 
 from __future__ import annotations
@@ -29,10 +31,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from valisync.gui.adapters.qt_signal_models import (
-    SignalTableModel,
-    encode_signal_keys,
-)
+from valisync.gui.adapters.qt_signal_models import encode_signal_keys
+from valisync.gui.adapters.signal_tree_model import SignalTreeModel
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
 
 # Empty-state placeholder text (FB-05/08/09); no_match takes a format arg.
@@ -44,7 +44,7 @@ _EMPTY_MESSAGES = {
 
 
 class ChannelBrowserView(QWidget):
-    """Search box + flat tree view bound to a :class:`ChannelBrowserVM`."""
+    """Search box + hierarchical tree view bound to a :class:`ChannelBrowserVM`."""
 
     # Emitted with the selected signal keys; the integration connects this to
     # the active Graph_Panel's add_signal (R14.1).
@@ -53,7 +53,7 @@ class ChannelBrowserView(QWidget):
     def __init__(self, vm: ChannelBrowserVM, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._vm = vm
-        self.model = SignalTableModel(vm)
+        self.model = SignalTreeModel(vm)
         # PC-20: ソート専用の proxy を挟む(フィルタは現行どおり VM 真実 = proxy は
         # accept-all のまま)。ヘッダクリックで Name/Unit 列ソート。
         self.proxy = QSortFilterProxyModel(self)
@@ -85,10 +85,6 @@ class ChannelBrowserView(QWidget):
         self.tree.setSelectionMode(QTreeView.SelectionMode.ExtendedSelection)
         self.tree.setDragEnabled(True)
         self.tree.setUniformRowHeights(True)
-
-        # Refactor for flat list appearance
-        self.tree.setRootIsDecorated(False)
-        self.tree.setItemsExpandable(False)
 
         # CustomContextMenu so a real right-click on the child tree emits
         # customContextMenuRequested. Overriding contextMenuEvent on this
