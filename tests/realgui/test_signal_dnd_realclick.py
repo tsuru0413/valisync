@@ -455,3 +455,141 @@ def test_drop_highlight_visible_mid_drag(qtbot: QtBot, tmp_path: Path) -> None:
     assert not panel.is_drop_highlighted(), (
         "drop-highlight not cleared after drop — _set_drop_highlight(False) not reached"
     )
+
+
+# ---------------------------------------------------------------------------
+# FU-22 B gate: expand an array parent, real-drag a CHILD leaf (hierarchical
+# grab-point). Scalar-only D&D realgui above never covers this new path.
+# ---------------------------------------------------------------------------
+
+
+def _make_browser_and_panel_arrays(qtbot: QtBot, tmp_path: Path):
+    """Like _make_browser_and_panel but the active file has an ARRAY base
+    (Arr[0]/Arr[1] -> a collapsible parent) plus a scalar. Dragging a CHILD row
+    exercises the child grab-point model.index(childRow, 0, parentIndex) ->
+    visualRect -- the exact path the proxy removal repaired (memory
+    gui_qsortfilterproxy_visualrect_source_index_empty_rect). CSV headers become
+    signal names verbatim, so Arr[0]/Arr[1] group under base 'Arr' and their
+    namespaced keys (csv_1::Arr[0]) resolve in the panel VM's signal_map so a
+    real drop actually draws the curve. Returns (browser, panel)."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
+    from valisync.core.models import Delimiter, FormatDefinition
+    from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+    from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
+    from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+    from valisync.gui.views.channel_browser_view import ChannelBrowserView
+    from valisync.gui.views.graph_panel_view import GraphPanelView
+
+    class _CapturingPanel(GraphPanelView):
+        drop_seen: bool = False
+
+        def dropEvent(self, ev: object) -> None:  # type: ignore[override]
+            super().dropEvent(ev)  # type: ignore[arg-type]
+            self.drop_seen = True
+
+    fmt = FormatDefinition(
+        name="f",
+        delimiter=Delimiter.COMMA,
+        timestamp_column=0,
+        timestamp_unit="sec",
+        signal_start_column=1,
+        signal_end_column=3,
+        has_header=True,
+    )
+    csv = tmp_path / "arr.csv"
+    csv.write_text(
+        "t,Arr[0],Arr[1],Scalar\n0.0,1.0,4.0,7.0\n1.0,2.0,5.0,8.0\n",
+        encoding="utf-8",
+    )
+    app_vm = AppViewModel()
+    file_key = app_vm.request_load(csv, fmt)
+    app_vm.set_active_file(file_key)
+
+    browser = ChannelBrowserView(ChannelBrowserVM(app_vm))
+    panel = _CapturingPanel(GraphPanelVM(app_vm.session))
+    qtbot.addWidget(browser)
+    qtbot.addWidget(panel)
+    for w, x in ((browser, 200), (panel, 640)):
+        w.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        w.setGeometry(x, 250, 400, 360)
+        w.show()
+        qtbot.waitExposed(w)
+    qtbot.waitUntil(
+        lambda: browser.tree.visualRect(browser.model.index(0, 0)).height() > 0,
+        timeout=3000,
+    )
+    QApplication.processEvents()
+    QApplication.processEvents()
+    return browser, panel
+
+
+def _child_phys(browser, parent_index, child_row: int) -> tuple[int, int]:
+    """Physical-pixel center of an EXPANDED array parent's child row."""
+    idx = browser.model.index(child_row, 0, parent_index)
+    dpr = browser.devicePixelRatioF()
+    center = browser.tree.visualRect(idx).center()
+    gp = browser.tree.viewport().mapToGlobal(center)
+    return round(gp.x() * dpr), round(gp.y() * dpr)
+
+
+def test_drop_expanded_array_child_creates_axis(qtbot: QtBot, tmp_path: Path) -> None:
+    """FU-22 B (increment 1-3 gate): expand an array parent, then real-drag a
+    CHILD leaf onto the plot -> the child's curve appears. This is the ONE
+    interaction the branch introduced that scalar-only D&D realgui never covered:
+    the child grab-point uses model.index(childRow, 0, parentIndex) -> visualRect,
+    the exact path the proxy removal repaired.
+
+    Honest RED: revert flags() to exclude ItemIsDragEnabled from leaves, or break
+    the child visualRect, and the drag never starts (drop_seen stays False)."""
+    skip_unless_real_display()
+    from PySide6.QtCore import QItemSelectionModel
+    from PySide6.QtWidgets import QApplication
+
+    browser, panel = _make_browser_and_panel_arrays(qtbot, tmp_path)
+    arr_index = browser.model.index(0, 0)  # top-level Arr parent (row 0)
+    assert browser.model.signal_key_at(arr_index) is None, (
+        "row 0 should be the Arr parent (key None)"
+    )
+
+    browser.tree.expand(arr_index)
+    qtbot.waitUntil(
+        lambda: (
+            browser.tree.visualRect(browser.model.index(0, 0, arr_index)).height() > 0
+        ),
+        timeout=3000,
+    )
+    child_index = browser.model.index(0, 0, arr_index)  # Arr[0]
+    child_key = browser.model.signal_key_at(child_index)
+    assert child_key and child_key.endswith("::Arr[0]"), (
+        f"unexpected child key {child_key!r}"
+    )
+
+    sm = browser.tree.selectionModel()
+    sm.clearSelection()
+    sm.select(
+        child_index,
+        QItemSelectionModel.SelectionFlag.Select
+        | QItemSelectionModel.SelectionFlag.Rows,
+    )
+    QApplication.processEvents()
+
+    press = _child_phys(browser, arr_index, 0)
+    target = _panel_point_phys(panel, panel.width() // 2, panel.height() // 2)
+    mid = ((press[0] + target[0]) // 2, (press[1] + target[1]) // 2)
+
+    drive_qdrag(press, [mid, target], done=lambda: panel.drop_seen)
+
+    for _ in range(3):
+        QApplication.processEvents()
+    with contextlib.suppress(Exception):
+        QApplication.primaryScreen().grabWindow(0).save(
+            str(tmp_path / "array_child.png")
+        )
+
+    assert panel.drop_seen, (
+        "no dropEvent -- real QDrag of an expanded array child never completed. "
+        f"screenshot: {tmp_path / 'array_child.png'}"
+    )
+    qtbot.waitUntil(lambda: child_key in panel.signal_keys_drawn(), timeout=2000)
