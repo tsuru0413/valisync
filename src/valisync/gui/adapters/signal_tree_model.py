@@ -62,6 +62,8 @@ class SignalTreeModel(QAbstractItemModel):
         super().__init__(parent)
         self._vm = vm
         self._top: list[_Node] = []
+        self._sort_col: int = -1
+        self._sort_order: Qt.SortOrder = Qt.SortOrder.AscendingOrder
         self._rebuild()
         self._vm.subscribe(self._on_vm_change)
 
@@ -82,6 +84,7 @@ class SignalTreeModel(QAbstractItemModel):
             else:
                 top.append(_Node(base, "", None, leaves, None, row))
         self._top = top
+        self._sort_top()  # preserve the active sort across filter/signal rebuilds
 
     def _materialize(self, node: _Node) -> None:
         if node.children is None:
@@ -89,6 +92,7 @@ class SignalTreeModel(QAbstractItemModel):
                 _Node(orig, unit, key, None, node, r)
                 for r, (orig, unit, key) in enumerate(node.leaves or [])
             ]
+            self._sort_children(node)  # apply the active sort to freshly-built children
 
     # --- navigation -------------------------------------------------------------
     def index(
@@ -130,6 +134,42 @@ class SignalTreeModel(QAbstractItemModel):
 
     def columnCount(self, parent: _Index = QModelIndex()) -> int:
         return len(self.HEADERS)
+
+    # --- sort (VM-side; proxy was dropped -- it materialized all children) -------
+    def sort(
+        self, column: int, order: Qt.SortOrder = Qt.SortOrder.AscendingOrder
+    ) -> None:
+        """Sort top-level bases now; children are sorted lazily on materialize so
+        an unexpanded array is never built just to sort (preserves the lazy tree)."""
+        self._sort_col = column
+        self._sort_order = order
+        self.beginResetModel()
+        self._sort_top()
+        for node in self._top:
+            if node.children is not None:  # already-materialized parents only
+                self._sort_children(node)
+        self.endResetModel()
+
+    def _sort_key(self, node: _Node, column: int) -> str:
+        return (node.orig if column == 0 else node.unit).lower()
+
+    def _sort_top(self) -> None:
+        if self._sort_col < 0:
+            return  # passthrough: keep session order (as built by _rebuild)
+        reverse = self._sort_order == Qt.SortOrder.DescendingOrder
+        self._top.sort(key=lambda n: self._sort_key(n, self._sort_col), reverse=reverse)
+        for i, n in enumerate(self._top):
+            n.row = i
+
+    def _sort_children(self, node: _Node) -> None:
+        if self._sort_col < 0 or not node.children:
+            return
+        reverse = self._sort_order == Qt.SortOrder.DescendingOrder
+        node.children.sort(
+            key=lambda n: self._sort_key(n, self._sort_col), reverse=reverse
+        )
+        for i, n in enumerate(node.children):
+            n.row = i
 
     # --- presentation -----------------------------------------------------------
     def data(self, index: _Index, role: int = Qt.ItemDataRole.DisplayRole) -> Any:

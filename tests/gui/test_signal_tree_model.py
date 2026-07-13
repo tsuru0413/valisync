@@ -103,3 +103,86 @@ def test_mimedata_encodes_leaf_keys(qtbot: QtBot) -> None:
     arr = m.index(0, 0, QModelIndex())
     mime = m.mimeData([m.index(0, 0, arr), m.index(1, 0, arr)])
     assert decode_signal_keys(mime) == ["g::Arr[0]", "g::Arr[1]"]
+
+
+def _sort_model(qtbot: QtBot) -> SignalTreeModel:
+    app_vm = AppViewModel()
+    vm = ChannelBrowserVM(app_vm)
+    app_vm.session.group_signals = lambda k: [
+        _sig("g::Zeta"),
+        _sig("g::alpha"),
+        _sig("g::Mid"),
+        _sig("g::Arr[2]"),
+        _sig("g::Arr[0]"),
+        _sig("g::Arr[1]"),
+    ]
+    app_vm.set_active_file("g")
+    return SignalTreeModel(vm)
+
+
+def _top_names(m: SignalTreeModel) -> list[str]:
+    return [
+        m.data(m.index(r, 0, QModelIndex()), Qt.ItemDataRole.DisplayRole)
+        for r in range(m.rowCount(QModelIndex()))
+    ]
+
+
+def test_sort_top_level_case_insensitive_ascending(qtbot: QtBot) -> None:
+    m = _sort_model(qtbot)
+    # session order: Zeta, alpha, Mid, Arr (Arr is a parent grouping the 3 leaves)
+    m.sort(0, Qt.SortOrder.AscendingOrder)
+    # case-insensitive A-Z: alpha, Arr, Mid, Zeta
+    assert _top_names(m) == ["alpha", "Arr", "Mid", "Zeta"]
+
+
+def test_sort_top_level_descending(qtbot: QtBot) -> None:
+    m = _sort_model(qtbot)
+    m.sort(0, Qt.SortOrder.DescendingOrder)
+    assert _top_names(m) == ["Zeta", "Mid", "Arr", "alpha"]
+
+
+def test_sort_does_not_materialize_children(qtbot: QtBot) -> None:
+    """FU-22 B lazy invariant: sort must not build children of an unexpanded
+    parent (that is the exact laziness the dropped proxy defeated)."""
+    m = _sort_model(qtbot)
+    m.sort(0, Qt.SortOrder.AscendingOrder)
+    parents = [n for n in m._top if n.key is None]
+    assert parents and all(n.children is None for n in parents)  # materialized 0
+
+
+def test_sort_row_reassigned_parent_round_trip(qtbot: QtBot) -> None:
+    """node.row is reassigned after sort so parent()/index() round-trip holds."""
+    m = _sort_model(qtbot)
+    m.sort(0, Qt.SortOrder.AscendingOrder)
+    for r in range(m.rowCount(QModelIndex())):
+        idx = m.index(r, 0, QModelIndex())
+        assert idx.row() == r
+        assert m.parent(idx) == QModelIndex()
+    # child round-trip after materialize (Arr is at sorted row 1)
+    arr = m.index(1, 0, QModelIndex())
+    assert m.data(arr, Qt.ItemDataRole.DisplayRole) == "Arr"
+    child = m.index(0, 0, arr)
+    assert m.parent(child) == arr
+
+
+def test_children_sorted_on_materialize(qtbot: QtBot) -> None:
+    """Materializing after a sort orders children too (Arr[2],Arr[0],Arr[1] ->
+    Arr[0],Arr[1],Arr[2])."""
+    m = _sort_model(qtbot)
+    m.sort(0, Qt.SortOrder.AscendingOrder)
+    arr = m.index(1, 0, QModelIndex())  # Arr after sort
+    names = [
+        m.data(m.index(r, 0, arr), Qt.ItemDataRole.DisplayRole)
+        for r in range(m.rowCount(arr))
+    ]
+    assert names == ["Arr[0]", "Arr[1]", "Arr[2]"]
+
+
+def test_sort_preserved_across_filter(qtbot: QtBot) -> None:
+    """Sort state survives a filter-triggered rebuild."""
+    m = _sort_model(qtbot)
+    m.sort(0, Qt.SortOrder.DescendingOrder)
+    m._vm.set_filter("a")  # notify 'filter' -> _rebuild
+    # 'a' matches alpha and Arr[*] (Arr base is prefix). Desc order among survivors.
+    names = _top_names(m)
+    assert names == sorted(names, key=str.lower, reverse=True)
