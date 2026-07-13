@@ -274,7 +274,13 @@ class GraphAreaView(QWidget):
                     event.globalPosition().toPoint()  # type: ignore[attr-defined]
                 )
             if isinstance(target, QWidget) and not (
-                target is self or self.isAncestorOf(target)
+                target is self
+                or self.isAncestorOf(target)
+                # FU-23: 未 accept の press は同一物理イベントが GraphAreaView の
+                # 祖先(central stack/MainWindow)へバブルする。その祖先配送は
+                # subtree 外でなく内側扱い — click-away と誤認すると軸レーンの
+                # 押下が自らアクティブ軸を解除しジェスチャが全滅する(真因)。
+                or target.isAncestorOf(self)
             ):
                 self.clear_active_axis()
         return False

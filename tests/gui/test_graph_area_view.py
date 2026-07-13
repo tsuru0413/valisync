@@ -278,6 +278,41 @@ class TestClickAwayDeselect:
 
         assert panels[0]._active_axis_index == 0, "subtree 内 press で誤って解除された"
 
+    def test_press_on_ancestor_bubble_does_not_clear(self, qtbot: QtBot) -> None:
+        """FU-23: 実クリックは未 accept 時に GraphAreaView の祖先へバブルする。
+        その祖先配送を click-away と誤認して解除してはならない(軸ジェスチャ全滅の真因)。
+        """
+        from PySide6.QtCore import QEvent, QPoint, Qt
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
+
+        view = _make_area(qtbot)
+        panels = self._panels(view)
+        panels[0].set_active_axis(0)
+
+        # GraphAreaView を container の子にして祖先関係を作る。
+        container = QWidget()
+        qtbot.addWidget(container)
+        layout = QVBoxLayout(container)
+        layout.addWidget(view)  # type: ignore[arg-type]
+        assert container.isAncestorOf(view)  # type: ignore[arg-type]
+
+        ev = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            QPoint(1, 1).toPointF()
+            if hasattr(QPoint(1, 1), "toPointF")
+            else QPoint(1, 1),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        # 祖先(container)への配送 = バブル痕跡。解除してはならない。
+        QApplication.instance().notify(container, ev)
+
+        assert panels[0]._active_axis_index == 0, (
+            "祖先へのバブル配送で誤って軸が解除された(FU-23 退行)"
+        )
+
     def test_event_filter_is_observation_only(self, qtbot: QtBot) -> None:
         """フィルタはイベントを消費しない(常に False を返す)。"""
         from PySide6.QtCore import QEvent, QPoint, Qt
