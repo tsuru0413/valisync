@@ -427,3 +427,33 @@ def test_tree_groups_buckets_arrays_under_base(tmp_path: Path) -> None:
     assert as_dict["Arr"][0] == ("Arr[0]", "V", "g::Arr[0]")  # (orig, unit, key)
     assert len(as_dict["Scalar"]) == 1
     assert as_dict["Struct"][0] == ("Struct.field", "V", "g::Struct.field")
+
+
+def test_shown_count_matches_signals_without_building_items(tmp_path: Path) -> None:
+    """FU-22 B: shown_count は len(signals) と一致するが SignalItem を構築しない。"""
+    app_vm = AppViewModel()
+    vm = ChannelBrowserVM(app_vm)
+
+    import numpy as np
+
+    def _sig(name: str) -> Signal:
+        return Signal(
+            name=name,
+            timestamps=np.array([0.0]),
+            values=np.array([1.0]),
+            file_format="MDF4",
+            bus_type="",
+            source_file="",
+            metadata={"unit": "V"},
+        )
+
+    app_vm.session.group_signals = lambda k: [_sig("g::a"), _sig("g::b"), _sig("g::ab")]
+    app_vm.set_active_file("g")
+
+    assert vm.shown_count() == 3  # no filter -> total
+    assert vm.shown_count() == len(vm.signals)
+    vm.set_filter("a")
+    assert vm.shown_count() == 2  # "a", "ab"
+    assert vm.shown_count() == len(vm.signals)
+    vm.set_filter("zzz")
+    assert vm.shown_count() == 0
