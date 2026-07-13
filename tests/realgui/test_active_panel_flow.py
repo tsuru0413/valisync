@@ -201,11 +201,13 @@ def test_click_activates_panel_and_add_routes_there(
 
     # 4) ChannelBrowser の row0 を実クリックで選択 → Add ボタンを実クリック
     tree = window.channel_browser_view.tree
-    proxy = window.channel_browser_view.proxy
+    model = (
+        window.channel_browser_view.model
+    )  # FU-22 B: proxy dropped, tree is model-direct
     qtbot.waitUntil(
-        lambda: tree.visualRect(proxy.index(0, 0)).height() > 0, timeout=3000
+        lambda: tree.visualRect(model.index(0, 0)).height() > 0, timeout=3000
     )
-    rect = tree.visualRect(proxy.index(0, 0))
+    rect = tree.visualRect(model.index(0, 0))
     vp = tree.viewport()
     # visualRect 幅は viewport 幅を超えうる (center.x が右隣ペインに着弾)。x をクランプ。
     local = QPoint(min(rect.center().x(), vp.width() - 8), rect.center().y())
@@ -240,11 +242,13 @@ def test_dblclick_and_enter_add_once_each(qtbot: QtBot, tmp_path: Path) -> None:
     target = vm.active_panel()  # add_panel で index 1 が active
 
     tree = window.channel_browser_view.tree
-    proxy = window.channel_browser_view.proxy
+    model = (
+        window.channel_browser_view.model
+    )  # FU-22 B: proxy dropped, tree is model-direct
     qtbot.waitUntil(
-        lambda: tree.visualRect(proxy.index(0, 0)).height() > 0, timeout=3000
+        lambda: tree.visualRect(model.index(0, 0)).height() > 0, timeout=3000
     )
-    rect = tree.visualRect(proxy.index(0, 0))
+    rect = tree.visualRect(model.index(0, 0))
     vp = tree.viewport()
     local = QPoint(min(rect.center().x(), vp.width() - 8), rect.center().y())
     rx, ry = _phys_center(vp, local)
