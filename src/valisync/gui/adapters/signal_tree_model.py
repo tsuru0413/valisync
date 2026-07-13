@@ -8,14 +8,19 @@ level is ~4,264 rows, not 264k)."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import (
     QAbstractItemModel,
+    QMimeData,
     QModelIndex,
     QObject,
     QPersistentModelIndex,
+    Qt,
 )
+
+from valisync.gui.adapters.qt_signal_models import SIGNAL_KEYS_MIME, encode_signal_keys
 
 if TYPE_CHECKING:
     from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
@@ -125,3 +130,62 @@ class SignalTreeModel(QAbstractItemModel):
 
     def columnCount(self, parent: _Index = QModelIndex()) -> int:
         return len(self.HEADERS)
+
+    # --- presentation -----------------------------------------------------------
+    def data(self, index: _Index, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        if not index.isValid():
+            return None
+        node: _Node = index.internalPointer()
+        if role == Qt.ItemDataRole.DisplayRole:
+            if index.column() == 0:
+                return node.orig
+            if index.column() == 1:
+                return node.unit
+        return None
+
+    def headerData(
+        self,
+        section: int,
+        orientation: Qt.Orientation,
+        role: int = Qt.ItemDataRole.DisplayRole,
+    ) -> Any:
+        if (
+            orientation == Qt.Orientation.Horizontal
+            and role == Qt.ItemDataRole.DisplayRole
+            and 0 <= section < len(self.HEADERS)
+        ):
+            return self.HEADERS[section]
+        return None
+
+    def signal_key_at(self, index: _Index) -> str | None:
+        """Leaf signal_key, or None for a parent (array) node."""
+        if not index.isValid():
+            return None
+        return index.internalPointer().key
+
+    # --- drag (leaf only in increment 1; parent aggregate = increment 4) --------
+    def flags(self, index: _Index) -> Qt.ItemFlag:
+        if not index.isValid():
+            return Qt.ItemFlag.NoItemFlags
+        node: _Node = index.internalPointer()
+        base = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        if node.key is not None:
+            base |= Qt.ItemFlag.ItemIsDragEnabled
+        return base
+
+    def mimeTypes(self) -> list[str]:
+        return [SIGNAL_KEYS_MIME]
+
+    def mimeData(self, indexes: Sequence[_Index]) -> QMimeData:
+        keys: list[str] = []
+        seen: set[int] = set()
+        for index in indexes:
+            if not index.isValid():
+                continue
+            node: _Node = index.internalPointer()
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            if node.key is not None:  # leaf only in increment 1
+                keys.append(node.key)
+        return encode_signal_keys(keys)
