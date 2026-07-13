@@ -621,45 +621,245 @@ git commit -m "feat(fu22b): ChannelBrowserView を SignalTreeModel(階層)へ差
 
 ---
 
-### Task 5: realgui パリティ + prod 実測(5s->~500ms)
+### Task 5: proxy 撤去(model 直結・遅延保持)
+
+> **改訂根拠(spec「実装後の実測知見」)**: QSortFilterProxyModel は reset マッピングで全 array 親の rowCount/hasChildren を source へ転送し `_materialize` を呼ぶ = 260k 子ノードを eager 構築(遅延/省メモリ破壊 + ~456ms)。proxy を撤去し model を tree 直結。sort(PC-20)は増分③で VM-side 化するため本増分では一時停止(sort テストは filter 同様 skip)。
 
 **Files:**
-- Modify: `tests/realgui/test_channel_browser_realclick.py`・`tests/realgui/test_signal_dnd_realclick.py`(grab-point 親スレッド化)
-- Scratch(非コミット): prod repro スクリプト
+- Modify: `src/valisync/gui/views/channel_browser_view.py`
+- Modify test: `tests/gui/test_channel_browser_view.py`
 
 **Interfaces:**
-- Consumes: 差し替え済み view。realgui 掴み点は top-level = `proxy.index(row,0)`、子 = `proxy.index(childRow,0, proxy.mapFromSource(親src))`。
+- Produces: `self.tree.model()` が `SignalTreeModel` 直結(proxy 無)。`selected_signal_keys()` は `self.tree.selectionModel().selectedRows(0)` の index を `self.model.signal_key_at(index)` で直接解決(mapToSource 不要)。`self.proxy` 属性は削除。
 
-- [ ] **Step 1: realgui 掴み点の親スレッド化**
+- [ ] **Step 1: 失敗テスト(proxy 非依存の掴み点)**
 
-`tests/realgui/test_channel_browser_realclick.py` / `test_signal_dnd_realclick.py` の掴み点で、リーフが配列子の場合は親を展開(`view.tree.expand(parent_proxy_index)`)してから `proxy.index(childRow, 0, parent_proxy)` で visualRect を取る。スカラー top-level はそのまま `proxy.index(row, 0)`。**掴み点は必ず proxy.index を親コンテキスト付きで**(memory gui_qsortfilterproxy_visualrect_source_index_empty_rect の tree 版)。
+Task 4 で追加した3テストは `view.proxy` を使う。proxy 撤去後の掴み点(model index 直接)へ書き換え。まず現行(proxy 版)が撤去後に壊れることを RED で確認するため、以下へ更新:
 
-Run: `uv run pytest --realgui tests/realgui/test_channel_browser_realclick.py tests/realgui/test_signal_dnd_realclick.py -v`
-Expected: PASS(実 D&D/選択が階層 view で源キーを配送)。
+```python
+def test_view_uses_signal_tree_model(qtbot: QtBot, tmp_path: Path) -> None:
+    from valisync.gui.adapters.signal_tree_model import SignalTreeModel
 
-- [ ] **Step 2: realgui クラスタ無回帰**
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+    assert isinstance(view.model, SignalTreeModel)
+    assert not hasattr(view, "proxy")  # proxy 撤去(FU-22 B: 遅延保持)
+    assert view.tree.model() is view.model  # model 直結
+    top0 = view.model.index(0, 0, QModelIndex())
+    assert view.model.rowCount(top0) >= 1  # array 親に子
 
-Run: `uv run pytest --realgui tests/realgui/test_journey_smoke.py tests/realgui/test_active_panel_flow.py tests/realgui/test_panel_source_flow.py tests/realgui/test_fu15_axis_deselect.py -v`
-Expected: 全 PASS(選択/追加/ドロップの動線が階層 view で無回帰)。
+
+def test_selected_leaf_resolves_source_key(qtbot: QtBot, tmp_path: Path) -> None:
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+    model = view.model
+    parent = model.index(0, 0, QModelIndex())  # array parent
+    child = model.index(0, 0, parent)  # first leaf child (no proxy threading)
+    view.tree.selectionModel().select(
+        child,
+        QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows,
+    )
+    keys = view.selected_signal_keys()
+    assert len(keys) == 1 and keys[0].endswith("[0]")
+
+
+def test_selecting_parent_yields_no_leaf_keys_in_incr1(qtbot: QtBot, tmp_path: Path) -> None:
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+    parent = view.model.index(0, 0, QModelIndex())
+    view.tree.selectionModel().select(
+        parent,
+        QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows,
+    )
+    assert view.selected_signal_keys() == []
+```
+
+- [ ] **Step 2: RED 確認**
+
+Run: `uv run pytest tests/gui/test_channel_browser_view.py -k "tree_model or leaf_resolves or parent_yields" -v`
+Expected: FAIL(`view.proxy` 依存の旧 view はまだ proxy を持つ / `hasattr(view,'proxy')` True)。
+
+- [ ] **Step 3: 実装(proxy 撤去)**
+
+`channel_browser_view.py`:
+1. proxy 生成ブロックを削除(現行の `self.proxy = QSortFilterProxyModel(self)` + `setSourceModel` + `setSortCaseSensitivity` の3行と直前 PC-20 コメント)。
+2. `self.tree.setModel(self.proxy)` -> `self.tree.setModel(self.model)`。
+3. `self.tree.setSortingEnabled(True)` と `self.tree.sortByColumn(-1, ...)` の2行 + 直前コメントを削除(sort は増分③で VM-side)。
+4. `selected_signal_keys()` を proxy 非依存へ:
+
+```python
+    def selected_signal_keys(self) -> list[str]:
+        """Return the namespaced keys of the selected leaf rows.
+
+        The tree is bound directly to SignalTreeModel (no proxy -- a proxy would
+        eagerly materialize all array children on reset, defeating the lazy tree,
+        see FU-22 B). So selection indexes are model indexes; resolve each key
+        directly. Parent (array) nodes return None and are skipped (parent-as-signal
+        lands in increment 4)."""
+        keys: list[str] = []
+        for index in self.tree.selectionModel().selectedRows(0):
+            key = self.model.signal_key_at(index)
+            if key is not None:
+                keys.append(key)
+        return keys
+```
+
+5. `from PySide6.QtCore import QSortFilterProxyModel` を削除(未使用化・ruff F401)。`Qt` は他で使うなら残す。
+
+- [ ] **Step 4: PC-20 sort テストを skip(増分③まで)**
+
+`tests/gui/test_channel_browser_view.py` の sort テスト5本(`test_default_order_is_source_order`・`test_header_click_sorts_by_name`・`test_selected_keys_correct_after_sort`・`test_dnd_mime_keys_correct_after_sort`・`test_sort_is_case_insensitive`)は `view.proxy` に依存。各関数の直前に:
+
+```python
+@pytest.mark.skip(reason="FU-22 B: sort moves VM-side in increment 3 (proxy dropped)")
+```
+
+`:311-317` 付近の proxy 説明コメントブロックも「増分③で VM-side sort に移行(proxy 撤去)」へ更新。
+
+- [ ] **Step 5: GREEN + 品質ゲート**
+
+Run: `uv run pytest tests/gui/test_channel_browser_view.py -v`(新規3 GREEN・sort 5本 skip)
+Run: `uv run pytest`; `uv run ruff check`; `uv run ruff format --check`; `uv run mypy src/`
+Expected: 全通過。他に `view.proxy` を参照する gui テストがあれば同様に model 直結へ是正(grep `\.proxy\b` in tests/gui)。
+
+- [ ] **Step 6: コミット**
+
+```bash
+git add src/valisync/gui/views/channel_browser_view.py tests/gui/test_channel_browser_view.py
+git commit -m "perf(fu22b): ChannelBrowser の proxy を撤去し model 直結(遅延保持・260k 子の eager 構築を根絶)"
+```
+
+---
+
+### Task 6: header/empty を count-only 化(264k SignalItem build 撤去)
+
+> **改訂根拠(spec「実装後の実測知見」)**: view `_refresh_state`->`header_text()`(`len(self.signals)`)/`empty_state()`(`if not self.signals`)が genuine switch ごとに 264k SignalItem を構築(~263ms)。カウントのみ必要なので `_prep` 長ベースの `shown_count()` に置換。
+
+**Files:**
+- Modify: `src/valisync/gui/viewmodels/channel_browser_vm.py`
+- Test: `tests/gui/test_channel_browser_vm.py`
+
+**Interfaces:**
+- Produces: `ChannelBrowserVM.shown_count() -> int` = フィルタ後の表示件数を SignalItem 非構築で算出(`_prep` を走査)。`header_text()`/`empty_state()` が `self.signals` の代わりに `shown_count()` を使う(挙動不変・264k build 撤去)。
+
+- [ ] **Step 1: 失敗テスト**
+
+`tests/gui/test_channel_browser_vm.py` に追加:
+
+```python
+def test_shown_count_matches_signals_without_building_items(tmp_path: Path) -> None:
+    """FU-22 B: shown_count は len(signals) と一致するが SignalItem を構築しない。"""
+    app_vm = AppViewModel()
+    vm = ChannelBrowserVM(app_vm)
+
+    import numpy as np
+
+    def _sig(name: str) -> Signal:
+        return Signal(
+            name=name, timestamps=np.array([0.0]), values=np.array([1.0]),
+            file_format="MDF4", bus_type="", source_file="", metadata={"unit": "V"},
+        )
+
+    app_vm.session.group_signals = lambda k: [_sig("g::a"), _sig("g::b"), _sig("g::ab")]
+    app_vm.set_active_file("g")
+
+    assert vm.shown_count() == 3  # no filter -> total
+    assert vm.shown_count() == len(vm.signals)
+    vm.set_filter("a")
+    assert vm.shown_count() == 2  # "a", "ab"
+    assert vm.shown_count() == len(vm.signals)
+    vm.set_filter("zzz")
+    assert vm.shown_count() == 0
+```
+
+- [ ] **Step 2: RED 確認**
+
+Run: `uv run pytest tests/gui/test_channel_browser_vm.py::test_shown_count_matches_signals_without_building_items -v`
+Expected: FAIL(`shown_count` 未定義)。
+
+- [ ] **Step 3: 実装**
+
+`channel_browser_vm.py` に `shown_count()` を追加(`_filtered` の近く):
+
+```python
+    def shown_count(self) -> int:
+        """Number of signals shown after the current filter, WITHOUT building
+        SignalItems. header_text/empty_state need only the count; materializing
+        264k SignalItems here was the residual ~263ms of the FU-22 B freeze."""
+        self._ensure_prep()
+        fl = self._filter_text.lower()
+        if not fl:
+            return len(self._prep)
+        return sum(1 for _n, lo, _u, _k in self._prep if fl in lo)
+```
+
+`header_text()` の `len(self.signals)` を `self.shown_count()` へ:
+
+```python
+        return f"{name} — {total} ch 中 {self.shown_count()} 件表示"
+```
+
+`empty_state()` の `if not self.signals:` を `if self.shown_count() == 0:` へ:
+
+```python
+        if self.shown_count() == 0:
+            return "no_match"
+        return "has_rows"
+```
+
+(他は不変。`—` は既存の em-dash を踏襲。)
+
+- [ ] **Step 4: GREEN 確認**
+
+Run: `uv run pytest tests/gui/test_channel_browser_vm.py -v`(shown_count + 既存 header/empty テスト無回帰)
+Expected: 全 PASS(header_text/empty_state の値は挙動不変)。
+
+- [ ] **Step 5: 品質ゲート + コミット**
+
+Run: `uv run pytest`; `uv run ruff check`; `uv run ruff format --check`; `uv run mypy src/`
+
+```bash
+git add src/valisync/gui/viewmodels/channel_browser_vm.py tests/gui/test_channel_browser_vm.py
+git commit -m "perf(fu22b): header/empty を shown_count で count-only 化(264k SignalItem build を撤去)"
+```
+
+---
+
+### Task 7: realgui パリティ + prod 実測(5s->~400ms)= メインセッション駆動
+
+> realgui は実ディスプレイ + スクショ AI 判定 + prod_demo.mf4 が必須でサブエージェント不可。gui-verify ①ゲートと同扱い。
+
+**Files:**
+- Modify(必要時): `tests/realgui/test_channel_browser_realclick.py`・`tests/realgui/test_signal_dnd_realclick.py`(stale コメント/掴み点)
+- Scratch(非コミット): prod repro
+
+**Interfaces:**
+- Consumes: proxy 撤去済 view。realgui 掴み点は `browser.tree.model().index(row, 0)`(top-level スカラー)/`model.index(childRow, 0, parentIndex)`(配列子・親展開後)。`browser.proxy` は存在しない。
+
+- [ ] **Step 1: realgui 掴み点を proxy 非依存へ**
+
+`test_signal_dnd_realclick.py`/`test_channel_browser_realclick.py` は CSV スカラー(`a`/`b`)を使い `browser.proxy.index(0,0)`/`browser.model.index(r,0)` で top-level を掴む。proxy 撤去後は `browser.proxy` が無いので `browser.tree.model().index(row,0)` か `browser.model.index(row,0)` へ。スカラーは top-level リーフのため親スレッド不要。stale コメント `browser.model is SignalTableModel` を `SignalTreeModel` へ。
+
+- [ ] **Step 2: realgui クラスタ実行(実ディスプレイ)**
+
+Run: `uv run pytest --realgui tests/realgui/test_signal_dnd_realclick.py tests/realgui/test_channel_browser_realclick.py tests/realgui/test_journey_smoke.py tests/realgui/test_active_panel_flow.py tests/realgui/test_panel_source_flow.py -v`
+Expected: 全 PASS(選択/D&D/追加が proxy 非依存の階層 view で無回帰)。スクショ目視添付。
 
 - [ ] **Step 3: prod 実測(主症状解消の記録)**
 
-scratchpad に repro を書き、real widget tree で `set_active_file(prod key)` の時間を実測。
-Expected: file 選択 5,000ms -> ~500ms 以下(top-level ~4,264 reset ~67ms + VM グルーピング ~152ms)。数値を spec/catalog に記録(コミットしない)。
+scratchpad の `repro_fu22b_incr1.py` 等を proxy 撤去 + shown_count 後の実コードで再走。
+Expected: genuine file 選択 5,027ms -> **~400ms 以下**・materialized=0(遅延保持)。数値を spec/catalog に記録(コミットしない)。
 
-- [ ] **Step 4: 増分① 完了コミット(あれば)**
-
-realgui テスト変更を commit。増分①はここで review チェックポイント(主症状解消)。**merge はしない**(②③④ でパリティ復旧後)。
+- [ ] **Step 4: realgui コミット(あれば)**
 
 ```bash
-git add tests/realgui/test_channel_browser_realclick.py tests/realgui/test_signal_dnd_realclick.py
-git commit -m "test(fu22b): 階層 view の realgui 掴み点を親スレッド化 + パリティ無回帰"
+git add tests/realgui/test_signal_dnd_realclick.py tests/realgui/test_channel_browser_realclick.py
+git commit -m "test(fu22b): realgui 掴み点を proxy 非依存へ + 階層 view パリティ無回帰"
 ```
+
+増分①はここで review チェックポイント。**merge はしない**(②③④ でパリティ復旧後)。
 
 ---
 
 ## Self-Review
 
-- **Spec coverage**: 増分①(モデル + VM グルーピング + view 差し替え + 展開/折畳 + リーフパリティ + grab-point) = Task 1-5。フィルタ②/sort③/親D&D④/磨き⑤は本プラン対象外(後続プラン)。
-- **Placeholder scan**: 全 step に実コード/実コマンド。`_make_view_with_arrays` の `channel_browser_vm` 入手経路のみ「既存に合わせる」注記(実装時に確認)。
-- **Type consistency**: `SignalTreeModel(vm)`・`signal_key_at(index) -> str | None`・`tree_groups() -> list[tuple[str, list[tuple[str,str,str]]]]`・`_base_of(orig)` は Task 間で一致。`_Node.key is None` が親/リーフ判定の単一規約。
+- **Spec coverage**: 増分①(モデル + VM グルーピング + view 差し替え + 展開/折畳 + リーフパリティ + grab-point + **proxy 撤去(遅延保持)** + **header/empty count-only**) = Task 1-7。フィルタ②/sort③(VM-side)/親D&D④/磨き⑤は本プラン対象外(後続プラン)。
+- **Placeholder scan**: 全 step に実コード/実コマンド。
+- **Type consistency**: `SignalTreeModel(vm)`・`signal_key_at(index) -> str | None`・`tree_groups() -> list[tuple[str, list[tuple[str,str,str]]]]`・`shown_count() -> int`・`_base_of(orig)` は Task 間で一致。`_Node.key is None` が親/リーフ判定の単一規約。proxy 撤去後は `self.tree.model()` が SignalTreeModel 直結で selection index = model index。

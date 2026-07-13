@@ -40,13 +40,14 @@
 - 既存の `signals`(flat SignalItem 列) は tree model が置換するため、tree 供給 API(`tree_structure()` or model が VM から直接読む)へ移行。FU-11 の precompute(lower 済みタプル)はフィルタ(増分②)で流用。
 - active file 不変ガード(FU-22 A)・memo は維持。
 
-### 3. proxy / フィルタ / sort
-- **proxy = accept-all + sort 専用**(現行踏襲)。sort はレベル内 = QSortFilterProxyModel が親ごとに子をソートするため自然に成立(増分③)。
-- **フィルタは VM 側**(現行踏襲)。**`setRecursiveFilteringEnabled(True)` は採用不可**: 各親の可視判定で全子を `filterAcceptsRow` に通す = lazy の全子 materialize 強制 = 264k 全構築でフィルタごと秒単位 = perf を殺す。代わりに VM が「マッチしたリーフ + その親」のフィルタ済み構造を計算(リーフ名マッチは FU-11 precompute で高速スキャン)。**フィルタ perf は増分②で prod 実測必須**(最悪 264k 走査 = 別フリーズ源になり得る)。フィルタ中は「マッチしたリーフをフラット表示(親を接頭辞に)」に切り替え木構造リビルドを避ける案も検討(増分②で判断)。
+### 3. proxy / フィルタ / sort（実装後の実測で改訂 — 下記「実装後の実測知見」参照）
+- **proxy は撤去し model を tree に直結する**（改訂）。当初は「proxy = accept-all + sort 専用（現行踏襲）」で sort をレベル内に成立させる計画だったが、**prod 264k 実測で QSortFilterProxyModel が reset マッピング時に全 array 親の rowCount/hasChildren を source 転送し `_materialize` を呼ぶ = 260k 子ノードを eager 構築（遅延・省メモリを完全破壊）＋~456ms コスト**と判明。plain proxy（recursiveFilteringEnabled OFF・dynamicSortFilter OFF でも）は遅延ツリーと根本非互換。→ **proxy 撤去（増分①）**。
+- **フィルタは VM 側**（proxy 無しでも不変）。VM の `tree_groups()` がフィルタ済み構造を返し model が rebuild。`setRecursiveFilteringEnabled` は元より不採用（全子 materialize 強制）。**フィルタ perf は増分②で prod 実測必須**。マッチしたリーフのフラット表示案も増分②で判断。
+- **sort は VM-side（増分③）**。proxy 撤去に伴い PC-20 sort は SignalTreeModel が `_top` グループ + 各親の children をソートする VM-side 方式へ移行（増分③）。増分①では sort を一時停止（PC-20 sort テストは filter 同様 skip）。
 
-### 4. realgui 掴み点(grab-point)
-- top-level: 従来どおり `proxy.index(row, 0)`。
-- **子: `proxy.index(childRow, 0, proxy.mapFromSource(親src))`**(親 index を第3引数でスレッド)。memory [[gui_qsortfilterproxy_visualrect_source_index_empty_rect]] の「source index 直渡し不可」は tree でも不変 = 必ず proxy.index を親コンテキスト付きで。
+### 4. realgui 掴み点(grab-point)（proxy 撤去に伴い改訂）
+- proxy 撤去後は tree の model が SignalTreeModel 直結のため、掴み点は **model index 直接**: top-level = `model.index(row, 0)`、子 = `model.index(childRow, 0, parentIndex)`（親を展開してから）。`proxy.index`/`mapToSource`/`mapFromSource` は不要。
+- スカラー信号は top-level リーフ = 従来どおり `model.index(row, 0)` で掴める（既存 realgui は無回帰）。array 子のドラッグは親展開 + `model.index(childRow, 0, parentIndex)`。
 
 ### 5. D&D / 追加の意味論(増分④)
 - 親ノード追加/D&D = 全リーフ signal_keys。**大配列(> 閾値・既定 50)は確認ダイアログ**(DI 注入)で事故防止。リーフは単一。
@@ -56,13 +57,22 @@
 
 | 増分 | 内容 | ship 判定 |
 |---|---|---|
-| **① コア** | `SignalTreeModel` + VM ツリーグルーピング + view を階層モデルへ + 展開/折畳 + **リーフ選択/D&D/追加パリティ** + grab-point 親スレッド化 | **5s フリーズ解消(reset ~67ms) + 484ms 消滅**。①単体で主症状解消 = 最小 shippable コア |
+| **① コア** | `SignalTreeModel` + VM ツリーグルーピング + view を階層モデルへ + 展開/折畳 + **リーフ選択/D&D/追加パリティ** + grab-point 親スレッド化 + **proxy 撤去（model 直結・遅延保持）** + **header/empty count-only（264k SignalItem build 撤去）** | **5s フリーズ解消 → ~400ms（実測・11x）・遅延保持（materialized 0）**。①単体で主症状解消 = 最小 shippable コア |
 | ② フィルタ | VM 側・リーフ名 + 親名マッチ・**prod 実測でフィルタ非フリーズ確認** | 検索パリティ復旧 |
-| ③ sort | レベル内(proxy 親ごと子ソート) | ソートパリティ復旧 |
+| ③ sort（VM-side） | SignalTreeModel が `_top`/children をソート（proxy 撤去済のため VM-side・元「proxy 親ごと子ソート」から改訂） | ソートパリティ復旧 |
 | ④ 親 D&D/追加 | `add_signals` batch API + 大配列確認ダイアログ | 親操作 + 再フリーズ防止 |
 | ⑤ 磨き(defer 可) | 親 `Base (N)` 表示・unit 集約・遅延リッチツールチップ(PC-19 相当) | 表示品質 |
 
 主症状は①で解消。②③④はパリティ回帰の復旧(独立増分だが merge 前必須)。⑤は defer 可。
+
+## 実装後の実測知見（2026-07-13・systematic-debugging）
+
+Path B 実装（Task 1-4）後の prod 264k 実測で、設計の2つの楽観的仮定が誤りと判明:
+
+1. **QSortFilterProxyModel は遅延ツリーと根本非互換**。当初「proxy = accept-all + sort（増分③まで保持）」としたが、proxy は reset マッピング時に全 array 親の rowCount/hasChildren を source へ転送し `_materialize` を呼ぶ = **260 配列 × ~1000 = 260,000 子ノードを eager 構築**（decisive: bare tree=materialized 0 / tree+proxy=materialized 260・child 260,000）。→ ~456ms コスト + 遅延/省メモリの完全破壊。`dynamicSortFilter=False`/`recursiveFilteringEnabled=False` でも変わらず。**→ proxy 撤去（増分①）・sort は VM-side（増分③）へ改訂**。
+2. **「484ms VM 構築消滅」は誤り**。model 以外に view の `header_text()`（`len(self.signals)`）/`empty_state()`（`if not self.signals`）も `signals` の consumer で、genuine switch ごとに 264k SignalItem を構築（~263ms）。**→ header/empty を count-only 化（`_prep` 長ベース）で撤去（増分①）**。
+
+実測（prod 264k・offscreen・genuine switch）: OLD flat QTreeView+proxy = 5,027ms → 実装済み①（tree+proxy+leak）= ~1,281ms（4x・但し遅延破壊）→ **推奨修正（no proxy + count-only）= ~397-450ms（11x・遅延保持 materialized 0）**。VM floor: prep 139ms + grouping 153ms（264k `_base_of` regex）+ bare tree reset ~80ms。
 
 ## テスト設計(gui-test-plan: 入力経路直結の view 変更 = クロスカット)
 
