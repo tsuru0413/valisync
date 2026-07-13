@@ -78,6 +78,14 @@ class ChannelBrowserView(QWidget):
 
         self.tree = QTreeView(self)
         self.tree.setModel(self.model)
+        # QHeaderView's un-set sort indicator defaults to (column=0, Descending);
+        # setSortingEnabled(True) fires that stale default as a real sort *before*
+        # our own passthrough call below runs, silently reordering the tree on
+        # every fresh view. Clear it first so there is nothing to fire.
+        self.tree.header().setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
+        self.tree.setSortingEnabled(True)
+        # Default: session order until a header is clicked (PC-20 DP2). -1 = passthrough.
+        self.tree.sortByColumn(-1, Qt.SortOrder.AscendingOrder)
         self.tree.setSelectionMode(QTreeView.SelectionMode.ExtendedSelection)
         self.tree.setDragEnabled(True)
         self.tree.setUniformRowHeights(True)

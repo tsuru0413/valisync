@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt
 from pytestqt.qtbot import QtBot
 
@@ -410,33 +409,38 @@ def test_double_click_emits_add(qtbot: QtBot, tmp_path: Path) -> None:
 # FU-22 B increment 1 dropped the QSortFilterProxyModel that used to sit
 # between SignalTreeModel (source) and the tree -- it forced eager
 # materialization of all array children on every reset (~456ms at prod scale),
-# defeating the lazy tree built in Tasks 1-4. Sort moves VM-side in increment
-# 3 (proxy dropped); the tests below are skipped until then.
+# defeating the lazy tree built in Tasks 1-4. Sort is now implemented VM-side
+# on SignalTreeModel itself (increment 3: SignalTreeModel.sort() + the view's
+# setSortingEnabled/sortByColumn(-1) wiring) -- these tests exercise the model
+# directly with no proxy indirection.
 
 
-@pytest.mark.skip(reason="FU-22 B: sort moves VM-side in increment 3 (proxy dropped)")
 def test_default_order_is_source_order(qtbot: QtBot, tmp_path: Path) -> None:
     # ソート未クリックの既定は源順(登録順)を保つ(sortByColumn(-1) パススルー)。
     view = _cb_view_with_signals(qtbot, tmp_path, ["zed", "alpha", "mid"])
-    names = [view.proxy.index(r, 0).data() for r in range(view.proxy.rowCount())]
+    names = [
+        view.model.index(r, 0, QModelIndex()).data()
+        for r in range(view.model.rowCount(QModelIndex()))
+    ]
     assert names == ["zed", "alpha", "mid"]  # 名前昇順に勝手に並び替えない
 
 
-@pytest.mark.skip(reason="FU-22 B: sort moves VM-side in increment 3 (proxy dropped)")
 def test_header_click_sorts_by_name(qtbot: QtBot, tmp_path: Path) -> None:
     # 登録順 "zed","alpha","mid" → 名前昇順ソートで alpha,mid,zed
     view = _cb_view_with_signals(qtbot, tmp_path, ["zed", "alpha", "mid"])
-    view.proxy.sort(0, Qt.SortOrder.AscendingOrder)  # Name 列 昇順
-    names = [view.proxy.index(r, 0).data() for r in range(view.proxy.rowCount())]
+    view.model.sort(0, Qt.SortOrder.AscendingOrder)  # Name 列 昇順
+    names = [
+        view.model.index(r, 0, QModelIndex()).data()
+        for r in range(view.model.rowCount(QModelIndex()))
+    ]
     assert names == ["alpha", "mid", "zed"]
 
 
-@pytest.mark.skip(reason="FU-22 B: sort moves VM-side in increment 3 (proxy dropped)")
 def test_selected_keys_correct_after_sort(qtbot: QtBot, tmp_path: Path) -> None:
     view = _cb_view_with_signals(qtbot, tmp_path, ["zed", "alpha", "mid"])
-    view.proxy.sort(0, Qt.SortOrder.AscendingOrder)
-    # ソート後の視覚的先頭行(=alpha)を選択 → mapToSource で alpha の key が返る
-    top = view.proxy.index(0, 0)
+    view.model.sort(0, Qt.SortOrder.AscendingOrder)
+    # ソート後の視覚的先頭行(=alpha)を選択 → model 直結で alpha の key が返る
+    top = view.model.index(0, 0, QModelIndex())
     view.tree.selectionModel().select(
         top,
         QItemSelectionModel.SelectionFlag.Select
@@ -449,11 +453,10 @@ def test_selected_keys_correct_after_sort(qtbot: QtBot, tmp_path: Path) -> None:
     )  # 見た目どおり alpha(源 index ずれで zed にならない)
 
 
-@pytest.mark.skip(reason="FU-22 B: sort moves VM-side in increment 3 (proxy dropped)")
 def test_dnd_mime_keys_correct_after_sort(qtbot: QtBot, tmp_path: Path) -> None:
     view = _cb_view_with_signals(qtbot, tmp_path, ["zed", "alpha", "mid"])
-    view.proxy.sort(0, Qt.SortOrder.AscendingOrder)
-    top = view.proxy.index(0, 0)
+    view.model.sort(0, Qt.SortOrder.AscendingOrder)
+    top = view.model.index(0, 0, QModelIndex())
     view.tree.selectionModel().select(
         top,
         QItemSelectionModel.SelectionFlag.Select
@@ -466,12 +469,27 @@ def test_dnd_mime_keys_correct_after_sort(qtbot: QtBot, tmp_path: Path) -> None:
     assert keys and keys[0].endswith("::alpha")
 
 
-@pytest.mark.skip(reason="FU-22 B: sort moves VM-side in increment 3 (proxy dropped)")
 def test_sort_is_case_insensitive(qtbot: QtBot, tmp_path: Path) -> None:
-    # 実 ADAS 信号名は大小混在 (EngineSpeed/vehSpd) -- QSortFilterProxyModel の
-    # 既定 CaseSensitive のままだと大文字始まりが全て小文字始まりより前に来て
-    # A-Z 走査が2ブロックに分断される (レビュー指摘の Minor follow-up)。
+    # 実 ADAS 信号名は大小混在 (EngineSpeed/vehSpd) -- 単純な CaseSensitive
+    # ソートだと大文字始まりが全て小文字始まりより前に来て A-Z 走査が2ブロック
+    # に分断される (レビュー指摘の Minor follow-up)。SignalTreeModel._sort_key
+    # は .lower() で正規化するので混在しても連続する。
     view = _cb_view_with_signals(qtbot, tmp_path, ["Beta", "alpha", "Gamma"])
-    view.proxy.sort(0, Qt.SortOrder.AscendingOrder)
-    names = [view.proxy.index(r, 0).data() for r in range(view.proxy.rowCount())]
+    view.model.sort(0, Qt.SortOrder.AscendingOrder)
+    names = [
+        view.model.index(r, 0, QModelIndex()).data()
+        for r in range(view.model.rowCount(QModelIndex()))
+    ]
     assert names == ["alpha", "Beta", "Gamma"]
+
+
+def test_sorting_enabled_does_not_materialize_children(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """FU-22 B: setSortingEnabled(True) の tree でも array 子は展開まで materialize
+    されない(QSortFilterProxyModel がこれを破壊していた教訓の直接検証)。"""
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+    view.model.sort(0, Qt.SortOrder.AscendingOrder)
+    qtbot.wait(10)  # let the tree react to the sort
+    parents = [n for n in view.model._top if n.key is None]
+    assert parents and all(n.children is None for n in parents)
