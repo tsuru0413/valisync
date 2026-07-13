@@ -6,6 +6,7 @@ Supports incremental substring filtering and selection state.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -15,6 +16,13 @@ if TYPE_CHECKING:
     from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 
 _SEP = "::"
+_BASE_RE = re.compile(r"[\[.]")
+
+
+def _base_of(orig: str) -> str:
+    """Base channel name = orig up to the first LD-14 suffix marker ('[' or '.')."""
+    m = _BASE_RE.search(orig)
+    return orig[: m.start()] if m else orig
 
 
 @dataclass(frozen=True)
@@ -117,6 +125,24 @@ class ChannelBrowserVM(Observable):
         return [
             SignalItem(name=n, unit=u, key=k) for n, lo, u, k in self._prep if fl in lo
         ]
+
+    def tree_groups(self) -> list[tuple[str, list[tuple[str, str, str]]]]:
+        """Group the active file's signals by base channel for the tree browser.
+
+        Returns [(base, [(orig, unit, key), ...]), ...] in base first-seen order.
+        Arrays (LD-14 Name[i]/.field) bucket under their base; scalars are a
+        single-leaf group. Filter is NOT applied here (increment 2)."""
+        self._ensure_prep()
+        groups: dict[str, list[tuple[str, str, str]]] = {}
+        order: list[str] = []
+        for orig, _lower, unit, key in self._prep:
+            base = _base_of(orig)
+            bucket = groups.get(base)
+            if bucket is None:
+                bucket = groups[base] = []
+                order.append(base)
+            bucket.append((orig, unit, key))
+        return [(b, groups[b]) for b in order]
 
     # ─── Header / empty-state (FB-05/09) ────────────────────────────────────
 

@@ -391,3 +391,39 @@ def test_active_file_switch_invalidates_prep_no_leak(tmp_path: Path) -> None:
 
     app_vm.set_active_file(kb)
     assert {s.name for s in vm.signals} == {"beta", "delta"}  # alpha/gamma を漏らさない
+
+
+def test_tree_groups_buckets_arrays_under_base(tmp_path: Path) -> None:
+    """FU-22 B: LD-14 名を base(最初の [ or . 以前)でグルーピング。配列は複数リーフ・スカラーは単一。"""
+    import numpy as np
+
+    app_vm = AppViewModel()
+    vm = ChannelBrowserVM(app_vm)
+
+    def _sig(name: str) -> Signal:
+        return Signal(
+            name=name,
+            timestamps=np.array([0.0]),
+            values=np.array([1.0]),
+            file_format="MDF4",
+            bus_type="",
+            source_file="",
+            metadata={"unit": "V"},
+        )
+
+    app_vm.session.group_signals = lambda key: [
+        _sig("g::Arr[0]"),
+        _sig("g::Arr[1]"),
+        _sig("g::Arr[2]"),
+        _sig("g::Scalar"),
+        _sig("g::Struct.field"),
+    ]
+    app_vm.set_active_file("g")
+
+    groups = vm.tree_groups()
+    as_dict = {base: leaves for base, leaves in groups}
+    assert [b for b, _ in groups] == ["Arr", "Scalar", "Struct"]  # first-seen order
+    assert len(as_dict["Arr"]) == 3
+    assert as_dict["Arr"][0] == ("Arr[0]", "V", "g::Arr[0]")  # (orig, unit, key)
+    assert len(as_dict["Scalar"]) == 1
+    assert as_dict["Struct"][0] == ("Struct.field", "V", "g::Struct.field")
