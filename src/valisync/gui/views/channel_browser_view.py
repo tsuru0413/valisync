@@ -1,7 +1,9 @@
 """Channel_Browser view — refactored for master-detail (Task 2.3).
 
-A search box atop a flat QTreeView. User gestures are forwarded to the VM.
-Displays signals for the currently active file in AppViewModel.
+A search box atop a hierarchical QTreeView. Array bases (LD-14 Name[i]/.field)
+collapse under a parent node; scalars stay top-level leaves (FU-22 B). User
+gestures are forwarded to the VM. Displays signals for the currently active
+file in AppViewModel.
 """
 
 from __future__ import annotations
@@ -12,8 +14,8 @@ from PySide6.QtCore import (
     QMimeData,
     QObject,
     QPoint,
-    QSortFilterProxyModel,
     Qt,
+    QTimer,
     Signal,
 )
 from PySide6.QtGui import QKeyEvent
@@ -29,11 +31,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from valisync.gui.adapters.qt_signal_models import (
-    SignalTableModel,
-    encode_signal_keys,
-)
+from valisync.gui.adapters.qt_signal_models import encode_signal_keys
+from valisync.gui.adapters.signal_tree_model import SignalTreeModel
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
+
+_FILTER_DEBOUNCE_MS = 200  # prod 264k のフィルタ scan ~170ms を入力停止後 1 回に集約
 
 # Empty-state placeholder text (FB-05/08/09); no_match takes a format arg.
 _EMPTY_MESSAGES = {
@@ -44,7 +46,7 @@ _EMPTY_MESSAGES = {
 
 
 class ChannelBrowserView(QWidget):
-    """Search box + flat tree view bound to a :class:`ChannelBrowserVM`."""
+    """Search box + hierarchical tree view bound to a :class:`ChannelBrowserVM`."""
 
     # Emitted with the selected signal keys; the integration connects this to
     # the active Graph_Panel's add_signal (R14.1).
@@ -53,18 +55,18 @@ class ChannelBrowserView(QWidget):
     def __init__(self, vm: ChannelBrowserVM, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._vm = vm
-        self.model = SignalTableModel(vm)
-        # PC-20: ソート専用の proxy を挟む(フィルタは現行どおり VM 真実 = proxy は
-        # accept-all のまま)。ヘッダクリックで Name/Unit 列ソート。
-        self.proxy = QSortFilterProxyModel(self)
-        self.proxy.setSourceModel(self.model)
-        # Real channel names are mixed-case (EngineSpeed / vehSpd); sort
-        # case-insensitively so an A-Z scan isn't split into upper/lower blocks.
-        self.proxy.setSortCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.model = SignalTreeModel(vm)
 
         self.search_box = QLineEdit(self)
         self.search_box.setPlaceholderText("Filter signals…")
         self.search_box.setClearButtonEnabled(True)
+
+        # FU-22 B increment 2: debounce the filter scan (~170ms at prod 264k)
+        # so rapid typing does not lag; the scan runs once after typing pauses.
+        self._filter_timer = QTimer(self)
+        self._filter_timer.setSingleShot(True)
+        self._filter_timer.setInterval(_FILTER_DEBOUNCE_MS)
+        self._filter_timer.timeout.connect(self._apply_filter)
 
         # PC-02: 可視の追加ボタン(FileBrowser の Open ボタンパターン踏襲)。
         # 文言は配送先(アクティブパネル)を正直に示す。
@@ -75,20 +77,18 @@ class ChannelBrowserView(QWidget):
         self.add_button.clicked.connect(self._emit_add_selected)
 
         self.tree = QTreeView(self)
-        self.tree.setModel(self.proxy)
+        self.tree.setModel(self.model)
+        # QHeaderView's un-set sort indicator defaults to (column=0, Descending);
+        # setSortingEnabled(True) fires that stale default as a real sort *before*
+        # our own passthrough call below runs, silently reordering the tree on
+        # every fresh view. Clear it first so there is nothing to fire.
+        self.tree.header().setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
         self.tree.setSortingEnabled(True)
-        # setSortingEnabled(True) は「現在のソート指標」で即時 sortByColumn する。
-        # 既定は源順(セッション/グループ順)を保ち、ヘッダクリックで初めてソート
-        # する挙動にしたいので、proxy のソート列を -1(パススルー)へ戻す(spec DP2:
-        # 「ヘッダクリックで名前/単位ソート」= 既定ソートは要求されていない)。
+        # Default: session order until a header is clicked (PC-20 DP2). -1 = passthrough.
         self.tree.sortByColumn(-1, Qt.SortOrder.AscendingOrder)
         self.tree.setSelectionMode(QTreeView.SelectionMode.ExtendedSelection)
         self.tree.setDragEnabled(True)
         self.tree.setUniformRowHeights(True)
-
-        # Refactor for flat list appearance
-        self.tree.setRootIsDecorated(False)
-        self.tree.setItemsExpandable(False)
 
         # CustomContextMenu so a real right-click on the child tree emits
         # customContextMenuRequested. Overriding contextMenuEvent on this
@@ -121,8 +121,9 @@ class ChannelBrowserView(QWidget):
         # set_filter() synchronously notifies "filter" -> _on_vm_change() ->
         # _refresh_state(), so a second direct textChanged->_refresh_state
         # connection would double-call it on every keystroke; the VM notify
-        # path alone is sufficient (see _on_vm_change below).
-        self.search_box.textChanged.connect(self._vm.set_filter)
+        # path alone is sufficient (see _on_vm_change below). textChanged only
+        # restarts the debounce timer; _apply_filter (below) calls set_filter.
+        self.search_box.textChanged.connect(lambda _text: self._filter_timer.start())
         self.tree.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
 
@@ -158,6 +159,10 @@ class ChannelBrowserView(QWidget):
         self.placeholder_label.setText(message)
         self._stack.setCurrentWidget(self.placeholder_label)
 
+    def _apply_filter(self) -> None:
+        """Apply the (debounced) search text to the VM filter."""
+        self._vm.set_filter(self.search_box.text())
+
     def _on_vm_change(self, change: str) -> None:
         """Handle notifications from ChannelBrowserVM."""
         if change in ("signals", "filter"):
@@ -173,16 +178,16 @@ class ChannelBrowserView(QWidget):
     # ─── Queries ───────────────────────────────────────────────────────────────
 
     def selected_signal_keys(self) -> list[str]:
-        """Return the namespaced keys of the currently-selected signal rows.
+        """Return the namespaced keys of the selected leaf rows.
 
-        Rows are proxy indexes (sort may reorder them), so each must be mapped
-        back to the source model before resolving its key -- otherwise a sorted
-        view would drag/select the wrong signal (PC-20).
-        """
+        The tree is bound directly to SignalTreeModel (no proxy -- a proxy would
+        eagerly materialize all array children on reset, defeating the lazy tree,
+        see FU-22 B). So selection indexes are model indexes; resolve each key
+        directly. Parent (array) nodes return None and are skipped (parent-as-signal
+        lands in increment 4)."""
         keys: list[str] = []
         for index in self.tree.selectionModel().selectedRows(0):
-            src = self.proxy.mapToSource(index)
-            key = self.model.signal_key_at(src)
+            key = self.model.signal_key_at(index)
             if key is not None:
                 keys.append(key)
         return keys

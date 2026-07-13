@@ -6,6 +6,7 @@ Supports incremental substring filtering and selection state.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -15,6 +16,13 @@ if TYPE_CHECKING:
     from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 
 _SEP = "::"
+_BASE_RE = re.compile(r"[\[.]")
+
+
+def _base_of(orig: str) -> str:
+    """Base channel name = orig up to the first LD-14 suffix marker ('[' or '.')."""
+    m = _BASE_RE.search(orig)
+    return orig[: m.start()] if m else orig
 
 
 @dataclass(frozen=True)
@@ -118,6 +126,45 @@ class ChannelBrowserVM(Observable):
             SignalItem(name=n, unit=u, key=k) for n, lo, u, k in self._prep if fl in lo
         ]
 
+    def shown_count(self) -> int:
+        """Number of signals shown after the current filter, WITHOUT building
+        SignalItems. header_text/empty_state need only the count; materializing
+        264k SignalItems here was the residual ~263ms of the FU-22 B freeze."""
+        self._ensure_prep()
+        fl = self._filter_text.lower()
+        if not fl:
+            return len(self._prep)
+        return sum(1 for _n, lo, _u, _k in self._prep if fl in lo)
+
+    def tree_groups(self) -> list[tuple[str, list[tuple[str, str, str]]]]:
+        """Group the active file's signals by base channel for the tree browser.
+
+        Returns [(base, [(orig, unit, key), ...]), ...] in base first-seen order.
+        Filtered by the current substring filter (fl in leaf name); a base appears
+        only if at least one of its leaves matches. Empty filter -> all signals."""
+        try:
+            self._ensure_prep()
+        except KeyError:
+            # set_active_file() does not validate the key exists (FU-22 A), so a
+            # notify can still be in flight for a key the session already
+            # dropped. Same guard as signals/_group_total (FU-22 B: this became
+            # production-reachable once ChannelBrowserView switched to
+            # SignalTreeModel, whose _on_vm_change calls tree_groups() directly).
+            return []
+        fl = self._filter_text.lower()
+        groups: dict[str, list[tuple[str, str, str]]] = {}
+        order: list[str] = []
+        for orig, lower, unit, key in self._prep:
+            if fl and fl not in lower:
+                continue
+            base = _base_of(orig)
+            bucket = groups.get(base)
+            if bucket is None:
+                bucket = groups[base] = []
+                order.append(base)
+            bucket.append((orig, unit, key))
+        return [(b, groups[b]) for b in order]
+
     # ─── Header / empty-state (FB-05/09) ────────────────────────────────────
 
     def _group_total(self) -> tuple[str, int] | None:
@@ -140,7 +187,7 @@ class ChannelBrowserVM(Observable):
         name, total = info
         if total == 0:
             return f"{name} — 0 ch"
-        return f"{name} — {total} ch 中 {len(self.signals)} 件表示"
+        return f"{name} — {total} ch 中 {self.shown_count()} 件表示"
 
     def empty_state(self) -> str:
         """Why the list is empty: none_selected / no_channels / no_match / has_rows."""
@@ -149,7 +196,7 @@ class ChannelBrowserVM(Observable):
             return "none_selected"
         if info[1] == 0:
             return "no_channels"
-        if not self.signals:
+        if self.shown_count() == 0:
             return "no_match"
         return "has_rows"
 

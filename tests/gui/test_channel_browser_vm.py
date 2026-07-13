@@ -391,3 +391,119 @@ def test_active_file_switch_invalidates_prep_no_leak(tmp_path: Path) -> None:
 
     app_vm.set_active_file(kb)
     assert {s.name for s in vm.signals} == {"beta", "delta"}  # alpha/gamma を漏らさない
+
+
+def test_tree_groups_buckets_arrays_under_base(tmp_path: Path) -> None:
+    """FU-22 B: LD-14 名を base(最初の [ or . 以前)でグルーピング。配列は複数リーフ・スカラーは単一。"""
+    import numpy as np
+
+    app_vm = AppViewModel()
+    vm = ChannelBrowserVM(app_vm)
+
+    def _sig(name: str) -> Signal:
+        return Signal(
+            name=name,
+            timestamps=np.array([0.0]),
+            values=np.array([1.0]),
+            file_format="MDF4",
+            bus_type="",
+            source_file="",
+            metadata={"unit": "V"},
+        )
+
+    app_vm.session.group_signals = lambda key: [
+        _sig("g::Arr[0]"),
+        _sig("g::Arr[1]"),
+        _sig("g::Arr[2]"),
+        _sig("g::Scalar"),
+        _sig("g::Struct.field"),
+    ]
+    app_vm.set_active_file("g")
+
+    groups = vm.tree_groups()
+    as_dict = {base: leaves for base, leaves in groups}
+    assert [b for b, _ in groups] == ["Arr", "Scalar", "Struct"]  # first-seen order
+    assert len(as_dict["Arr"]) == 3
+    assert as_dict["Arr"][0] == ("Arr[0]", "V", "g::Arr[0]")  # (orig, unit, key)
+    assert len(as_dict["Scalar"]) == 1
+    assert as_dict["Struct"][0] == ("Struct.field", "V", "g::Struct.field")
+
+
+def test_tree_groups_honors_filter(tmp_path: Path) -> None:
+    """FU-22 B 増分2: tree_groups は fl in leaf名 でリーフを絞り base で再グルーピング。"""
+    import numpy as np
+
+    app_vm = AppViewModel()
+    vm = ChannelBrowserVM(app_vm)
+
+    def _sig(name: str) -> Signal:
+        return Signal(
+            name=name,
+            timestamps=np.array([0.0]),
+            values=np.array([1.0]),
+            file_format="MDF4",
+            bus_type="",
+            source_file="",
+            metadata={"unit": "V"},
+        )
+
+    app_vm.session.group_signals = lambda k: [
+        _sig("g::Arr[0]"),
+        _sig("g::Arr[1]"),
+        _sig("g::Speed"),
+        _sig("g::Brake"),
+    ]
+    app_vm.set_active_file("g")
+
+    # no filter -> all bases
+    assert [b for b, _ in vm.tree_groups()] == ["Arr", "Speed", "Brake"]
+
+    # filter matches a base name (prefix of its leaves) -> that base with all children
+    vm.set_filter("arr")
+    groups = vm.tree_groups()
+    assert [b for b, _ in groups] == ["Arr"]
+    assert len(groups[0][1]) == 2  # both Arr[0], Arr[1]
+
+    # filter matches a specific leaf -> only that base, only matching leaves
+    vm.set_filter("arr[1]")
+    groups = vm.tree_groups()
+    assert [b for b, _ in groups] == ["Arr"]
+    assert [orig for orig, _u, _k in groups[0][1]] == ["Arr[1]"]
+
+    # filter matches a scalar
+    vm.set_filter("speed")
+    assert [b for b, _ in vm.tree_groups()] == ["Speed"]
+
+    # no match -> empty
+    vm.set_filter("zzz")
+    assert vm.tree_groups() == []
+
+
+def test_shown_count_matches_signals_without_building_items(tmp_path: Path) -> None:
+    """FU-22 B: shown_count は len(signals) と一致するが SignalItem を構築しない。"""
+    app_vm = AppViewModel()
+    vm = ChannelBrowserVM(app_vm)
+
+    import numpy as np
+
+    def _sig(name: str) -> Signal:
+        return Signal(
+            name=name,
+            timestamps=np.array([0.0]),
+            values=np.array([1.0]),
+            file_format="MDF4",
+            bus_type="",
+            source_file="",
+            metadata={"unit": "V"},
+        )
+
+    app_vm.session.group_signals = lambda k: [_sig("g::a"), _sig("g::b"), _sig("g::ab")]
+    app_vm.set_active_file("g")
+
+    assert vm.shown_count() == 3  # no filter -> total
+    assert vm.shown_count() == len(vm.signals)
+    vm.set_filter("a")
+    assert vm.shown_count() == 2  # "a", "ab"
+    assert vm.shown_count() == len(vm.signals)
+    vm.set_filter("zzz")
+    assert vm.shown_count() == 0

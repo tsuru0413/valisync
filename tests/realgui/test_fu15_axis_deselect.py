@@ -156,11 +156,13 @@ def test_channelbrowser_click_deselects_active_axis(
     # obj = 配送先(tree.viewport()) は GraphAreaView の subtree 外 — クロス
     # ウィジェット実配送(合成 notify ではなく実 OS ヒットテスト経由)。
     tree = window.channel_browser_view.tree
-    proxy = window.channel_browser_view.proxy
+    model = (
+        window.channel_browser_view.model
+    )  # FU-22 B: proxy dropped, tree is model-direct
     qtbot.waitUntil(
-        lambda: tree.visualRect(proxy.index(0, 0)).height() > 0, timeout=3000
+        lambda: tree.visualRect(model.index(0, 0)).height() > 0, timeout=3000
     )
-    rect = tree.visualRect(proxy.index(0, 0))
+    rect = tree.visualRect(model.index(0, 0))
     vp = tree.viewport()
     from PySide6.QtCore import QPoint
 
