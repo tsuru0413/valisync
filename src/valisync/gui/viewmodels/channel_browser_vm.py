@@ -140,8 +140,8 @@ class ChannelBrowserVM(Observable):
         """Group the active file's signals by base channel for the tree browser.
 
         Returns [(base, [(orig, unit, key), ...]), ...] in base first-seen order.
-        Arrays (LD-14 Name[i]/.field) bucket under their base; scalars are a
-        single-leaf group. Filter is NOT applied here (increment 2)."""
+        Filtered by the current substring filter (fl in leaf name); a base appears
+        only if at least one of its leaves matches. Empty filter -> all signals."""
         try:
             self._ensure_prep()
         except KeyError:
@@ -151,9 +151,12 @@ class ChannelBrowserVM(Observable):
             # production-reachable once ChannelBrowserView switched to
             # SignalTreeModel, whose _on_vm_change calls tree_groups() directly).
             return []
+        fl = self._filter_text.lower()
         groups: dict[str, list[tuple[str, str, str]]] = {}
         order: list[str] = []
-        for orig, _lower, unit, key in self._prep:
+        for orig, lower, unit, key in self._prep:
+            if fl and fl not in lower:
+                continue
             base = _base_of(orig)
             bucket = groups.get(base)
             if bucket is None:

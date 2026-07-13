@@ -429,6 +429,56 @@ def test_tree_groups_buckets_arrays_under_base(tmp_path: Path) -> None:
     assert as_dict["Struct"][0] == ("Struct.field", "V", "g::Struct.field")
 
 
+def test_tree_groups_honors_filter(tmp_path: Path) -> None:
+    """FU-22 B 増分2: tree_groups は fl in leaf名 でリーフを絞り base で再グルーピング。"""
+    import numpy as np
+
+    app_vm = AppViewModel()
+    vm = ChannelBrowserVM(app_vm)
+
+    def _sig(name: str) -> Signal:
+        return Signal(
+            name=name,
+            timestamps=np.array([0.0]),
+            values=np.array([1.0]),
+            file_format="MDF4",
+            bus_type="",
+            source_file="",
+            metadata={"unit": "V"},
+        )
+
+    app_vm.session.group_signals = lambda k: [
+        _sig("g::Arr[0]"),
+        _sig("g::Arr[1]"),
+        _sig("g::Speed"),
+        _sig("g::Brake"),
+    ]
+    app_vm.set_active_file("g")
+
+    # no filter -> all bases
+    assert [b for b, _ in vm.tree_groups()] == ["Arr", "Speed", "Brake"]
+
+    # filter matches a base name (prefix of its leaves) -> that base with all children
+    vm.set_filter("arr")
+    groups = vm.tree_groups()
+    assert [b for b, _ in groups] == ["Arr"]
+    assert len(groups[0][1]) == 2  # both Arr[0], Arr[1]
+
+    # filter matches a specific leaf -> only that base, only matching leaves
+    vm.set_filter("arr[1]")
+    groups = vm.tree_groups()
+    assert [b for b, _ in groups] == ["Arr"]
+    assert [orig for orig, _u, _k in groups[0][1]] == ["Arr[1]"]
+
+    # filter matches a scalar
+    vm.set_filter("speed")
+    assert [b for b, _ in vm.tree_groups()] == ["Speed"]
+
+    # no match -> empty
+    vm.set_filter("zzz")
+    assert vm.tree_groups() == []
+
+
 def test_shown_count_matches_signals_without_building_items(tmp_path: Path) -> None:
     """FU-22 B: shown_count は len(signals) と一致するが SignalItem を構築しない。"""
     app_vm = AppViewModel()
