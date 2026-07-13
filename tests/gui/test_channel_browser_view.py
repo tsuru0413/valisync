@@ -192,16 +192,30 @@ def test_selecting_parent_yields_no_leaf_keys_in_incr1(
 
 
 class TestSearchFilter:
-    @pytest.mark.skip(reason="FU-22 B: filter wiring lands in increment 2")
     def test_search_box_filters_list(self, qtbot: QtBot, tmp_path: Path) -> None:
+        app_vm, key = _setup_app(tmp_path)  # sig_a, sig_b (scalars)
+        app_vm.set_active_file(key)
+        vm = ChannelBrowserVM(app_vm)
+        view = _make_view(qtbot, vm)
+
+        assert view.model.rowCount() == 2  # both scalars = top-level leaves
+        view.search_box.setText("sig_a")
+        # Debounced: filter applies after the timer fires in the event loop.
+        qtbot.waitUntil(lambda: view.model.rowCount() == 1, timeout=1000)
+
+    def test_search_box_debounces_filter(self, qtbot: QtBot, tmp_path: Path) -> None:
+        """FU-22 B increment 2: keystrokes do not call set_filter synchronously;
+        the debounce timer applies it once after typing pauses."""
         app_vm, key = _setup_app(tmp_path)
         app_vm.set_active_file(key)
         vm = ChannelBrowserVM(app_vm)
         view = _make_view(qtbot, vm)
 
-        assert view.model.rowCount() == 2
         view.search_box.setText("sig_a")
-        assert view.model.rowCount() == 1
+        assert vm._filter_text == ""  # NOT applied synchronously (debounced)
+        qtbot.waitUntil(
+            lambda: vm._filter_text == "sig_a", timeout=1000
+        )  # applied after debounce
 
 
 class TestSelection:
@@ -266,11 +280,11 @@ def test_placeholder_no_match_includes_query_and_recovers(
     app_vm, vm, key = _loaded_vm(tmp_path)
     app_vm.set_active_file(key)
     view = _make_view(qtbot, vm)
-    view.search_box.setText("xyz123")  # 実経路: textChanged → set_filter
-    assert view.is_showing_placeholder()
+    view.search_box.setText("xyz123")  # debounced textChanged -> set_filter
+    qtbot.waitUntil(lambda: view.is_showing_placeholder(), timeout=1000)
     assert "xyz123" in view.placeholder_label.text()
     view.search_box.setText("")
-    assert not view.is_showing_placeholder()
+    qtbot.waitUntil(lambda: not view.is_showing_placeholder(), timeout=1000)
 
 
 def test_no_channels_placeholder_shown_after_refresh(

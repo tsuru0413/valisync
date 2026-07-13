@@ -15,6 +15,7 @@ from PySide6.QtCore import (
     QObject,
     QPoint,
     Qt,
+    QTimer,
     Signal,
 )
 from PySide6.QtGui import QKeyEvent
@@ -33,6 +34,8 @@ from PySide6.QtWidgets import (
 from valisync.gui.adapters.qt_signal_models import encode_signal_keys
 from valisync.gui.adapters.signal_tree_model import SignalTreeModel
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
+
+_FILTER_DEBOUNCE_MS = 200  # prod 264k のフィルタ scan ~170ms を入力停止後 1 回に集約
 
 # Empty-state placeholder text (FB-05/08/09); no_match takes a format arg.
 _EMPTY_MESSAGES = {
@@ -57,6 +60,13 @@ class ChannelBrowserView(QWidget):
         self.search_box = QLineEdit(self)
         self.search_box.setPlaceholderText("Filter signals…")
         self.search_box.setClearButtonEnabled(True)
+
+        # FU-22 B increment 2: debounce the filter scan (~170ms at prod 264k)
+        # so rapid typing does not lag; the scan runs once after typing pauses.
+        self._filter_timer = QTimer(self)
+        self._filter_timer.setSingleShot(True)
+        self._filter_timer.setInterval(_FILTER_DEBOUNCE_MS)
+        self._filter_timer.timeout.connect(self._apply_filter)
 
         # PC-02: 可視の追加ボタン(FileBrowser の Open ボタンパターン踏襲)。
         # 文言は配送先(アクティブパネル)を正直に示す。
@@ -103,8 +113,9 @@ class ChannelBrowserView(QWidget):
         # set_filter() synchronously notifies "filter" -> _on_vm_change() ->
         # _refresh_state(), so a second direct textChanged->_refresh_state
         # connection would double-call it on every keystroke; the VM notify
-        # path alone is sufficient (see _on_vm_change below).
-        self.search_box.textChanged.connect(self._vm.set_filter)
+        # path alone is sufficient (see _on_vm_change below). textChanged only
+        # restarts the debounce timer; _apply_filter (below) calls set_filter.
+        self.search_box.textChanged.connect(lambda _text: self._filter_timer.start())
         self.tree.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
 
@@ -139,6 +150,10 @@ class ChannelBrowserView(QWidget):
             message = message.format(query=self._vm.filter_query())
         self.placeholder_label.setText(message)
         self._stack.setCurrentWidget(self.placeholder_label)
+
+    def _apply_filter(self) -> None:
+        """Apply the (debounced) search text to the VM filter."""
+        self._vm.set_filter(self.search_box.text())
 
     def _on_vm_change(self, change: str) -> None:
         """Handle notifications from ChannelBrowserVM."""
