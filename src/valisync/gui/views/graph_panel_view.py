@@ -2468,7 +2468,7 @@ class GraphPanelView(QWidget):
         return menu
 
     def build_axis_menu(self, axis_index: int) -> QMenu:
-        """Right-click menu for one Y-axis (spec §4.3: オートフィット/範囲指定/削除/曲線一覧)."""
+        """Right-click menu for one Y-axis (spec §4.3: オートフィット/範囲指定/ズーム/削除/曲線一覧)."""
         menu = QMenu(self)
         menu.addAction("この軸をオートフィット").triggered.connect(
             lambda *_: self.vm.reset_axis_y(axis_index)
@@ -2590,7 +2590,7 @@ class GraphPanelView(QWidget):
         return (float(lo_edit.text()), float(hi_edit.text()))
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
-        # ルーティング優先順 (spec §4.3): カーソル線 → 曲線 → Y軸 → 空白 (パネル)。
+        # ルーティング優先順 (spec §4.3): カーソル線 → 曲線 → Y軸 → X軸 → 空白 (パネル)。
         pos = QPointF(event.pos())
         which = self._cursor_line_at(pos)
         if which is not None:
