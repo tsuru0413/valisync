@@ -258,12 +258,13 @@ def main() -> int:
         return 2
 
     failed = False
+    size_mismatch = False
     for name in names:
         a = _load_rgba(args.baseline / name)
         b = _load_rgba(args.after / name)
         if a.shape != b.shape:
             print(f"NG {name}: サイズ不一致 {a.shape} vs {b.shape}")
-            failed = True
+            size_mismatch = True
             continue
         diff = (a != b).any(axis=2)
         n = int(diff.sum())
@@ -283,7 +284,7 @@ def main() -> int:
             QImage(out.tobytes(), w, h, w * 4, QImage.Format.Format_RGBA8888).save(
                 str(args.diff_out / name)
             )
-    return 1 if failed else 0
+    return 2 if size_mismatch else (1 if failed else 0)
 
 
 if __name__ == "__main__":
