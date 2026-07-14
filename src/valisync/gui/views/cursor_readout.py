@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from valisync.gui.theme import qss, tokens
 from valisync.gui.viewmodels.graph_panel_vm import CursorReading, DeltaReading
 from valisync.gui.views.cursor_shapes import CursorKind, cursor
 
@@ -73,19 +74,16 @@ class CursorReadout(QWidget):
         super().__init__(parent)
         self.setObjectName("CursorReadout")
         # Semi-opaque dark chip so it reads over the waveforms.
-        self.setStyleSheet(
-            "#CursorReadout { background: rgba(17,17,27,230);"
-            " border: 1px solid #45475a; border-radius: 5px; }"
-            " QLabel { color: #cdd6f4; }"
-        )
+        self.setStyleSheet(qss.readout_chip())
+        sp = tokens.active().spacing
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(6, 5, 6, 5)
-        outer.setSpacing(3)
+        outer.setContentsMargins(*sp.chip_margins)
+        outer.setSpacing(sp.chip_vspace)
 
         # Header row: time-position label (left) + always-visible close X (right).
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
-        header_row.setSpacing(6)
+        header_row.setSpacing(sp.chip_header_hspace)
         self._header = QLabel()
         self._header.setTextFormat(Qt.TextFormat.RichText)
         self._header.hide()
@@ -95,10 +93,7 @@ class CursorReadout(QWidget):
         self._close_btn.setText("✕")
         self._close_btn.setToolTip("カーソルを消す")
         self._close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._close_btn.setStyleSheet(
-            "QToolButton { color:#cdd6f4; border:none; padding:0 2px; }"
-            " QToolButton:hover { color:#f38ba8; }"
-        )
+        self._close_btn.setStyleSheet(qss.readout_close_button())
         self._close_btn.clicked.connect(self._clear_cursors)
         header_row.addWidget(self._close_btn)
         outer.addLayout(header_row)
@@ -108,8 +103,8 @@ class CursorReadout(QWidget):
         # Table grid — child of outer VBox, NOT directly of self.
         self._grid = QGridLayout()
         self._grid.setContentsMargins(0, 0, 0, 0)
-        self._grid.setHorizontalSpacing(8)
-        self._grid.setVerticalSpacing(2)
+        self._grid.setHorizontalSpacing(sp.chip_grid_hspace)
+        self._grid.setVerticalSpacing(sp.chip_grid_vspace)
         outer.addLayout(self._grid)
 
         self._rows: list[tuple[str, str]] = []
@@ -187,7 +182,7 @@ class CursorReadout(QWidget):
         if interp_label:
             self._header_text += f"  ─ {interp_label}"
         self._col_headers = []
-        header_html = f'<span style="color:#f9e2af">●</span> {ta_str}'
+        header_html = f"{qss.colored_dot(tokens.active().colors.cursor_a)} {ta_str}"
         if interp_label:
             header_html += f"  ─ {interp_label}"
         self._header.setText(header_html)
@@ -225,9 +220,10 @@ class CursorReadout(QWidget):
             self._header_text += f"  ─ {interp_label}"
         stat_cols = [c for c in _STAT_COLS if c in self._visible_stats]
         self._col_headers = ["A値", "Δy", *stat_cols]
+        c = tokens.active().colors
         header_html = (
-            f'<span style="color:#f9e2af">●</span> {ta_str}'
-            f'  <span style="color:#89b4fa">●</span> {tb_str}'
+            f"{qss.colored_dot(c.cursor_a)} {ta_str}"
+            f"  {qss.colored_dot(c.cursor_b)} {tb_str}"
             f" · <b>Δt {dt_str}</b>"
         )
         if interp_label:
@@ -417,7 +413,7 @@ class CursorReadout(QWidget):
             # 列見出し — swatch(col0)・name(col1) の上は空白、データ列(col2+) に col_headers を配置
             for c, head in enumerate(["", "", *col_headers]):
                 lbl = QLabel(head)
-                lbl.setStyleSheet("color:#7f849c; font-size:9px;")
+                lbl.setStyleSheet(qss.readout_small_label())
                 lbl.setAlignment(
                     Qt.AlignmentFlag.AlignRight
                     if c >= 2
@@ -434,7 +430,7 @@ class CursorReadout(QWidget):
             name_lbl = QLabel()
             if unit:
                 name_lbl.setTextFormat(Qt.TextFormat.RichText)
-                name_lbl.setText(f'{name} <span style="color:#7f849c">[{unit}]</span>')
+                name_lbl.setText(f"{name} {qss.unit_span(unit)}")
             else:
                 name_lbl.setText(name)
             self._grid.addWidget(name_lbl, r0 + i, 1)
