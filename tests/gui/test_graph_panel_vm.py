@@ -29,6 +29,7 @@ from valisync.core.interpolation import InterpolationMethod
 from valisync.core.models import Delimiter, FormatDefinition, Signal, SignalGroup
 from valisync.core.session import Session
 from valisync.core.statistics.range_stats import StatisticsResult  # noqa: F401
+from valisync.gui.theme.tokens import active
 from valisync.gui.viewmodels.graph_panel_vm import (
     CursorReading,  # noqa: F401
     DeltaReading,  # noqa: F401
@@ -140,15 +141,16 @@ def _loaded_vm(tmp_path: Path, unit: str = "km/h") -> GraphPanelVM:
 
 def test_render_curve_is_dataclass() -> None:
     """RenderCurve is a dataclass with name, color, timestamps, values, axis_index."""
+    expected_color = active().colors.signal_palette[0].hex
     rc = RenderCurve(
         name="grp::sig",
-        color="#1f77b4",
+        color=expected_color,
         timestamps=np.array([0.0, 1.0]),
         values=np.array([1.0, 2.0]),
         axis_index=0,
     )
     assert rc.name == "grp::sig"
-    assert rc.color == "#1f77b4"
+    assert rc.color == expected_color
     assert len(rc.timestamps) == 2
     assert len(rc.values) == 2
     assert rc.axis_index == 0
@@ -172,7 +174,7 @@ def test_vm_construction_empty_session() -> None:
 
 
 def test_add_signal_assigns_first_color(tmp_path: Path) -> None:
-    """First added signal gets the first palette color #1f77b4."""
+    """First added signal gets the first palette color (signal_palette[0])."""
     session, _ = _loaded_session(tmp_path)
     vm = GraphPanelVM(session)
     sig_key = _first_signal_key(session)
@@ -180,7 +182,9 @@ def test_add_signal_assigns_first_color(tmp_path: Path) -> None:
     vm.add_signal(sig_key)
 
     snapshot = vm.inspect()
-    assert snapshot["plotted_signals"][0]["color"] == "#1f77b4"
+    assert (
+        snapshot["plotted_signals"][0]["color"] == active().colors.signal_palette[0].hex
+    )
 
 
 def test_add_signal_assigns_distinct_colors(tmp_path: Path) -> None:
