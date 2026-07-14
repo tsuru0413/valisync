@@ -1,0 +1,188 @@
+# デザイントークン・パイプライン 設計 spec
+
+- **日付**: 2026-07-15
+- **ステータス**: 設計承認済み（brainstorming セクション承認＋アドバーサリアルレビュー反映 2026-07-15）
+- **スコープ**: デザイントークン基盤（`gui/theme/`）＋ Claude Design 連携パイプライン（抽出・カタログ・同期・反映ループ）
+
+## 1. 背景と課題
+
+valisync GUI の現在のビジュアルデザインは、コード上に単一の真実を持たない。
+
+- **集中管理されたテーマ機構が存在しない** — テーマモジュール・色定数・QSS ファイル・QPalette 設定はゼロ。スタイルは各ビューにインライン QSS とハードコード色で散在（純リテラル約 44 箇所・コメント内 hex 等を含めると約 58 箇所・10 ファイル。「何を 1 箇所と数えるか」の基準は増分1 実装プランの全数調査で確定する）。
+- **2つの暗黙パレットが混在** — 信号カーブは matplotlib tab10（`viewmodels/graph_panel_vm.py:31-43` の `_PALETTE`）、カーソル readout は Catppuccin Mocha 系ダーク配色（`views/cursor_readout.py:76-80`）。「青」だけで `#1f77b4` / `#89b4fa` / `#4FC3F7` の 3 種が併存。
+- **クロムとプロットの分裂** — アプリクロム（メニュー・ドック・ダイアログ）は OS 既定のライト、プロット面は pyqtgraph 既定のダークで、混在状態が固定。ダーク/ライト切替なし。**重要**: この既定外観はコード上に値が存在しない（`pg.setConfigOption` / `QPalette` / アプリレベル QSS は src 全体で 0 件）。つまり凍結トークン化が集約できるのはコード上のリテラルのみで、暗黙のフレームワーク既定はトークンに乗らない（→ §8 増分3 の前提）。
+- **フォント指定ゼロ**（OS 既定依存・唯一の例外は `cursor_readout.py:420` の `font-size:9px`）、**カスタムアイコンアセットゼロ**（Qt 標準アイコン＋絵文字＋実行時描画）。
+- スペーシングも各所リテラル（module 定数化は `_Y_AXIS_FIXED_WIDTH = 72` 等ごく一部）。
+- なお動的色計算（lighten/blend 等）は src/ に存在せず全色が静的リテラル — 「値をそのまま凍結」戦略の前提は成立している（調査済み）。
+
+このため「統一感のある洗練されたデザイン」を実装・維持する土台がなく、機能追加のたびにハードコードが増える構造になっている。
+
+## 2. ゴールと成功基準
+
+**ゴール（brainstorm 決定: 案A）**: 継続的なデザイン運用パイプラインを作る。現在の UI を Claude Design（claude.ai/design）上にカタログ化し、「デザイン検討 → 承認 → コード反映 → 再生成 → 照合」のループを回せる状態にする。デザイントークン（`gui/theme/tokens.py`）＋デザインコンセプト文書（`docs/design.md`）が単一の真実になる。
+
+成功基準:
+
+1. コード上に存在する色・余白・radii・タイポ指定の値がリポジトリ内の 1 箇所（`tokens.py`）に集約され、GUI コードはトークン名で参照する（タイポは現状 `font-size:9px` の 1 箇所のみなのでほぼ空カテゴリとして始まる）。
+2. Claude Design プロジェクト上に Ground Truth（実機スクショ）/ Tokens / Components / Proposals のカード群が成立し、スクリプト再実行＋DesignSync で増分更新できる。
+3. デザイン変更が原則「トークン値の diff」として表現され、再生成→同期→照合の手順が文書化されている（例外は §8 増分3 の初回クロム反復 — 構造作業を伴う）。
+4. 新規コードへの色ハードコード混入を CI のガードテストが捕捉する。
+
+## 3. 決定事項（brainstorming Q&A）
+
+| 論点 | 決定 | 理由 |
+|---|---|---|
+| ゴール | **A: 継続運用の仕組み**（一回きりの刷新ではない） | 未着手 GUI サブスペック（derived / views / script）が控えており、テーマ機構を先に作ると以降の実装が全て乗る |
+| Claude Design 上の表現 | **C: ハイブリッド**（スクショ = Ground Truth ＋ HTML = Tokens/Components） | スクショだけでは反復手段がなく、HTML だけでは現状との乖離を検証できない。スクショは「実装がデザインに追従できたか」の照合点 |
+| テーマ方向性 | **C: ダーク単一で実装、両対応可能な構造** — トークンは意味名ベース、値セットは `DARK` 1 つのみ。切替 UI・ライト値セットは作らない（YAGNI） | ADAS HILS 計測環境は暗室・長時間監視が多くダークが実用的。意味名レイヤーだけ将来に備える |
+| 適用順序 | **A: 凍結→トークン化→再デザインの 2 段階** — まず現状色をそのままトークン値として凍結（見た目不変の純リファクタ）、刷新はその後の反復で適用。**2 回目以降の反復はトークン値変更のみで回る。ただし初回のクロム反復（増分3）はトークン追加＋`apply.py` 実装という構造作業を伴う**（§8） | 「見た目不変」はスクショ前後比較で機械的に検証でき、リファクタ不具合とデザイン変更の差分が混ざらない |
+| 単一の真実の形式 | **案1: Python ネイティブトークン**（`tokens.py`）＋エクスポータで CSS/JSON へ導出 | 最大の消費者（Qt コード）と同じ言語で mypy/ruff の品質ゲートに乗り、タイポが型エラーで落ちる。JSON 真実（案2）は文字列キーのパース層が入り loud-fail 文化と相性が悪く、現時点で言語中立性の需要がない |
+
+## 4. 全体アーキテクチャ
+
+```
+src/valisync/gui/theme/          ← 新パッケージ（単一の真実）※src/ 構造変更としてユーザー承認済み
+  tokens.py     意味名トークン定義（Qt/pyqtgraph 非依存の pure Python 必須）
+  qss.py        トークン→QSS 断片フォーマッタ（view ソースから色構文文字列を排除する）
+  apply.py      起動時適用フック（Qt 依存はここに隔離）
+design/cards/                    ← コンポーネントカードの HTML テンプレート（手書き・コミット対象）
+design/proposals/                ← 検討中の改善案カード（手書き・コミット対象）
+scripts/export_design_tokens.py  ← エクスポータ（tokens → design_export/）
+scripts/capture_ui_screenshots.py ← 実機スクショ撮影（→ design_export/screenshots/）
+design_export/                   ← ビルド成果物（gitignore）。DesignSync 同期バンドル
+docs/design.md                   ← 人間向けデザインコンセプト文書（値は持たずトークン名で参照）
+```
+
+### 4.1 tokens.py — トークン定義
+
+- **構造制約**: 全階層 frozen dataclass＋属性アクセス（dict 禁止）。これにより「タイポが mypy の型エラーで落ちる」という案1 選定理由が実際に成立する。値セットは `DARK = ThemeTokens(...)` の 1 インスタンスのみ。
+- **純粋性制約**: `tokens.py` は Qt/pyqtgraph を import しない（pure Python）。`viewmodels/graph_panel_vm.py` 等は docstring で「No PySide6/Qt/pyqtgraph imports」を宣言する pure-Python VM であり、theme からの import でこれを壊さないため。`theme/__init__.py` は tokens のみ re-export し、`apply` / `qss` は明示 import とする。増分1 で純粋性ガードテスト（tokens import 後の `sys.modules` 検査）を Layer A に常設する。
+- **色値の型**: 生文字列ではなく正規化表現（frozen `Color` dataclass、RGBA 各 0–255 int）で持ち、消費側フォーマッタを設ける — Qt QSS（`rgba(r,g,b,a)` の a は 0–255）/ `QColor` / pyqtgraph / CSS（`rgba()` の a は 0–1、hex の alpha 位置も Qt `#AARRGGBB` と CSS `#RRGGBBAA` で逆）はフォーマットが非互換であり、素通しするとエクスポート先の tokens.css が壊れるため。
+- **命名は意味名**（役割ベース）: `surface_chip` / `text_primary` / `cursor_a` / `cursor_b` / `accent_active` / `error` / `drop_highlight` / `signal_palette`（tab10 の 10 色 tuple）等。値名（`catppuccin_blue` 等）にしない。
+- 具体的なフィールド一覧は増分1 の実装プランで全数調査に基づいて確定する。同値の色でも**役割が違えば別トークン**にする（後の再デザインで独立に動かせるように。例: `#1f77b4` はパレット 1 番とドロップ強調枠で役割が異なる）。
+- spacing / radii / typography は現在使われている値（chip padding `(6,5,6,5)`、`border-radius:5px`、`font-size:9px` 等）を凍結して収録。`_Y_AXIS_FIXED_WIDTH = 72` のような**レイアウト機構の定数はトークン化しない**。
+- **デザイン色 vs 構造色の線引き**: 視覚デザインの一部として選ばれた色はトークン化する。描画機構上の必然で決まる色（カーソル bitmap のマスク用白黒 `cursor_shapes.py:98-99`、`Qt.GlobalColor.transparent` 等）は構造色としてトークン化せず、ガードスキャンの allowlist に理由付きで登録する。
+
+### 4.2 qss.py — QSS フォーマッタ
+
+インライン QSS 文字列を view 側で f-string 組み立てすると、view ソースに `rgba(...)` 等の色構文テキストが残り**ガードスキャン（§7）と正面衝突する**。これを避けるため、QSS 断片の生成関数を theme 側（`qss.py`）に置き、view は `qss.chip_style(tokens)` のような関数呼び出しだけを持つ。view ソースから色構文文字列そのものが消えるので、ガードスキャンは単純なままで済む。
+
+### 4.3 apply.py — 適用フック
+
+- **呼び出し位置**: `build_main_window()`（またはそれが使う共有経路）から**冪等に**呼ぶ。多重呼び出し安全。`main()` だけに置くと、`build_main_window` を直接使う pytest-qt / realgui テストが apply を通らず、apply が実処理を持つ増分3 以降でテスト描画と実アプリ描画が乖離する（false-green/false-red 化）ため。撮影スクリプトも同じ経路（`build_main_window` 経由）で起動し、描画経路を実アプリと一致させる。
+- **増分1 では原則 no-op**（注入点の配線のみ）。例外として pyqtgraph の既定と同値の明示固定（`background='k'` / `foreground='d'` 等）のみ行ってよい。**QPalette・アプリレベル QSS の「現行既定の明示固定」は増分1 ではやらない** — 非空 QSS は native スタイルの描画パスを変える既知の Qt 罠があり、凍結保証（見た目不変）自体を毀損しうるため。
+- **ダーククロム統一時（増分3）の設計判断**: Windows の `windowsvista` スタイルは多くのコントロールで QPalette を無視するため、ダーククロムは実質 **Fusion スタイルへの切替（＋QPalette）か全面 QSS** の二択になる。QStyle 選択は増分3 の設計スパイクで確定する（本 spec では選択肢の存在と制約のみ固定）。
+
+### 4.4 既存コードの変化
+
+- 散在するハードコード色・QSS リテラルを `theme.tokens`（QSS は `theme.qss` 経由）参照へ置換（値は現状のまま凍結＝見た目不変）。
+- `graph_panel_vm.py` の `_PALETTE`（信号色）は `tokens.py` の `signal_palette` へ移動し、VM は theme から import する（`views/graph_panel_view.py:68` による private 定数 `_PALETTE` の越境参照も解消される）。
+- **色値を assert する既存テストの移行**（約 24 箇所・凍結時点で実施）: palette 値・カーソル色等に直結するもの（`tests/gui/test_graph_panel_vm.py:151,183`・`tests/gui/test_cursor_readout_diff.py:55` 等）は**期待値をトークンから導出**する形に書き換える（ただし「コード==コード」の同義反復にならないもののみ）。特に `tests/realgui/test_fu12_boundary_data_visible.py:146-151` のピクセル述語は palette[0]==青・背景==黒を前提としており、トークン導出に書き換えないと増分3 の最初の値変更で即崩壊する。`#123456` 等のカスタム色プラミングテストはトークン非依存で無変更のまま正しい。
+
+## 5. データフローと運用ループ
+
+**一方向のデータフロー**(真実は常にリポジトリ側。Claude Design 側で直接編集しない):
+
+```
+tokens.py（単一の真実）
+  ├─ import ──────────→ Qt ビュー/VM（実アプリの描画）
+  ├─ apply.py ────────→ QPalette / pyqtgraph 全体設定
+  └─ エクスポータ ────→ design_export/tokens.css + tokens.json + 見本カード
+                            ↑ design/cards/・design/proposals/ テンプレート（var(--vs-*) 参照）
+実アプリ ─ 撮影スクリプト ─→ design_export/screenshots/（Ground Truth カード）
+design_export/ ─ DesignSync ─→ claude.ai/design プロジェクト「valisync-design」
+```
+
+### Claude Design プロジェクトのカードグループ構成
+
+| グループ | 中身 | 由来 |
+|---|---|---|
+| Ground Truth | 実機スクショ（メインウィンドウ・波形パネル・readout・各ダイアログ） | 撮影スクリプト。PNG は `<img>` 埋め込みのラッパ HTML カードとして生成（DesignSync のカード索引は HTML 先頭の `@dsCard` マーカーで構築されるため PNG 単体はカードにならない） |
+| Tokens | 色見本・spacing スケール・タイポ見本 | エクスポータ自動生成 |
+| Components | readout チップ・軸ガター・アクティブ枠・ドロップ強調・ダイアログ等の HTML 再現 | `design/cards/` テンプレート |
+| Proposals | 検討中の改善案カード（採用されたらトークン値に反映して削除） | `design/proposals/` テンプレート（**ローカル作成→push**。リモート限定にすると未採用案がセッション間で消え、一方向規約とも矛盾するため、Proposals もコミット対象とする） |
+| Meta | 同期マニフェストカード（push 時の git SHA・tokens ハッシュ・カード一覧） | エクスポータ自動生成 |
+
+各カード HTML の先頭に `<!-- @dsCard group="…" -->` マーカーを付与し、Claude Design 側のグループ分けを自動化する。
+
+### 同期状態の管理
+
+`design_export/` は gitignore のため「前回何を push したか」がリポジトリに残らない。リネーム・廃止カードの削除（`delete_files`）を決めるため、**同期は毎回 `list_files` でリモートの実状態と突合**し、ローカルバンドルに無いパスを削除候補として提示する。Meta グループの同期マニフェストカードが「リモートがどの git SHA 由来か」の照合点になる。
+
+### 運用ループ（1 反復 = 1 feature ブランチ）
+
+1. **検討**: claude.ai/design 上でカードを見ながら議論。改善案は `design/proposals/` に案A/案B カードとして作成して push し、Proposals グループで比較。
+2. **承認**: 採用案を決定。
+3. **反映**: `tokens.py` の値変更（意味名は不変なのでコード側 diff は原則トークン値のみ。初回クロム反復のみ §4.3 の構造作業を伴う）＋ `docs/design.md` に決定理由を追記。
+4. **再生成**: エクスポータ＋撮影スクリプトを再実行 → DesignSync で増分同期（`finalize_plan` → `write_files`。常にコンポーネント単位、丸ごと置換はしない）。
+5. **照合**: Ground Truth（新スクショ）と Components（意図したデザイン）を見比べ、**「意図した変化のみが起きたか」**を確認（増分1 の凍結検証＝厳密一致とは別物 — §7）。採用済み Proposals はカード削除＋ `design/proposals/` からも削除。
+
+この手順は `docs/design.md` に文書化し、以降のセッションで再現可能にする。
+
+## 6. エラー処理・堅牢性
+
+- **エクスポータの決定的出力**: 同じ `tokens.py` → バイト同一の出力。成立条件を実装で固定する — `open(..., newline="\n")`（Windows 既定の `\r\n` 混入防止）・JSON は `sort_keys=True, indent 固定, ensure_ascii 固定`・出力順は dataclass フィールド定義順。トークン名→CSS 変数名の変換で衝突が生じたら loud-fail。
+- **撮影スクリプト**:
+  - 実ディスプレイ必須（offscreen の `QWidget.grab()` は全文字が□になる既知の罠 — `QT_QPA_PLATFORM=windows` を強制）。
+  - **QSettings 隔離必須**: `MainWindow._restore_state` がユーザーの実ドック配置/ジオメトリを復元してしまうため、`tests/realgui/conftest.py` と同じ隔離機構を組み込む。
+  - デモデータ不在なら「`scripts/generate_demo_mf4.py --profile quick` を先に実行」と明示してエラー終了。状態ごとにタイムアウトを設けハングを防ぐ。
+  - モーダルダイアログは `exec()` がブロックするため show()＋非モーダル駆動等の段取りが要る（詳細は実装プラン）。
+- **同期**: DesignSync の `finalize_plan` が書込パスを事前確定するため誤爆的な全置換は構造的に不可能。push 前に `get_project` でプロジェクトが design-system 型であることを検証する。`get_file` は 256 KiB cap があるため、大きな PNG は読み戻しでなくローカル成果物で照合する。
+- **ガードテストの例外管理**: allowlist は**行パターン単位の ratchet**（ファイルパス＋一致パターン＋理由を必須）。ファイル単位だと同一ファイル内の新規違反を隠し、カウント式は行移動で偽陽性化するため。
+
+## 7. テスト戦略
+
+詳細は各増分の実装プラン作成時に `/gui-test-plan` スキルで確定する。骨子:
+
+| レイヤー | 内容 |
+|---|---|
+| Layer A（ロジック） | トークン構造の妥当性（全フィールド型付き・Color 値域検証）、純粋性ガード（tokens import 後の `sys.modules` に Qt 不在）、エクスポータ round-trip（`tokens.py` ↔ `tokens.json` 一致）、golden 出力テスト、Color→各フォーマット変換の正しさ（Qt QSS / CSS の alpha・hex 順序） |
+| Layer B（Qt 直叩き） | `apply.py` が期待どおり pyqtgraph 設定を注入すること・冪等であること、置換後のビューがトークン色で描画されること（スポットチェック） |
+| **凍結検証**（増分1 の要） | 下記「凍結検証の成立条件」参照 |
+| Layer C（realgui） | 各増分の merge 前に `/gui-verify` の①ゲート（実 OS 入力＋スクショ AI 判定） |
+| ガードスキャン（常設） | **AST ベース**（文字列リテラルのみ走査 — コメント/docstring 内 hex の偽陽性を回避）＋ `QColor(数値リテラル引数)` 呼び出し検出。対象パターン: hex・`rgba(`・`rgb(`・`hsl(`・`QColor("名前色")`・`Qt.GlobalColor.*`（transparent 等の構造色は allowlist）。対象: `src/valisync/gui/`（`theme/` 除く）。例外は §6 の ratchet allowlist |
+
+### 凍結検証の成立条件（増分1）
+
+ピクセル厳密一致を成立させるため、以下を増分1 の設計条件として固定する:
+
+1. **撮影単位は `QWidget.grab()`**（コンポジタ非経由・OS カーソル非含有・タイトルバー〔ファイルパス等の環境文字列を含む〕を構造的に除外）。全画面 `grabWindow(0)` はタスクバー時計や背後ウィンドウが写るため凍結比較には使わない（Ground Truth カード用の見栄え撮影とは用途を分ける）。
+2. **静止状態の定義**: スピナー（QTimer 回転アーク）・不確定プログレスバー・テキストカレット点滅・hover 効果を排した状態のみ撮影対象にする。物理マウスはウィンドウ外へ退避。
+3. **環境固定の運用規定**: ベースライン→再撮影の間、同一マシン・同一 DPI・OS テーマ/ClearType 不変・**uv.lock 変更禁止**（Qt/pyqtgraph 更新は描画を変えうる）。デモデータは**同一ファイルを再利用**（再生成しない）。
+4. **比較機構は増分1 の新規成果物**: リポジトリに画像比較の仕組みは現存しないため、diff ピクセル数＋diff 画像を出力する比較スクリプトを作る。
+5. **手順**: 撮影スクリプト（最小版）をブランチ先頭で実装 → リファクタ**前**に撮影しベースラインを scratchpad 等の作業領域に保存 → 置換 → 再撮影 → 比較。証拠（一致レポート）は PR に添付。
+6. **役割写像の検証**（ピクセル比較の盲点対策）: 同値別トークンの誤配線はピクセル比較では原理的に検出できない（値が同じなので画は一致する）。補完として (a) 「58 箇所→トークン」のマッピング表を実装プランのレビュー成果物とする、(b) **全トークンを相異なる値にしたデバッグテーマ**を一時適用して撮影し、各トークンの着地点を目視検証する追加パスを行う（トークン化したからこそ可能になる検証で、パイプラインの自己実証を兼ねる）。
+7. **二層の照合の区別**: 増分1 の凍結検証＝厳密一致。§5 運用ループ手順5 の照合＝「意図した変化のみか」の許容付き判定。長期では OS/Qt 更新で Ground Truth が漂移するため、両者を混同しない。
+
+## 8. 増分分割（1 増分 = 1 feature ブランチ = 1 実装プラン）
+
+1. **増分1: 凍結トークン化** — theme パッケージ新設（`tokens.py`/`qss.py`/`apply.py`＝原則 no-op 注入点を `build_main_window` に配線）、ハードコード色を現状値のままトークン参照へ置換、色 assert 既存テストのトークン導出化（§4.4）、ガードテスト常設、凍結検証（§7 の成立条件＋比較スクリプト＋デバッグテーマ検証）。**撮影スクリプトは凍結検証に必要な最小版（主要状態のみ）をここで先行実装する**。ここまでで「単一の真実」が成立。
+2. **増分2: パイプライン構築** — エクスポータ・`design/cards/` テンプレート・撮影スクリプトのカタログ用拡張（全サーフェス＋ダイアログ網羅）・同期マニフェスト・`docs/design.md`・初回同期で Claude Design 上にカタログ成立。ここまでで運用ループが回せる状態。
+3. **増分3: 最初の再デザイン反復（クロム統一）** — ダーククロム統一・青 3 種の整理などを Claude Design で検討して適用。**この初回反復のみ構造作業を伴う**: 暗黙のフレームワーク既定はトークンに乗っていないため、クロム系トークンの新規追加＋ `apply.py` の実装（QStyle 選択 — Fusion＋QPalette か全面 QSS かの設計スパイク含む）が必要（§4.3）。**トークン値変更のみで回る「軽い反復」が成立するのは増分3 完了後**。以降はデザイン反復ごとに小さなブランチで回す。
+
+## 9. 非スコープ（YAGNI）
+
+- ライトテーマの値セット・テーマ切替 UI（構造だけ意味名レイヤーで備える）
+- JSON/YAML を単一の真実にする案（案2 — 外部デザインツール連携が本格化したら再検討）
+- カスタムアイコンアセットの導入（現行の Qt 標準アイコン＋実行時描画を維持。デザイン反復で必要になったら Proposals として検討）
+- Claude Design 側での直接編集・双方向同期
+- `_Y_AXIS_FIXED_WIDTH` 等レイアウト機構定数のトークン化
+- 増分1 での QPalette / アプリ QSS の「現行既定の明示固定」（§4.3 — 凍結保証を毀損しうるため増分3 で扱う）
+
+## 10. リスクと対策
+
+| リスク | 対策 |
+|---|---|
+| 凍結置換の見落とし・誤置換 | スクショ前後ピクセル比較（§7 成立条件）＋ガードスキャンが残存ハードコードを列挙 |
+| 同値別トークンの誤配線（ピクセル比較で不可視） | マッピング表レビュー＋デバッグテーマ撮影パス（§7-6） |
+| HTML 再現と Qt 実描画の乖離 | Components はあくまで検討用の近似と位置づけ、最終照合は Ground Truth スクショで行う（§5 手順5） |
+| 撮影スクリプトの不安定さ（実ディスプレイ・タイミング） | realgui 基盤の既知の知見（実ディスプレイ強制・QSettings 隔離・タイムアウト・画面内配置）を再利用。撮影は CI に入れずローカル運用 |
+| design_export/ と Claude Design の乖離 | 真実は常にリポジトリ側という一方向規約＋毎回 `list_files` 突合＋同期マニフェスト（§5） |
+| 増分3 の QStyle 切替が想定外に大工事化 | 増分3 冒頭に設計スパイク（Fusion+QPalette vs 全面 QSS の比較検証）を置き、結果次第で増分をさらに分割 |
+
+## 11. 関連
+
+- 現状調査: 本 spec §1（2026-07-15 実施の GUI スタイリング実態調査に基づく）
+- アドバーサリアルレビュー: 2026-07-15 実施（Critical 1・Important 8・Minor 6 を本 spec に反映済み）
+- 実装プラン: `docs/superpowers/plans/2026-07-15-design-tokens-r1-freeze.md`（増分1・作成予定）、`…-r2-pipeline.md`（増分2・作成予定）
+- 運用文書: `docs/design.md`（増分2 で作成）
