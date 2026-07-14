@@ -29,7 +29,7 @@ from valisync.core.models import Delimiter, FormatDefinition, Signal, SignalGrou
 from valisync.core.session import Session
 from valisync.gui.adapters.qt_signal_models import encode_signal_keys
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
-from valisync.gui.views.graph_panel_view import ZONE_PLOT, ZONE_Y_INNER
+from valisync.gui.views.graph_panel_view import ZONE_PLOT, ZONE_X_INNER, ZONE_Y_INNER
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -1134,6 +1134,9 @@ def _spy_menus(view: object) -> list[tuple[str, object]]:
     view.build_context_menu = lambda: (  # type: ignore[method-assign,attr-defined]
         calls.append(("panel", None)) or SimpleNamespace(exec=lambda *a: None)
     )
+    view.build_x_axis_menu = lambda: (  # type: ignore[method-assign,attr-defined]
+        calls.append(("x_axis", None)) or SimpleNamespace(exec=lambda *a: None)
+    )
     return calls
 
 
@@ -1273,6 +1276,81 @@ class TestAxisContextMenu:
         act.trigger()
 
         assert vm.axes[0].y_range == (2.0, 8.0)
+
+
+class TestAxisZoomMenu:
+    """FU-09: build_axis_menu/build_x_axis_menu の zoom 項目とルーティング。"""
+
+    def test_y_axis_menu_has_zoom_actions_routed_to_zoom_axis(
+        self, qtbot: QtBot
+    ) -> None:
+        from unittest.mock import Mock, call
+
+        panel = _build_panel_view_with_axes(qtbot)
+        panel.vm.set_axis_range(0, 0.0, 100.0)  # ensure a concrete range
+        panel.vm.zoom_axis = Mock()  # spy
+        menu = panel.build_axis_menu(0)
+        acts = {a.text(): a for a in menu.actions()}
+        assert "ズームイン" in acts and "ズームアウト（引き）" in acts  # noqa: RUF001
+        assert acts["ズームイン"].isEnabled()
+        acts["ズームイン"].trigger()
+        acts["ズームアウト（引き）"].trigger()  # noqa: RUF001
+        assert panel.vm.zoom_axis.call_args_list == [call(0, 0.9), call(0, 1.1)]
+
+    def test_y_axis_zoom_disabled_when_range_none(self, qtbot: QtBot) -> None:
+        panel = _build_panel_view_with_axes(qtbot)
+        panel.vm.axes[0].set_range(None, None)  # clear the range
+        menu = panel.build_axis_menu(0)
+        acts = {a.text(): a for a in menu.actions()}
+        assert not acts["ズームイン"].isEnabled()
+        assert not acts["ズームアウト（引き）"].isEnabled()  # noqa: RUF001
+
+    def test_x_axis_menu_has_four_actions(self, qtbot: QtBot) -> None:
+        from unittest.mock import Mock, call
+
+        panel = _build_panel_view_with_axes(qtbot)
+        panel.vm.set_x_range(0.0, 100.0)
+        panel.vm.reset_x = Mock()
+        panel.vm.zoom_x = Mock()
+        menu = panel.build_x_axis_menu()
+        texts = [a.text() for a in menu.actions()]
+        assert texts == [
+            "X軸をオートフィット",
+            "範囲を指定…",
+            "ズームイン",
+            "ズームアウト（引き）",  # noqa: RUF001
+        ]
+        acts = {a.text(): a for a in menu.actions()}
+        acts["X軸をオートフィット"].trigger()
+        acts["ズームイン"].trigger()
+        acts["ズームアウト（引き）"].trigger()  # noqa: RUF001
+        assert panel.vm.reset_x.called
+        assert panel.vm.zoom_x.call_args_list == [call(0.9), call(1.1)]
+
+    def test_x_axis_zoom_disabled_when_x_range_none(self, qtbot: QtBot) -> None:
+        panel = _build_panel_view_with_axes(qtbot)
+        panel.vm.x_range = None
+        menu = panel.build_x_axis_menu()
+        acts = {a.text(): a for a in menu.actions()}
+        assert not acts["ズームイン"].isEnabled()
+        assert not acts["ズームアウト（引き）"].isEnabled()  # noqa: RUF001
+
+    def test_context_menu_routes_x_axis_on_x_zone(self, qtbot: QtBot) -> None:
+        panel = _build_panel_view_with_axes(qtbot)
+        panel._curve_at = lambda pos: None  # type: ignore[method-assign]
+        panel._zone_at = lambda pos: ZONE_X_INNER  # type: ignore[method-assign]
+        calls = _spy_menus(panel)
+        panel.contextMenuEvent(_ctx_event())  # type: ignore[attr-defined]
+        assert calls == [("x_axis", None)]
+
+    def test_prompt_x_range_applies_set_x_range(self, qtbot: QtBot) -> None:
+        from unittest.mock import Mock
+
+        panel = _build_panel_view_with_axes(qtbot)
+        panel._range_dialog_fn = lambda axis_index, current: (2.0, 8.0)  # stub dialog
+        panel.vm.set_x_range = Mock()
+        panel._prompt_x_range()
+        panel.vm.set_x_range.assert_called_once_with(2.0, 8.0)
 
 
 # ─── Grid (PC-15/DP13) ───────────────────────────────────────────────────────

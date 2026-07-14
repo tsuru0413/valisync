@@ -2476,6 +2476,18 @@ class GraphPanelView(QWidget):
         menu.addAction("範囲を指定…").triggered.connect(
             lambda *_: self._prompt_axis_range(axis_index)
         )
+        # FU-09: center-based discrete zoom. Disabled when the axis has no
+        # concrete range (nothing to scale around).
+        has_range = (
+            0 <= axis_index < len(self.vm.axes)
+            and self.vm.axes[axis_index].y_range is not None
+        )
+        zin = menu.addAction("ズームイン")
+        zin.setEnabled(has_range)
+        zin.triggered.connect(lambda *_: self.vm.zoom_axis(axis_index, 0.9))
+        zout = menu.addAction("ズームアウト（引き）")  # noqa: RUF001
+        zout.setEnabled(has_range)
+        zout.triggered.connect(lambda *_: self.vm.zoom_axis(axis_index, 1.1))
         menu.addAction("軸を削除").triggered.connect(
             lambda *_: self.vm.remove_axis(axis_index)
         )
@@ -2489,6 +2501,24 @@ class GraphPanelView(QWidget):
             )
         return menu
 
+    def build_x_axis_menu(self) -> QMenu:
+        """Right-click menu for the X (time) axis (FU-09): autofit / range / zoom."""
+        menu = QMenu(self)
+        menu.addAction("X軸をオートフィット").triggered.connect(
+            lambda *_: self.vm.reset_x()
+        )
+        menu.addAction("範囲を指定…").triggered.connect(
+            lambda *_: self._prompt_x_range()
+        )
+        has_range = self.vm.x_range is not None
+        zin = menu.addAction("ズームイン")
+        zin.setEnabled(has_range)
+        zin.triggered.connect(lambda *_: self.vm.zoom_x(0.9))
+        zout = menu.addAction("ズームアウト（引き）")  # noqa: RUF001
+        zout.setEnabled(has_range)
+        zout.triggered.connect(lambda *_: self.vm.zoom_x(1.1))
+        return menu
+
     def _prompt_axis_range(self, axis_index: int) -> None:
         """Open the range dialog for *axis_index* and apply the chosen [lo, hi]."""
         axes = self.vm.axes
@@ -2499,6 +2529,17 @@ class GraphPanelView(QWidget):
         if result is not None:
             lo, hi = result
             self.vm.set_axis_range(axis_index, lo, hi)
+
+    def _prompt_x_range(self) -> None:
+        """Open the range dialog for the X (time) axis and apply the chosen [lo, hi].
+
+        Reuses the single range-dialog DI hook: axis_index == -1 is the X-axis
+        sentinel (see _default_range_dialog's title branch)."""
+        fn = self._range_dialog_fn or self._default_range_dialog
+        result = fn(-1, self.vm.x_range)
+        if result is not None:
+            lo, hi = result
+            self.vm.set_x_range(lo, hi)
 
     def _default_range_dialog(
         self, axis_index: int, current: tuple[float, float] | None
@@ -2516,7 +2557,9 @@ class GraphPanelView(QWidget):
         )
 
         dlg = QDialog(self)
-        dlg.setWindowTitle("Y軸の範囲を指定")
+        # axis_index == -1 is the X (time) axis sentinel (FU-09); ASCII-safe title
+        # (no full-width parens) mirrors the Y title so RUF001 stays clean.
+        dlg.setWindowTitle("X軸の範囲を指定" if axis_index == -1 else "Y軸の範囲を指定")
         form = QFormLayout(dlg)
         lo_edit = QLineEdit("" if current is None else f"{current[0]:g}")
         hi_edit = QLineEdit("" if current is None else f"{current[1]:g}")
@@ -2559,5 +2602,8 @@ class GraphPanelView(QWidget):
             return
         if self._zone_at(pos) in (ZONE_Y_INNER, ZONE_Y_OUTER):
             self.build_axis_menu(self._axis_index_at(pos)).exec(event.globalPos())
+            return
+        if self._zone_at(pos) in (ZONE_X_INNER, ZONE_X_OUTER):
+            self.build_x_axis_menu().exec(event.globalPos())
             return
         self.build_context_menu().exec(event.globalPos())
