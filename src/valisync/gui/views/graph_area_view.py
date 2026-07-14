@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from valisync.gui.theme import qss
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 from valisync.gui.views.graph_panel_view import GraphPanelView
@@ -346,7 +347,7 @@ class GraphAreaView(QWidget):
             return
         # 範囲外は editor を残して修正させる (赤枠でフィードバック)。
         if not (1 <= len(text) <= 32):
-            self._rename_editor.setStyleSheet("border: 1px solid #c0392b;")
+            self._rename_editor.setStyleSheet(qss.rename_error_border())
             return
         self._discard_rename_editor()  # 先に _rename_editor=None にする
         self.rename_tab(index, text)  # VM 反映 -> _rebuild
@@ -377,9 +378,7 @@ class GraphAreaView(QWidget):
 
     def _set_drop_highlight(self, active: bool) -> None:
         self._drop_active = active
-        self.setStyleSheet(
-            "GraphAreaView { border: 2px dashed #1f77b4; }" if active else ""
-        )
+        self.setStyleSheet(qss.area_drop_highlight() if active else "")
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():

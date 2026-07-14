@@ -66,7 +66,7 @@ from valisync.gui.adapters.qt_signal_models import (
     encode_axis_move,
 )
 from valisync.gui.theme import qss, tokens
-from valisync.gui.viewmodels.graph_panel_vm import _PALETTE, GraphPanelVM
+from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 from valisync.gui.views.cursor_shapes import CursorKind, cursor
 
 # Interp method → menu/readout label (PC-09). Single source of truth so the
@@ -2211,12 +2211,10 @@ class GraphPanelView(QWidget):
             lambda *_: self.vm.toggle_entry_visibility(entry_id)
         )
         color_menu = menu.addMenu("色変更")
-        for hex_color in _PALETTE:
-            act = color_menu.addAction(hex_color)
-            act.setIcon(self._color_icon(hex_color))
-            act.triggered.connect(
-                lambda *_, c=hex_color: self.vm.set_color(entry_id, c)
-            )
+        for c in tokens.active().colors.signal_palette:
+            act = color_menu.addAction(c.hex)
+            act.setIcon(self._color_icon(c.hex))
+            act.triggered.connect(lambda *_, c=c.hex: self.vm.set_color(entry_id, c))
         color_menu.addSeparator()
         color_menu.addAction("その他…").triggered.connect(
             lambda *_: self._pick_custom_color(entry_id)
