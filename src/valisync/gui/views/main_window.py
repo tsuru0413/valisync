@@ -218,6 +218,9 @@ class MainWindow(QMainWindow):
         # SH-11: 永続状態で上書きされる前の既定配置を捕捉 (Reset Layout 用)。
         self._default_state = self.saveState()
         self._restore_state()
+        # restoreState resets dock corner config to Qt defaults, so re-apply FU-10
+        # after the startup restore (and after Reset Layout -- see _reset_layout).
+        self._apply_dock_corners()
 
     # ─── Load pipeline ─────────────────────────────────────────────────────────
 
@@ -502,6 +505,16 @@ class MainWindow(QMainWindow):
         if state:
             self.restoreState(state)
 
+    def _apply_dock_corners(self) -> None:
+        """FU-10: give the bottom-right corner to the Right area so the File/Channel
+        Browser docks span the right column full-height (Qt's default assigns it to
+        the Bottom area, letting Diagnostics extend under and shorten them). Called
+        AFTER every restoreState -- restoreState resets corner config to defaults."""
+        self.setCorner(
+            Qt.Corner.BottomRightCorner, Qt.DockWidgetArea.RightDockWidgetArea
+        )
+
     def _reset_layout(self) -> None:
         """Restore the default dock/toolbar arrangement captured at startup (SH-11)."""
         self.restoreState(self._default_state)
+        self._apply_dock_corners()  # restoreState reset the FU-10 corner; re-apply
