@@ -69,3 +69,22 @@ def test_default_arg_reads_active_at_call_time():
         assert Color(1, 2, 3).hex in qss.error_label()
     finally:
         set_active(dark)
+
+
+def test_drop_highlight_builders_reference_drop_highlight_not_palette0():
+    """drop_highlight は palette[0] と同値の別トークン (tokens.py の deliberate 分離)。
+
+    DARK では両者が同値のため、値ベースの assert は誤配線 (builder が palette[0]
+    を参照) を検出できない。値を分岐させたテーマで builder がどちらのトークンを
+    消費するかを直接実証する (Task 11 デバッグテーマ検証の盲点補完)。
+    """
+    import dataclasses
+
+    from valisync.gui.theme.tokens import Color
+
+    alt = dataclasses.replace(
+        DARK, colors=dataclasses.replace(DARK.colors, drop_highlight=Color(1, 2, 3))
+    )
+    for style in (qss.panel_drop_highlight(alt), qss.area_drop_highlight(alt)):
+        assert Color(1, 2, 3).hex in style
+        assert DARK.colors.signal_palette[0].hex not in style
