@@ -8,12 +8,12 @@ from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
 from valisync.gui.views.file_browser_view import FileBrowserView
 
 
-def test_open_button_emits_open_requested(qtbot: QtBot) -> None:
+def test_no_open_button_or_signal(qtbot: QtBot) -> None:
+    """FU-05: the header 'open' button and its open_requested signal are removed.
+
+    Open is reached via the Welcome CTA / toolbar / File>Open / Ctrl+O instead.
+    """
     view = FileBrowserView(FileBrowserVM(AppViewModel()))
     qtbot.addWidget(view)
-    fired: list[int] = []
-    view.open_requested.connect(lambda: fired.append(1))
-    btn = view.findChild(QPushButton, "file_browser_open")
-    assert btn is not None
-    btn.click()
-    assert fired == [1]
+    assert view.findChild(QPushButton, "file_browser_open") is None
+    assert not hasattr(view, "open_requested")

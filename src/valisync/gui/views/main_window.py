@@ -220,7 +220,6 @@ class MainWindow(QMainWindow):
             self.signal_preview_window.show_signal
         )
         self.graph_area_view.file_dropped.connect(self._load_file)
-        self.file_browser_view.open_requested.connect(self.open_file)
         self._app_unsubscribe = self.app_vm.subscribe(self._on_app_change)
 
         self._rebuild_recent_menu()
