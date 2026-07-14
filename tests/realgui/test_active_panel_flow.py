@@ -1,18 +1,22 @@
 # ruff: noqa: RUF003
-"""Layer C: アクティブパネル閉ループの実 OS 入力実証 (PC-07 / PC-02 / PC-04)。
+"""Layer C: アクティブパネル閉ループの実 OS 入力実証 (PC-07 / PC-02 / FU-13)。
 
-合成 qtbot ではなく実クリック / 実ダブルクリック / 実 Enter で MainWindow を駆動し、
-OS→Qt ヒットテスト/配送で以下の閉ループが成立することを検証する (Layer B との違い):
+合成 qtbot ではなく実クリック / 実ダブルクリック / 実右クリックメニューで MainWindow
+を駆動し、OS->Qt ヒットテスト/配送で以下の閉ループが成立することを検証する
+(Layer B との違い):
 
-- パネル 2 の実クリック → パネル 2 が活性化し amber 枠が描画される (スクショ)
-- 別ウィジェット (ChannelBrowser) の行を実クリック選択 → Add ボタンを実クリック →
-  信号がアクティブパネル (パネル 2) に着地し曲線が実描画される (スクショ)
-- パネル 1 の Y 軸ストリップを実クリック → 軸クリック経路でパネル 1 に活性化が戻る
-- 実ダブルクリックで 1 回だけ追加・実 Enter で 1 回だけ追加 (二重発火なしの実証明)
+- パネル 2 の実クリック -> パネル 2 が活性化し amber 枠が描画される (スクショ)
+- パネル 1 の Y 軸ストリップを実クリック -> 軸クリック経路でパネル 1 に活性化が戻る
+- 別ウィジェット (ChannelBrowser) の行を実クリック選択 -> 実右クリックメニューの
+  "Add to Active Panel" を実クリック -> 信号がアクティブパネル (パネル 2) に着地し
+  曲線が実描画される (スクショ)。FU-06 で追加ボタンは撤去され追加は menu/D&D のみ。
+- 実ダブルクリック -> 信号プレビューウィンドウが開き波形が描画される (FU-13。旧挙動の
+  ダブルクリック追加は撤去)。
 
-自動 assert (VM 状態・_active_frame.isVisible()・raw エントリ数) は backstop、
-スクショが判定の本体。plotted_signal_keys() は dedup を返すため、二重発火の観測は
-inspect()["plotted_signals"] の raw エントリ数で数える (dedup では 1 vs 2 を区別不能)。
+自動 assert (VM 状態・_active_frame.isVisible()・plot item 数) は backstop、
+スクショが判定の本体。追加経路の active-routing は D&D では検証できない (D&D は
+drop 先パネル geometry ターゲットで active パネル指向でない) ため、右クリックメニュー
+経由が active-routing の唯一の実経路。
 """
 
 from __future__ import annotations
@@ -28,7 +32,9 @@ from pytestqt.qtbot import QtBot
 from tests.realgui._realgui_input import (
     LDOWN,
     LUP,
-    VK_RETURN,
+    RDOWN,
+    RUP,
+    VK_ESCAPE,
     at,
     double_click,
     skip_unless_real_display,
@@ -52,7 +58,7 @@ def _pump_n(n: int) -> None:
 
 
 def _real_click(x: int, y: int) -> None:
-    """純クリック: 同一点で press→release (MOVE なし)。"""
+    """純クリック: 同一点で press->release (MOVE なし)。"""
     at(x, y, LDOWN)
     _pump()
     at(x, y, LUP)
@@ -80,18 +86,11 @@ def _panel_widget(window, tab_index: int, panel_index: int):  # type: ignore[no-
     return page.widget(panel_index)
 
 
-def _entry_count(panel_vm, key: str) -> int:  # type: ignore[no-untyped-def]
-    """key の raw プロットエントリ数 (dedup しない — 二重発火検出用)。"""
-    return sum(
-        1 for e in panel_vm.inspect()["plotted_signals"] if e["signal_key"] == key
-    )
-
-
 def _make_window_with_two_panels_and_signal(qtbot: QtBot, tmp_path: Path):  # type: ignore[no-untyped-def]
     """MainWindow を構築し、CSV 1 信号を同期ロード・2 パネル化して表示する。
 
     QSettings 隔離は tests/realgui/conftest.py の autouse が効く。信号ロードは
-    off-thread の LoadController を経由せず session.load→_on_loaded を直接呼んで
+    off-thread の LoadController を経由せず session.load->_on_loaded を直接呼んで
     同期化する (production の完走コールバックと同じ登録/活性化経路)。返り値の
     signal_key は ChannelBrowser の row0 に出る namespaced キー。
     """
@@ -142,11 +141,58 @@ def _make_window_with_two_panels_and_signal(qtbot: QtBot, tmp_path: Path):  # ty
     return window, signal_key
 
 
+def _real_menu_add_first_action(row_phys: tuple[int, int]) -> str | None:
+    """行を実右クリック -> アプリの QMenu を待ち -> 先頭アクション ("Add to Active
+    Panel") を実クリックする。クリックしたアクション文字列を返す。
+
+    view は menu を ``QMenu.exec`` (ネストした Qt イベントループ) で表示するため、
+    右クリックもメニュー項目クリックも QTimer で予約し、そのネストループ内で発火させる。
+    項目クリックが外れてもハングしないよう ESC watchdog がメニューを閉じる (外れは
+    assertion 失敗であってマシンハングではない)。
+    """
+    from PySide6.QtCore import QEventLoop, QTimer
+    from PySide6.QtWidgets import QApplication, QMenu
+
+    px, py = row_phys
+    out: dict[str, object] = {}
+    loop = QEventLoop()
+
+    def right_click() -> None:
+        at(px, py, RDOWN)
+        at(px, py, RUP)
+
+    def click_item() -> None:
+        menu = QApplication.activePopupWidget()
+        if isinstance(menu, QMenu) and menu.actions():
+            act = menu.actions()[0]
+            gc = menu.mapToGlobal(menu.actionGeometry(act).center())
+            dpr = menu.devicePixelRatioF()
+            mx, my = round(gc.x() * dpr), round(gc.y() * dpr)
+            at(mx, my, LDOWN)
+            at(mx, my, LUP)
+            out["clicked"] = act.text()
+        else:
+            out["clicked"] = None
+
+    def watchdog() -> None:
+        # 項目クリックが外れていれば menu が残る -> ESC で閉じてから quit。
+        if isinstance(QApplication.activePopupWidget(), QMenu):
+            key_input(VK_ESCAPE)
+        loop.quit()
+
+    QTimer.singleShot(300, right_click)
+    QTimer.singleShot(1000, click_item)
+    QTimer.singleShot(1600, watchdog)
+    QTimer.singleShot(5000, loop.quit)  # hard safety
+    loop.exec()
+    return out.get("clicked")  # type: ignore[return-value]
+
+
 @pytest.mark.realgui
 def test_click_activates_panel_and_add_routes_there(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
-    """PC-07/PC-02 閉ループ: 実クリックで活性化 → 別ウィジェットの Add がアクティブパネルへ着地。"""
+    """PC-07/PC-02 閉ループ: 実クリックで活性化 -> 右クリックメニューの追加がアクティブパネルへ着地。"""
     skip_unless_real_display()
     from PySide6.QtWidgets import QApplication
 
@@ -165,7 +211,7 @@ def test_click_activates_panel_and_add_routes_there(
         timeout=3000,
     )
 
-    # 1) パネル 2 (index 1) の空白部を実クリック → 活性化＋枠
+    # 1) パネル 2 (index 1) の空白部を実クリック -> 活性化＋枠
     px, py = _phys_center(panel1, QPoint(panel1.width() // 2, 16))
     _real_click(px, py)
     shot1 = _shot(tmp_path, "01_panel2_active_frame")
@@ -180,13 +226,13 @@ def test_click_activates_panel_and_add_routes_there(
         f"パネル 1 の枠が残っている。screenshot: {shot1}"
     )
 
-    # 2) [レビュー追加] パネル 1 (index 0) の Y 軸ストリップを実クリック → active==0 に戻る
-    #    (軸クリック経路 _AlignedAxisItem.mouseClickEvent → set_active_axis/activate の実証)
+    # 2) [レビュー追加] パネル 1 (index 0) の Y 軸ストリップを実クリック -> active==0 に戻る
+    #    (軸クリック経路 _AlignedAxisItem.mouseClickEvent -> set_active_axis/activate の実証)
     spine = panel0._y_axes[0].sceneBoundingRect()
     ax_x, ax_y = to_phys(panel0, spine.center().x(), spine.center().y())
     at(ax_x, ax_y, LDOWN)
     time.sleep(0.05)
-    at(ax_x, ax_y, LUP)  # 同一点・MOVE なし → 純クリック → mouseClickEvent
+    at(ax_x, ax_y, LUP)  # 同一点・MOVE なし -> 純クリック -> mouseClickEvent
     _pump_n(4)
     qtbot.waitUntil(lambda: vm.active_panel_index(0) == 0, timeout=2000)
     assert vm.active_panel_index(0) == 0, (
@@ -195,11 +241,12 @@ def test_click_activates_panel_and_add_routes_there(
     )
     assert panel0._active_frame.isVisible()
 
-    # 3) Add 閉ループを brief どおりパネル 2 へ着地させるため、パネル 2 を再活性化
+    # 3) Add 閉ループをパネル 2 へ着地させるため、パネル 2 を再活性化
     _real_click(px, py)
     qtbot.waitUntil(lambda: vm.active_panel_index(0) == 1, timeout=2000)
 
-    # 4) ChannelBrowser の row0 を実クリックで選択 → Add ボタンを実クリック
+    # 4) ChannelBrowser の row0 を実クリックで選択 -> 実右クリックメニューの
+    #    "Add to Active Panel" を実クリック (FU-06 でボタン撤去・追加は menu/D&D のみ)。
     tree = window.channel_browser_view.tree
     model = (
         window.channel_browser_view.model
@@ -211,12 +258,14 @@ def test_click_activates_panel_and_add_routes_there(
     vp = tree.viewport()
     # visualRect 幅は viewport 幅を超えうる (center.x が右隣ペインに着弾)。x をクランプ。
     local = QPoint(min(rect.center().x(), vp.width() - 8), rect.center().y())
-    _real_click(*_phys_center(vp, local))
-    add_btn = window.channel_browser_view.add_button
-    qtbot.waitUntil(lambda: add_btn.isEnabled(), timeout=2000)
-    _real_click(*_phys_center(add_btn, add_btn.rect().center()))
+    row_phys = _phys_center(vp, local)
+    _real_click(*row_phys)  # 行を選択 -> "Add to Active Panel" が有効化
+    clicked = _real_menu_add_first_action(row_phys)
+    assert clicked == "Add to Active Panel", (
+        f"実右クリックメニューの先頭項目を実クリックできなかった (got {clicked!r})。"
+    )
 
-    # 5) パネル 2 に着地 (パネル 1 は空のまま)＋曲線が実描画
+    # 5) メニュー経由の追加がアクティブパネル 2 に着地 (パネル 1 は空のまま)＋曲線が実描画
     panel1_vm = vm.panels(0)[1]
     panel0_vm = vm.panels(0)[0]
     qtbot.waitUntil(lambda: key in panel1_vm.plotted_signal_keys(), timeout=2000)
@@ -233,13 +282,14 @@ def test_click_activates_panel_and_add_routes_there(
 
 
 @pytest.mark.realgui
-def test_dblclick_and_enter_add_once_each(qtbot: QtBot, tmp_path: Path) -> None:
-    """PC-04: 実ダブルクリックで 1 回追加・実 Enter で 1 回追加 (二重発火なしの実証明)。"""
+def test_dblclick_opens_preview_window(qtbot: QtBot, tmp_path: Path) -> None:
+    """FU-13: 信号行の実ダブルクリックで単一プレビューウィンドウが開き、プレビュー
+    タブに波形が描画される (入力経路が追加からプレビューへ変更)。"""
     skip_unless_real_display()
 
     window, key = _make_window_with_two_panels_and_signal(qtbot, tmp_path)
-    vm = window.graph_area_vm
-    target = vm.active_panel()  # add_panel で index 1 が active
+    pw = window.signal_preview_window
+    assert not pw.isVisible(), "プレビューウィンドウはダブルクリックまで閉じているべき"
 
     tree = window.channel_browser_view.tree
     model = (
@@ -253,22 +303,19 @@ def test_dblclick_and_enter_add_once_each(qtbot: QtBot, tmp_path: Path) -> None:
     local = QPoint(min(rect.center().x(), vp.width() - 8), rect.center().y())
     rx, ry = _phys_center(vp, local)
 
-    # 実ダブルクリック → activated 経路で 1 回だけ追加
+    # 実ダブルクリック (GetDoubleClickTime 窓内 2 連打) -> doubleClicked -> preview
     double_click(rx, ry)
-    _pump_n(4)
-    qtbot.waitUntil(lambda: _entry_count(target, key) >= 1, timeout=2000)
-    assert _entry_count(target, key) == 1, (
-        f"実ダブルクリックで {_entry_count(target, key)} 回追加された (期待 1・二重発火)。"
+    _pump_n(6)
+    qtbot.waitUntil(lambda: pw.isVisible(), timeout=2000)
+    shot = _shot(tmp_path, "03_dblclick_preview")
+    assert pw.isVisible(), (
+        f"実ダブルクリックでプレビューウィンドウが開かない。screenshot: {shot}"
     )
-
-    # 実 Enter → eventFilter 経路でもう 1 回だけ追加 (activated も発火するなら +2)。
-    # 実キーは前面ウィンドウのフォーカス widget へ届く — 直前の実ダブルクリックで
-    # tree がフォーカス済み。
-    key_input(VK_RETURN)
-    _pump_n(4)
-    qtbot.waitUntil(lambda: _entry_count(target, key) >= 2, timeout=2000)
-    shot3 = _shot(tmp_path, "03_dblclick_enter_add")
-    assert _entry_count(target, key) == 2, (
-        f"実 Enter 後の追加数が {_entry_count(target, key)} (期待 2・二重発火なら 4)。"
-        f"screenshot: {shot3}"
+    # プレビュータブに波形が 1 本描画される (ユーザーが実際に見る終状態)。
+    qtbot.waitUntil(lambda: len(pw.preview_plot.listDataItems()) == 1, timeout=2000)
+    assert len(pw.preview_plot.listDataItems()) == 1, (
+        f"プレビュータブに波形が描画されていない。screenshot: {shot}"
+    )
+    assert key in pw.windowTitle(), (
+        f"プレビューウィンドウのタイトルに信号名がない (got {pw.windowTitle()!r})。"
     )
