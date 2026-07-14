@@ -66,3 +66,23 @@ def test_refreshes_on_vm_notification(qtbot: QtBot) -> None:
 
     assert model.rowCount(QModelIndex()) == 1
     assert model.data(model.index(0, 0), Qt.ItemDataRole.DisplayRole) == "new.mf4"
+
+
+def test_releasing_row_foreground_uses_token(qtbot: QtBot, monkeypatch) -> None:
+    """配線検証: 解放中行の ForegroundRole が text_releasing トークンを返す。"""
+    from PySide6.QtGui import QColor
+
+    from valisync.gui.theme.tokens import active
+
+    app_vm = AppViewModel()
+    k = app_vm.session._groups.add(
+        SignalGroup((), Path("/a.mf4").absolute(), "MDF4", datetime.now())
+    )
+    app_vm._loaded_keys = [k]
+    vm = FileBrowserVM(app_vm)
+    model = FileListModel(vm)
+    monkeypatch.setattr(vm, "is_releasing", lambda row: True)
+
+    index = model.index(0, 0, QModelIndex())
+    expected = QColor(*active().colors.text_releasing.rgba)
+    assert model.data(index, Qt.ItemDataRole.ForegroundRole) == expected

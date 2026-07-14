@@ -12,6 +12,7 @@ from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem, QWidget
 
 from valisync.gui.adapters.qt_signal_models import FileListModel
+from valisync.gui.theme import tokens
 
 
 class ReleasingSpinnerDelegate(QStyledItemDelegate):
@@ -38,7 +39,7 @@ class ReleasingSpinnerDelegate(QStyledItemDelegate):
         rect = QRectF(x, y, d, d)
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        pen = QPen(QColor(120, 160, 255), 2)
+        pen = QPen(QColor(*tokens.active().colors.busy_spinner.rgba), 2)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
         start = int(self._angle()) * 16  # Qt angles are in 1/16 deg

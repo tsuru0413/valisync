@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from valisync.core.loaders.csv_format_detector import DetectedFormat, split_line
 from valisync.core.models.format_def import Delimiter, FormatDefinition
+from valisync.gui.theme import qss
 
 _DELIM_LABEL = {
     Delimiter.COMMA: "カンマ (,)",
@@ -81,7 +82,7 @@ class CsvFormatDialog(QDialog):
         layout.addLayout(form)
 
         self._error = QLabel(self)
-        self._error.setStyleSheet("color: #c0392b;")
+        self._error.setStyleSheet(qss.error_label())
         self._error.setWordWrap(True)
         layout.addWidget(self._error)
 

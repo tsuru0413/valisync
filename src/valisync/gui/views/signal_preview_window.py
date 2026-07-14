@@ -16,10 +16,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from valisync.gui.theme import tokens
+
 if TYPE_CHECKING:
     from valisync.gui.viewmodels.signal_preview_vm import SignalPreviewVM
-
-_PREVIEW_PEN = pg.mkPen("#4FC3F7", width=1)
 
 
 class SignalPreviewWindow(QWidget):
@@ -69,7 +69,9 @@ class SignalPreviewWindow(QWidget):
         data = self._vm.plot_data()
         if data is not None:
             x, y = data
-            self.preview_plot.plot(x, y, pen=_PREVIEW_PEN)
+            self.preview_plot.plot(
+                x, y, pen=pg.mkPen(tokens.active().colors.preview_curve.hex, width=1)
+            )
             self._preview_stack.setCurrentIndex(0)
         else:
             self._preview_stack.setCurrentIndex(1)
