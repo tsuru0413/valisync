@@ -736,3 +736,16 @@ def test_channel_browser_double_click_opens_preview(
     # Emitting preview_requested drives show_signal (window becomes visible).
     window.channel_browser_view.preview_requested.emit("nonexistent::key")  # type: ignore[union-attr]
     assert window.signal_preview_window.isVisible()  # type: ignore[union-attr]
+
+
+def test_preview_window_is_parented_to_main_window(qtbot: QtBot) -> None:
+    """Important #1 (final review): SignalPreviewWindow must be parented to
+    MainWindow, not a parent-less top-level. Qt's quitOnLastWindowClosed only
+    quits on the last PARENT-LESS top-level closing, so a parent-less preview
+    left open when MainWindow is closed via X orphans the app (never quits).
+    It must still be a floating, non-modal top-level window (isWindow() True)
+    -- parenting just ties its lifetime to MainWindow and stops it counting as
+    a primary window."""
+    window = _make_window(qtbot)
+    assert window.signal_preview_window.parent() is window  # type: ignore[union-attr]
+    assert window.signal_preview_window.isWindow() is True  # type: ignore[union-attr]

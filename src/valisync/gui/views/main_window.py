@@ -213,7 +213,9 @@ class MainWindow(QMainWindow):
             self._add_to_active_panel
         )
         # FU-13: single-instance, non-modal preview window opened by double-click.
-        self.signal_preview_window = SignalPreviewWindow(SignalPreviewVM(self.app_vm))
+        self.signal_preview_window = SignalPreviewWindow(
+            SignalPreviewVM(self.app_vm), parent=self
+        )
         self.channel_browser_view.preview_requested.connect(
             self.signal_preview_window.show_signal
         )

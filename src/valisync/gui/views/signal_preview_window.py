@@ -23,8 +23,8 @@ _PREVIEW_PEN = pg.mkPen("#4FC3F7", width=1)
 
 
 class SignalPreviewWindow(QWidget):
-    def __init__(self, vm: SignalPreviewVM) -> None:
-        super().__init__(None)
+    def __init__(self, vm: SignalPreviewVM, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
         self._vm = vm
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowTitle("信号プレビュー")
