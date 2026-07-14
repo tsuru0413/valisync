@@ -74,6 +74,29 @@ class TestDocksExist:
         window = _make_window(qtbot)
         assert isinstance(window.channel_dock, QDockWidget)  # type: ignore[union-attr]
 
+    def test_bottom_right_corner_belongs_to_right_dock_area(self, qtbot: QtBot) -> None:
+        """FU-10: the bottom-right corner is assigned to the Right dock area so the
+        File/Channel Browser docks span the right column full-height (Diagnostics,
+        in the bottom area, no longer extends under them). Qt's default assigns
+        this corner to BottomDockWidgetArea, which shortens the right docks."""
+        window = _make_window(qtbot)
+        assert (
+            window.corner(Qt.Corner.BottomRightCorner)  # type: ignore[union-attr]
+            == Qt.DockWidgetArea.RightDockWidgetArea
+        )
+
+    def test_corner_survives_reset_layout(self, qtbot: QtBot) -> None:
+        """FU-10 regression: restoreState resets dock corner config to Qt defaults,
+        so SH-11 Reset Layout (which calls restoreState) must re-apply the corner.
+        Without the re-apply the right docks silently revert to short (the same
+        clobber that broke the startup restore for users with a saved windowState)."""
+        window = _make_window(qtbot)
+        window._reset_layout()  # type: ignore[union-attr]  # SH-11 -> restoreState
+        assert (
+            window.corner(Qt.Corner.BottomRightCorner)  # type: ignore[union-attr]
+            == Qt.DockWidgetArea.RightDockWidgetArea
+        )
+
 
 # ---------------------------------------------------------------------------
 # Central Widget
