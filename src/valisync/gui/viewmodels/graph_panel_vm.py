@@ -62,6 +62,25 @@ def _padded_range(lo: float, hi: float) -> tuple[float, float]:
     return (v - pad, v + pad)
 
 
+def _scaled_range(lo: float, hi: float, factor: float) -> tuple[float, float] | None:
+    """Scale a range around its center by *factor* (FU-09 center-based zoom).
+
+    factor < 1 shrinks (zoom in), > 1 expands (zoom out). Returns None for a
+    degenerate (zero-width) span or any non-finite input/result, so callers
+    treat it as a no-op rather than producing an unusable range.
+    """
+    if not (math.isfinite(lo) and math.isfinite(hi)):
+        return None
+    center = (lo + hi) / 2.0
+    half = (hi - lo) / 2.0 * factor
+    if half == 0.0:
+        return None
+    new_lo, new_hi = center - half, center + half
+    if not (math.isfinite(new_lo) and math.isfinite(new_hi)):
+        return None
+    return (new_lo, new_hi)
+
+
 MIN_H: float = 0.05
 
 
@@ -627,6 +646,28 @@ class GraphPanelVM(Observable):
             return
         self._axes[axis_index].set_range(min(lo, hi), max(lo, hi))
         self._notify("axes")
+
+    def zoom_axis(self, axis_index: int, factor: float) -> None:
+        """Zoom one Y-axis around its center by *factor* (FU-09). No-op when the
+        axis has no concrete range or the span is degenerate/non-finite."""
+        if not (0 <= axis_index < len(self._axes)):
+            return
+        rng = self._axes[axis_index].y_range
+        if rng is None:
+            return
+        scaled = _scaled_range(rng[0], rng[1], factor)
+        if scaled is not None:
+            self.set_axis_range(axis_index, scaled[0], scaled[1])
+
+    def zoom_x(self, factor: float) -> None:
+        """Zoom the X range around its center by *factor* (FU-09), via set_x_range
+        so the existing X-sync fan-out applies. No-op when x_range is unset or the
+        span is degenerate/non-finite."""
+        if self.x_range is None:
+            return
+        scaled = _scaled_range(self.x_range[0], self.x_range[1], factor)
+        if scaled is not None:
+            self.set_x_range(scaled[0], scaled[1])
 
     def _fit_axis(self, axis: YAxisVM, lo: float | None, hi: float | None) -> None:
         """Store an auto-fit result on *axis*, widening a degenerate constant-signal
