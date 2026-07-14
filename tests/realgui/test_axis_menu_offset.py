@@ -442,3 +442,107 @@ def test_real_curve_menu_move_to_new_axis(qtbot: QtBot, tmp_path: Path) -> None:
         "a new axis was not created after a real click on '新しい軸へ移動' "
         f"(vm.axes={len(view.vm.axes)}). screenshots: {shot_menu}, {shot_after}"
     )
+
+
+# ─── FU-09: 軸メニュー中心基準ズーム (Y軸 build_axis_menu / X軸 build_x_axis_menu) ──
+
+
+def _x_strip_center_phys(panel):  # type: ignore[no-untyped-def]
+    """Physical screen point at the centre of the bottom X (time) axis strip.
+
+    _x_axis is a scene AxisItem drawn below the plot; its scene centre maps back
+    (same to_phys transform as _spine_center_phys) to a widget point with
+    ``py > plot_rect.bottom()`` -> ZONE_X_INNER/OUTER, which contextMenuEvent
+    routes to build_x_axis_menu (FU-09).
+    """
+    strip = panel._x_axis.sceneBoundingRect()
+    return to_phys(panel, strip.center().x(), strip.center().y())
+
+
+def test_real_right_click_y_axis_zoom_in_shrinks_range(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """軸0のガター (スパイン) を実右クリック → メニュー「ズームイン」を実クリック → Y軸レンジが
+    中心保持で 10% 縮小する (half*0.9)。Layer B の contextMenuEvent 直呼びでは通らない
+    OS 経路 (右クリック配送→メニュー→実項目クリック) を検証する。
+    """
+    skip_unless_real_display()
+    from tests.gui._panel_factory import make_two_axis_panel
+
+    view = make_two_axis_panel()
+    _show(qtbot, view)
+    _wait_panel_laid_out(qtbot, view)
+    before = view.vm.axes[0].y_range
+    assert before is not None, "axis 0 has no y_range to zoom"
+    before_center = (before[0] + before[1]) / 2.0
+    before_half = (before[1] - before[0]) / 2.0
+
+    target = _spine_center_phys(view, 0)
+    shot_menu = tmp_path / "y_zoom_00_menu.png"
+    captured = _open_menu_click_item(view, target, "ズームイン", shot_menu)
+    _pump_n(6)
+
+    assert captured.get("type") == "QMenu", (
+        "real right-click on axis 0's gutter did not raise the axis menu (got "
+        f"{captured.get('type')!r}). screenshot: {shot_menu}"
+    )
+    actions = captured.get("actions") or []
+    assert "ズームイン" in actions, f"axis menu missing 'ズームイン': {actions!r}"
+    assert captured.get("clicked"), "real click on 'ズームイン' failed to fire"
+    after = view.vm.axes[0].y_range
+    assert after is not None
+    after_center = (after[0] + after[1]) / 2.0
+    after_half = (after[1] - after[0]) / 2.0
+    assert after_half == pytest.approx(before_half * 0.9, rel=1e-6), (
+        f"Y range half did not shrink 10% (before {before_half}, after {after_half}). "
+        f"screenshot: {shot_menu}"
+    )
+    assert after_center == pytest.approx(before_center, rel=1e-6, abs=1e-9), (
+        "Y zoom did not preserve the axis centre"
+    )
+
+
+def test_real_right_click_x_axis_zoom_in_shrinks_range(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """X軸ストリップを実右クリック → build_x_axis_menu の「ズームイン」を実クリック → X軸レンジが
+    中心保持で 10% 縮小する。ZONE_X ルーティング (contextMenuEvent の新分岐) の実 OS 経路検証。
+    """
+    skip_unless_real_display()
+    from tests.gui._panel_factory import make_two_axis_panel
+
+    view = make_two_axis_panel()
+    _show(qtbot, view)
+    _wait_panel_laid_out(qtbot, view)
+    before = view.vm.x_range
+    assert before is not None, "panel has no x_range to zoom"
+    before_center = (before[0] + before[1]) / 2.0
+    before_half = (before[1] - before[0]) / 2.0
+
+    target = _x_strip_center_phys(view)
+    shot_menu = tmp_path / "x_zoom_00_menu.png"
+    captured = _open_menu_click_item(view, target, "ズームイン", shot_menu)
+    _pump_n(6)
+
+    assert captured.get("type") == "QMenu", (
+        "real right-click on the X axis strip did not raise the X axis menu (got "
+        f"{captured.get('type')!r}). screenshot: {shot_menu}"
+    )
+    actions = captured.get("actions") or []
+    # "X軸をオートフィット" is unique to build_x_axis_menu -> confirms ZONE_X routing.
+    assert "X軸をオートフィット" in actions, (
+        f"ZONE_X did not route to build_x_axis_menu: {actions!r}"
+    )
+    assert "ズームイン" in actions, f"X axis menu missing 'ズームイン': {actions!r}"
+    assert captured.get("clicked"), "real click on 'ズームイン' failed to fire"
+    after = view.vm.x_range
+    assert after is not None
+    after_center = (after[0] + after[1]) / 2.0
+    after_half = (after[1] - after[0]) / 2.0
+    assert after_half == pytest.approx(before_half * 0.9, rel=1e-6), (
+        f"X range half did not shrink 10% (before {before_half}, after {after_half}). "
+        f"screenshot: {shot_menu}"
+    )
+    assert after_center == pytest.approx(before_center, rel=1e-6, abs=1e-9), (
+        "X zoom did not preserve the centre"
+    )

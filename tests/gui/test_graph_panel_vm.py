@@ -18,6 +18,7 @@ Tests verify (strict TDD — tests written before implementation):
 from __future__ import annotations
 
 import csv
+import math
 from datetime import datetime
 from pathlib import Path
 
@@ -1821,3 +1822,67 @@ def test_manual_set_y_range_zero_width_not_padded(tmp_path: Path) -> None:
     vm = _loaded_vm(tmp_path)
     vm.set_y_range(3.0, 3.0)
     assert vm._axes[0].y_range == (3.0, 3.0)
+
+
+# ─── FU-09: center-based zoom ────────────────────────────────────────────────
+
+
+def test_scaled_range_zoom_in_shrinks_around_center() -> None:
+    from valisync.gui.viewmodels.graph_panel_vm import _scaled_range
+
+    # (0, 100): center 50, half 50; factor 0.9 -> half 45 -> (5, 95)
+    assert _scaled_range(0.0, 100.0, 0.9) == pytest.approx((5.0, 95.0))
+
+
+def test_scaled_range_zoom_out_expands_around_center() -> None:
+    from valisync.gui.viewmodels.graph_panel_vm import _scaled_range
+
+    # factor 1.1 -> half 55 -> (-5, 105)
+    assert _scaled_range(0.0, 100.0, 1.1) == pytest.approx((-5.0, 105.0))
+
+
+def test_scaled_range_none_for_degenerate_or_nonfinite() -> None:
+    from valisync.gui.viewmodels.graph_panel_vm import _scaled_range
+
+    assert _scaled_range(5.0, 5.0, 0.9) is None  # half == 0
+    assert _scaled_range(math.inf, 1.0, 0.9) is None  # non-finite input
+    assert _scaled_range(0.0, 1.0, math.inf) is None  # non-finite result
+
+
+def test_zoom_axis_scales_y_range_around_center(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=50)
+    vm = GraphPanelVM(session)
+    vm.add_signal(session.signals()[0].name)
+    vm.set_axis_range(0, 0.0, 100.0)
+    vm.zoom_axis(0, 0.9)
+    assert vm.axes[0].y_range == pytest.approx((5.0, 95.0))
+
+
+def test_zoom_axis_noop_when_degenerate_or_bad_index(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=50)
+    vm = GraphPanelVM(session)
+    vm.zoom_axis(0, 0.9)  # no axes yet -> no-op, no error
+    vm.add_signal(session.signals()[0].name)
+    vm.set_axis_range(0, 7.0, 7.0)  # degenerate span
+    vm.zoom_axis(0, 0.9)
+    assert vm.axes[0].y_range == pytest.approx((7.0, 7.0))  # unchanged
+
+
+def test_zoom_x_scales_x_range_via_set_x_range(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path, n_rows=50)
+    vm = GraphPanelVM(session)
+    vm.add_signal(session.signals()[0].name)
+    vm.set_x_range(0.0, 100.0)
+    events: list[str] = []
+    vm.subscribe(events.append)
+    vm.zoom_x(1.1)
+    assert vm.x_range == pytest.approx((-5.0, 105.0))
+    assert "range" in events  # went through set_x_range (X-sync fan-out entry point)
+
+
+def test_zoom_x_noop_when_x_range_none(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path)
+    vm = GraphPanelVM(session)
+    assert vm.x_range is None
+    vm.zoom_x(0.9)  # no-op, no error
+    assert vm.x_range is None
