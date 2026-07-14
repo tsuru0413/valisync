@@ -65,6 +65,7 @@ from valisync.gui.adapters.qt_signal_models import (
     decode_signal_keys,
     encode_axis_move,
 )
+from valisync.gui.theme import qss, tokens
 from valisync.gui.viewmodels.graph_panel_vm import _PALETTE, GraphPanelVM
 from valisync.gui.views.cursor_shapes import CursorKind, cursor
 
@@ -104,8 +105,6 @@ AXZONE_PAN = "ax_pan"
 # displayed signals change. Larger magnitudes stay within it via pyqtgraph's
 # automatic SI-prefix / scientific tick formatting.
 _Y_AXIS_FIXED_WIDTH = 72
-
-_GRID_ALPHA = 60  # X グリッド線のアルファ (0-255・淡色)
 
 # FU-12: 各 Y 軸リージョンをその高さの 3% だけ上下に内側へ寄せる。どの軸も真の
 # フルハイトにしないことで、レンジ境界に一致するデータがプロット枠に張り付いて
@@ -424,15 +423,15 @@ class _AlignedAxisItem(pg.AxisItem):
         p.save()
         # Amber frame border — always shown while active OR hovered.
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(QColor("#f59e0b"), 2))
+        p.setPen(QPen(QColor(*tokens.active().colors.accent_active.rgba), 2))
         p.drawRect(r.adjusted(1, 1, -1, -1))
         # Grip handles — only shown when this axis is the ACTIVE axis.
         if (
             self._panel_view is not None
             and self._vm_axis_index == self._panel_view._active_axis_index
         ):
-            p.setBrush(QColor("#ffffff"))
-            p.setPen(QPen(QColor("#b45309"), 1))
+            p.setBrush(QColor(*tokens.active().colors.grip_fill.rgba))
+            p.setPen(QPen(QColor(*tokens.active().colors.accent_active_dark.rgba), 1))
             cx = r.center().x()
             for cy in (r.top() + 1.0, r.bottom() - 1.0):
                 p.drawRoundedRect(
@@ -813,13 +812,10 @@ class GraphPanelView(QWidget):
 
         # PC-07: アクティブパネル枠。chrome と同じく overlay (レイアウト非参加) で
         # plot_widget を原点 (0,0) に保つ。WA_TransparentForMouseEvents で
-        # ゾーン hit-test に一切干渉しない。色はアクティブ軸 amber (#f59e0b) と同系。
+        # ゾーン hit-test に一切干渉しない。色はアクティブ軸 amber (accent_active) と同系。
         self._active_frame = QFrame(self)
         self._active_frame.setObjectName("active_panel_frame")
-        self._active_frame.setStyleSheet(
-            "#active_panel_frame {"
-            " border: 1px solid #f59e0b; border-radius: 2px; background: transparent; }"
-        )
+        self._active_frame.setStyleSheet(qss.active_panel_frame())
         self._active_frame.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._active_frame.setGeometry(self.rect())
         self._active_frame.setVisible(False)
@@ -840,10 +836,15 @@ class GraphPanelView(QWidget):
         # differ) via _make_cursor_line, and re-attached together on every axis
         # rebuild via _cursor_lines.
         self._cursor_line = self._make_cursor_line(
-            pg.mkPen("#f9e2af", width=2), self._on_cursor_line_dragged
+            pg.mkPen(tokens.active().colors.cursor_a.hex, width=2),
+            self._on_cursor_line_dragged,
         )
         self._cursor_line_b = self._make_cursor_line(
-            pg.mkPen("#89b4fa", width=2, style=Qt.PenStyle.DashLine),
+            pg.mkPen(
+                tokens.active().colors.cursor_b.hex,
+                width=2,
+                style=Qt.PenStyle.DashLine,
+            ),
             self._on_cursor_line_b_dragged,
         )
         self._readout = CursorReadout(self)
@@ -886,7 +887,9 @@ class GraphPanelView(QWidget):
 
     def _apply_grid(self) -> None:
         """Reflect the VM's grid_enabled onto the shared X axis (vertical grid lines)."""
-        self._x_axis.setGrid(_GRID_ALPHA if self.vm.grid_enabled else False)
+        self._x_axis.setGrid(
+            tokens.active().grid_alpha if self.vm.grid_enabled else False
+        )
 
     def refresh(self) -> None:
         """Re-project vm.render_data() onto the plot, reconciling multiple axes."""
@@ -1440,12 +1443,13 @@ class GraphPanelView(QWidget):
 
     def _apply_cursor_pens(self) -> None:
         """Thicken the active cursor line (width 3.5) and normalise the other."""
+        c = tokens.active().colors
         self._cursor_line.setPen(
-            pg.mkPen("#f9e2af", width=3.5 if self._active_cursor == "A" else 2)
+            pg.mkPen(c.cursor_a.hex, width=3.5 if self._active_cursor == "A" else 2)
         )
         self._cursor_line_b.setPen(
             pg.mkPen(
-                "#89b4fa",
+                c.cursor_b.hex,
                 width=3.5 if self._active_cursor == "B" else 2,
                 style=Qt.PenStyle.DashLine,
             )
@@ -1583,7 +1587,7 @@ class GraphPanelView(QWidget):
         scene = self.plot_widget.scene()
         if self._axis_move_line is None:
             line = QGraphicsLineItem()
-            pen = QPen(QColor(255, 165, 0))  # orange
+            pen = QPen(QColor(*tokens.active().colors.axis_move_indicator.rgba))
             pen.setWidth(3)
             line.setPen(pen)
             line.setZValue(100)
@@ -1592,7 +1596,9 @@ class GraphPanelView(QWidget):
             self._axis_move_line = line
         if self._axis_move_highlight is None:
             rect_item = QGraphicsRectItem()
-            rect_item.setBrush(QBrush(QColor(255, 165, 0, 60)))  # translucent orange
+            rect_item.setBrush(
+                QBrush(QColor(*tokens.active().colors.axis_move_fill.rgba))
+            )
             rect_item.setPen(QPen(Qt.PenStyle.NoPen))
             rect_item.setZValue(100)
             rect_item.setVisible(False)
@@ -2030,9 +2036,7 @@ class GraphPanelView(QWidget):
 
     def _set_drop_highlight(self, active: bool) -> None:
         self._drop_active = active
-        self.setStyleSheet(
-            "GraphPanelView { border: 2px solid #1f77b4; }" if active else ""
-        )
+        self.setStyleSheet(qss.panel_drop_highlight() if active else "")
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         md = event.mimeData()
