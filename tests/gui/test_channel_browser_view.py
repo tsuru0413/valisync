@@ -304,105 +304,70 @@ def test_no_channels_placeholder_shown_after_refresh(
     assert "このファイルに信号がありません" in view.placeholder_label.text()
 
 
-# ─── Add Button (PC-02) ──────────────────────────────────────────────────────
-# view/選択の構築式は本ファイル既存の _loaded_vm/_make_view/_select に倣う
-# (このファイルに view fixture・_select_first_row ヘルパは存在しないため)。
+# ─── Double-click / Enter (FU-06/FU-13) ──────────────────────────────────────
+# PC-02 の add_button と Enter-add の eventFilter は撤去(Task 3)。追加は
+# 右クリックメニュー(_emit_add_selected)と D&D のみに一本化。ダブルクリックは
+# preview_requested を emit する(add ではない)。
 
 
-def test_add_button_disabled_without_selection(qtbot: QtBot, tmp_path: Path) -> None:
-    app_vm, vm, key = _loaded_vm(tmp_path)
-    app_vm.set_active_file(key)
-    view = _make_view(qtbot, vm)
-    assert not view.add_button.isEnabled()
+def test_double_click_emits_preview_not_add(qtbot: QtBot, tmp_path: Path) -> None:
+    """FU-13: double-click emits preview_requested with the leaf key, NOT add."""
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+    parent = view.model.index(0, 0, QModelIndex())  # array parent
+    child = view.model.index(0, 0, parent)  # a leaf
+    view.tree.selectionModel().select(
+        child,
+        QItemSelectionModel.SelectionFlag.Select
+        | QItemSelectionModel.SelectionFlag.Rows,
+    )
+    with qtbot.waitSignal(view.preview_requested, timeout=1000) as prev:
+        view.tree.doubleClicked.emit(child)
+    assert prev.args[0].endswith("[0]")
 
 
-def test_add_button_enabled_with_selection(qtbot: QtBot, tmp_path: Path) -> None:
-    app_vm, vm, key = _loaded_vm(tmp_path)
-    app_vm.set_active_file(key)
-    view = _make_view(qtbot, vm)
-    _select(view, 0)
-    assert view.add_button.isEnabled()
+def test_no_add_button(qtbot: QtBot, tmp_path: Path) -> None:
+    """FU-06: the 'add to active panel' button is removed."""
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+    assert not hasattr(view, "add_button")
 
 
-def test_add_button_disabled_after_clear(qtbot: QtBot, tmp_path: Path) -> None:
-    app_vm, vm, key = _loaded_vm(tmp_path)
-    app_vm.set_active_file(key)
-    view = _make_view(qtbot, vm)
-    _select(view, 0)
-    view.tree.selectionModel().clearSelection()
-    assert not view.add_button.isEnabled()
+def test_enter_does_not_emit_add(qtbot: QtBot, tmp_path: Path) -> None:
+    """FU-06/Enter removal: pressing Enter on the tree emits neither add nor preview."""
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QKeyEvent
+
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+    parent = view.model.index(0, 0, QModelIndex())
+    child = view.model.index(0, 0, parent)
+    view.tree.selectionModel().select(
+        child,
+        QItemSelectionModel.SelectionFlag.Select
+        | QItemSelectionModel.SelectionFlag.Rows,
+    )
+    fired: list[str] = []
+    view.add_to_panel_requested.connect(lambda _k: fired.append("add"))
+    view.preview_requested.connect(lambda _k: fired.append("preview"))
+    ev = QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier
+    )
+    view.tree.keyPressEvent(ev)
+    assert fired == []  # Enter does nothing
 
 
-def test_add_button_click_emits_selected_keys(qtbot: QtBot, tmp_path: Path) -> None:
-    """Layer B: 実クリック(合成) -> clicked -> emit の実経路。emit 直叩き禁止。"""
-    app_vm, vm, key = _loaded_vm(tmp_path)
-    app_vm.set_active_file(key)
-    view = _make_view(qtbot, vm)
-    emitted: list[list[str]] = []
-    view.add_to_panel_requested.connect(emitted.append)
-    _select(view, 0)
-
-    qtbot.mouseClick(view.add_button, Qt.MouseButton.LeftButton)
-
-    assert emitted == [view.selected_signal_keys()]
-    assert emitted[0]  # 空 emit でない
-
-
-# ─── Double-click / Enter (PC-04) ────────────────────────────────────────────
-# 二重発火ガード: Windows では QAbstractItemView.activated が Enter でも発火
-# するため、tree.activated (dblclick 用) と eventFilter (Return/Enter 用) を
-# 両方配線すると 1 打鍵で 2 回 emit しうる。eventFilter が消費して防ぐ (spec §6)。
-
-
-def test_enter_emits_add_exactly_once(qtbot: QtBot, tmp_path: Path) -> None:
-    """二重発火ガード: Windows では activated も Enter で発火する ── 1 回だけ emit。"""
-    app_vm, vm, key = _loaded_vm(tmp_path)
-    app_vm.set_active_file(key)
-    view = _make_view(qtbot, vm)
-    emitted: list[list[str]] = []
-    view.add_to_panel_requested.connect(emitted.append)
-    _select(view, 0)
-
-    view.tree.setFocus()
-    qtbot.keyClick(view.tree, Qt.Key.Key_Return)
-
-    assert len(emitted) == 1
-
-
-def test_enter_without_selection_does_not_emit(qtbot: QtBot, tmp_path: Path) -> None:
-    app_vm, vm, key = _loaded_vm(tmp_path)
-    app_vm.set_active_file(key)
-    view = _make_view(qtbot, vm)
-    emitted: list[list[str]] = []
-    view.add_to_panel_requested.connect(emitted.append)
-
-    view.tree.setFocus()
-    qtbot.keyClick(view.tree, Qt.Key.Key_Return)
-
-    assert emitted == []
-
-
-def test_double_click_emits_add(qtbot: QtBot, tmp_path: Path) -> None:
-    """Layer B dblclick: fresh itemview は warm-up click 前置が必須 (memory)。"""
-    app_vm, vm, key = _loaded_vm(tmp_path)
-    app_vm.set_active_file(key)
-    view = _make_view(qtbot, vm)
-    emitted: list[list[str]] = []
-    view.add_to_panel_requested.connect(emitted.append)
-
-    # view.tree is bound directly to view.model (no proxy, FU-22 B).
-    index = view.model.index(0, 0)
-    qtbot.waitUntil(lambda: view.tree.visualRect(index).height() > 0)
-    rect_center = view.tree.visualRect(index).center()
-
-    # warm-up (sabotage 検証: warm-up 単独では emit されないことを確認してから dblclick)
-    qtbot.mouseClick(view.tree.viewport(), Qt.MouseButton.LeftButton, pos=rect_center)
-    assert emitted == []  # warm-up が自力発火しない証明 (false-green 防止)
-
-    qtbot.mouseDClick(view.tree.viewport(), Qt.MouseButton.LeftButton, pos=rect_center)
-
-    assert len(emitted) == 1
-    assert emitted[0] == view.selected_signal_keys()
+def test_context_menu_add_still_emits(qtbot: QtBot, tmp_path: Path) -> None:
+    """Regression: right-click 'Add to Active Panel' still emits add_to_panel_requested."""
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+    parent = view.model.index(0, 0, QModelIndex())
+    child = view.model.index(0, 0, parent)
+    view.tree.selectionModel().select(
+        child,
+        QItemSelectionModel.SelectionFlag.Select
+        | QItemSelectionModel.SelectionFlag.Rows,
+    )
+    menu = view.build_context_menu()
+    add_action = next(a for a in menu.actions() if a.text() == "Add to Active Panel")
+    with qtbot.waitSignal(view.add_to_panel_requested, timeout=1000):
+        add_action.trigger()
 
 
 # ─── Header-click Column Sort (PC-20/DP2) ────────────────────────────────────

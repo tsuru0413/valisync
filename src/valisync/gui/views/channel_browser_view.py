@@ -9,22 +9,19 @@ file in AppViewModel.
 from __future__ import annotations
 
 from PySide6.QtCore import (
-    QEvent,
     QItemSelection,
     QMimeData,
-    QObject,
+    QModelIndex,
     QPoint,
     Qt,
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMenu,
-    QPushButton,
     QStackedWidget,
     QTreeView,
     QVBoxLayout,
@@ -51,6 +48,7 @@ class ChannelBrowserView(QWidget):
     # Emitted with the selected signal keys; the integration connects this to
     # the active Graph_Panel's add_signal (R14.1).
     add_to_panel_requested = Signal(list)
+    preview_requested = Signal(str)  # FU-13: double-click a leaf -> open preview
 
     def __init__(self, vm: ChannelBrowserVM, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -67,14 +65,6 @@ class ChannelBrowserView(QWidget):
         self._filter_timer.setSingleShot(True)
         self._filter_timer.setInterval(_FILTER_DEBOUNCE_MS)
         self._filter_timer.timeout.connect(self._apply_filter)
-
-        # PC-02: 可視の追加ボタン(FileBrowser の Open ボタンパターン踏襲)。
-        # 文言は配送先(アクティブパネル)を正直に示す。
-        self.add_button = QPushButton("アクティブパネルへ追加", self)
-        self.add_button.setObjectName("channel_browser_add")
-        self.add_button.setToolTip("選択中の信号をアクティブパネルへ追加")
-        self.add_button.setEnabled(False)
-        self.add_button.clicked.connect(self._emit_add_selected)
 
         self.tree = QTreeView(self)
         self.tree.setModel(self.model)
@@ -109,7 +99,6 @@ class ChannelBrowserView(QWidget):
 
         controls = QHBoxLayout()
         controls.addWidget(self.search_box, 1)
-        controls.addWidget(self.add_button)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -127,11 +116,9 @@ class ChannelBrowserView(QWidget):
         self.tree.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
 
-        # PC-04: 最短追加操作。activated はダブルクリック専用 (Enter は eventFilter が
-        # 消費して単発 emit を保証 -- Windows では activated も Enter で発火するため、
-        # 両配線だと 1 打鍵で二重追加になる。spec §6 二重発火ガード)。
-        self.tree.activated.connect(lambda _index: self._emit_add_selected())
-        self.tree.installEventFilter(self)
+        # FU-13: double-click (not Enter) opens the preview window. doubleClicked
+        # fires only on double-click, so Enter never triggers it.
+        self.tree.doubleClicked.connect(self._emit_preview)
 
         # The VM outlives this widget; drop the subscription when the C++ object
         # is destroyed so a later notify never calls into a deleted view.
@@ -173,7 +160,6 @@ class ChannelBrowserView(QWidget):
     ) -> None:
         keys = self.selected_signal_keys()
         self._vm.set_selection(keys)
-        self.add_button.setEnabled(bool(keys))
 
     # ─── Queries ───────────────────────────────────────────────────────────────
 
@@ -199,27 +185,16 @@ class ChannelBrowserView(QWidget):
     # ─── Commands ────────────────────────────────────────────────────────────--
 
     def _emit_add_selected(self) -> None:
-        """Emit add_to_panel_requested for the current selection (PC-02/PC-04 共用)."""
+        """Emit add_to_panel_requested for the current selection (right-click menu / D&D)."""
         keys = self.selected_signal_keys()
         if keys:
             self.add_to_panel_requested.emit(keys)
 
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        """Consume Return/Enter on the tree so activated cannot also fire it.
-
-        QAbstractItemView.activated fires on Enter as well as double-click on
-        Windows; without consuming the key here, a single key press would
-        emit add_to_panel_requested twice (spec §6 二重発火ガード).
-        """
-        if (
-            watched is self.tree
-            and isinstance(event, QKeyEvent)
-            and event.type() == QEvent.Type.KeyPress
-            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
-        ):
-            self._emit_add_selected()
-            return True  # consumed: do not propagate to QAbstractItemView.activated
-        return super().eventFilter(watched, event)
+    def _emit_preview(self, index: QModelIndex) -> None:
+        """Emit preview_requested for a leaf; parents (key is None) are ignored."""
+        key = self.model.signal_key_at(index)
+        if key is not None:
+            self.preview_requested.emit(key)
 
     # ─── Context menu (R14.1) ──────────────────────────────────────────────────
 
@@ -229,8 +204,7 @@ class ChannelBrowserView(QWidget):
         add = menu.addAction("Add to Active Panel")
         add.setEnabled(bool(self.selected_signal_keys()))
         # Route through _emit_add_selected so the empty-selection guard is shared
-        # with the button/dblclick/Enter paths (action is already disabled when
-        # empty; this keeps all four add paths symmetric).
+        # with D&D (action is already disabled when empty; add is menu/D&D only).
         add.triggered.connect(lambda *_: self._emit_add_selected())
         return menu
 

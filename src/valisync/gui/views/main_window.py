@@ -39,6 +39,7 @@ from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
 from valisync.gui.viewmodels.diagnostics_vm import DiagnosticsViewModel
 from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
+from valisync.gui.viewmodels.signal_preview_vm import SignalPreviewVM
 from valisync.gui.views.busy_overlay import BusyOverlay
 from valisync.gui.views.channel_browser_view import ChannelBrowserView
 from valisync.gui.views.csv_format_dialog import CsvFormatDialog
@@ -49,6 +50,7 @@ from valisync.gui.views.file_browser_view import FileBrowserView
 from valisync.gui.views.graph_area_view import GraphAreaView
 from valisync.gui.views.recent_files import RecentFiles
 from valisync.gui.views.shell_actions import ShellActions
+from valisync.gui.views.signal_preview_window import SignalPreviewWindow
 from valisync.gui.views.welcome_view import WelcomeView
 from valisync.gui.workers.expansion_confirmer import ExpansionConfirmer
 from valisync.gui.workers.export_worker import ExportController
@@ -209,6 +211,13 @@ class MainWindow(QMainWindow):
         # ── Cross-view wiring ────────────────────────────────────────────────
         self.channel_browser_view.add_to_panel_requested.connect(
             self._add_to_active_panel
+        )
+        # FU-13: single-instance, non-modal preview window opened by double-click.
+        self.signal_preview_window = SignalPreviewWindow(
+            SignalPreviewVM(self.app_vm), parent=self
+        )
+        self.channel_browser_view.preview_requested.connect(
+            self.signal_preview_window.show_signal
         )
         self.graph_area_view.file_dropped.connect(self._load_file)
         self.file_browser_view.open_requested.connect(self.open_file)
