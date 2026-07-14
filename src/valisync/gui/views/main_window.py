@@ -220,7 +220,6 @@ class MainWindow(QMainWindow):
             self.signal_preview_window.show_signal
         )
         self.graph_area_view.file_dropped.connect(self._load_file)
-        self.file_browser_view.open_requested.connect(self.open_file)
         self._app_unsubscribe = self.app_vm.subscribe(self._on_app_change)
 
         self._rebuild_recent_menu()
@@ -408,7 +407,7 @@ class MainWindow(QMainWindow):
     _OPEN_FILTER = "計測ファイル (*.mf4 *.mdf *.dat *.csv);;すべてのファイル (*)"
 
     def open_file(self, *_: object) -> None:
-        """File>Open / Ctrl+O / Welcome CTA / File Browser ボタンの集約先。
+        """File>Open / Ctrl+O / Welcome CTA / toolbar の集約先。
 
         v1 は単一ファイル。選択されたら既存 _load_file (オフスレッド・CSV
         フォーマット解決・診断) へ委譲する。

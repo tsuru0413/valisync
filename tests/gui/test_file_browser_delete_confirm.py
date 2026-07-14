@@ -1,8 +1,8 @@
 """Tests for FileBrowserView delete confirmation (SH-08).
 
 Verifies: a modal confirmation gate before unload (injected via `_confirm_fn`
-for testability), the menu's "Remove File" action routes through it, and a
-visible header "close" button exists.
+for testability), the menu's "Remove File" action routes through it, and
+the right-click 'Remove File' menu is the surviving close affordance.
 """
 
 from __future__ import annotations
@@ -59,7 +59,8 @@ def test_menu_remove_routes_through_confirm(qtbot: QtBot, monkeypatch) -> None: 
     assert seen == ["log.mf4"] and calls == []  # confirm consulted, declined
 
 
-def test_header_has_close_button(qtbot: QtBot) -> None:
+def test_no_close_button(qtbot: QtBot) -> None:
+    """FU-05: the header 'close' button is removed; closing a file is via the
+    right-click 'Remove File' menu (still covered above)."""
     _app, _vm, view = _make_browser_with_file(qtbot)
-    btn = view.findChild(QPushButton, "file_browser_close")
-    assert isinstance(btn, QPushButton)
+    assert view.findChild(QPushButton, "file_browser_close") is None
