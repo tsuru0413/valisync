@@ -718,3 +718,21 @@ def test_window_can_still_be_resized_beyond_screen(qtbot) -> None:
     qtbot.addWidget(mw)
     mw.resize(3000, 700)
     assert mw.width() == 3000
+
+
+# ---------------------------------------------------------------------------
+# FU-13: ChannelBrowser double-click wiring opens the single preview window
+# ---------------------------------------------------------------------------
+
+
+def test_channel_browser_double_click_opens_preview(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """FU-13 wiring: ChannelBrowser preview_requested opens the single preview window."""
+    from valisync.gui.views.signal_preview_window import SignalPreviewWindow
+
+    window = _make_window(qtbot)
+    assert isinstance(window.signal_preview_window, SignalPreviewWindow)  # type: ignore[union-attr]
+    # Emitting preview_requested drives show_signal (window becomes visible).
+    window.channel_browser_view.preview_requested.emit("nonexistent::key")  # type: ignore[union-attr]
+    assert window.signal_preview_window.isVisible()  # type: ignore[union-attr]
