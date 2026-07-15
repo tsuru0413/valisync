@@ -115,6 +115,8 @@ def test_design_card_templates_follow_conventions():
     cards_dir = Path(__file__).resolve().parents[2] / "design" / "cards"
     templates = sorted(cards_dir.glob("*.html"))
     assert templates, "design/cards/ にテンプレートが無い"
+    # 全 var(--vs-*) 参照が build_css の実在変数であること (typo は無言の透明化になる)
+    known = set(re.findall(r"--vs-[\w-]+", export.build_css(DARK)))
     for path in templates:
         text = path.read_text(encoding="utf-8")
         assert text.splitlines()[0] == '<!-- @dsCard group="Components" -->', path.name
@@ -122,6 +124,10 @@ def test_design_card_templates_follow_conventions():
         # 生 hex/rgba 禁止 — 色は必ず var(--vs-*) 経由 (トークン変更に自動追従させる)。
         # OS 既定 chrome の再現用グレーのみ 3桁 hex (#eee 等) を許容。
         assert not re.search(r"#[0-9a-fA-F]{6}\b|rgba?\(", text), path.name
+        # テンプレート内の全 var(--vs-*) 参照が known に存在すること
+        used = set(re.findall(r"var\((--vs-[\w-]+)\)", text))
+        assert used, path.name  # テンプレートは最低1つはトークンを参照する
+        assert used <= known, (path.name, sorted(used - known))
         # 注入が通ることも検証
         out = export.inject_tokens_css(text, DARK)
         assert "--vs-color-plot-background" in out
