@@ -395,9 +395,14 @@ def test_drop_highlight_visible_mid_drag(qtbot: QtBot, tmp_path: Path) -> None:
         def dragMoveEvent(self, ev: object) -> None:  # type: ignore[override]
             super().dragMoveEvent(ev)  # type: ignore[arg-type]
             # Capture the drop-highlight state WHILE the drag hovers the panel.
+            # 枠は _drop_frame overlay が描く (self への setStyleSheet は子 plot
+            # に覆われ不描画だった実バグの修正で移行) — overlay 側を検証する。
             if self.is_drop_highlighted():
                 self.mid_highlighted = True
-                if "border" in self.styleSheet():
+                if (
+                    self._drop_frame.isVisible()
+                    and "border" in self._drop_frame.styleSheet()
+                ):
                     self.mid_border = True
 
         def dropEvent(self, ev: object) -> None:  # type: ignore[override]

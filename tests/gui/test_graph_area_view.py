@@ -332,3 +332,38 @@ class TestClickAwayDeselect:
             Qt.KeyboardModifier.NoModifier,
         )
         assert view.eventFilter(outsider, ev) is False  # type: ignore[attr-defined]
+
+
+def test_file_drop_highlight_border_paints_as_child(qtbot: QtBot) -> None:
+    """OS ファイルドラッグの 2px 破線枠が子ウィジェットとして実描画される。
+
+    素の QWidget サブクラスは WA_StyledBackground なしだと子として QSS
+    border を描かない (増分1 デバッグテーマ検証で発覚した実バグ)。破線の
+    ギャップを避けるため左端列を走査して枠色ピクセルの存在を assert する。
+    """
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    from valisync.core.session import Session
+    from valisync.gui.theme.tokens import active
+    from valisync.gui.views.graph_area_view import GraphAreaView
+
+    vm = GraphAreaVM(AppViewModel(Session()))
+    view = GraphAreaView(vm)
+    parent = QWidget()
+    qtbot.addWidget(parent)  # view は parent 所有 — 二重管理を避ける
+    layout = QVBoxLayout(parent)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.addWidget(view)
+    parent.resize(400, 300)
+    parent.show()
+    view._set_drop_highlight(True)
+    parent.repaint()
+    img = parent.grab().toImage()
+    expected = active().colors.drop_highlight
+    hit = any(
+        abs((p := img.pixelColor(1, y)).red() - expected.r) < 12
+        and abs(p.green() - expected.g) < 12
+        and abs(p.blue() - expected.b) < 12
+        for y in range(4, img.height() - 4)
+    )
+    assert hit, f"左端列に枠色 {expected.hex} のピクセルが1つも無い (不描画)"

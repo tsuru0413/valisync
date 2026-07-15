@@ -60,11 +60,22 @@ def active_panel_frame(t: tokens.ThemeTokens | None = None) -> str:
 
 
 def panel_drop_highlight(t: tokens.ThemeTokens | None = None) -> str:
-    return f"GraphPanelView {{ border: 2px solid {_t(t).colors.drop_highlight.hex}; }}"
+    """信号ドロップ強調枠 — overlay QFrame 用 (素の QWidget への QSS border は
+    子に覆われ見えないため、view 本体でなく _drop_frame overlay に適用する)。"""
+    return (
+        "#drop_highlight_frame {"
+        f" border: 2px solid {_t(t).colors.drop_highlight.hex};"
+        " background: transparent; }"
+    )
 
 
 def area_drop_highlight(t: tokens.ThemeTokens | None = None) -> str:
-    return f"GraphAreaView {{ border: 2px dashed {_t(t).colors.drop_highlight.hex}; }}"
+    """OS ファイルドロップの破線枠 — overlay QFrame 用 (同上)。"""
+    return (
+        "#area_drop_highlight_frame {"
+        f" border: 2px dashed {_t(t).colors.drop_highlight.hex};"
+        " background: transparent; }"
+    )
 
 
 def rename_error_border(t: tokens.ThemeTokens | None = None) -> str:

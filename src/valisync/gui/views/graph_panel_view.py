@@ -820,6 +820,18 @@ class GraphPanelView(QWidget):
         self._active_frame.setGeometry(self.rect())
         self._active_frame.setVisible(False)
 
+        # R12.5: ドロップ強調枠も overlay。素の QWidget への QSS border は
+        # (1) 子ウィジェットとしては WA_StyledBackground なしで不描画、
+        # (2) 付与しても margins 0 の子 plot が枠上を覆う — ため self への
+        # setStyleSheet では構造的に見えない。_active_frame と同型の
+        # QFrame overlay で最前面に描く (レイアウト非参加・hit-test 非干渉)。
+        self._drop_frame = QFrame(self)
+        self._drop_frame.setObjectName("drop_highlight_frame")
+        self._drop_frame.setStyleSheet(qss.panel_drop_highlight())
+        self._drop_frame.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._drop_frame.setGeometry(self.rect())
+        self._drop_frame.setVisible(False)
+
         unsubscribe = self.vm.subscribe(self._on_vm_change)
         self._unsubscribe = unsubscribe
         # The VM outlives this widget; drop the subscription when the C++ object
@@ -2036,7 +2048,9 @@ class GraphPanelView(QWidget):
 
     def _set_drop_highlight(self, active: bool) -> None:
         self._drop_active = active
-        self.setStyleSheet(qss.panel_drop_highlight() if active else "")
+        self._drop_frame.setVisible(active)
+        if active:
+            self._drop_frame.raise_()  # overlay は後生成の兄弟に沈む — 表示時に前面化
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         md = event.mimeData()
@@ -2145,6 +2159,7 @@ class GraphPanelView(QWidget):
         self.vm.set_panel_width(max(1, event.size().width()))  # notifies → refresh()
         self._position_panel_chrome()
         self._active_frame.setGeometry(self.rect())
+        self._drop_frame.setGeometry(self.rect())
 
     def _position_panel_chrome(self) -> None:
         """Keep the +/x overlay pinned to the top-right corner, above the plot."""

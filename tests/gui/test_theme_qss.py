@@ -41,9 +41,9 @@ def test_colored_dot_and_unit_span():
 def test_frame_and_highlight_styles():
     assert DARK.colors.accent_active.hex in qss.active_panel_frame(DARK)
     assert f"border-radius: {DARK.radii.active_frame}px" in qss.active_panel_frame(DARK)
-    assert "GraphPanelView" in qss.panel_drop_highlight(DARK)
+    assert "#drop_highlight_frame" in qss.panel_drop_highlight(DARK)
     assert "solid" in qss.panel_drop_highlight(DARK)
-    assert "GraphAreaView" in qss.area_drop_highlight(DARK)
+    assert "#area_drop_highlight_frame" in qss.area_drop_highlight(DARK)
     assert "dashed" in qss.area_drop_highlight(DARK)
     assert DARK.colors.drop_highlight.hex in qss.panel_drop_highlight(DARK)
     assert DARK.colors.drop_highlight.hex in qss.area_drop_highlight(DARK)

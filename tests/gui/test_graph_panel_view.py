@@ -1391,6 +1391,46 @@ def test_cursor_pens_and_frame_use_tokens(qtbot: QtBot, tmp_path: Path) -> None:
     assert view._cursor_line_b.pen.color().name() == c.cursor_b.hex
     assert c.accent_active.hex in view._active_frame.styleSheet()
     view._set_drop_highlight(True)
-    assert c.drop_highlight.hex in view.styleSheet()
+    # 親 view は未 show — isVisible() は祖先非表示で常に False になるため
+    # isVisibleTo(view) で「view 表示時に見える状態か」を検証する。
+    assert view._drop_frame.isVisibleTo(view)
+    assert c.drop_highlight.hex in view._drop_frame.styleSheet()
     view._set_drop_highlight(False)
-    assert view.styleSheet() == ""
+    assert not view._drop_frame.isVisibleTo(view)
+
+
+def test_drop_highlight_border_paints_as_child(qtbot: QtBot, tmp_path: Path) -> None:
+    """ドロップ強調の 2px 実線枠が子ウィジェットとして実ピクセル描画される。
+
+    既存の realgui drop テストは is_drop_highlighted() (状態フラグ) を assert
+    しており、枠が実際に描かれるかは検証していなかった。素の QWidget サブ
+    クラスは WA_StyledBackground なしだと子として QSS border を描かない
+    (増分1 デバッグテーマ検証で発覚した実バグ)。
+    """
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    from valisync.gui.theme.tokens import active
+    from valisync.gui.views.graph_panel_view import GraphPanelView
+
+    session, _ = _loaded_session(tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_keys(session)[0])
+    view = GraphPanelView(vm)
+    parent = QWidget()
+    qtbot.addWidget(parent)  # view は parent 所有 — 二重管理を避ける
+    layout = QVBoxLayout(parent)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.addWidget(view)
+    parent.resize(400, 300)
+    parent.show()
+    view._set_drop_highlight(True)
+    parent.repaint()
+    img = parent.grab().toImage()
+    expected = active().colors.drop_highlight
+    hit = any(
+        abs((p := img.pixelColor(1, y)).red() - expected.r) < 12
+        and abs(p.green() - expected.g) < 12
+        and abs(p.blue() - expected.b) < 12
+        for y in range(4, img.height() - 4)
+    )
+    assert hit, f"左端列に枠色 {expected.hex} のピクセルが1つも無い (不描画)"

@@ -73,6 +73,9 @@ class CursorReadout(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("CursorReadout")
+        # 素の QWidget サブクラスは子ウィジェットとして QSS background/border を
+        # 描かない (Qt 仕様) — チップ面の実描画にこの属性が必須。
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         # Semi-opaque dark chip so it reads over the waveforms.
         self.setStyleSheet(qss.readout_chip())
         sp = tokens.active().spacing
