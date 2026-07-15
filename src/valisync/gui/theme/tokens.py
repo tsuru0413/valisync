@@ -81,6 +81,20 @@ class Colors:
     busy_spinner: Color
     text_releasing: Color
     preview_curve: Color
+    # クロム — QPalette の 12 role へ写像 (apply.build_palette・spec §4.3)。
+    # cursor_b/text_secondary 等と同値の初期値があるが役割別トークン (spec §4.1)。
+    chrome_window: Color
+    chrome_window_text: Color
+    chrome_base: Color
+    chrome_alternate_base: Color
+    chrome_text: Color
+    chrome_button: Color
+    chrome_button_text: Color
+    chrome_tooltip_base: Color
+    chrome_tooltip_text: Color
+    chrome_highlight: Color
+    chrome_highlight_text: Color
+    chrome_placeholder: Color
 
 
 @dataclass(frozen=True)
@@ -146,6 +160,18 @@ DARK = ThemeTokens(
         busy_spinner=Color(120, 160, 255),
         text_releasing=Color(128, 128, 128),
         preview_curve=Color.from_hex("#4FC3F7"),
+        chrome_window=Color.from_hex("#1e1e2e"),
+        chrome_window_text=Color.from_hex("#cdd6f4"),
+        chrome_base=Color.from_hex("#181825"),
+        chrome_alternate_base=Color.from_hex("#1e1e2e"),
+        chrome_text=Color.from_hex("#cdd6f4"),
+        chrome_button=Color.from_hex("#313244"),
+        chrome_button_text=Color.from_hex("#cdd6f4"),
+        chrome_tooltip_base=Color.from_hex("#181825"),
+        chrome_tooltip_text=Color.from_hex("#cdd6f4"),
+        chrome_highlight=Color.from_hex("#89b4fa"),
+        chrome_highlight_text=Color.from_hex("#11111b"),
+        chrome_placeholder=Color.from_hex("#7f849c"),
     ),
     spacing=Spacing(
         chip_margins=(6, 5, 6, 5),
