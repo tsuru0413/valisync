@@ -9,6 +9,37 @@ from valisync.gui.viewmodels.graph_panel_vm import CursorReading, DeltaReading
 from valisync.gui.views.cursor_readout import CursorReadout
 
 
+def test_chip_background_paints_as_child_widget(qtbot: QtBot):
+    """QSS 背景が『子ウィジェット』として実描画される (WA_StyledBackground)。
+
+    素の QWidget サブクラスは属性なしだと子として QSS background/border を
+    描かず親の背景が透ける (Qt 仕様 — top-level は背景消去経路で描かれるため
+    単体 grab では見逃す)。増分1 のデバッグテーマ検証で発覚した実バグ。
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QWidget
+
+    from valisync.gui.theme.tokens import active
+
+    parent = QWidget()
+    parent.setStyleSheet("background: #00ff00;")  # 蛍光緑 — 透けたら即検出
+    parent.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+    parent.resize(400, 200)
+    qtbot.addWidget(parent)
+    w = CursorReadout(parent)
+    w.set_global(1.0, [CursorReading("csv::vCar", "#1f77b4", 12.3, True)])
+    w.move(50, 50)
+    w.setVisible(True)
+    w.adjustSize()
+    parent.show()
+    img = parent.grab().toImage()
+    inner = img.pixelColor(50 + w.width() // 2, 50 + w.height() - 4)
+    assert inner.name() != "#00ff00", "チップ背景が描画されず親の緑が透けている"
+    # surface_chip (alpha 230) の緑上ブレンドでは R/B がほぼトークン値に一致する
+    chip = active().colors.surface_chip
+    assert abs(inner.red() - chip.r) < 12 and abs(inner.blue() - chip.b) < 12
+
+
 def test_set_readings_builds_one_row_per_signal(qtbot: QtBot):
     w = CursorReadout()
     qtbot.addWidget(w)

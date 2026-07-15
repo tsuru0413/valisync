@@ -27,11 +27,13 @@ from PySide6.QtGui import (
     QFocusEvent,
     QKeyEvent,
     QKeySequence,
+    QResizeEvent,
     QShortcut,
 )
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QFrame,
     QLineEdit,
     QSplitter,
     QStyle,
@@ -98,6 +100,15 @@ class GraphAreaView(QWidget):
         self._syncing = False
         self._drop_active = False
         self.setAcceptDrops(True)
+        # R12.5: OS ファイルドロップの破線枠 overlay。素の QWidget への QSS
+        # border は子に覆われ構造的に見えないため、GraphPanelView の
+        # _active_frame/_drop_frame と同型の QFrame overlay で最前面に描く。
+        self._drop_frame = QFrame(self)
+        self._drop_frame.setObjectName("area_drop_highlight_frame")
+        self._drop_frame.setStyleSheet(qss.area_drop_highlight())
+        self._drop_frame.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._drop_frame.setGeometry(self.rect())
+        self._drop_frame.setVisible(False)
         # PC-07: (tab_index, panel_index, widget) の現行 GraphPanelView 一覧。
         # "active_panel" の軽量経路が rebuild なしで枠を再適用するために使う。
         self._panel_views: list[tuple[int, int, GraphPanelView]] = []
@@ -378,7 +389,13 @@ class GraphAreaView(QWidget):
 
     def _set_drop_highlight(self, active: bool) -> None:
         self._drop_active = active
-        self.setStyleSheet(qss.area_drop_highlight() if active else "")
+        self._drop_frame.setVisible(active)
+        if active:
+            self._drop_frame.raise_()  # overlay は後生成の兄弟に沈む — 表示時に前面化
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._drop_frame.setGeometry(self.rect())
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
