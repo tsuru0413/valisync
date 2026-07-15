@@ -77,3 +77,31 @@ def test_export_module_is_qt_free():
     )
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_inject_tokens_css_replaces_placeholder_and_fails_loudly():
+    import pytest
+
+    out = export.inject_tokens_css("<html><!-- @TOKENS_CSS --><body/></html>", DARK)
+    assert "<style>" in out and "--vs-color-cursor-a" in out
+    assert "@TOKENS_CSS" not in out
+    with pytest.raises(ValueError):
+        export.inject_tokens_css("<html>no placeholder</html>", DARK)
+
+
+def test_build_token_cards_structure():
+    cards = export.build_token_cards(DARK)
+    assert set(cards) == {
+        "tokens/colors.html",
+        "tokens/spacing.html",
+        "tokens/typography.html",
+    }
+    for path, html in cards.items():
+        first_line = html.splitlines()[0]
+        assert first_line == '<!-- @dsCard group="Tokens" -->', path
+        assert "<!doctype html>" in html
+        assert "@TOKENS_CSS" not in html  # 注入済み
+    colors = cards["tokens/colors.html"]
+    # 全色フィールド名が見本に載る (palette は index 付き)
+    assert "cursor_a" in colors and "signal_palette-0" in colors
+    assert "var(--vs-color-cursor-a)" in colors
