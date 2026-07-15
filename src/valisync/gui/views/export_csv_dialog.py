@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 
 from valisync.core.export.csv_exporter import CsvExportOptions
 from valisync.core.models import Signal
+from valisync.gui.theme import qss
 
 if TYPE_CHECKING:
     from valisync.gui.viewmodels.app_viewmodel import AppViewModel
@@ -145,7 +146,7 @@ class ExportCsvDialog(QDialog):
         self._decimal.currentIndexChanged.connect(self._validate)
 
         self._error = QLabel(self)
-        self._error.setStyleSheet("color: #c0392b;")
+        self._error.setStyleSheet(qss.error_label())
         self._error.setWordWrap(True)
         layout.addWidget(self._error)
 

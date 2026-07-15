@@ -143,10 +143,19 @@ def test_fu12_boundary_data_visible_on_real_display(
     search_top_scene = frame_bot_scene - 0.15 * R.height()
     _col, row_top = to_phys(view, scene_x_lo, search_top_scene)
 
+    # 判定ヒューリスティクスの前提: palette[0] が青優勢 (b が r/g を 20 以上上回る)。
+    # 再デザイン反復で palette[0] が青でなくなったら、ここが先に落ちて
+    # ヒューリスティクスの更新を要求する (無言のスキャン失敗にしない)。
+    from valisync.gui.theme.tokens import active
+
+    pen0 = active().colors.signal_palette[0]
+    assert pen0.b > pen0.g + 20 and pen0.b > pen0.r + 20, (
+        f"palette[0]={pen0.hex} が青優勢でない — _is_curve_pixel をトークン値に合わせて更新せよ"
+    )
+
     def _is_curve_pixel(color: QColor) -> bool:
-        # 背景は黒(0,0,0)、曲線ペンは _PALETTE[0] == "#1f77b4" == RGB(31,119,180)。
-        # 青チャンネルが赤・緑を明確に上回るという特徴は、黒背景との混色
-        # (アンチエイリアス端)でも比率として保たれるため頑健な判定になる。
+        # 背景 plot_background=黒、曲線ペンは signal_palette[0] (青優勢)。
+        # 青チャンネルが赤・緑を明確に上回る特徴は黒背景との混色でも保たれる。
         r, g, b, _a = color.getRgb()
         return b > g + 20 and b > r + 20
 

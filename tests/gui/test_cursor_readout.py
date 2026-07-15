@@ -428,3 +428,18 @@ def test_readout_has_move_cursor(qtbot: QtBot):
     ro = CursorReadout()
     qtbot.addWidget(ro)
     assert ro.cursor().shape() == Qt.CursorShape.SizeAllCursor
+
+
+def test_header_markers_and_chip_use_tokens(qtbot):
+    """配線検証: readout がカーソル/チップのトークンを消費する (凍結置換の対線)。"""
+    from valisync.gui.theme.tokens import active
+
+    w = CursorReadout()
+    qtbot.addWidget(w)
+    c = active().colors
+    w.set_delta(
+        0.5, 0.75, [DeltaReading("s", "#123456", 1.0, 0.5, _stats(1, 2, 0, 1, 9), True)]
+    )
+    assert c.cursor_a.hex in w._header.text()
+    assert c.cursor_b.hex in w._header.text()
+    assert c.surface_chip.qss() in w.styleSheet()

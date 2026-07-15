@@ -20,6 +20,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor
 
+from valisync.gui.theme import tokens
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM, SignalItem
 from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
 
@@ -96,7 +97,9 @@ class FileListModel(QAbstractListModel):
         if role == Qt.ItemDataRole.ForegroundRole and self._vm.is_releasing(
             index.row()
         ):
-            return QColor(128, 128, 128)  # 淡色(解放中の行はグレーアウト)
+            return QColor(
+                *tokens.active().colors.text_releasing.rgba
+            )  # 解放中の行はグレーアウト
         return None
 
     def flags(self, index: _Index) -> Qt.ItemFlag:

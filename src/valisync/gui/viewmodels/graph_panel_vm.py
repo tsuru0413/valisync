@@ -25,22 +25,9 @@ from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
 from valisync.core.models import Signal
 from valisync.core.session import Session
 from valisync.core.statistics.range_stats import StatisticsResult
+from valisync.gui.theme import tokens
 from valisync.gui.viewmodels.observable import Observable
 from valisync.gui.viewmodels.y_axis_vm import YAxisVM
-
-# Matplotlib tab10 palette — 10 visually distinct colours.
-_PALETTE: tuple[str, ...] = (
-    "#1f77b4",
-    "#ff7f0e",
-    "#2ca02c",
-    "#d62728",
-    "#9467bd",
-    "#8c564b",
-    "#e377c2",
-    "#7f7f7f",
-    "#bcbd22",
-    "#17becf",
-)
 
 # Number of decimal places used when building the cache key from x-range floats.
 # 9 decimal places = ~1 ns precision on seconds timestamps, more than sufficient.
@@ -93,7 +80,7 @@ class RenderCurve:
     """
 
     name: str  # namespaced signal key, e.g. "csv_1::speed"
-    color: str  # hex colour, e.g. "#1f77b4"
+    color: str  # hex colour (theme.tokens.signal_palette 由来 or ユーザー指定)
     timestamps: np.ndarray  # float64, already LOD-reduced if applicable
     values: np.ndarray  # float64, same length as timestamps
     axis_index: int = 0  # Added for multi-axis support
@@ -254,7 +241,8 @@ class GraphPanelVM(Observable):
 
     def add_signal_to_axis(self, signal_key: str, axis_index: int) -> None:
         """Add *signal_key* to a specific axis."""
-        color = _PALETTE[len(self._plotted) % len(_PALETTE)]
+        palette = tokens.active().colors.signal_palette
+        color = palette[len(self._plotted) % len(palette)].hex
         entry_id = self._next_entry_id
         self._next_entry_id += 1
         self._plotted.append(

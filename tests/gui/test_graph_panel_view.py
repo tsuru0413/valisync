@@ -1379,3 +1379,18 @@ def test_grid_menu_reflects_current_state(qtbot, tmp_path):
     menu = view.build_context_menu()
     grid_act = next(a for a in menu.actions() if a.text() == "グリッド")
     assert grid_act.isChecked() is True
+
+
+def test_cursor_pens_and_frame_use_tokens(qtbot: QtBot, tmp_path: Path) -> None:
+    """配線検証: カーソル線 A/B・アクティブ枠・ドロップ強調がトークンを消費する。"""
+    from valisync.gui.theme.tokens import active
+
+    view = _make_panel_view(qtbot, tmp_path)
+    c = active().colors
+    assert view._cursor_line.pen.color().name() == c.cursor_a.hex
+    assert view._cursor_line_b.pen.color().name() == c.cursor_b.hex
+    assert c.accent_active.hex in view._active_frame.styleSheet()
+    view._set_drop_highlight(True)
+    assert c.drop_highlight.hex in view.styleSheet()
+    view._set_drop_highlight(False)
+    assert view.styleSheet() == ""

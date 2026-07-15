@@ -67,3 +67,6 @@ tests/fixtures/*.csv
 # Claude Code worktree scratch（隔離チェックアウト。commit しない）。
 # .claude/skills/ と .claude/agents/ は追跡する。
 .claude/worktrees/
+
+# Design token pipeline: frozen-comparison screenshots (local visual verification).
+design_export/

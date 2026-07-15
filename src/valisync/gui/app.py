@@ -13,6 +13,7 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 from valisync.core.session import Session
+from valisync.gui.theme.apply import apply_theme
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.views.main_window import MainWindow
 
@@ -27,6 +28,7 @@ def build_main_window(app_vm: AppViewModel | None = None) -> MainWindow:
         ``Session``) is created when *None*.  Passing a custom VM is useful
         for integration tests.
     """
+    apply_theme()  # ウィジェット構築前に (spec §4.3 — テスト経路と実アプリで同一)
     if app_vm is None:
         session = Session()
         app_vm = AppViewModel(session)
