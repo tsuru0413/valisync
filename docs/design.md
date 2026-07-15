@@ -46,7 +46,9 @@
    ```
    → DesignSync で増分同期（`list_files` でリモートと突合 → `finalize_plan` →
    `write_files`。常にコンポーネント単位・丸ごと置換しない・push 前に `get_project` で
-   design-system 型を検証）。
+   design-system 型を検証）。同期集合は `meta/manifest.html` 記載のファイル一覧が真実 —
+   リモート `list_files` にあってローカルバンドルに無いパスは改名/削除の残骸なので
+   `delete_files` で消す（エクスポータはローカル側の残骸を毎回 purge する）。
 5. **照合**: Ground Truth（新スクショ）と Components（意図したデザイン）を見比べ、
    「意図した変化のみか」を確認。採用済み Proposals はローカル・リモート両方から削除。
 
@@ -65,3 +67,9 @@
 - Do: カードテンプレートの色は `var(--vs-*)` のみ（`tests/gui/test_theme_export.py` が検証）。
 - Don't: view/VM に hex・`rgba(`・`QColor(リテラル)` を書く（ガードテストが落とす）。
 - Don't: Claude Design 上でカードを直接編集する（次回 push で消える — 真実はリポジトリ）。
+
+## 決定履歴
+
+運用ループ手順3で採用した決定をここに追記する（日付・変更トークン・理由・PR）。
+
+- （まだ無し — 最初の再デザイン反復で記録開始）

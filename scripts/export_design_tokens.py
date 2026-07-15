@@ -10,6 +10,7 @@ theme/export.py (純粋コア) の出力を design_export/ へ書き出す薄い
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -37,15 +38,30 @@ def main() -> int:
     from valisync.gui.theme import export
     from valisync.gui.theme.tokens import DARK
 
-    sha = (
-        args.sha
-        or subprocess.run(
+    if args.sha:
+        sha = args.sha
+    else:
+        proc = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             capture_output=True,
             text=True,
             cwd=REPO,
-        ).stdout.strip()
-    )
+        )
+        sha = proc.stdout.strip()
+        if proc.returncode != 0 or not sha:
+            print(
+                f"git rev-parse --short HEAD 失敗 (exit {proc.returncode}): "
+                f"{proc.stderr.strip()}",
+                file=sys.stderr,
+            )
+            return 2
+
+    # 自出力の purge — 改名/削除時の陳腐化ファイル残留(ゴーストカード)を防ぐ。
+    # --out 全体は消さない: 既定では --screenshots (撮影成果物) が中に居るため。
+    for sub in ("tokens", "cards", "proposals", "ground_truth", "meta"):
+        shutil.rmtree(args.out / sub, ignore_errors=True)
+    for top in ("tokens.css", "tokens.json"):
+        (args.out / top).unlink(missing_ok=True)
 
     written: list[str] = []
 

@@ -178,8 +178,13 @@ def test_cli_writes_full_bundle(tmp_path):
         "--sha",
         "deadbee",
     ]
+    # 陳腐化ファイル(改名/削除された旧出力を模擬) — purge が掃除することを後で検証する。
+    stale = out / "cards" / "stale_old_card.html"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("old", encoding="utf-8")
     r1 = subprocess.run(cmd, capture_output=True, text=True)
     assert r1.returncode == 0, r1.stderr
+    assert not stale.exists()  # purge が陳腐化カードを掃除する (Fix 1)
     for rel in [
         "tokens.css",
         "tokens.json",
@@ -201,3 +206,26 @@ def test_cli_writes_full_bundle(tmp_path):
     # cards は注入済み (プレースホルダが残っていない)
     card = (out / "cards" / "readout_chip.html").read_text(encoding="utf-8")
     assert "@TOKENS_CSS" not in card and "--vs-color-surface-chip" in card
+
+
+def test_build_css_covers_every_token_field():
+    """全カテゴリの全フィールドが CSS に載る (新フィールドの無言脱落ガード)。
+
+    typography は特例命名 (--vs-font-small) のため『フィールド数ぶんの --vs-font-* 行』
+    で検証する — 新フィールド追加時に build_css 側の対応漏れがここで RED になる。
+    """
+    import dataclasses
+
+    css = export.build_css(DARK)
+    for f in dataclasses.fields(DARK.colors):
+        if f.name == "signal_palette":
+            for i in range(len(DARK.colors.signal_palette)):
+                assert export.css_var_name("color", f.name, i) + ":" in css
+        else:
+            assert export.css_var_name("color", f.name) + ":" in css
+    for f in dataclasses.fields(DARK.spacing):
+        assert export.css_var_name("spacing", f.name) + ":" in css
+    for f in dataclasses.fields(DARK.radii):
+        assert export.css_var_name("radius", f.name) + ":" in css
+    assert css.count("--vs-font-") == len(dataclasses.fields(DARK.typography))
+    assert "--vs-grid-alpha:" in css

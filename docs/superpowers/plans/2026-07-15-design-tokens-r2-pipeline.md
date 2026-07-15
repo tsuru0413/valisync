@@ -1044,7 +1044,7 @@ gh pr checks <num> --watch
 - [ ] **Step 1**: `DesignSync list_projects` — 既存の design-system プロジェクトを確認。無ければ `create_project name="valisync-design"`。
 - [ ] **Step 2**: `get_project` で `type: PROJECT_TYPE_DESIGN_SYSTEM` を検証（spec §6 — 通常プロジェクトへの push はデザインシステムにならない）。
 - [ ] **Step 3**: `list_files` でリモート現状を突合（初回は空のはず）。
-- [ ] **Step 4**: `finalize_plan` — writes=`["tokens.css","tokens.json","tokens/**/*.html","cards/**/*.html","ground_truth/**/*.html","meta/manifest.html"]`・`localDir=<repo>/design_export`。
+- [ ] **Step 4**: `finalize_plan` — writes=`["tokens.css","tokens.json","tokens/**/*.html","cards/**/*.html","proposals/**/*.html","ground_truth/**/*.html","meta/manifest.html"]`・`localDir=<repo>/design_export`。
 - [ ] **Step 5**: `write_files` — 全ファイルを `localPath` で upload（内容はコンテキストに載せない）。
 - [ ] **Step 6**: ユーザーに claude.ai/design での閲覧確認を依頼（カードグループ Ground Truth/Tokens/Components/Meta が並ぶこと）— これが増分2 の受け入れ。
 
