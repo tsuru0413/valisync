@@ -7,7 +7,7 @@
 | 順位 | 場所 | 内容 |
 |---|---|---|
 | 1 | `docs/superpowers/specs/` ＋ `docs/superpowers/plans/` | 計画の一次情報源（brainstorming 設計 spec / writing-plans 実装プラン）— **新規作業はここ** |
-| 2 | `docs/<topic>.md`（`product` / `development` / `structure` / `policies` / `workflow`）＋ GUI テストは `/gui-test-plan`・`/gui-verify` スキル | プロダクト・技術/品質ゲート・構造・方針・開発フロー・GUI テスト（レイヤー／E2E は両スキルの `reference/` が一次情報源） |
+| 2 | `docs/<topic>.md`（`product` / `development` / `structure` / `policies` / `workflow` / `design`）＋ GUI テストは `/gui-test-plan`・`/gui-verify` スキル | プロダクト・技術/品質ゲート・構造・方針・開発フロー・GUI テスト（レイヤー／E2E は両スキルの `reference/` が一次情報源） |
 | 3 | `.kiro/specs/<spec>/{requirements,design,tasks}.md` | **完了済み Phase 1/2 のアーカイブ**（歴史・トレーサビリティ。新規には使わない） |
 | 4 | このファイル | 上記で発見できないハマりどころと方針概要 |
 

@@ -49,21 +49,69 @@ def test_dark_all_color_fields_are_color():
 
 
 def test_dark_values_frozen_snapshot():
-    """DARK 値の意図的 test-lock — 再デザイン反復で値を変えたらここも更新 (spec §3)。"""
-    c = DARK.colors
-    assert c.signal_palette[0].hex == "#1f77b4"
-    assert c.cursor_a.hex == "#f9e2af"
-    assert c.cursor_b.hex == "#89b4fa"
-    assert c.surface_chip == Color(17, 17, 27, 230)
-    assert c.accent_active.hex == "#f59e0b"
-    assert c.drop_highlight.hex == "#1f77b4"
-    assert c.error.hex == "#c0392b"
-    assert c.plot_background == Color(0, 0, 0)
-    assert c.plot_foreground == Color(150, 150, 150)
+    """DARK 全値の意図的 test-lock — 再デザイン反復で値を変えたらこの golden も更新する (spec §3)。
+
+    dataclasses.fields 反復で全フィールドを照合するため、トークンの追加・
+    削除・値変更はすべてここで RED になる (部分ロックのすり抜け防止)。
+    """
+    golden_colors = {
+        "plot_background": Color(0, 0, 0),
+        "plot_foreground": Color(150, 150, 150),
+        "signal_palette": (
+            Color.from_hex("#1f77b4"),
+            Color.from_hex("#ff7f0e"),
+            Color.from_hex("#2ca02c"),
+            Color.from_hex("#d62728"),
+            Color.from_hex("#9467bd"),
+            Color.from_hex("#8c564b"),
+            Color.from_hex("#e377c2"),
+            Color.from_hex("#7f7f7f"),
+            Color.from_hex("#bcbd22"),
+            Color.from_hex("#17becf"),
+        ),
+        "cursor_a": Color.from_hex("#f9e2af"),
+        "cursor_b": Color.from_hex("#89b4fa"),
+        "surface_chip": Color(17, 17, 27, 230),
+        "border_chip": Color.from_hex("#45475a"),
+        "text_primary": Color.from_hex("#cdd6f4"),
+        "text_secondary": Color.from_hex("#7f849c"),
+        "close_hover": Color.from_hex("#f38ba8"),
+        "accent_active": Color.from_hex("#f59e0b"),
+        "accent_active_dark": Color.from_hex("#b45309"),
+        "grip_fill": Color.from_hex("#ffffff"),
+        "drop_highlight": Color.from_hex("#1f77b4"),
+        "axis_move_indicator": Color(255, 165, 0),
+        "axis_move_fill": Color(255, 165, 0, 60),
+        "error": Color.from_hex("#c0392b"),
+        "busy_spinner": Color(120, 160, 255),
+        "text_releasing": Color(128, 128, 128),
+        "preview_curve": Color.from_hex("#4FC3F7"),
+    }
+    actual_colors = {
+        f.name: getattr(DARK.colors, f.name) for f in dataclasses.fields(DARK.colors)
+    }
+    assert actual_colors == golden_colors
+
+    assert {
+        f.name: getattr(DARK.spacing, f.name) for f in dataclasses.fields(DARK.spacing)
+    } == {
+        "chip_margins": (6, 5, 6, 5),
+        "chip_vspace": 3,
+        "chip_header_hspace": 6,
+        "chip_grid_hspace": 8,
+        "chip_grid_vspace": 2,
+    }
+    assert {
+        f.name: getattr(DARK.radii, f.name) for f in dataclasses.fields(DARK.radii)
+    } == {
+        "chip": 5,
+        "active_frame": 2,
+    }
+    assert {
+        f.name: getattr(DARK.typography, f.name)
+        for f in dataclasses.fields(DARK.typography)
+    } == {"small_px": 9}
     assert DARK.grid_alpha == 60
-    assert DARK.spacing.chip_margins == (6, 5, 6, 5)
-    assert DARK.radii.chip == 5
-    assert DARK.typography.small_px == 9
 
 
 def test_active_default_and_set():

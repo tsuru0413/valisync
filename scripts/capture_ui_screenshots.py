@@ -40,6 +40,11 @@ def main() -> int:
         action="store_true",
         help="全 Color トークンを相異なる値にして撮影 (役割写像の目視検証・spec §7-6)",
     )
+    parser.add_argument(
+        "--catalog",
+        action="store_true",
+        help="カタログ用の追加状態 (ダイアログ/プレビュー) も撮影 (凍結比較の既定5状態は不変)",
+    )
     args = parser.parse_args()
 
     if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
@@ -133,6 +138,45 @@ def main() -> int:
     panel_view._set_drop_highlight(True)
     window.graph_area_view._set_drop_highlight(True)
     grab("05_affordances")
+
+    if args.catalog:
+        # アフォーダンス強制表示を解除してからカタログ状態へ
+        panel_view._active_frame.setVisible(False)
+        panel_view._set_drop_highlight(False)
+        window.graph_area_view._set_drop_highlight(False)
+        settle()
+
+        # --- 06: CSV エクスポートダイアログ (エラーラベル表示状態) -------------
+        from valisync.gui.views.export_csv_dialog import ExportCsvDialog
+
+        dlg = ExportCsvDialog(window.app_vm, initial_selected=set())
+        dlg._validate()  # 撮影ツールとしての private 利用: エラー行を可視化
+        dlg.show()
+        settle()
+        dlg.grab().save(str(args.out / "06_export_dialog_error.png"))
+        print("captured 06_export_dialog_error.png")
+        dlg.close()
+
+        # --- 07: CSV フォーマット確認ダイアログ --------------------------------
+        from valisync.core.loaders.csv_format_detector import CsvFormatDetector
+        from valisync.gui.views.csv_format_dialog import CsvFormatDialog
+
+        detected = CsvFormatDetector().detect(csv)
+        fmt_dlg = CsvFormatDialog(detected)
+        fmt_dlg.show()
+        settle()
+        fmt_dlg.grab().save(str(args.out / "07_csv_format_dialog.png"))
+        print("captured 07_csv_format_dialog.png")
+        fmt_dlg.close()
+
+        # --- 08: 信号プレビュー窓 ----------------------------------------------
+        window.signal_preview_window.show_signal(keys[0])
+        settle()
+        window.signal_preview_window.grab().save(
+            str(args.out / "08_signal_preview.png")
+        )
+        print("captured 08_signal_preview.png")
+        window.signal_preview_window.close()
 
     window.close()
     return 0

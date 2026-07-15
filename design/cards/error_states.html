@@ -1,0 +1,26 @@
+<!-- @dsCard group="Components" -->
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8">
+<title>エラー/ステータス表示</title>
+<!-- @TOKENS_CSS -->
+<style>
+  body { background: #eee; color: #222; margin: 24px; font-family: sans-serif; font-size: 13px; }
+  .dialog { background: #fff; border: 1px solid #bbb; width: 360px; padding: 12px; margin: 12px 0; }
+  .error-label { color: var(--vs-color-error); }
+  .rename-error { border: 1px solid var(--vs-color-error); padding: 2px 6px; width: 120px; }
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--vs-color-busy-spinner); border-top-color: transparent; border-radius: 50%; }
+  .releasing { color: var(--vs-color-text-releasing); }
+  .preview { color: var(--vs-color-preview-curve); }
+  label { display: block; margin-top: 14px; color: #666; }
+</style>
+</head><body>
+<p>注: ダイアログ chrome は OS 既定 (ライト・増分3で統一検討)。ここではトークン適用箇所のみ再現。</p>
+<label>ダイアログのエラーラベル (error)</label>
+<div class="dialog"><span class="error-label">少なくとも1信号を選択してください</span></div>
+<label>タブ改名エディタの範囲外エラー枠 (error)</label>
+<div class="dialog"><input class="rename-error" value="長すぎる名前..."></div>
+<label>解放中スピナー (busy_spinner) と行グレーアウト (text_releasing)</label>
+<div class="dialog"><span class="spinner"></span> <span class="releasing">closing_file.mf4 (解放中)</span></div>
+<label>信号プレビュー線 (preview_curve)</label>
+<div class="dialog" style="background:var(--vs-color-plot-background)"><svg width="320" height="60"><polyline points="0,50 40,20 80,40 120,10 160,35 200,15 240,45 280,25 320,30" fill="none" stroke="var(--vs-color-preview-curve)" stroke-width="1"/></svg></div>
+</body></html>
