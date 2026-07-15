@@ -105,3 +105,23 @@ def test_build_token_cards_structure():
     # 全色フィールド名が見本に載る (palette は index 付き)
     assert "cursor_a" in colors and "signal_palette-0" in colors
     assert "var(--vs-color-cursor-a)" in colors
+
+
+def test_design_card_templates_follow_conventions():
+    """design/cards/*.html: マーカー1行目・プレースホルダ必須・生 hex 禁止 (var(--vs-*) のみ)。"""
+    import re
+    from pathlib import Path
+
+    cards_dir = Path(__file__).resolve().parents[2] / "design" / "cards"
+    templates = sorted(cards_dir.glob("*.html"))
+    assert templates, "design/cards/ にテンプレートが無い"
+    for path in templates:
+        text = path.read_text(encoding="utf-8")
+        assert text.splitlines()[0] == '<!-- @dsCard group="Components" -->', path.name
+        assert "<!-- @TOKENS_CSS -->" in text, path.name
+        # 生 hex/rgba 禁止 — 色は必ず var(--vs-*) 経由 (トークン変更に自動追従させる)。
+        # OS 既定 chrome の再現用グレーのみ 3桁 hex (#eee 等) を許容。
+        assert not re.search(r"#[0-9a-fA-F]{6}\b|rgba?\(", text), path.name
+        # 注入が通ることも検証
+        out = export.inject_tokens_css(text, DARK)
+        assert "--vs-color-plot-background" in out

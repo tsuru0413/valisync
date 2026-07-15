@@ -1,0 +1,26 @@
+<!-- @dsCard group="Components" -->
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8">
+<title>アクティブ/ドロップ アフォーダンス</title>
+<!-- @TOKENS_CSS -->
+<style>
+  body { background: var(--vs-color-plot-background); color: var(--vs-color-text-primary); margin: 24px; font-family: sans-serif; font-size: 13px; }
+  .panel { width: 320px; height: 120px; margin: 12px 0; position: relative; background: var(--vs-color-plot-background); }
+  .active-frame { border: 1px solid var(--vs-color-accent-active); border-radius: var(--vs-radius-active-frame); }
+  .panel-drop { border: 2px solid var(--vs-color-drop-highlight); }
+  .area-drop { border: 2px dashed var(--vs-color-drop-highlight); }
+  .grip { position: absolute; top: -4px; left: 140px; width: 28px; height: 8px; background: var(--vs-color-grip-fill); border: 1px solid var(--vs-color-accent-active-dark); border-radius: 3px; }
+  .move-line { position: absolute; left: 60px; top: 0; width: 3px; height: 100%; background: var(--vs-color-axis-move-indicator); }
+  .move-fill { position: absolute; left: 60px; top: 0; width: 80px; height: 100%; background: var(--vs-color-axis-move-fill); }
+  label { display: block; margin-top: 16px; color: var(--vs-color-text-secondary); }
+</style>
+</head><body>
+<label>アクティブパネル枠 + 軸グリップ (accent_active / grip_fill / accent_active_dark)</label>
+<div class="panel active-frame"><div class="grip"></div></div>
+<label>パネルへの信号ドロップ強調 (drop_highlight・実線)</label>
+<div class="panel panel-drop"></div>
+<label>エリアへのファイルドロップ強調 (drop_highlight・破線)</label>
+<div class="panel area-drop"></div>
+<label>軸移動インジケータ (axis_move_indicator / axis_move_fill=alpha60)</label>
+<div class="panel"><div class="move-fill"></div><div class="move-line"></div></div>
+</body></html>
