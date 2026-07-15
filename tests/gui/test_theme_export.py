@@ -131,3 +131,73 @@ def test_design_card_templates_follow_conventions():
         # 注入が通ることも検証
         out = export.inject_tokens_css(text, DARK)
         assert "--vs-color-plot-background" in out
+
+
+def test_build_ground_truth_card_embeds_png_as_data_uri():
+    png = b"\x89PNG\r\n\x1a\nfakebytes"
+    html = export.build_ground_truth_card("02_plotted", png)
+    assert html.splitlines()[0] == '<!-- @dsCard group="Ground Truth" -->'
+    assert "data:image/png;base64," in html
+    import base64
+
+    assert base64.b64encode(png).decode("ascii") in html
+    assert "02_plotted" in html
+
+
+def test_build_manifest_records_sha_hash_and_paths():
+    import hashlib
+
+    tokens_json = export.build_json(DARK)
+    html = export.build_manifest(
+        "abc1234", tokens_json, ["cards/readout_chip.html", "tokens/colors.html"]
+    )
+    assert html.splitlines()[0] == '<!-- @dsCard group="Meta" -->'
+    assert "abc1234" in html
+    assert hashlib.sha256(tokens_json.encode("utf-8")).hexdigest() in html
+    assert "cards/readout_chip.html" in html
+
+
+def test_cli_writes_full_bundle(tmp_path):
+    """CLI の統合テスト — 一時 out dir へ全成果物を決定的に出力する。"""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    shots = tmp_path / "shots"
+    shots.mkdir()
+    (shots / "01_welcome.png").write_bytes(b"\x89PNG\r\n\x1a\nx")
+    out = tmp_path / "export"
+    repo = Path(__file__).resolve().parents[2]
+    cmd = [
+        sys.executable,
+        str(repo / "scripts" / "export_design_tokens.py"),
+        "--out",
+        str(out),
+        "--screenshots",
+        str(shots),
+        "--sha",
+        "deadbee",
+    ]
+    r1 = subprocess.run(cmd, capture_output=True, text=True)
+    assert r1.returncode == 0, r1.stderr
+    for rel in [
+        "tokens.css",
+        "tokens.json",
+        "tokens/colors.html",
+        "tokens/spacing.html",
+        "tokens/typography.html",
+        "cards/readout_chip.html",
+        "cards/affordances.html",
+        "cards/error_states.html",
+        "ground_truth/01_welcome.html",
+        "meta/manifest.html",
+    ]:
+        assert (out / rel).is_file(), rel
+    # 決定性: 再実行でバイト同一
+    before = {p: p.read_bytes() for p in out.rglob("*.html")}
+    r2 = subprocess.run(cmd, capture_output=True, text=True)
+    assert r2.returncode == 0
+    assert before == {p: p.read_bytes() for p in out.rglob("*.html")}
+    # cards は注入済み (プレースホルダが残っていない)
+    card = (out / "cards" / "readout_chip.html").read_text(encoding="utf-8")
+    assert "@TOKENS_CSS" not in card and "--vs-color-surface-chip" in card

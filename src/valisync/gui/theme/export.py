@@ -161,3 +161,34 @@ def build_token_cards(t: ThemeTokens) -> dict[str, str]:
         "tokens/spacing.html": _card("Tokens", "Spacing / Radii", spacing_body, t),
         "tokens/typography.html": _card("Tokens", "Typography", typo_body, t),
     }
+
+
+def build_ground_truth_card(name: str, png_bytes: bytes) -> str:
+    import base64
+
+    uri = "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
+    return (
+        '<!-- @dsCard group="Ground Truth" -->\n'
+        "<!doctype html>\n"
+        '<html lang="ja"><head><meta charset="utf-8">\n'
+        f"<title>{name}</title>\n"
+        "<style>body{margin:0;background:#111}img{max-width:100%;display:block}</style>\n"
+        f'</head><body>\n<img alt="{name}" src="{uri}">\n</body></html>\n'
+    )
+
+
+def build_manifest(sha: str, tokens_json: str, paths: list[str]) -> str:
+    import hashlib
+
+    digest = hashlib.sha256(tokens_json.encode("utf-8")).hexdigest()
+    items = "".join(f"<li><code>{p}</code></li>" for p in sorted(paths))
+    return (
+        '<!-- @dsCard group="Meta" -->\n'
+        "<!doctype html>\n"
+        '<html lang="ja"><head><meta charset="utf-8"><title>Sync Manifest</title>\n'
+        "<style>body{font-family:sans-serif;font-size:13px;margin:16px}</style>\n"
+        "</head><body>\n<h2>Sync Manifest</h2>\n"
+        f"<p>git SHA: <code>{sha}</code></p>\n"
+        f"<p>tokens.json sha256: <code>{digest}</code></p>\n"
+        f"<ul>{items}</ul>\n</body></html>\n"
+    )
