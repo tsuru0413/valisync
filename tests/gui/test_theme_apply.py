@@ -73,3 +73,43 @@ def test_apply_sets_fusion_style_and_palette(qapp):
     )
     apply_theme()  # 冪等 — 2度呼んでも fusion のまま・例外なし
     assert qapp.style().objectName() == "fusion"
+
+
+def test_build_palette_role_mapping_with_distinct_values():
+    """同値クロムトークン群内の写像取り違えは DARK 値の比較では盲目 (r1 の教訓:
+    memory gui_freeze_tokenization_verification_pattern)。全 chrome トークンを
+    相異値にしたテーマで role↔token の対応を直接実証する。"""
+    import dataclasses
+
+    from PySide6.QtGui import QColor, QPalette
+
+    from valisync.gui.theme.apply import build_palette
+    from valisync.gui.theme.tokens import DARK, Color
+
+    chrome_fields = [
+        f.name for f in dataclasses.fields(DARK.colors) if f.name.startswith("chrome_")
+    ]
+    assert len(chrome_fields) == 12
+    repl = {
+        name: Color(i + 1, (i * 7 + 3) % 256, (i * 13 + 5) % 256)
+        for i, name in enumerate(chrome_fields)
+    }
+    alt = dataclasses.replace(DARK, colors=dataclasses.replace(DARK.colors, **repl))
+    p = build_palette(alt)
+    roles = QPalette.ColorRole
+    expected = {
+        roles.Window: "chrome_window",
+        roles.WindowText: "chrome_window_text",
+        roles.Base: "chrome_base",
+        roles.AlternateBase: "chrome_alternate_base",
+        roles.Text: "chrome_text",
+        roles.Button: "chrome_button",
+        roles.ButtonText: "chrome_button_text",
+        roles.ToolTipBase: "chrome_tooltip_base",
+        roles.ToolTipText: "chrome_tooltip_text",
+        roles.Highlight: "chrome_highlight",
+        roles.HighlightedText: "chrome_highlight_text",
+        roles.PlaceholderText: "chrome_placeholder",
+    }
+    for role, name in expected.items():
+        assert p.color(role) == QColor(*repl[name].rgba), name
