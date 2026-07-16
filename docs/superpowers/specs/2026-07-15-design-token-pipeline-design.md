@@ -247,7 +247,45 @@ design_export/ ─ DesignSync ─→ claude.ai/design プロジェクト「valis
 
 プロット面のライト化・プロット据え置きトークンの分割（cursor_a/b 兼用のまま）・ライブ切替・`colorSchemeChanged` 購読・LIGHT 確定配色（Latte 初期値で出荷）。
 
-## 12. 関連
+## 12. 増分5 詳細設計（アイコン刷新・2026-07-16 brainstorming＋スパイク確定）
+
+### 12.1 決定事項（Q&A＋実機スパイク）
+
+| 論点 | 決定 | 理由 |
+|---|---|---|
+| アセットの出所 | **既製 OSS をアイコン単位で vendored・主 Lucide（ISC）＋補 Tabler（MIT）** — 実機スパイク（両セット×4アイコンをトークン着色で実ツールバー/48px シート・dark/light 撮影）でユーザー選定 | 両セットとも 24×24/stroke 2px/丸キャップの線画で混在可。主従ルールで統一感を担保。アイコン単位 vendoring なので技術コストゼロ |
+| 絵文字グリフ（診断 ⛔⚠ℹ・✕ 等） | **増分5 対象外** — 基盤確立後のデザイン反復で個別判断 | 文字列埋め込みの置換はリスト装飾ロール化等でスコープ倍増。現状でも機能しており YAGNI |
+| 機構 | **レジストリ＋実行時 SVG 着色**（案1）。qrc コンパイル（案2）は4ファイルに過剰・QIconEngine（案3）はライブ切替が無い現状では複雑さのみ（将来のライブ切替時の選択肢として記録） | 既存アーキテクチャ（pure レジストリ＋呼び出し時読み＋Qt 層描画）と同型 |
+
+### 12.2 コンポーネント
+
+- **`src/valisync/gui/theme/icons/`**（新設・パッケージ内アセット）: vendored SVG（初期4個・下表）＋`LICENSES.md`（Lucide=ISC・Tabler=MIT の全文＋アイコンごとの出所一覧）。**SVG 規約: 色は `currentColor` のみ**（固定 fill/stroke 色を持ち込まない — テーマ追従の前提。Layer A テストで全ファイル検証）。
+- **`theme/icons.py`**（新設・Qt 依存層）: 意味名レジストリ `ICONS: dict[str, str]`（意味名→アセット相対パス）＋ `icon(name: str, size: int = 20) -> QIcon`。呼び出し時に `tokens.active()` を読み、`currentColor` を **Normal=`chrome_text`・Disabled=`chrome_disabled_text`** に置換して QSvgRenderer で描画し QIcon の両モードに登録。未知の name は KeyError（loud-fail）。
+- **消費側**: `shell_actions.py` の3箇所（open/open_folder/export）＋ `main_window.py` の Data Explorer 1箇所を `icons.icon(...)` へ置換（`QStyle.standardIcon` は src から消滅）。
+- **エクスポータ**: **Icons カード**（group=`Icons / {テーマ}`）を追加 — レジストリ全アイコンを Normal/Disabled 両モード・出所名付きで表示（Claude Design の検討範囲入り）。
+
+### 12.3 初期レジストリ（主 Lucide 原則）
+
+| 意味名 | アセット | 出所 |
+|---|---|---|
+| `open` | `lucide/folder-open.svg` | Lucide |
+| `open_folder` | `lucide/folder.svg` | Lucide |
+| `export` | `lucide/save.svg` | Lucide |
+| `data_explorer` | `lucide/folder-tree.svg` | Lucide |
+
+（Tabler は「Lucide に無い/意味が合わない」場合の補完として `tabler/` サブディレクトリに追加。混在時もレジストリと LICENSES.md が出所を明示する。）
+
+### 12.4 テーマ連動と検証
+
+- アイコンは構築時生成 → **再起動反映（§11）と自然に一貫**。撮影 `--theme {dark,light}` で両テーマのアイコンがそのまま Ground Truth に写る。
+- テスト: Layer A（レジストリ全登録の SVG 実在・`currentColor` のみ規約・着色置換の文字列検証・未知 name の KeyError）／Layer B（4アクションのアイコン非空・pixmap のピクセルが chrome_text 系・Disabled pixmap が chrome_disabled_text 系）／描画 E2E（dark/light 撮影で**ツールバーのみ意図変化**・他領域は前ベースラインと一致）／realgui（journey 系無回帰 — 入力経路不変のため scoped で可）。
+- ベースライン更新（意図した変化）＋両テーマカタログ再撮影＋再同期を増分内に含む。
+
+### 12.5 非スコープ（増分5）
+
+絵文字/文字グリフの置換・qrc 化・QIconEngine（ライブ切替対応）・ドックタイトルバーの float/close ボタン（QDockWidget 内部・QStyle 由来）・4個以外のアイコン追加。
+
+## 13. 関連
 
 - 現状調査: 本 spec §1（2026-07-15 実施の GUI スタイリング実態調査に基づく）
 - アドバーサリアルレビュー: 2026-07-15 実施（Critical 1・Important 8・Minor 6 を本 spec に反映済み）
