@@ -184,6 +184,33 @@ def build_ground_truth_card(name: str, png_bytes: bytes, theme_label: str) -> st
     )
 
 
+def build_icons_card(t: ThemeTokens, theme_label: str) -> str:
+    """Icons カード — SVG 生テキストを埋め込み currentColor は CSS 継承で解決
+    (Qt 非依存・spec §12.2)。Normal/Disabled をトークン var で並置する。"""
+    from valisync.gui.theme.icons import ICONS, ICONS_DIR
+
+    rows: list[str] = []
+    for name, rel in sorted(ICONS.items()):
+        svg = (ICONS_DIR / rel).read_text(encoding="utf-8")
+        source = rel.split("/")[0]
+        rows.append(
+            "<tr>"
+            f"<td><code>{name}</code></td>"
+            f"<td><span style='color: var(--vs-color-chrome-text)'>{svg}</span></td>"
+            f"<td><span style='color: var(--vs-color-chrome-disabled-text)'>{svg}</span></td>"
+            f"<td><code>{source}</code></td>"
+            "</tr>"
+        )
+    body = (
+        "<table><tr><th>name</th><th>Normal</th><th>Disabled</th><th>出所</th></tr>"
+        + "".join(rows)
+        + "</table>"
+        "<p>着色は実行時に currentColor をトークンへ置換 (theme/icons.py)。"
+        "本カードは CSS 継承で同じトークンを解決している。</p>"
+    )
+    return _card(f"Icons / {theme_label}", "Icons", body, t)
+
+
 def build_manifest(
     sha: str, tokens_json: str, paths: list[str], theme_label: str
 ) -> str:

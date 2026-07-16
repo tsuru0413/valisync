@@ -289,3 +289,31 @@ def test_build_css_covers_every_token_field():
         assert export.css_var_name("radius", f.name) + ":" in css
     assert css.count("--vs-font-") == len(dataclasses.fields(DARK.typography))
     assert "--vs-grid-alpha:" in css
+
+
+def test_build_icons_card_embeds_all_registry_svgs():
+    from valisync.gui.theme.icons import ICONS
+
+    html = export.build_icons_card(DARK, "Dark")
+    assert html.splitlines()[0] == '<!-- @dsCard group="Icons / Dark" -->'
+    assert "@TOKENS_CSS" not in html  # 注入済み
+    assert html.count("<svg") >= len(ICONS) * 2  # Normal+Disabled
+    for name, rel in ICONS.items():
+        assert name in html
+        assert rel.split("/")[0] in html  # 出所 (lucide 等)
+    assert "var(--vs-color-chrome-text)" in html
+    assert "var(--vs-color-chrome-disabled-text)" in html
+
+
+def test_icons_card_import_stays_pure():
+    """export.py が icons レジストリを読んでも Qt 非依存のまま (spec §12.2 I2)。"""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; import valisync.gui.theme.export; "
+        "bad = [m for m in sys.modules if m.startswith(('PySide6', 'pyqtgraph'))]; "
+        "sys.exit(1 if bad else 0)"
+    )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
