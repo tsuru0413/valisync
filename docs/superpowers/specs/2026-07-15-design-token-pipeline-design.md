@@ -259,10 +259,11 @@ design_export/ ─ DesignSync ─→ claude.ai/design プロジェクト「valis
 
 ### 12.2 コンポーネント
 
-- **`src/valisync/gui/theme/icons/`**（新設・パッケージ内アセット）: vendored SVG（初期4個・下表）＋`LICENSES.md`（Lucide=ISC・Tabler=MIT の全文＋アイコンごとの出所一覧）。**SVG 規約: 色は `currentColor` のみ**（固定 fill/stroke 色を持ち込まない — テーマ追従の前提。Layer A テストで全ファイル検証）。
-- **`theme/icons.py`**（新設・Qt 依存層）: 意味名レジストリ `ICONS: dict[str, str]`（意味名→アセット相対パス）＋ `icon(name: str, size: int = 20) -> QIcon`。呼び出し時に `tokens.active()` を読み、`currentColor` を **Normal=`chrome_text`・Disabled=`chrome_disabled_text`** に置換して QSvgRenderer で描画し QIcon の両モードに登録。未知の name は KeyError（loud-fail）。
+- **`src/valisync/gui/theme/icons/`**（新設・パッケージ内アセット）: vendored SVG（初期4個・下表）＋`LICENSES.md`（Lucide=ISC・Tabler=MIT の全文＋アイコンごとの出所一覧）。**SVG 規約: 色は `currentColor` のみ**（固定 fill/stroke 色を持ち込まない — テーマ追従の前提）。Layer A テストで全ファイル検証 — 既存 AST ガード（`test_theme_guard.py`）は `*.py` のみ走査で `theme/` を除外するため **`.svg` の色規約はこの新規テストが唯一の防波堤**（レビュー M1）。
+- **アセット解決と配布**（レビュー C1 — wheel ビルド実証で SVG 欠落を確認）: 実行時解決は `Path(__file__).resolve().parent / "icons"`。**`pyproject.toml` に `[tool.setuptools.package-data] "valisync.gui.theme" = ["icons/**/*.svg", "icons/LICENSES.md"]` を追加**（setuptools 既定は `.py` 以外を静かに落とす。dev/CI は editable install のため無症状だが、wheel 配布時にアイコン参照全てが FileNotFoundError になる false-green の構造的盲点 — 追加理由をコメントで残す）。
+- **`theme/icons.py`**（新設・Qt 依存層）: 意味名レジストリ `ICONS: dict[str, str]`（意味名→アセット相対パス）＋ `icon(name: str, size: int = 20) -> QIcon`。呼び出し時に `tokens.active()` を読み、`currentColor` を **Normal=`chrome_text`・Disabled=`chrome_disabled_text`** に置換して QSvgRenderer で描画し QIcon の両モードに登録。**HiDPI 対応（レビュー I3）**: `devicePixelRatioF()` を乗じた物理ピクセルで QPixmap を確保し `setDevicePixelRatio(dpr)` して登録（置換前の `QStyle.standardIcon` はネイティブ HiDPI 対応のため、怠ると高 DPI で置換前より滲む退行になる）。未知の name は KeyError（loud-fail）。
 - **消費側**: `shell_actions.py` の3箇所（open/open_folder/export）＋ `main_window.py` の Data Explorer 1箇所を `icons.icon(...)` へ置換（`QStyle.standardIcon` は src から消滅）。
-- **エクスポータ**: **Icons カード**（group=`Icons / {テーマ}`）を追加 — レジストリ全アイコンを Normal/Disabled 両モード・出所名付きで表示（Claude Design の検討範囲入り）。
+- **エクスポータ**: **Icons カード**（group=`Icons / {テーマ}`）を追加。**Components 方式＝Qt 非依存（レビュー I2）**: `export.py` は SVG 生テキストを `<svg>` としてそのまま埋め込み、Normal/Disabled 各ラッパーに `style="color: var(--vs-color-chrome-text)"` / `var(--vs-color-chrome-disabled-text)` を与えて `currentColor` の解決をブラウザの CSS 継承へ委譲する（pure 制約維持・QSvgRenderer 不要・出所名付き）。
 
 ### 12.3 初期レジストリ（主 Lucide 原則）
 
@@ -283,7 +284,7 @@ design_export/ ─ DesignSync ─→ claude.ai/design プロジェクト「valis
 
 ### 12.5 非スコープ（増分5）
 
-絵文字/文字グリフの置換・qrc 化・QIconEngine（ライブ切替対応）・ドックタイトルバーの float/close ボタン（QDockWidget 内部・QStyle 由来）・4個以外のアイコン追加。
+絵文字/文字グリフの置換・qrc 化・QIconEngine（ライブ切替対応）・ドックタイトルバーの float/close ボタン（QDockWidget 内部・QStyle 由来）・4個以外のアイコン追加。（§8 の「ドックのアイコン」はレジストリに含まれる data_explorer **起動アイコン**を指し、QDockWidget 自体の float/close chrome とは別物 — 後者は本項で明示的に非スコープ。レビュー I1 の曖昧さ解消。）
 
 ## 13. 関連
 
