@@ -306,12 +306,14 @@ def test_build_icons_card_embeds_all_registry_svgs():
 
 
 def test_icons_card_import_stays_pure():
-    """export.py が icons レジストリを読んでも Qt 非依存のまま (spec §12.2 I2)。"""
+    """build_icons_card 実呼出し — icons レジストリ関数内 import まで踏む (spec §12.2 I2)。"""
     import subprocess
     import sys
 
     code = (
-        "import sys; import valisync.gui.theme.export; "
+        "import sys; from valisync.gui.theme.export import build_icons_card; "
+        "from valisync.gui.theme.tokens import DARK; "
+        "build_icons_card(DARK, 'Dark'); "
         "bad = [m for m in sys.modules if m.startswith(('PySide6', 'pyqtgraph'))]; "
         "sys.exit(1 if bad else 0)"
     )
