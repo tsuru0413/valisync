@@ -159,7 +159,7 @@ design_export/ ─ DesignSync ─→ claude.ai/design プロジェクト「valis
 1. **増分1: 凍結トークン化** — theme パッケージ新設（`tokens.py`/`qss.py`/`apply.py`＝原則 no-op 注入点を `build_main_window` に配線）、ハードコード色を現状値のままトークン参照へ置換、色 assert 既存テストのトークン導出化（§4.4）、ガードテスト常設、凍結検証（§7 の成立条件＋比較スクリプト＋デバッグテーマ検証）。**撮影スクリプトは凍結検証に必要な最小版（主要状態のみ）をここで先行実装する**。ここまでで「単一の真実」が成立。
 2. **増分2: パイプライン構築** — エクスポータ・`design/cards/` テンプレート・撮影スクリプトのカタログ用拡張（全サーフェス＋ダイアログ網羅）・同期マニフェスト・`docs/design.md`・初回同期で Claude Design 上にカタログ成立。ここまでで運用ループが回せる状態。
 3. **増分3: クロムのトークン化（ダーク・三態の土台）** — クロム系トークン（QPalette の約12 role に対応する `chrome_*` 群）を新規追加し、`apply.py` で **Fusion＋トークン由来 QPalette** を適用（スパイクで確定・§4.3）。初期値はスパイクの Catppuccin 系ダーク（確定配色は以降の Claude Design 反復でトークン値変更のみ）。ベースライン更新・カタログ再撮影・再同期を含む。**注意**: Fusion 切替は全コントロールの描画メトリクス（行高・タブ高等）を変えうるため realgui **全数**無回帰を merge 前ゲートに含める。
-4. **増分4: テーマ三態（ライト/オート）** — LIGHT 値セット（Claude Design で設計）＋View メニューのテーマ radio（ライト/ダーク/オート・QSettings 永続）＋オート（`QStyleHints.colorScheme` 検出・`colorSchemeChanged` 追従）。**切替の反映方式（ライブ再適用 vs 再起動反映）はこの増分の設計で確定** — ライブは「構築時に焼き込まれる stylesheet/pen の再適用パス」を要する（増分1 の呼び出し時読み規約はこのための布石だが、`__init__` 時適用の再実行機構が別途必要）。
+4. **増分4: テーマ三態（ライト/ダーク/オート）** — 詳細設計は §11（2026-07-16 brainstorming 確定）。要点: LIGHT 値セット（Catppuccin Latte 初期値で出荷→Claude Design で洗練）＋View メニューのテーマ radio（ライト/ダーク/オート・QSettings 永続・既定=オート）＋**全面「再起動反映」で一貫**（オートの OS 追従も次回起動・`colorSchemeChanged` は購読しない）。`resolve_theme(mode, os_prefers_dark)` 純関数（tokens.py）＋`apply_startup_theme`（apply.py・起動時に mode/OS を解決して `set_active`→`apply_theme`）。プロット面のライト化は非スコープ（黒据え置き・曲線色の再設計を避ける）。
 5. **増分5: アイコン刷新（予定・2026-07-16 追加）** — Qt 標準アイコン（`QStyle.StandardPixmap` — Open/Save/フォルダ等）をカスタム SVG アセットへ置換し、トークン連動の着色（ライト/ダークで自動追従）にする。ツールバー/メニュー/ドックのアイコンが Claude Design の検討範囲に入る。詳細設計（アセット管理・描画方式・テーマ連動の選択肢比較）は着手時の設計スパイクで確定。§9 の「カスタムアイコン非導入」はこの増分で解除。
 6. **増分6 以降: 運用（再デザイン反復）** — トークン値変更のみで回る「軽い反復」。デザイン反復ごとに小さなブランチ。
 
@@ -182,11 +182,56 @@ design_export/ ─ DesignSync ─→ claude.ai/design プロジェクト「valis
 | 撮影スクリプトの不安定さ（実ディスプレイ・タイミング） | realgui 基盤の既知の知見（実ディスプレイ強制・QSettings 隔離・タイムアウト・画面内配置）を再利用。撮影は CI に入れずローカル運用 |
 | design_export/ と Claude Design の乖離 | 真実は常にリポジトリ側という一方向規約＋毎回 `list_files` 突合＋同期マニフェスト（§5） |
 | 増分3 の QStyle 切替が想定外に大工事化 | ~~増分3 冒頭に設計スパイク~~ **スパイク完了（2026-07-16）— Fusion＋QPalette 採用で解消**（§4.3）。残リスクは Fusion 化による描画メトリクス変化 → realgui 全数を merge 前ゲートに |
-| ライブテーマ切替（増分4）の再適用パスが大工事化 | 増分4 の設計で「ライブ vs 再起動反映」を確定してから着手（再起動反映なら小規模）。呼び出し時読み規約（増分1）が下地 |
+| ライブテーマ切替（増分4）の再適用パスが大工事化 | **解消（2026-07-16 brainstorming）— 全面「再起動反映」を採用**（§11）。ライブ再適用の 33 箇所配線を回避し、`apply_startup_theme` を起動時1回で完結 |
 
-## 11. 関連
+## 11. 増分4 詳細設計（テーマ三態・2026-07-16 brainstorming 確定）
+
+### 11.1 決定事項（Q&A）
+
+| 論点 | 決定 | 理由 |
+|---|---|---|
+| 切替の反映方式 | **全面「再起動反映」** — メニュー選択は QSettings 保存のみ、次回起動から適用 | ADAS 計測でテーマは長時間固定の設定。ライブは構築時焼き込み（QSS/pen）の 33 箇所再適用配線＋realgui 検証コストに見合わない |
+| オートの OS 追従タイミング | **起動時に一度だけ検出**（`colorSchemeChanged` 非購読）— 起動中の OS 変化は次回起動で追従 | 再起動反映と一貫。OS 切替は稀で「次回起動追従」で実用上十分 |
+| LIGHT 初期配色 | **Catppuccin Latte**（Mocha の公式ライト対応版）を出荷値に→Claude Design で洗練 | 実装→Ground Truth→検討のパイプライン思想。Mocha と役割対応が取れた既製パレット |
+| 新規インストール既定 | **オート（OS 追従）** | 三態で最も無難な既定。当環境は OS ダークで現状と連続 |
+
+### 11.2 コンポーネント
+
+- **`tokens.py`**（pure Python 維持）: `LIGHT: ThemeTokens`（Latte 値・DARK と同一フィールド構成）／`ThemeMode(Enum)`（`LIGHT`/`DARK`/`AUTO`・値は QSettings 保存形の文字列）／`resolve_theme(mode: ThemeMode, os_prefers_dark: bool) -> ThemeTokens`（純関数: AUTO→os で DARK/LIGHT・LIGHT/DARK は os 無視）。
+- **`apply.py`**（Qt 隔離層）: `os_prefers_dark() -> bool`（`QApplication.styleHints().colorScheme()`・Unknown→dark 扱い・QApplication 不在→False）／`load_theme_mode()/save_theme_mode()`（QSettings・未知値は AUTO フォールバック）／`apply_startup_theme()`（load→detect→`resolve_theme`→`set_active`→`apply_theme` を合成）。
+- **`app.py`**: `build_main_window` の `apply_theme()` 呼び出しを `apply_startup_theme()` へ差し替え。
+- **`main_window.py`**: View>テーマ サブメニューに radio 3つ（`QActionGroup` 排他・現 mode checked）。選択で `save_theme_mode`＋「再起動で反映されます」ステータス。**active/apply_theme は呼ばない**（再起動反映）。
+
+### 11.3 データフロー
+
+起動: `build_main_window` → `apply_startup_theme`（QSettings＋OS→resolve→set_active→apply_theme[Fusion+palette]）→ 各ウィジェット `__init__` が active を焼き込み。
+メニュー選択: `save_theme_mode`（保存のみ）＋ステータス表示。現画面は不変。
+
+### 11.4 LIGHT 値の方針
+
+- クロム: Latte 対応色（`chrome_window`=Base `#eff1f5`・`chrome_text`=Text `#4c4f69`・`chrome_button`=Surface0 `#ccd0da`・`chrome_highlight`=Blue `#1e66f5`・`chrome_disabled_text`=Overlay0 `#9ca0b0` 等・全数は実装プランで Latte 対応表として確定）。
+- readout チップ: 半透明ライト面＋Latte Text 文字。
+- **signal_palette（曲線 tab10）は両テーマ共通**（中彩度で白/黒どちらの背景でも識別可）。
+- **`plot_background` は初期ライトでも黒据え置き**（プロット面の白化は曲線色の再設計を要し増分肥大 → 非スコープ・Claude Design 反復で判断）。
+
+### 11.5 二テーマのカタログ/エクスポート
+
+`export_design_tokens.py --theme {dark,light}`・`capture_ui_screenshots.py` は起動時に mode 強制で両テーマの Ground Truth/Tokens カードを別出力。Claude Design に DARK/LIGHT が並ぶ。
+
+### 11.6 テスト
+
+- Layer A: `resolve_theme` 全分岐／**LIGHT 全域スナップショット test-lock**（DARK と同形式）／`load_theme_mode` 未知値フォールバック。
+- Layer B: `apply_startup_theme`（light 設定で build_main_window→LIGHT active＋Latte パレット＝再起動反映のインプロセス実証）／`os_prefers_dark` の写像・Unknown→dark／メニュー（排他・現 mode checked・**選択後 active() 不変**）。
+- 描画 E2E: `capture --theme light` でライト起動スクショ（LIGHT Ground Truth・クロム/チップ/文字が Latte 一貫）。
+- realgui: テーマ radio 実クリック→ステータス「再起動で反映」＋QSettings 保存＋**画面即変化なし**。ライト実適用の視覚確認は light 設定での実アプリ起動スクショ。
+
+### 11.7 非スコープ（増分4）
+
+プロット面のライト化・ライブ切替・`colorSchemeChanged` 購読・LIGHT 確定配色（Latte 初期値で出荷）。
+
+## 12. 関連
 
 - 現状調査: 本 spec §1（2026-07-15 実施の GUI スタイリング実態調査に基づく）
 - アドバーサリアルレビュー: 2026-07-15 実施（Critical 1・Important 8・Minor 6 を本 spec に反映済み）
-- 実装プラン: `docs/superpowers/plans/2026-07-15-design-tokens-r1-freeze.md`（増分1・作成予定）、`…-r2-pipeline.md`（増分2・作成予定）
+- 実装プラン: [r1-freeze](../plans/2026-07-15-design-tokens-r1-freeze.md)（増分1）・[r2-pipeline](../plans/2026-07-15-design-tokens-r2-pipeline.md)（増分2）・[r3-chrome](../plans/2026-07-16-design-tokens-r3-chrome.md)（増分3）
 - 運用文書: `docs/design.md`（増分2 で作成）
