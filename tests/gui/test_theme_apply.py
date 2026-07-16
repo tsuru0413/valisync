@@ -62,6 +62,12 @@ def test_build_palette_maps_all_chrome_tokens(qapp):
     for role, tok in expected.items():
         assert p.color(role) == QColor(*tok.rgba), role
 
+    # Disabled グループ: 無効状態が有効時と見分けられること (グレーアウト回帰ガード)
+    disabled = QPalette.ColorGroup.Disabled
+    for role in (roles.WindowText, roles.Text, roles.ButtonText):
+        assert p.color(disabled, role) == QColor(*c.chrome_disabled_text.rgba)
+        assert p.color(disabled, role) != p.color(QPalette.ColorGroup.Active, role)
+
 
 def test_apply_sets_fusion_style_and_palette(qapp):
     from PySide6.QtGui import QColor, QPalette
@@ -89,7 +95,7 @@ def test_build_palette_role_mapping_with_distinct_values():
     chrome_fields = [
         f.name for f in dataclasses.fields(DARK.colors) if f.name.startswith("chrome_")
     ]
-    assert len(chrome_fields) == 12
+    assert len(chrome_fields) == 13
     repl = {
         name: Color(i + 1, (i * 7 + 3) % 256, (i * 13 + 5) % 256)
         for i, name in enumerate(chrome_fields)
@@ -113,3 +119,6 @@ def test_build_palette_role_mapping_with_distinct_values():
     }
     for role, name in expected.items():
         assert p.color(role) == QColor(*repl[name].rgba), name
+    assert p.color(QPalette.ColorGroup.Disabled, roles.WindowText) == QColor(
+        *repl["chrome_disabled_text"].rgba
+    )

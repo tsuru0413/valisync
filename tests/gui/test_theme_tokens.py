@@ -99,6 +99,7 @@ def test_dark_values_frozen_snapshot():
         "chrome_highlight": Color.from_hex("#89b4fa"),
         "chrome_highlight_text": Color.from_hex("#11111b"),
         "chrome_placeholder": Color.from_hex("#7f849c"),
+        "chrome_disabled_text": Color.from_hex("#6c7086"),
     }
     actual_colors = {
         f.name: getattr(DARK.colors, f.name) for f in dataclasses.fields(DARK.colors)

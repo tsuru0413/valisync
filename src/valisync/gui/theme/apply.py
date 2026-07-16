@@ -38,6 +38,12 @@ def build_palette(t: tokens.ThemeTokens) -> QPalette:
     p = QPalette()
     for role, col in mapping:
         p.setColor(role, QColor(*col.rgba))
+    # Disabled グループを明示 — setColor(role, color) は全グループに同色を
+    # 設定するため、無効コントロールが有効時と見分け不能になる (最終レビューで
+    # 実証された回帰)。テキスト系3 role を dim トークンでグレーアウトさせる。
+    disabled = QPalette.ColorGroup.Disabled
+    for role in (roles.WindowText, roles.Text, roles.ButtonText):
+        p.setColor(disabled, role, QColor(*c.chrome_disabled_text.rgba))
     return p
 
 

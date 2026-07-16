@@ -95,6 +95,7 @@ class Colors:
     chrome_highlight: Color
     chrome_highlight_text: Color
     chrome_placeholder: Color
+    chrome_disabled_text: Color
 
 
 @dataclass(frozen=True)
@@ -172,6 +173,7 @@ DARK = ThemeTokens(
         chrome_highlight=Color.from_hex("#89b4fa"),
         chrome_highlight_text=Color.from_hex("#11111b"),
         chrome_placeholder=Color.from_hex("#7f849c"),
+        chrome_disabled_text=Color.from_hex("#6c7086"),
     ),
     spacing=Spacing(
         chip_margins=(6, 5, 6, 5),
