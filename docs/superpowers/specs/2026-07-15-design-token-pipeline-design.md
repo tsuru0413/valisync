@@ -197,37 +197,55 @@ design_export/ ─ DesignSync ─→ claude.ai/design プロジェクト「valis
 
 ### 11.2 コンポーネント
 
-- **`tokens.py`**（pure Python 維持）: `LIGHT: ThemeTokens`（Latte 値・DARK と同一フィールド構成）／`ThemeMode(Enum)`（`LIGHT`/`DARK`/`AUTO`・値は QSettings 保存形の文字列）／`resolve_theme(mode: ThemeMode, os_prefers_dark: bool) -> ThemeTokens`（純関数: AUTO→os で DARK/LIGHT・LIGHT/DARK は os 無視）。
-- **`apply.py`**（Qt 隔離層）: `os_prefers_dark() -> bool`（`QApplication.styleHints().colorScheme()`・Unknown→dark 扱い・QApplication 不在→False）／`load_theme_mode()/save_theme_mode()`（QSettings・未知値は AUTO フォールバック）／`apply_startup_theme()`（load→detect→`resolve_theme`→`set_active`→`apply_theme` を合成）。
-- **`app.py`**: `build_main_window` の `apply_theme()` 呼び出しを `apply_startup_theme()` へ差し替え。
-- **`main_window.py`**: View>テーマ サブメニューに radio 3つ（`QActionGroup` 排他・現 mode checked）。選択で `save_theme_mode`＋「再起動で反映されます」ステータス。**active/apply_theme は呼ばない**（再起動反映）。
+- **`tokens.py`**（pure Python 維持）: `LIGHT: ThemeTokens`（Latte 値・DARK と同一フィールド構成 — frozen dataclass の必須キーワード引数によりフィールド漏れは import 時 `TypeError` で loud-fail）／`ThemeMode(Enum)`（`LIGHT`/`DARK`/`AUTO`・値は QSettings 保存形の文字列）／`resolve_theme(mode: ThemeMode, os_prefers_dark: bool) -> ThemeTokens`（純関数: AUTO→os で DARK/LIGHT・LIGHT/DARK は os 無視）。
+- **`apply.py`**（Qt 隔離層）:
+  - `os_prefers_dark() -> bool`（`QApplication.styleHints().colorScheme()`）。**判定不能は一律 dark**（`Unknown`／QApplication 不在／非対応 Qt はすべて `True`＝現行 DARK 単一運用との連続性を優先し非対称を排除。C1 レビュー反映）。CI（Linux+xvfb）で `Unknown` が返っても dark に落ちるため Layer A/B は安定。
+  - `load_theme_mode()/save_theme_mode()`（QSettings・未知値は AUTO フォールバック）。**org/app 定数は `theme/settings.py`（新設・薄い共有モジュール）に集約し、`main_window.py`/`recent_files.py` も将来これを参照**（今は既存 `_ORG`/`_APP` 値と同一文字列を settings.py に定義し apply.py が使用）。キー名 `"theme_mode"`（geometry/windowState と衝突しない）。`main_window → apply` の呼び出し方向のみ（apply は main_window を import しない＝循環回避）。
+  - `apply_startup_theme(forced: ThemeMode | None = None)`（`forced` 指定時は QSettings/OS を読まず `resolve_theme(forced, os_prefers_dark())` 相当で確定→`set_active`→`apply_theme`。**通常起動は `forced=None` で QSettings/OS 解決**）。この `forced` 経路が撮影スクリプトのテーマ強制注入口（C1 反映）。
+- **`app.py`**: `build_main_window(app_vm=None, *, theme=None)` にテーマ override 引数を追加し、内部で `apply_startup_theme(forced=theme)` を呼ぶ（`apply_theme()` 直呼びを差し替え）。`--debug-theme`/`--theme` の両撮影経路はこの override を通す（`set_active` 事前注入をやめ、上書き衝突を構造的に解消）。
+- **`main_window.py`**: View>テーマ サブメニューに radio 3つ（`QActionGroup` 排他）。**既存の確立パターンを踏襲**（`setChecked` を `triggered` 配線の**前**に行う・`toggled` でなく `triggered` に配線＝起動時 checked 同期が `save_theme_mode` を誘発しない。過去のタブ改名/Enter 二重発火の教訓）。選択で `save_theme_mode`＋「再起動で反映されます」ステータス。**active/apply_theme は呼ばない**（再起動反映）。
 
 ### 11.3 データフロー
 
-起動: `build_main_window` → `apply_startup_theme`（QSettings＋OS→resolve→set_active→apply_theme[Fusion+palette]）→ 各ウィジェット `__init__` が active を焼き込み。
-メニュー選択: `save_theme_mode`（保存のみ）＋ステータス表示。現画面は不変。
+```
+通常起動: main() → build_main_window(theme=None) → apply_startup_theme(forced=None)
+             ├ load_theme_mode() [QSettings・未保存→AUTO]
+             ├ os_prefers_dark() [AUTO のときのみ意味]
+             ├ resolve_theme(mode, os) → DARK|LIGHT
+             ├ set_active(resolved)
+             └ apply_theme() [Fusion+build_palette(active)]
+          → 各ウィジェット __init__ が active を焼き込み
+撮影強制: build_main_window(theme=DARK|LIGHT) → apply_startup_theme(forced=...)
+             [QSettings/OS を読まず forced を set_active — --debug-theme/--theme 共通経路]
+メニュー選択: save_theme_mode(mode) のみ ＋ ステータス表示（現画面は不変）
+```
 
 ### 11.4 LIGHT 値の方針
 
 - クロム: Latte 対応色（`chrome_window`=Base `#eff1f5`・`chrome_text`=Text `#4c4f69`・`chrome_button`=Surface0 `#ccd0da`・`chrome_highlight`=Blue `#1e66f5`・`chrome_disabled_text`=Overlay0 `#9ca0b0` 等・全数は実装プランで Latte 対応表として確定）。
 - readout チップ: 半透明ライト面＋Latte Text 文字。
-- **signal_palette（曲線 tab10）は両テーマ共通**（中彩度で白/黒どちらの背景でも識別可）。
-- **`plot_background` は初期ライトでも黒据え置き**（プロット面の白化は曲線色の再設計を要し増分肥大 → 非スコープ・Claude Design 反復で判断）。
+- **プロット面据え置きトークン（テーマ非依存・両テーマ共通値）**（C3 レビュー反映）: `plot_background`（黒）・`plot_foreground`・`signal_palette`（tab10）に加え、**プロットキャンバス上またはその直上に `QPainter`/`pg.mkPen` で直接描画されるトークンも据え置く** — `cursor_a`/`cursor_b`（カーソル線＝黒背景で視認必須）・`accent_active`/`accent_active_dark`/`grip_fill`（アクティブ軸/枠）・`drop_highlight`（ドロップ強調枠）・`axis_move_indicator`/`axis_move_fill`（軸移動）・`preview_curve`（プレビュー線）。これらは §4.1 の「役割が違えば別トークン」原則により、クロムの Latte 化から独立して黒背景前提の値を保つ。
+  - **兼用トークンの分割判断**: `cursor_a`/`cursor_b` は現状「プロット線」と「readout マーカー」兼用（`tokens.py` コメント）。プロット線は据え置き必須だが readout マーカーは Latte 面上に載る。**増分4 では分割せず据え置き優先**（黄/青のマーカーは半透明ライト面でも視認可・分割は増分肥大）。将来 readout の Latte 最適化が必要なら別トークンへ分割（Claude Design 反復）。
+- **`plot_background` の白化は非スコープ**（曲線色の再設計を要し増分肥大 → Claude Design 反復で判断）。
 
 ### 11.5 二テーマのカタログ/エクスポート
 
-`export_design_tokens.py --theme {dark,light}`・`capture_ui_screenshots.py` は起動時に mode 強制で両テーマの Ground Truth/Tokens カードを別出力。Claude Design に DARK/LIGHT が並ぶ。
+- **出力レイアウト**（I3/I4 反映）: `export_design_tokens.py --theme {dark,light}`（既定 dark）はテーマ別サブツリー `design_export/{theme}/...`（例 `design_export/light/tokens.css`・`.../cards/...`・`.../ground_truth/...`）へ出力。**purge は自テーマのサブツリーのみ対象**（他テーマ・screenshots を消さない）。`capture_ui_screenshots.py --theme {dark,light}` は `build_main_window(theme=...)` 経由で強制起動して撮影。
+- **Claude Design 上の区別**: カードのグループ名にテーマを含める（例 `Tokens / Light`・`Ground Truth / Light`）。`_card()` のラッパー配色は当該テーマ由来にする（LIGHT カードはライトなページ chrome）。Meta マニフェストは両テーマ分のパスを記録。
+- `--debug-theme` は base theme 引数を取り LIGHT でも役割写像検証可能にする（I5 反映）。
+- **docs/design.md 更新**（M2 反映）: 「ダーク単一」→「三態」・運用ループのコマンド例に `--theme` を反映するのを増分4 のタスクに含める。
 
 ### 11.6 テスト
 
-- Layer A: `resolve_theme` 全分岐／**LIGHT 全域スナップショット test-lock**（DARK と同形式）／`load_theme_mode` 未知値フォールバック。
-- Layer B: `apply_startup_theme`（light 設定で build_main_window→LIGHT active＋Latte パレット＝再起動反映のインプロセス実証）／`os_prefers_dark` の写像・Unknown→dark／メニュー（排他・現 mode checked・**選択後 active() 不変**）。
-- 描画 E2E: `capture --theme light` でライト起動スクショ（LIGHT Ground Truth・クロム/チップ/文字が Latte 一貫）。
+- **QSettings 隔離**（C2 反映）: `tests/gui/conftest.py`・`tests/realgui/conftest.py` の隔離フィクスチャに `theme.settings`（新設共有モジュール）の org/app monkeypatch を追加する（既存 `mw`/`rf` に加える3つ目の書込元 — 追加しないと realgui のテーマ radio クリックが実レジストリを汚す）。
+- Layer A: `resolve_theme` 全分岐（AUTO×dark→DARK／AUTO×light→LIGHT／LIGHT→LIGHT・os 無視／DARK→DARK・os 無視）／**LIGHT 全域スナップショット test-lock**（DARK と同形式・Latte 値ロック）／`load_theme_mode` 未知値→AUTO フォールバック／`build_main_window(theme=...)` の forced 経路が QSettings を無視すること。
+- Layer B: `apply_startup_theme`（light 設定で build_main_window→LIGHT active＋Latte パレット＝再起動反映のインプロセス実証／`forced=LIGHT` が QSettings=dark を上書きすること）／`os_prefers_dark` の colorScheme→bool 写像・判定不能→dark／メニュー（`QActionGroup` 排他・現 mode checked・**選択後 active() 不変**・**メニュー構築〔checked 同期〕が `save_theme_mode` を呼ばない＝呼出回数0**）。
+- 描画 E2E: `capture --theme light` でライト起動スクショ（LIGHT Ground Truth・クロム/チップ/文字が Latte 一貫・**プロット面据え置きトークンが黒背景で視認可**）。`--debug-theme --theme light` で LIGHT の役割写像目視。
 - realgui: テーマ radio 実クリック→ステータス「再起動で反映」＋QSettings 保存＋**画面即変化なし**。ライト実適用の視覚確認は light 設定での実アプリ起動スクショ。
 
 ### 11.7 非スコープ（増分4）
 
-プロット面のライト化・ライブ切替・`colorSchemeChanged` 購読・LIGHT 確定配色（Latte 初期値で出荷）。
+プロット面のライト化・プロット据え置きトークンの分割（cursor_a/b 兼用のまま）・ライブ切替・`colorSchemeChanged` 購読・LIGHT 確定配色（Latte 初期値で出荷）。
 
 ## 12. 関連
 
