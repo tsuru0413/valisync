@@ -27,7 +27,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QStackedWidget,
-    QStyle,
     QToolBar,
 )
 
@@ -35,6 +34,7 @@ from valisync.core.loaders.csv_format_detector import CsvFormatDetector
 from valisync.core.models.format_def import FormatDefinition
 from valisync.core.session import LoadOutcome
 from valisync.gui.theme import apply as theme_apply
+from valisync.gui.theme import icons
 from valisync.gui.theme.tokens import ThemeMode
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
@@ -214,7 +214,7 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.shell_actions.action("export"))
         toolbar.addSeparator()
         self.action_data_explorer = QAction(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon),
+            icons.icon("data_explorer"),
             "Data Explorer",
             self,
         )

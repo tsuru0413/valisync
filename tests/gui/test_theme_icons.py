@@ -102,3 +102,21 @@ def test_icon_pixels_use_theme_tokens(qtbot):
     )
     # 同値でないテーマ前提の分離確認 (DARK: text #cdd6f4 / disabled #6c7086 は十分離れている)
     assert not _has_pixel_near(disabled, ct, tol=20)
+
+
+def test_shell_actions_use_registry_icons(qtbot):
+    """4アクション全てがレジストリ由来の非 null アイコンを持つ (Layer B)。"""
+    from PySide6.QtWidgets import QWidget
+
+    from valisync.gui.theme.tokens import active
+    from valisync.gui.views.shell_actions import ShellActions
+
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    acts = ShellActions(parent)
+    for key in ("open", "open_folder", "export"):
+        assert not acts.action(key).icon().isNull(), key
+    # ピクセルがトークン色 (QStyle 由来の多色アイコンからの置換確認)
+    c = active().colors
+    img = acts.action("open").icon().pixmap(24, 24).toImage()
+    assert _has_pixel_near(img, (c.chrome_text.r, c.chrome_text.g, c.chrome_text.b))

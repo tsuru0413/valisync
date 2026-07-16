@@ -1,6 +1,6 @@
 """ShellActions — central QAction registry (SH-05/06/14 foundation).
 
-Each shell command is defined ONCE here (text + standard icon + shortcut +
+Each shell command is defined ONCE here (text + registry icon + shortcut +
 tooltip-with-shortcut + statusTip). Menus, toolbars and context menus mount
 these same QAction objects. `triggered` is connected by the owner (MainWindow),
 so this class stays a pure definition layer and is testable without a window.
@@ -9,33 +9,34 @@ so this class stays a pure definition layer and is testable without a window.
 from __future__ import annotations
 
 from PySide6.QtGui import QAction, QIcon, QKeySequence
-from PySide6.QtWidgets import QStyle, QWidget
+from PySide6.QtWidgets import QWidget
+
+from valisync.gui.theme import icons
 
 
 class ShellActions:
     def __init__(self, parent: QWidget) -> None:
         self._parent = parent
-        style = parent.style()
         self.actions: dict[str, QAction] = {}
 
         self._add(
             "open",
             "開く…",
-            style.standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton),
+            icons.icon("open"),
             "Ctrl+O",
             "計測ファイルを開く",
         )
         self._add(
             "open_folder",
             "フォルダを開く…",
-            style.standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon),
+            icons.icon("open_folder"),
             "Ctrl+Shift+O",
             "データソースフォルダを登録する",
         )
         exp = self._add(
             "export",
             "エクスポート…",
-            style.standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton),
+            icons.icon("export"),
             "Ctrl+E",
             "表示中の信号を CSV に書き出す",
         )
