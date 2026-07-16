@@ -45,6 +45,12 @@ def main() -> int:
         action="store_true",
         help="カタログ用の追加状態 (ダイアログ/プレビュー) も撮影 (凍結比較の既定5状態は不変)",
     )
+    parser.add_argument(
+        "--theme",
+        choices=["dark", "light"],
+        default="dark",
+        help="撮影テーマ (ホスト OS 設定に依存しない決定的撮影のため必須既定 dark)",
+    )
     args = parser.parse_args()
 
     if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
@@ -66,15 +72,18 @@ def main() -> int:
 
     app = QApplication(sys.argv)
 
-    if args.debug_theme:
-        from valisync.gui.theme.tokens import set_active
-
-        set_active(_debug_theme())
-
     from valisync.core.models import Delimiter, FormatDefinition
     from valisync.gui.app import build_main_window
+    from valisync.gui.theme.tokens import ThemeMode
 
-    window = build_main_window()
+    mode = ThemeMode.LIGHT if args.theme == "light" else ThemeMode.DARK
+    if args.debug_theme:
+        from valisync.gui.theme.tokens import DARK, LIGHT
+
+        base = LIGHT if args.theme == "light" else DARK
+        window = build_main_window(theme=_debug_theme(base))
+    else:
+        window = build_main_window(theme=mode)
     screen = app.primaryScreen().availableGeometry()
     window.setGeometry(screen.x() + 60, screen.y() + 60, 1120, 760)
     window.show()
@@ -182,7 +191,7 @@ def main() -> int:
     return 0
 
 
-def _debug_theme():
+def _debug_theme(base):
     """全 Color トークンが相異なるテーマ — 各トークンの着地点を目視で検証する。
 
     alpha は元値を保持 (半透明チップ等のレイアウト/合成条件を変えないため)。
@@ -191,19 +200,19 @@ def _debug_theme():
     import colorsys
     import dataclasses
 
-    from valisync.gui.theme.tokens import DARK, Color
+    from valisync.gui.theme.tokens import Color
 
     def distinct(i: int, a: int) -> Color:
         r, g, b = colorsys.hsv_to_rgb((i * 0.61803) % 1.0, 1.0, 1.0)
         return Color(int(r * 255), int(g * 255), int(b * 255), a)
 
-    c = DARK.colors
+    c = base.colors
     names = [f.name for f in dataclasses.fields(c) if f.name != "signal_palette"]
     repl: dict = {name: distinct(i, getattr(c, name).a) for i, name in enumerate(names)}
     repl["signal_palette"] = tuple(
         distinct(100 + i, 255) for i in range(len(c.signal_palette))
     )
-    return dataclasses.replace(DARK, colors=dataclasses.replace(c, **repl))
+    return dataclasses.replace(base, colors=dataclasses.replace(c, **repl))
 
 
 if __name__ == "__main__":

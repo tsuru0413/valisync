@@ -13,12 +13,17 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 from valisync.core.session import Session
-from valisync.gui.theme.apply import apply_theme
+from valisync.gui.theme.apply import apply_startup_theme
+from valisync.gui.theme.tokens import ThemeMode, ThemeTokens
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.views.main_window import MainWindow
 
 
-def build_main_window(app_vm: AppViewModel | None = None) -> MainWindow:
+def build_main_window(
+    app_vm: AppViewModel | None = None,
+    *,
+    theme: ThemeMode | ThemeTokens | None = None,
+) -> MainWindow:
     """Wire the ViewModel and View layers and return a ready-to-show MainWindow.
 
     Parameters
@@ -27,8 +32,12 @@ def build_main_window(app_vm: AppViewModel | None = None) -> MainWindow:
         An existing ``AppViewModel`` to use.  A fresh one (backed by a new
         ``Session``) is created when *None*.  Passing a custom VM is useful
         for integration tests.
+    theme:
+        テーマの強制注入 (撮影スクリプト/テスト用 — None なら QSettings+OS で
+        解決・spec §11.3)。
     """
-    apply_theme()  # ウィジェット構築前に (spec §4.3 — テスト経路と実アプリで同一)
+    # ウィジェット構築前に (spec §4.3 — テスト経路と実アプリで同一)
+    apply_startup_theme(forced=theme)
     if app_vm is None:
         session = Session()
         app_vm = AppViewModel(session)

@@ -206,3 +206,20 @@ def test_apply_startup_theme_forced_ignores_settings(qapp):
     finally:
         set_active(DARK)
         apply_mod.apply_theme()
+
+
+def test_build_main_window_theme_override(qtbot):
+    """build_main_window(theme=...) が QSettings より優先される (spec §11.3)。"""
+    from valisync.gui.app import build_main_window
+    from valisync.gui.theme import apply as apply_mod
+    from valisync.gui.theme.apply import save_theme_mode
+    from valisync.gui.theme.tokens import DARK, LIGHT, ThemeMode, active, set_active
+
+    save_theme_mode(ThemeMode.DARK)
+    try:
+        window = build_main_window(theme=ThemeMode.LIGHT)
+        qtbot.addWidget(window)
+        assert active() is LIGHT
+    finally:
+        set_active(DARK)
+        apply_mod.apply_theme()
