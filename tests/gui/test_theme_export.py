@@ -90,7 +90,7 @@ def test_inject_tokens_css_replaces_placeholder_and_fails_loudly():
 
 
 def test_build_token_cards_structure():
-    cards = export.build_token_cards(DARK)
+    cards = export.build_token_cards(DARK, "Dark")
     assert set(cards) == {
         "tokens/colors.html",
         "tokens/spacing.html",
@@ -98,7 +98,7 @@ def test_build_token_cards_structure():
     }
     for path, html in cards.items():
         first_line = html.splitlines()[0]
-        assert first_line == '<!-- @dsCard group="Tokens" -->', path
+        assert first_line == '<!-- @dsCard group="Tokens / Dark" -->', path
         assert "<!doctype html>" in html
         assert "@TOKENS_CSS" not in html  # 注入済み
     colors = cards["tokens/colors.html"]
@@ -135,13 +135,18 @@ def test_design_card_templates_follow_conventions():
 
 def test_build_ground_truth_card_embeds_png_as_data_uri():
     png = b"\x89PNG\r\n\x1a\nfakebytes"
-    html = export.build_ground_truth_card("02_plotted", png)
-    assert html.splitlines()[0] == '<!-- @dsCard group="Ground Truth" -->'
+    html = export.build_ground_truth_card("02_plotted", png, "Dark")
+    assert html.splitlines()[0] == '<!-- @dsCard group="Ground Truth / Dark" -->'
     assert "data:image/png;base64," in html
     import base64
 
     assert base64.b64encode(png).decode("ascii") in html
     assert "02_plotted" in html
+    # Light ラベル対応の検証
+    assert (
+        '<!-- @dsCard group="Ground Truth / Light" -->'
+        in export.build_ground_truth_card("01_welcome", png, "Light").splitlines()[0]
+    )
 
 
 def test_build_manifest_records_sha_hash_and_paths():
@@ -149,12 +154,67 @@ def test_build_manifest_records_sha_hash_and_paths():
 
     tokens_json = export.build_json(DARK)
     html = export.build_manifest(
-        "abc1234", tokens_json, ["cards/readout_chip.html", "tokens/colors.html"]
+        "abc1234",
+        tokens_json,
+        ["cards/readout_chip.html", "tokens/colors.html"],
+        "Dark",
     )
-    assert html.splitlines()[0] == '<!-- @dsCard group="Meta" -->'
+    assert html.splitlines()[0] == '<!-- @dsCard group="Meta / Dark" -->'
     assert "abc1234" in html
     assert hashlib.sha256(tokens_json.encode("utf-8")).hexdigest() in html
     assert "cards/readout_chip.html" in html
+    # Light ラベル対応の検証
+    assert export.build_manifest("abc1234", tokens_json, [], "Light").splitlines()[
+        0
+    ] == ('<!-- @dsCard group="Meta / Light" -->')
+
+
+def test_card_wrapper_uses_theme_chrome_colors():
+    """カードラッパー配色はテーマ由来 (LIGHT カードはライトな地・spec §11.5)。"""
+    from valisync.gui.theme.tokens import LIGHT
+
+    dark_cards = export.build_token_cards(DARK, "Dark")
+    light_cards = export.build_token_cards(LIGHT, "Light")
+    assert DARK.colors.chrome_window.hex in dark_cards["tokens/colors.html"]
+    assert LIGHT.colors.chrome_window.hex in light_cards["tokens/colors.html"]
+    assert (
+        '<!-- @dsCard group="Tokens / Light" -->' in light_cards["tokens/colors.html"]
+    )
+
+
+def test_cli_light_theme_writes_to_light_subtree_and_keeps_dark(tmp_path):
+    """--theme light は light/ サブツリーへ出力し dark/ を purge しない (spec §11.5)。"""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[2]
+    out = tmp_path / "export"
+    shots = tmp_path / "shots"
+    shots.mkdir()
+    (shots / "01_welcome.png").write_bytes(b"\x89PNG\r\n\x1a\nx")
+    base = [
+        sys.executable,
+        str(repo / "scripts" / "export_design_tokens.py"),
+        "--out",
+        str(out),
+        "--screenshots",
+        str(shots),
+        "--sha",
+        "deadbee",
+    ]
+    assert (
+        subprocess.run([*base, "--theme", "dark"], capture_output=True).returncode == 0
+    )
+    assert (
+        subprocess.run([*base, "--theme", "light"], capture_output=True).returncode == 0
+    )
+    assert (out / "dark" / "tokens.css").is_file()  # light 実行後も dark が残る
+    assert (out / "light" / "tokens.css").is_file()
+    light_colors = (out / "light" / "tokens" / "colors.html").read_text(
+        encoding="utf-8"
+    )
+    assert "Tokens / Light" in light_colors
 
 
 def test_cli_writes_full_bundle(tmp_path):
@@ -179,23 +239,23 @@ def test_cli_writes_full_bundle(tmp_path):
         "deadbee",
     ]
     # 陳腐化ファイル(改名/削除された旧出力を模擬) — purge が掃除することを後で検証する。
-    stale = out / "cards" / "stale_old_card.html"
+    stale = out / "dark" / "cards" / "stale_old_card.html"
     stale.parent.mkdir(parents=True, exist_ok=True)
     stale.write_text("old", encoding="utf-8")
     r1 = subprocess.run(cmd, capture_output=True, text=True)
     assert r1.returncode == 0, r1.stderr
     assert not stale.exists()  # purge が陳腐化カードを掃除する (Fix 1)
     for rel in [
-        "tokens.css",
-        "tokens.json",
-        "tokens/colors.html",
-        "tokens/spacing.html",
-        "tokens/typography.html",
-        "cards/readout_chip.html",
-        "cards/affordances.html",
-        "cards/error_states.html",
-        "ground_truth/01_welcome.html",
-        "meta/manifest.html",
+        "dark/tokens.css",
+        "dark/tokens.json",
+        "dark/tokens/colors.html",
+        "dark/tokens/spacing.html",
+        "dark/tokens/typography.html",
+        "dark/cards/readout_chip.html",
+        "dark/cards/affordances.html",
+        "dark/cards/error_states.html",
+        "dark/ground_truth/01_welcome.html",
+        "dark/meta/manifest.html",
     ]:
         assert (out / rel).is_file(), rel
     # 決定性: 再実行でバイト同一
@@ -204,7 +264,7 @@ def test_cli_writes_full_bundle(tmp_path):
     assert r2.returncode == 0
     assert before == {p: p.read_bytes() for p in out.rglob("*.html")}
     # cards は注入済み (プレースホルダが残っていない)
-    card = (out / "cards" / "readout_chip.html").read_text(encoding="utf-8")
+    card = (out / "dark" / "cards" / "readout_chip.html").read_text(encoding="utf-8")
     assert "@TOKENS_CSS" not in card and "--vs-color-surface-chip" in card
 
 

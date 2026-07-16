@@ -122,3 +122,104 @@ def test_build_palette_role_mapping_with_distinct_values():
     assert p.color(QPalette.ColorGroup.Disabled, roles.WindowText) == QColor(
         *repl["chrome_disabled_text"].rgba
     )
+
+
+def test_os_prefers_dark_maps_color_scheme(qapp, monkeypatch):
+    """Light のみ False・Dark/Unknown は True (判定不能は一律 dark・spec §11.2)。"""
+    from PySide6.QtCore import Qt
+
+    from valisync.gui.theme import apply as apply_mod
+
+    class _Hints:
+        def __init__(self, scheme):
+            self._scheme = scheme
+
+        def colorScheme(self):
+            return self._scheme
+
+    for scheme, expected in [
+        (Qt.ColorScheme.Light, False),
+        (Qt.ColorScheme.Dark, True),
+        (Qt.ColorScheme.Unknown, True),
+    ]:
+        monkeypatch.setattr(type(qapp), "styleHints", lambda self, s=scheme: _Hints(s))
+        assert apply_mod.os_prefers_dark() is expected, scheme
+
+
+def test_theme_mode_roundtrip_and_unknown_fallback(qapp):
+    from valisync.gui.theme.apply import load_theme_mode, save_theme_mode
+    from valisync.gui.theme.tokens import ThemeMode
+
+    assert load_theme_mode() is ThemeMode.AUTO  # 未保存 → AUTO 既定
+    save_theme_mode(ThemeMode.LIGHT)
+    assert load_theme_mode() is ThemeMode.LIGHT
+    # 未知値 (手編集/旧バージョン) は AUTO へ silent フォールバック
+    from PySide6.QtCore import QSettings
+
+    from valisync.gui.theme import settings as theme_settings
+
+    QSettings(theme_settings._ORG, theme_settings._APP).setValue(
+        "theme_mode", "solarized"
+    )
+    assert load_theme_mode() is ThemeMode.AUTO
+
+
+def test_apply_startup_theme_resolves_saved_mode(qapp, monkeypatch):
+    """再起動反映のインプロセス実証: 保存 light → 起動解決で LIGHT active＋Latte パレット。"""  # noqa: RUF002
+    from PySide6.QtGui import QColor, QPalette
+
+    from valisync.gui.theme import apply as apply_mod
+    from valisync.gui.theme.apply import apply_startup_theme, save_theme_mode
+    from valisync.gui.theme.tokens import DARK, LIGHT, ThemeMode, active, set_active
+
+    save_theme_mode(ThemeMode.LIGHT)
+    monkeypatch.setattr(
+        apply_mod, "os_prefers_dark", lambda: True
+    )  # os は無視されるはず
+    try:
+        apply_startup_theme()
+        assert active() is LIGHT
+        assert qapp.palette().color(QPalette.ColorRole.Window) == QColor(
+            *LIGHT.colors.chrome_window.rgba
+        )
+    finally:
+        set_active(DARK)
+        apply_mod.apply_theme()
+
+
+def test_apply_startup_theme_forced_ignores_settings(qapp):
+    """forced は QSettings を読まない (spec §11.3 — 撮影スクリプトの強制注入口)。"""
+    from valisync.gui.theme import apply as apply_mod
+    from valisync.gui.theme.apply import apply_startup_theme, save_theme_mode
+    from valisync.gui.theme.tokens import DARK, LIGHT, ThemeMode, active, set_active
+
+    save_theme_mode(ThemeMode.DARK)
+    try:
+        apply_startup_theme(forced=ThemeMode.LIGHT)
+        assert active() is LIGHT
+        # ThemeTokens 直接注入 (--debug-theme 経路)
+        import dataclasses
+
+        alt = dataclasses.replace(DARK)
+        apply_startup_theme(forced=alt)
+        assert active() is alt
+    finally:
+        set_active(DARK)
+        apply_mod.apply_theme()
+
+
+def test_build_main_window_theme_override(qtbot):
+    """build_main_window(theme=...) が QSettings より優先される (spec §11.3)。"""
+    from valisync.gui.app import build_main_window
+    from valisync.gui.theme import apply as apply_mod
+    from valisync.gui.theme.apply import save_theme_mode
+    from valisync.gui.theme.tokens import DARK, LIGHT, ThemeMode, active, set_active
+
+    save_theme_mode(ThemeMode.DARK)
+    try:
+        window = build_main_window(theme=ThemeMode.LIGHT)
+        qtbot.addWidget(window)
+        assert active() is LIGHT
+    finally:
+        set_active(DARK)
+        apply_mod.apply_theme()

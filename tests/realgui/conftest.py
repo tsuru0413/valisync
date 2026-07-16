@@ -33,5 +33,10 @@ def _isolate_qsettings_realgui(request, monkeypatch):  # type: ignore[no-untyped
     monkeypatch.setattr(mw, "_APP", test_app)
     monkeypatch.setattr(rf, "_ORG", test_org)
     monkeypatch.setattr(rf, "_APP", test_app)
+
+    import valisync.gui.theme.settings as theme_settings
+
+    monkeypatch.setattr(theme_settings, "_ORG", test_org)
+    monkeypatch.setattr(theme_settings, "_APP", test_app)
     yield
     QSettings(test_org, test_app).clear()

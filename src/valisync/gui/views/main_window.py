@@ -20,7 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt
-from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
@@ -34,6 +34,8 @@ from PySide6.QtWidgets import (
 from valisync.core.loaders.csv_format_detector import CsvFormatDetector
 from valisync.core.models.format_def import FormatDefinition
 from valisync.core.session import LoadOutcome
+from valisync.gui.theme import apply as theme_apply
+from valisync.gui.theme.tokens import ThemeMode
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
 from valisync.gui.viewmodels.diagnostics_vm import DiagnosticsViewModel
@@ -176,6 +178,26 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.file_dock.toggleViewAction())
         view_menu.addAction(self.channel_dock.toggleViewAction())
         view_menu.addAction(self.diagnostics_dock.toggleViewAction())
+        view_menu.addSeparator()
+
+        # 増分4: テーマ三態 (再起動反映 — 選択は QSettings 保存のみ・spec §11)。
+        theme_menu = view_menu.addMenu("テーマ")
+        self._theme_group = QActionGroup(self)
+        self._theme_group.setExclusive(True)
+        current_mode = theme_apply.load_theme_mode()
+        for label, mode in (
+            ("ライト", ThemeMode.LIGHT),
+            ("ダーク", ThemeMode.DARK),
+            ("オート (OS に合わせる)", ThemeMode.AUTO),
+        ):
+            act = theme_menu.addAction(label)
+            act.setCheckable(True)
+            self._theme_group.addAction(act)
+            # setChecked は triggered 配線の前 (排他カスケード誤発火の構造回避 —
+            # gui_qactiongroup_exclusive_radio_menu の既存規約)
+            act.setChecked(mode is current_mode)
+            act.triggered.connect(lambda _=False, m=mode: self._on_theme_selected(m))
+
         view_menu.addSeparator()
         self.action_reset_layout = view_menu.addAction("Reset Layout")
         self.action_reset_layout.triggered.connect(self._reset_layout)
@@ -526,3 +548,15 @@ class MainWindow(QMainWindow):
         """Restore the default dock/toolbar arrangement captured at startup (SH-11)."""
         self.restoreState(self._default_state)
         self._apply_dock_corners()  # restoreState reset the FU-10 corner; re-apply
+
+    def _on_theme_selected(self, mode: ThemeMode) -> None:
+        """テーマ radio 選択 — 保存のみ。set_active/apply_theme は呼ばない (再起動反映)。"""
+        theme_apply.save_theme_mode(mode)
+        labels = {
+            ThemeMode.LIGHT: "ライト",
+            ThemeMode.DARK: "ダーク",
+            ThemeMode.AUTO: "オート",
+        }
+        self.statusBar().showMessage(
+            f"テーマを「{labels[mode]}」に変更しました。再起動で反映されます", 8000
+        )
