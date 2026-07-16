@@ -86,6 +86,20 @@ def test_dark_values_frozen_snapshot():
         "busy_spinner": Color(120, 160, 255),
         "text_releasing": Color(128, 128, 128),
         "preview_curve": Color.from_hex("#4FC3F7"),
+        # クロム (QPalette 写像・増分3 — 値はスパイクの Catppuccin 系初期値)
+        "chrome_window": Color.from_hex("#1e1e2e"),
+        "chrome_window_text": Color.from_hex("#cdd6f4"),
+        "chrome_base": Color.from_hex("#181825"),
+        "chrome_alternate_base": Color.from_hex("#1e1e2e"),
+        "chrome_text": Color.from_hex("#cdd6f4"),
+        "chrome_button": Color.from_hex("#313244"),
+        "chrome_button_text": Color.from_hex("#cdd6f4"),
+        "chrome_tooltip_base": Color.from_hex("#181825"),
+        "chrome_tooltip_text": Color.from_hex("#cdd6f4"),
+        "chrome_highlight": Color.from_hex("#89b4fa"),
+        "chrome_highlight_text": Color.from_hex("#11111b"),
+        "chrome_placeholder": Color.from_hex("#7f849c"),
+        "chrome_disabled_text": Color.from_hex("#6c7086"),
     }
     actual_colors = {
         f.name: getattr(DARK.colors, f.name) for f in dataclasses.fields(DARK.colors)
