@@ -23,28 +23,32 @@ def test_menu_reflects_saved_mode_without_saving(qtbot: QtBot, monkeypatch):
     save_theme_mode(ThemeMode.LIGHT)  # 本物で事前保存
     calls: list[object] = []
     monkeypatch.setattr(apply_mod, "save_theme_mode", lambda m: calls.append(m))
-    window = build_main_window()
-    qtbot.addWidget(window)
-    acts = _theme_actions(window)
-    assert acts["ライト"].isChecked()
-    assert not acts["ダーク"].isChecked()
-    assert calls == []  # 構築では保存が一度も呼ばれない
-    set_active(DARK)
-    apply_mod.apply_theme()
+    try:
+        window = build_main_window()
+        qtbot.addWidget(window)
+        acts = _theme_actions(window)
+        assert acts["ライト"].isChecked()
+        assert not acts["ダーク"].isChecked()
+        assert calls == []  # 構築では保存が一度も呼ばれない
+    finally:
+        set_active(DARK)
+        apply_mod.apply_theme()
 
 
 def test_select_saves_but_does_not_change_active(qtbot: QtBot):
     """選択は保存＋ステータスのみ — active()/画面は不変 (再起動反映)。"""  # noqa: RUF002
-    window = build_main_window()  # 未保存 → AUTO 既定
-    qtbot.addWidget(window)
-    before = active()
-    acts = _theme_actions(window)
-    acts["ライト"].trigger()
-    assert load_theme_mode() is ThemeMode.LIGHT
-    assert active() is before  # 即適用しない
-    assert "再起動" in window.statusBar().currentMessage()
-    # 排他: ライトを選ぶとオートが unchecked
-    assert acts["ライト"].isChecked()
-    assert not acts["オート (OS に合わせる)"].isChecked()
-    set_active(DARK)
-    apply_mod.apply_theme()
+    try:
+        window = build_main_window()  # 未保存 → AUTO 既定
+        qtbot.addWidget(window)
+        before = active()
+        acts = _theme_actions(window)
+        acts["ライト"].trigger()
+        assert load_theme_mode() is ThemeMode.LIGHT
+        assert active() is before  # 即適用しない
+        assert "再起動" in window.statusBar().currentMessage()
+        # 排他: ライトを選ぶとオートが unchecked
+        assert acts["ライト"].isChecked()
+        assert not acts["オート (OS に合わせる)"].isChecked()
+    finally:
+        set_active(DARK)
+        apply_mod.apply_theme()

@@ -142,6 +142,11 @@ def test_build_ground_truth_card_embeds_png_as_data_uri():
 
     assert base64.b64encode(png).decode("ascii") in html
     assert "02_plotted" in html
+    # Light ラベル対応の検証
+    assert (
+        '<!-- @dsCard group="Ground Truth / Light" -->'
+        in export.build_ground_truth_card("01_welcome", png, "Light").splitlines()[0]
+    )
 
 
 def test_build_manifest_records_sha_hash_and_paths():
@@ -158,6 +163,10 @@ def test_build_manifest_records_sha_hash_and_paths():
     assert "abc1234" in html
     assert hashlib.sha256(tokens_json.encode("utf-8")).hexdigest() in html
     assert "cards/readout_chip.html" in html
+    # Light ラベル対応の検証
+    assert export.build_manifest("abc1234", tokens_json, [], "Light").splitlines()[
+        0
+    ] == ('<!-- @dsCard group="Meta / Light" -->')
 
 
 def test_card_wrapper_uses_theme_chrome_colors():
