@@ -15,8 +15,9 @@
    テキスト断片は `theme/qss.py` の生成関数を追加して使う。
 4. **呼び出し時読み** — `tokens.active()` を使用時に読む。module 定数・default 引数へ
    束縛しない（デバッグテーマ・将来のテーマ切替が効かなくなる）。
-5. **ダーク単一（拡張可能構造）** — 値セットは DARK のみ。ライトは将来 ThemeTokens
-   インスタンス追加で対応（切替 UI は未実装・YAGNI）。
+5. **テーマ三態（ライト/ダーク/オート）** — 値セットは DARK（Mocha 系）と LIGHT（Latte 系）。
+   View>テーマ で選択（QSettings 永続・既定オート=OS 追従）。**反映は再起動時**（オートの
+   OS 追従も次回起動）。プロット面とその上の描画トークンはテーマ非依存（黒キャンバス据え置き）。
 
 ## トークンの意味（カテゴリ概要）
 
@@ -39,14 +40,19 @@
 2. **承認**: 採用案を決める。
 3. **反映**: `tokens.py` の値変更＋`tests/gui/test_theme_tokens.py` の golden 更新＋本書
    に決定理由を追記。クロム系の初回だけ `apply.py` の構造作業を伴う（spec §8 増分3）。
-4. **再生成**:
+4. **再生成**: DARK/LIGHT 双方を撮影・出力する（テーマごとに独立ディレクトリ）。
    ```bash
-   uv run python scripts/capture_ui_screenshots.py --out design_export/screenshots_catalog --catalog
-   uv run python scripts/export_design_tokens.py
+   uv run python scripts/capture_ui_screenshots.py --out design_export/screenshots_catalog_dark --theme dark --catalog
+   uv run python scripts/export_design_tokens.py --theme dark
+
+   uv run python scripts/capture_ui_screenshots.py --out design_export/screenshots_catalog_light --theme light --catalog
+   uv run python scripts/export_design_tokens.py --theme light
    ```
    → DesignSync で増分同期（`list_files` でリモートと突合 → `finalize_plan` →
    `write_files`。常にコンポーネント単位・丸ごと置換しない・push 前に `get_project` で
-   design-system 型を検証）。同期集合は `meta/manifest.html` 記載のファイル一覧が真実 —
+   design-system 型を検証）。**同期対象は `design_export/dark/` と `design_export/light/`
+   の2ツリー**（テーマごとに独立した `tokens`/`cards`/`proposals`/`ground_truth`/`meta` 一式）。
+   同期集合は各ツリーの `meta/manifest.html` 記載のファイル一覧が真実 —
    リモート `list_files` にあってローカルバンドルに無いパスは改名/削除の残骸なので
    `delete_files` で消す（エクスポータはローカル側の残骸を毎回 purge する）。
 5. **照合**: Ground Truth（新スクショ）と Components（意図したデザイン）を見比べ、

@@ -2,8 +2,10 @@
 
 theme/export.py (純粋コア) の出力を design_export/ へ書き出す薄い層。
 使い方:
-    uv run python scripts/export_design_tokens.py
-    (--out design_export --screenshots design_export/screenshots_catalog が既定。
+    uv run python scripts/export_design_tokens.py --theme dark
+    uv run python scripts/export_design_tokens.py --theme light
+    (--out design_export・--theme dark が既定。--screenshots は
+     design_export/screenshots_catalog_{theme} が既定。出力先は design_export/{theme}/。
      --sha 省略時は git rev-parse --short HEAD)
 """
 
