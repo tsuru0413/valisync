@@ -254,6 +254,7 @@ def test_cli_writes_full_bundle(tmp_path):
         "dark/cards/readout_chip.html",
         "dark/cards/affordances.html",
         "dark/cards/error_states.html",
+        "dark/icons/overview.html",
         "dark/ground_truth/01_welcome.html",
         "dark/meta/manifest.html",
     ]:
@@ -289,3 +290,33 @@ def test_build_css_covers_every_token_field():
         assert export.css_var_name("radius", f.name) + ":" in css
     assert css.count("--vs-font-") == len(dataclasses.fields(DARK.typography))
     assert "--vs-grid-alpha:" in css
+
+
+def test_build_icons_card_embeds_all_registry_svgs():
+    from valisync.gui.theme.icons import ICONS
+
+    html = export.build_icons_card(DARK, "Dark")
+    assert html.splitlines()[0] == '<!-- @dsCard group="Icons / Dark" -->'
+    assert "@TOKENS_CSS" not in html  # 注入済み
+    assert html.count("<svg") >= len(ICONS) * 2  # Normal+Disabled
+    for name, rel in ICONS.items():
+        assert name in html
+        assert rel.split("/")[0] in html  # 出所 (lucide 等)
+    assert "var(--vs-color-chrome-text)" in html
+    assert "var(--vs-color-chrome-disabled-text)" in html
+
+
+def test_icons_card_import_stays_pure():
+    """build_icons_card 実呼出し — icons レジストリ関数内 import まで踏む (spec §12.2 I2)。"""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; from valisync.gui.theme.export import build_icons_card; "
+        "from valisync.gui.theme.tokens import DARK; "
+        "build_icons_card(DARK, 'Dark'); "
+        "bad = [m for m in sys.modules if m.startswith(('PySide6', 'pyqtgraph'))]; "
+        "sys.exit(1 if bad else 0)"
+    )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr

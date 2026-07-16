@@ -66,7 +66,7 @@ def main() -> int:
     # 自出力の purge — 改名/削除時の陳腐化ファイル残留(ゴーストカード)を防ぐ。
     # root (自テーマ subtree) 配下のみ消す: 他テーマ subtree・--screenshots
     # (撮影成果物) は --out 直下の兄弟のため巻き込まない。
-    for sub in ("tokens", "cards", "proposals", "ground_truth", "meta"):
+    for sub in ("tokens", "cards", "proposals", "ground_truth", "meta", "icons"):
         shutil.rmtree(root / sub, ignore_errors=True)
     for top in ("tokens.css", "tokens.json"):
         (root / top).unlink(missing_ok=True)
@@ -82,6 +82,9 @@ def main() -> int:
     for rel, html in export.build_token_cards(t, theme_label).items():
         _write(root / rel, html)
         written.append(rel)
+
+    _write(root / "icons" / "overview.html", export.build_icons_card(t, theme_label))
+    written.append("icons/overview.html")
 
     cards_dir = REPO / "design" / "cards"
     for tpl in sorted(cards_dir.glob("*.html")):

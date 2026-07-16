@@ -28,6 +28,11 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# setuptools 既定は .py 以外を wheel から落とす。dev/CI は editable install のため
+# 欠落が無症状 (false-green) だが、wheel 配布時にアイコン参照が全滅する (spec §12.2)。
+"valisync.gui.theme" = ["icons/**/*.svg", "icons/LICENSES.md"]
+
 [project.scripts]
 valisync = "valisync.gui.app:main"
 

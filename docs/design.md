@@ -32,6 +32,15 @@
 | フィードバック | `error` / `busy_spinner` / `text_releasing` / `preview_curve` | 検証エラー・非同期状態 |
 | 寸法 | `spacing.*` / `radii.*` / `typography.small_px` / `grid_alpha` | チップ余白・角丸・縮小ラベル・グリッド透過 |
 
+## アイコン
+
+ツールバー/メニューのアイコンは `src/valisync/gui/theme/icons/` の vendored SVG
+（主 Lucide・補 Tabler — 出所とライセンスは同ディレクトリの LICENSES.md）を、
+実行時に `currentColor` → トークン（Normal=`chrome_text`・Disabled=`chrome_disabled_text`）
+置換で着色する（`theme/icons.py` の意味名レジストリ）。テーマに自動追従し、
+カタログの Icons カードで両モードを確認できる。SVG に固定色を持ち込まない
+（`tests/gui/test_theme_icons.py` が検証）。
+
 ## 運用ループ（1 反復 = 1 feature ブランチ）
 
 1. **検討**: claude.ai/design のプロジェクト「valisync-design」でカードを見ながら議論。
