@@ -27,16 +27,19 @@ def _write(path: Path, text: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, default=REPO / "design_export")
-    parser.add_argument(
-        "--screenshots",
-        type=Path,
-        default=REPO / "design_export" / "screenshots_catalog",
-    )
+    parser.add_argument("--screenshots", type=Path, default=None)
+    parser.add_argument("--theme", choices=["dark", "light"], default="dark")
     parser.add_argument("--sha", default=None)
     args = parser.parse_args()
+    args.screenshots = args.screenshots or (
+        args.out / f"screenshots_catalog_{args.theme}"
+    )
 
     from valisync.gui.theme import export
-    from valisync.gui.theme.tokens import DARK
+    from valisync.gui.theme.tokens import DARK, LIGHT
+
+    theme_label = "Light" if args.theme == "light" else "Dark"
+    t = LIGHT if args.theme == "light" else DARK
 
     if args.sha:
         sha = args.sha
@@ -56,39 +59,44 @@ def main() -> int:
             )
             return 2
 
+    root = args.out / args.theme
+
     # 自出力の purge — 改名/削除時の陳腐化ファイル残留(ゴーストカード)を防ぐ。
-    # --out 全体は消さない: 既定では --screenshots (撮影成果物) が中に居るため。
+    # root (自テーマ subtree) 配下のみ消す: 他テーマ subtree・--screenshots
+    # (撮影成果物) は --out 直下の兄弟のため巻き込まない。
     for sub in ("tokens", "cards", "proposals", "ground_truth", "meta"):
-        shutil.rmtree(args.out / sub, ignore_errors=True)
+        shutil.rmtree(root / sub, ignore_errors=True)
     for top in ("tokens.css", "tokens.json"):
-        (args.out / top).unlink(missing_ok=True)
+        (root / top).unlink(missing_ok=True)
 
     written: list[str] = []
 
-    _write(args.out / "tokens.css", export.build_css(DARK))
+    _write(root / "tokens.css", export.build_css(t))
     written.append("tokens.css")
-    tokens_json = export.build_json(DARK)
-    _write(args.out / "tokens.json", tokens_json)
+    tokens_json = export.build_json(t)
+    _write(root / "tokens.json", tokens_json)
     written.append("tokens.json")
 
-    for rel, html in export.build_token_cards(DARK).items():
-        _write(args.out / rel, html)
+    for rel, html in export.build_token_cards(t, theme_label).items():
+        _write(root / rel, html)
         written.append(rel)
 
     cards_dir = REPO / "design" / "cards"
     for tpl in sorted(cards_dir.glob("*.html")):
-        html = export.inject_tokens_css(tpl.read_text(encoding="utf-8"), DARK)
-        _write(args.out / "cards" / tpl.name, html)
+        html = export.inject_tokens_css(tpl.read_text(encoding="utf-8"), t)
+        _write(root / "cards" / tpl.name, html)
         written.append(f"cards/{tpl.name}")
     for tpl in sorted((REPO / "design" / "proposals").glob("*.html")):
-        html = export.inject_tokens_css(tpl.read_text(encoding="utf-8"), DARK)
-        _write(args.out / "proposals" / tpl.name, html)
+        html = export.inject_tokens_css(tpl.read_text(encoding="utf-8"), t)
+        _write(root / "proposals" / tpl.name, html)
         written.append(f"proposals/{tpl.name}")
 
     if args.screenshots.is_dir():
         for png in sorted(args.screenshots.glob("*.png")):
-            html = export.build_ground_truth_card(png.stem, png.read_bytes())
-            _write(args.out / "ground_truth" / f"{png.stem}.html", html)
+            html = export.build_ground_truth_card(
+                png.stem, png.read_bytes(), theme_label
+            )
+            _write(root / "ground_truth" / f"{png.stem}.html", html)
             written.append(f"ground_truth/{png.stem}.html")
     else:
         print(
@@ -97,11 +105,11 @@ def main() -> int:
         )
 
     _write(
-        args.out / "meta" / "manifest.html",
-        export.build_manifest(sha, tokens_json, written),
+        root / "meta" / "manifest.html",
+        export.build_manifest(sha, tokens_json, written, theme_label),
     )
     written.append("meta/manifest.html")
-    print(f"exported {len(written)} files -> {args.out}")
+    print(f"exported {len(written)} files -> {root}")
     return 0
 
 

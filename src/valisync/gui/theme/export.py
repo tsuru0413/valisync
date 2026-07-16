@@ -90,15 +90,16 @@ def inject_tokens_css(template: str, t: ThemeTokens) -> str:
 
 
 def _card(group: str, title: str, body: str, t: ThemeTokens) -> str:
+    c = t.colors
     template = (
         f'<!-- @dsCard group="{group}" -->\n'
         "<!doctype html>\n"
         '<html lang="ja"><head><meta charset="utf-8">\n'
         f"<title>{title}</title>\n"
         "<!-- @TOKENS_CSS -->\n"
-        "<style>body{background:#1e1e2e;color:#cdd6f4;font-family:sans-serif;"
-        "margin:16px} table{border-collapse:collapse} td,th{padding:4px 10px;"
-        "text-align:left;font-size:13px}</style>\n"
+        f"<style>body{{background:{c.chrome_window.hex};color:{c.chrome_text.hex};"
+        "font-family:sans-serif;margin:16px} table{border-collapse:collapse} "
+        "td,th{padding:4px 10px;text-align:left;font-size:13px}</style>\n"
         f"</head><body>\n<h2>{title}</h2>\n{body}\n</body></html>\n"
     )
     return inject_tokens_css(template, t)
@@ -113,7 +114,7 @@ def _swatch_row(label: str, var: str, meta: str) -> str:
     )
 
 
-def build_token_cards(t: ThemeTokens) -> dict[str, str]:
+def build_token_cards(t: ThemeTokens, theme_label: str) -> dict[str, str]:
     rows: list[str] = []
     for f in dataclasses.fields(t.colors):
         v = getattr(t.colors, f.name)
@@ -157,18 +158,24 @@ def build_token_cards(t: ThemeTokens) -> dict[str, str]:
     )
 
     return {
-        "tokens/colors.html": _card("Tokens", "Colors", colors_body, t),
-        "tokens/spacing.html": _card("Tokens", "Spacing / Radii", spacing_body, t),
-        "tokens/typography.html": _card("Tokens", "Typography", typo_body, t),
+        "tokens/colors.html": _card(
+            f"Tokens / {theme_label}", "Colors", colors_body, t
+        ),
+        "tokens/spacing.html": _card(
+            f"Tokens / {theme_label}", "Spacing / Radii", spacing_body, t
+        ),
+        "tokens/typography.html": _card(
+            f"Tokens / {theme_label}", "Typography", typo_body, t
+        ),
     }
 
 
-def build_ground_truth_card(name: str, png_bytes: bytes) -> str:
+def build_ground_truth_card(name: str, png_bytes: bytes, theme_label: str) -> str:
     import base64
 
     uri = "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
     return (
-        '<!-- @dsCard group="Ground Truth" -->\n'
+        f'<!-- @dsCard group="Ground Truth / {theme_label}" -->\n'
         "<!doctype html>\n"
         '<html lang="ja"><head><meta charset="utf-8">\n'
         f"<title>{name}</title>\n"
@@ -177,13 +184,15 @@ def build_ground_truth_card(name: str, png_bytes: bytes) -> str:
     )
 
 
-def build_manifest(sha: str, tokens_json: str, paths: list[str]) -> str:
+def build_manifest(
+    sha: str, tokens_json: str, paths: list[str], theme_label: str
+) -> str:
     import hashlib
 
     digest = hashlib.sha256(tokens_json.encode("utf-8")).hexdigest()
     items = "".join(f"<li><code>{p}</code></li>" for p in sorted(paths))
     return (
-        '<!-- @dsCard group="Meta" -->\n'
+        f'<!-- @dsCard group="Meta / {theme_label}" -->\n'
         "<!doctype html>\n"
         '<html lang="ja"><head><meta charset="utf-8"><title>Sync Manifest</title>\n'
         "<style>body{font-family:sans-serif;font-size:13px;margin:16px}</style>\n"
