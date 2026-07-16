@@ -8,7 +8,15 @@ import sys
 
 import pytest
 
-from valisync.gui.theme.tokens import DARK, Color, active, set_active
+from valisync.gui.theme.tokens import (
+    DARK,
+    LIGHT,
+    Color,
+    ThemeMode,
+    active,
+    resolve_theme,
+    set_active,
+)
 
 
 def test_color_hex_roundtrip():
@@ -147,3 +155,73 @@ def test_tokens_module_is_qt_free():
     )
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_theme_mode_values_are_settings_strings():
+    assert ThemeMode.LIGHT.value == "light"
+    assert ThemeMode.DARK.value == "dark"
+    assert ThemeMode.AUTO.value == "auto"
+
+
+def test_resolve_theme_all_branches():
+    """AUTO のみ os を参照・LIGHT/DARK は os 無視 (spec §11.2)。"""
+    assert resolve_theme(ThemeMode.AUTO, os_prefers_dark=True) is DARK
+    assert resolve_theme(ThemeMode.AUTO, os_prefers_dark=False) is LIGHT
+    assert resolve_theme(ThemeMode.LIGHT, os_prefers_dark=True) is LIGHT
+    assert resolve_theme(ThemeMode.LIGHT, os_prefers_dark=False) is LIGHT
+    assert resolve_theme(ThemeMode.DARK, os_prefers_dark=True) is DARK
+    assert resolve_theme(ThemeMode.DARK, os_prefers_dark=False) is DARK
+
+
+def test_light_plot_pinned_tokens_match_dark():
+    """プロット面据え置きトークンは両テーマ同値 (spec §11.4 — 黒キャンバス上の視認性)。"""
+    pinned = [
+        "plot_background",
+        "plot_foreground",
+        "signal_palette",
+        "cursor_a",
+        "cursor_b",
+        "accent_active",
+        "accent_active_dark",
+        "grip_fill",
+        "drop_highlight",
+        "axis_move_indicator",
+        "axis_move_fill",
+        "preview_curve",
+    ]
+    for name in pinned:
+        assert getattr(LIGHT.colors, name) == getattr(DARK.colors, name), name
+    assert LIGHT.spacing is DARK.spacing
+    assert LIGHT.radii is DARK.radii
+    assert LIGHT.typography is DARK.typography
+    assert LIGHT.grid_alpha == DARK.grid_alpha
+
+
+def test_light_values_frozen_snapshot():
+    """LIGHT 全テーマ化トークンの意図的 test-lock (Latte 初期値・再デザイン反復で更新)。"""
+    c = LIGHT.colors
+    golden = {
+        "surface_chip": Color(220, 224, 232, 230),
+        "border_chip": Color.from_hex("#bcc0cc"),
+        "text_primary": Color.from_hex("#4c4f69"),
+        "text_secondary": Color.from_hex("#8c8fa1"),
+        "close_hover": Color.from_hex("#d20f39"),
+        "error": Color.from_hex("#c0392b"),
+        "busy_spinner": Color(30, 102, 245),
+        "text_releasing": Color(128, 128, 128),
+        "chrome_window": Color.from_hex("#eff1f5"),
+        "chrome_window_text": Color.from_hex("#4c4f69"),
+        "chrome_base": Color.from_hex("#e6e9ef"),
+        "chrome_alternate_base": Color.from_hex("#eff1f5"),
+        "chrome_text": Color.from_hex("#4c4f69"),
+        "chrome_button": Color.from_hex("#ccd0da"),
+        "chrome_button_text": Color.from_hex("#4c4f69"),
+        "chrome_tooltip_base": Color.from_hex("#e6e9ef"),
+        "chrome_tooltip_text": Color.from_hex("#4c4f69"),
+        "chrome_highlight": Color.from_hex("#1e66f5"),
+        "chrome_highlight_text": Color.from_hex("#dce0e8"),
+        "chrome_placeholder": Color.from_hex("#8c8fa1"),
+        "chrome_disabled_text": Color.from_hex("#9ca0b0"),
+    }
+    for name, expected in golden.items():
+        assert getattr(c, name) == expected, name

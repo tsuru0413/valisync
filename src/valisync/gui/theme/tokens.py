@@ -10,6 +10,7 @@ pure Python (PySide6/pyqtgraph import 禁止) — pure-Python VM から import
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 
 @dataclass(frozen=True)
@@ -186,6 +187,72 @@ DARK = ThemeTokens(
     typography=Typography(small_px=9),
     grid_alpha=60,
 )
+
+
+LIGHT = ThemeTokens(
+    colors=Colors(
+        # ── プロット面据え置き (spec §11.4 — 黒キャンバス上の視認性・両テーマ共通) ──
+        plot_background=DARK.colors.plot_background,
+        plot_foreground=DARK.colors.plot_foreground,
+        signal_palette=DARK.colors.signal_palette,
+        cursor_a=DARK.colors.cursor_a,
+        cursor_b=DARK.colors.cursor_b,
+        accent_active=DARK.colors.accent_active,
+        accent_active_dark=DARK.colors.accent_active_dark,
+        grip_fill=DARK.colors.grip_fill,
+        drop_highlight=DARK.colors.drop_highlight,
+        axis_move_indicator=DARK.colors.axis_move_indicator,
+        axis_move_fill=DARK.colors.axis_move_fill,
+        preview_curve=DARK.colors.preview_curve,
+        # ── テーマ化 (Catppuccin Latte — Mocha との役割対応で写像) ──────────────
+        surface_chip=Color(220, 224, 232, 230),
+        border_chip=Color.from_hex("#bcc0cc"),
+        text_primary=Color.from_hex("#4c4f69"),
+        text_secondary=Color.from_hex("#8c8fa1"),
+        close_hover=Color.from_hex("#d20f39"),
+        error=Color.from_hex("#c0392b"),
+        busy_spinner=Color(30, 102, 245),
+        text_releasing=Color(128, 128, 128),
+        chrome_window=Color.from_hex("#eff1f5"),
+        chrome_window_text=Color.from_hex("#4c4f69"),
+        chrome_base=Color.from_hex("#e6e9ef"),
+        chrome_alternate_base=Color.from_hex("#eff1f5"),
+        chrome_text=Color.from_hex("#4c4f69"),
+        chrome_button=Color.from_hex("#ccd0da"),
+        chrome_button_text=Color.from_hex("#4c4f69"),
+        chrome_tooltip_base=Color.from_hex("#e6e9ef"),
+        chrome_tooltip_text=Color.from_hex("#4c4f69"),
+        chrome_highlight=Color.from_hex("#1e66f5"),
+        chrome_highlight_text=Color.from_hex("#dce0e8"),
+        chrome_placeholder=Color.from_hex("#8c8fa1"),
+        chrome_disabled_text=Color.from_hex("#9ca0b0"),
+    ),
+    spacing=DARK.spacing,
+    radii=DARK.radii,
+    typography=DARK.typography,
+    grid_alpha=DARK.grid_alpha,
+)
+
+
+class ThemeMode(Enum):
+    """テーマ選択 (値は QSettings 保存形の文字列・spec §11.2)。"""
+
+    LIGHT = "light"
+    DARK = "dark"
+    AUTO = "auto"
+
+
+def resolve_theme(mode: ThemeMode, os_prefers_dark: bool) -> ThemeTokens:
+    """mode と OS スキームからテーマセットを解決する純関数 (spec §11.2)。
+
+    AUTO のみ os_prefers_dark を参照する。LIGHT/DARK は明示選択なので無視。
+    """
+    if mode is ThemeMode.LIGHT:
+        return LIGHT
+    if mode is ThemeMode.DARK:
+        return DARK
+    return DARK if os_prefers_dark else LIGHT
+
 
 _active: ThemeTokens = DARK
 
