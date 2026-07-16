@@ -28,6 +28,9 @@ def test_svgs_use_current_color_only():
         text = path.read_text(encoding="utf-8")
         assert "currentColor" in text, path.name
         assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgb\(", text), path.name
+        # fill/stroke 属性はホワイトリスト方式 — hsl()/named color も遮断
+        for m in re.finditer(r'(?:fill|stroke)="([^"]+)"', text):
+            assert m.group(1) in ("none", "currentColor"), (path.name, m.group(1))
 
 
 def test_licenses_md_covers_every_svg():
@@ -118,5 +121,8 @@ def test_shell_actions_use_registry_icons(qtbot):
         assert not acts.action(key).icon().isNull(), key
     # ピクセルがトークン色 (QStyle 由来の多色アイコンからの置換確認)
     c = active().colors
-    img = acts.action("open").icon().pixmap(24, 24).toImage()
-    assert _has_pixel_near(img, (c.chrome_text.r, c.chrome_text.g, c.chrome_text.b))
+    for key in ("open", "open_folder", "export"):
+        img = acts.action(key).icon().pixmap(24, 24).toImage()
+        assert _has_pixel_near(
+            img, (c.chrome_text.r, c.chrome_text.g, c.chrome_text.b)
+        ), key

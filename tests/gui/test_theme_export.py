@@ -254,6 +254,7 @@ def test_cli_writes_full_bundle(tmp_path):
         "dark/cards/readout_chip.html",
         "dark/cards/affordances.html",
         "dark/cards/error_states.html",
+        "dark/icons/overview.html",
         "dark/ground_truth/01_welcome.html",
         "dark/meta/manifest.html",
     ]:
