@@ -71,6 +71,9 @@ def main() -> int:
     )
 
     app = QApplication(sys.argv)
+    # テキストキャレットの点滅を無効化 — blink 位相の撮影レースで focus 中の
+    # QLineEdit に 1px 縦線の非決定差分が出る (region-frames T5 で 20px 実測)
+    app.setCursorFlashTime(0)
 
     from valisync.core.models import Delimiter, FormatDefinition
     from valisync.gui.app import build_main_window
