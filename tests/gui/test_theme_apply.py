@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pyqtgraph as pg
 from PySide6.QtWidgets import QWidget
 
@@ -336,3 +339,25 @@ def test_frame_region_border_paints_on_child_widget(qtbot):
         if img.pixelColor(x, y).rgb() == frame_color
     )
     assert hits >= 100, f"枠線ピクセルが不足 ({hits}) — 枠が描画されていない"
+
+
+def test_apply_theme_applies_fusion_style_fresh_process():
+    """Fusion 適用の回帰ガード (レビュー Important 対応)。
+
+    QSS 設定後は style().objectName() が '' に壊れるため既存 qapp では検証不能。
+    fresh interpreter で separator QSS を空に patch し (styleSheet ガードが
+    素通りしてラップが起きない)、初回適用の Fusion を直接観測する。
+    setStyle コード路が実行されたことは property vs_fusion_applied で検証
+    (offscreen は fusion が default ゆえ objectName 検査は不十分)。
+    """
+    code = (
+        "import os; os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen'); "
+        "import sys; from PySide6.QtWidgets import QApplication; "
+        "app = QApplication(sys.argv); "
+        "from valisync.gui.theme import apply as apply_mod, qss; "
+        "qss.main_window_separator = lambda t=None: ''; "
+        "apply_mod.apply_theme(); "
+        "sys.exit(0 if app.property('vs_fusion_applied') else 1)"
+    )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
