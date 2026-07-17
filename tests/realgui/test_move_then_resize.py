@@ -24,11 +24,11 @@ import pytest
 from pytestqt.qtbot import QtBot
 
 from tests.realgui._realgui_input import (
-    LDOWN,
     LUP,
     MOVE,
     at,
     drive_qdrag,
+    press_grip_and_confirm,
     skip_unless_real_display,
     to_phys,
 )
@@ -97,19 +97,21 @@ def test_first_resize_after_axis_move_works(qtbot: QtBot, tmp_path: Path) -> Non
     spine0_h_before = view._y_axes[0].sceneBoundingRect().height()
 
     # ── Immediately grip-resize axis 0 (still active) — FIRST attempt only ──
-    # Small uniform steps keep the threshold-crossing inside the thin grip band.
+    # 交差確認プロトコル (press_grip_and_confirm docstring 参照): 停滞した
+    # post-QDrag 状態でドラッグが始まらなければ confirm timeout で loud-fail
+    # するため「1回目の press で効く」という本テストの回帰意図は保存される。
     spine = view._y_axes[0].sceneBoundingRect()
     R = view._view_boxes[0].sceneBoundingRect()
     gx, gy = to_phys(view, spine.center().x(), spine.bottom() - 2)
     tx, ty = to_phys(view, spine.center().x(), R.y() + 0.30 * R.height())
-    at(gx, gy, LDOWN)
-    time.sleep(0.05)
-    dy = ty - gy
-    n = max(2, (abs(dy) + 7) // 8)
-    for k in range(1, n + 1):
-        at(gx, gy + dy * k // n, MOVE)
-        QApplication.processEvents()
-        time.sleep(0.02)
+    press_grip_and_confirm(view, 0, "bottom", gx, gy)
+    # 分類確定後は絶対追従 — 中間1点→目標で release。
+    at(gx, (gy + ty) // 2, MOVE)
+    QApplication.processEvents()
+    time.sleep(0.02)
+    at(tx, ty, MOVE)
+    QApplication.processEvents()
+    time.sleep(0.02)
     at(tx, ty, LUP)
     for _ in range(5):
         QApplication.processEvents()
