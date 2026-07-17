@@ -3,7 +3,8 @@
 増分3: クロム = Fusion スタイル + トークン由来 QPalette (スパイクで確定)。
 QPalette の 12 role を chrome_* トークンへ写像する。
 QSS 上書きは qss.py の生成関数経由 (separator は app レベル・領域枠は frame_region)。
-冪等: 同値 set の繰り返しは安全 (Fusion は未適用時のみ setStyle)。
+冪等: 同値 set の繰り返しは安全 (Fusion は property フラグで初回のみ setStyle —
+QSS 設定後は style().objectName() が壊れるため)。
 生成済みウィジェットの pg 設定へは遡及しないため build_main_window の先頭
 (ウィジェット構築前) で呼ぶ。QApplication 不在の文脈では pg 設定のみ。
 """
@@ -55,8 +56,11 @@ def apply_theme(t: tokens.ThemeTokens | None = None) -> None:
     pg.setConfigOption("foreground", tt.colors.plot_foreground.rgba)
     app = QApplication.instance()
     if isinstance(app, QApplication):
-        if app.style().objectName() != "fusion":
+        # QSS 設定後は style().objectName() が '' になる (QStyleSheetStyle ラップ・
+        # 再 setStyle でも回復しない実測) — 初回判定は property フラグで行う
+        if not app.property("vs_fusion_applied"):
             app.setStyle("Fusion")
+            app.setProperty("vs_fusion_applied", True)
         app.setPalette(build_palette(tt))
         # 領域境界: separator は app レベル QSS でしか描けない (palette 非対応)
         # 冪等: 同一内容なら setStyleSheet を呼ばず (Qt 副作用回避)

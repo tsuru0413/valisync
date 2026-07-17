@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import pyqtgraph as pg
+from PySide6.QtWidgets import QWidget
 
 from valisync.gui.theme.apply import apply_theme
 from valisync.gui.theme.tokens import DARK
+
+
+class _RegionProbe(QWidget):
+    """素の QWidget サブクラス — plain QWidget は Qt が特別扱いし WA なしでも
+    QSS を描くため、WA_StyledBackground の sabotage 検出には subclass が必須
+    (PR #116 の対象条件・production の配線先 view もサブクラス)。"""
 
 
 def test_apply_sets_pg_options_idempotently(qapp):
@@ -237,6 +244,16 @@ def test_build_main_window_theme_override(qtbot):
         apply_mod.apply_theme()
 
 
+def test_apply_theme_does_not_rebuild_style_on_repeat(qapp):
+    """2回目の apply_theme が setStyle を再実行しない (QSS 設定後 objectName が
+    '' になる実測に対する property フラグ判定の回帰ガード)。setStyle が走ると
+    style() が別インスタンスに置き換わるため、参照保持＋is で観測する。"""  # noqa: RUF002
+    apply_theme()
+    style_before = qapp.style()  # 参照保持 (id 再利用フレーク回避)
+    apply_theme()
+    assert qapp.style() is style_before
+
+
 def test_apply_theme_sets_separator_stylesheet(qapp):
     apply_theme()
     sheet = qapp.styleSheet()
@@ -284,8 +301,13 @@ def test_frame_region_preserves_existing_name_and_margins(qtbot):
 def test_frame_region_border_paints_on_child_widget(qtbot):
     """honest ピクセル: 枠が『子ウィジェットとして』実描画される (PR #116 蛍光緑親パターン)。
 
+    probe は QWidget サブクラス (_RegionProbe) — 素の QWidget は Qt が特別扱いし
+    WA_StyledBackground なしでも QSS を描いてしまうため sabotage を検出できない。
+    production の配線先 (FileBrowserView 等) もサブクラスであり、この条件が
+    PR #116 の対象そのもの。
+
     sabotage 構成: frame_region の WA_StyledBackground 行を外すと枠は描かれず
-    RED になる (素の QWidget 子は QSS border を描かない Qt 仕様 — 増分1 で実証)。
+    RED になる (増分1 で実証)。
     """
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QColor
@@ -298,7 +320,7 @@ def test_frame_region_border_paints_on_child_widget(qtbot):
     parent.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
     parent.resize(200, 120)
     qtbot.addWidget(parent)
-    child = QWidget(parent)
+    child = _RegionProbe(parent)
     QVBoxLayout(child).setContentsMargins(0, 0, 0, 0)
     child.setGeometry(20, 20, 100, 60)
     frame_region(child, "region_pixel_probe")
