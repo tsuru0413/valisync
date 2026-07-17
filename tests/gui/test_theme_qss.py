@@ -88,3 +88,31 @@ def test_drop_highlight_builders_reference_drop_highlight_not_palette0():
     for style in (qss.panel_drop_highlight(alt), qss.area_drop_highlight(alt)):
         assert Color(1, 2, 3).hex in style
         assert DARK.colors.signal_palette[0].hex not in style
+
+
+def test_region_boundary_styles_use_chrome_frame():
+    s = qss.main_window_separator(DARK)
+    assert "QMainWindow::separator" in s
+    assert DARK.colors.chrome_frame.hex in s
+    assert "width: 4px" in s and "height: 4px" in s
+    f = qss.region_frame("region_central", DARK)
+    assert f.startswith("#region_central")
+    assert f"border: 1px solid {DARK.colors.chrome_frame.hex}" in f
+
+
+def test_region_frame_uses_chrome_frame_not_border_chip():
+    """chrome_frame は border_chip と同値の別トークン (DARK #45475a / LIGHT #bcc0cc)。
+
+    値ベース assert は誤配線 (builder が border_chip を参照) に盲目 — 値を
+    分岐させたテーマで消費トークンを直接実証する (spec §4)。
+    """
+    import dataclasses
+
+    from valisync.gui.theme.tokens import Color
+
+    alt = dataclasses.replace(
+        DARK, colors=dataclasses.replace(DARK.colors, chrome_frame=Color(1, 2, 3))
+    )
+    for style in (qss.main_window_separator(alt), qss.region_frame("x", alt)):
+        assert Color(1, 2, 3).hex in style
+        assert DARK.colors.border_chip.hex not in style
