@@ -22,6 +22,8 @@ def test_build_main_window_applies_theme(qtbot):
     main() でなく build_main_window に置く理由 = pytest-qt/realgui/撮影
     スクリプトが同じ描画経路を通るため (spec §4.3)。
     """
+    from PySide6.QtGui import QColor, QPalette
+
     from valisync.gui.app import build_main_window
 
     pg.setConfigOption("background", "w")
@@ -29,11 +31,16 @@ def test_build_main_window_applies_theme(qtbot):
     qtbot.addWidget(window)
     assert pg.getConfigOption("background") == DARK.colors.plot_background.rgba
     assert pg.getConfigOption("foreground") == DARK.colors.plot_foreground.rgba
-    # r3: build_main_window 経由でクロムも Fusion+トークンパレットになる
+    # r3: build_main_window 経由で palette と separator stylesheet が適用
     import PySide6.QtWidgets as _qtw
 
     app = _qtw.QApplication.instance()
-    assert app is not None and app.style().objectName() == "fusion"
+    assert app is not None
+    # palette の特性で Fusion style の適用を検証 (setStyleSheet 副作用対応)
+    assert app.palette().color(QPalette.ColorRole.Window) == QColor(
+        *DARK.colors.chrome_window.rgba
+    )
+    assert "QMainWindow::separator" in app.styleSheet()
 
 
 def test_build_palette_maps_all_chrome_tokens(qapp):
@@ -73,12 +80,17 @@ def test_apply_sets_fusion_style_and_palette(qapp):
     from PySide6.QtGui import QColor, QPalette
 
     apply_theme()
-    assert qapp.style().objectName() == "fusion"
+    # style の特性検証: palette が正しく適用されているか (setStyleSheet の副作用対応)
     assert qapp.palette().color(QPalette.ColorRole.Window) == QColor(
         *DARK.colors.chrome_window.rgba
     )
-    apply_theme()  # 冪等 — 2度呼んでも fusion のまま・例外なし
-    assert qapp.style().objectName() == "fusion"
+    # separator stylesheet が app に設定されている
+    assert "QMainWindow::separator" in qapp.styleSheet()
+    apply_theme()  # 冪等 — 2度呼んでも palette 一貫・stylesheet 重複なし
+    assert qapp.palette().color(QPalette.ColorRole.Window) == QColor(
+        *DARK.colors.chrome_window.rgba
+    )
+    assert qapp.styleSheet().count("QMainWindow::separator") == 1
 
 
 def test_build_palette_role_mapping_with_distinct_values():
@@ -223,3 +235,82 @@ def test_build_main_window_theme_override(qtbot):
     finally:
         set_active(DARK)
         apply_mod.apply_theme()
+
+
+def test_apply_theme_sets_separator_stylesheet(qapp):
+    apply_theme()
+    sheet = qapp.styleSheet()
+    assert "QMainWindow::separator" in sheet
+    assert DARK.colors.chrome_frame.hex in sheet
+    apply_theme()  # 冪等 — 同一文字列の再設定で規則が重複しない
+    assert qapp.styleSheet().count("QMainWindow::separator") == 1
+
+
+def test_frame_region_sets_name_attribute_margins_and_qss(qtbot):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    from valisync.gui.theme.apply import frame_region
+
+    w = QWidget()
+    qtbot.addWidget(w)
+    QVBoxLayout(w).setContentsMargins(0, 0, 0, 0)
+    frame_region(w, "region_test")
+    assert w.objectName() == "region_test"
+    assert w.testAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+    m = w.layout().contentsMargins()
+    assert (m.left(), m.top(), m.right(), m.bottom()) == (1, 1, 1, 1)
+    assert "#region_test" in w.styleSheet()
+    assert DARK.colors.chrome_frame.hex in w.styleSheet()
+
+
+def test_frame_region_preserves_existing_name_and_margins(qtbot):
+    """objectName 既設なら尊重・余白が非ゼロ (既定余白等) なら不変 (spec §6.2)。"""
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    from valisync.gui.theme.apply import frame_region
+
+    w = QWidget()
+    qtbot.addWidget(w)
+    w.setObjectName("already_named")
+    QVBoxLayout(w).setContentsMargins(9, 9, 9, 9)
+    frame_region(w, "region_ignored")
+    assert w.objectName() == "already_named"
+    m = w.layout().contentsMargins()
+    assert (m.left(), m.top(), m.right(), m.bottom()) == (9, 9, 9, 9)
+    assert "#already_named" in w.styleSheet()
+
+
+def test_frame_region_border_paints_on_child_widget(qtbot):
+    """honest ピクセル: 枠が『子ウィジェットとして』実描画される (PR #116 蛍光緑親パターン)。
+
+    sabotage 構成: frame_region の WA_StyledBackground 行を外すと枠は描かれず
+    RED になる (素の QWidget 子は QSS border を描かない Qt 仕様 — 増分1 で実証)。
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    from valisync.gui.theme.apply import frame_region
+
+    parent = QWidget()
+    parent.setStyleSheet("background: #00ff00;")  # 蛍光緑 — 枠が透けたら即検出
+    parent.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+    parent.resize(200, 120)
+    qtbot.addWidget(parent)
+    child = QWidget(parent)
+    QVBoxLayout(child).setContentsMargins(0, 0, 0, 0)
+    child.setGeometry(20, 20, 100, 60)
+    frame_region(child, "region_pixel_probe")
+    parent.show()
+    img = parent.grab().toImage()
+    # grab() は物理ピクセル (DPR≠1 で論理座標の点打ちは枠線 1px を外す) —
+    # 枠色ピクセルの計数で描画を実証する (この scene で chrome_frame 色は枠のみ)
+    frame_color = QColor(*DARK.colors.chrome_frame.rgba).rgb()
+    hits = sum(
+        1
+        for y in range(img.height())
+        for x in range(img.width())
+        if img.pixelColor(x, y).rgb() == frame_color
+    )
+    assert hits >= 100, f"枠線ピクセルが不足 ({hits}) — 枠が描画されていない"
