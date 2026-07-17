@@ -361,3 +361,21 @@ def test_apply_theme_applies_fusion_style_fresh_process():
     )
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_main_window_regions_have_boundary_frames(qtbot):
+    """4領域 (file/channel/diagnostics/central) に境界枠が配線される (spec §7)。"""
+    from valisync.gui.app import build_main_window
+
+    window = build_main_window()
+    qtbot.addWidget(window)
+    regions = {
+        "region_file_browser": window.file_browser_view,
+        "region_channel_browser": window.channel_browser_view,
+        "region_diagnostics": window.diagnostics_dock.widget(),
+        "region_central": window.central_stack,
+    }
+    for name, w in regions.items():
+        assert w.objectName() == name, name
+        assert f"#{name}" in w.styleSheet(), name
+        assert DARK.colors.chrome_frame.hex in w.styleSheet(), name
