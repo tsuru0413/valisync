@@ -152,6 +152,12 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.central_stack)
         self._update_central()
 
+        # ── 領域境界フレーム (region-frames spec §7) — 対象はシェルが選ぶ ──────
+        theme_apply.frame_region(self.file_browser_view, "region_file_browser")
+        theme_apply.frame_region(self.channel_browser_view, "region_channel_browser")
+        theme_apply.frame_region(self.diagnostics_dock.widget(), "region_diagnostics")
+        theme_apply.frame_region(self.central_stack, "region_central")
+
         # ── ShellActions (QAction レジストリ) ────────────────────────────────
         self.shell_actions = ShellActions(self)
         self.shell_actions.action("open").triggered.connect(self.open_file)

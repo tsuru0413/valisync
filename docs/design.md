@@ -30,6 +30,7 @@
 | アクティブ強調 | `accent_active` / `accent_active_dark` / `grip_fill` | アクティブ軸/パネルの amber 系 |
 | インタラクション | `drop_highlight` / `axis_move_indicator` / `axis_move_fill` | D&D・軸移動の一時表示 |
 | フィードバック | `error` / `busy_spinner` / `text_releasing` / `preview_curve` | 検証エラー・非同期状態 |
+| 領域境界 | `chrome_frame` | separator と4領域（File/Channel/Diagnostics/中央）の 1px 枠。`apply.frame_region` — どの領域に付けるかはシェルの責務 |
 | 寸法 | `spacing.*` / `radii.*` / `typography.small_px` / `grid_alpha` | チップ余白・角丸・縮小ラベル・グリッド透過 |
 
 ## アイコン
@@ -87,4 +88,7 @@
 
 運用ループ手順3で採用した決定をここに追記する（日付・変更トークン・理由・PR）。
 
-- （まだ無し — 最初の再デザイン反復で記録開始）
+- 2026-07-17: `chrome_frame` 新設（surface1 系初期値・`border_chip` と同値の別役割）。
+  4領域境界の視認性改善 — スパイク実機比較（現状／A separator のみ／B 1px 枠／C 背景差＋枠）
+  でユーザーが B を選択（配色不変を優先・C は将来反復で再検討可）。設計は
+  [region-frames spec](superpowers/specs/2026-07-17-region-frames-design.md)。PR #123。

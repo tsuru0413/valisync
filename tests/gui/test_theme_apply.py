@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pyqtgraph as pg
+from PySide6.QtWidgets import QWidget
 
 from valisync.gui.theme.apply import apply_theme
 from valisync.gui.theme.tokens import DARK
+
+
+class _RegionProbe(QWidget):
+    """素の QWidget サブクラス — plain QWidget は Qt が特別扱いし WA なしでも
+    QSS を描くため、WA_StyledBackground の sabotage 検出には subclass が必須
+    (PR #116 の対象条件・production の配線先 view もサブクラス)。"""
 
 
 def test_apply_sets_pg_options_idempotently(qapp):
@@ -22,6 +32,8 @@ def test_build_main_window_applies_theme(qtbot):
     main() でなく build_main_window に置く理由 = pytest-qt/realgui/撮影
     スクリプトが同じ描画経路を通るため (spec §4.3)。
     """
+    from PySide6.QtGui import QColor, QPalette
+
     from valisync.gui.app import build_main_window
 
     pg.setConfigOption("background", "w")
@@ -29,11 +41,16 @@ def test_build_main_window_applies_theme(qtbot):
     qtbot.addWidget(window)
     assert pg.getConfigOption("background") == DARK.colors.plot_background.rgba
     assert pg.getConfigOption("foreground") == DARK.colors.plot_foreground.rgba
-    # r3: build_main_window 経由でクロムも Fusion+トークンパレットになる
+    # r3: build_main_window 経由で palette と separator stylesheet が適用
     import PySide6.QtWidgets as _qtw
 
     app = _qtw.QApplication.instance()
-    assert app is not None and app.style().objectName() == "fusion"
+    assert app is not None
+    # palette の特性で Fusion style の適用を検証 (setStyleSheet 副作用対応)
+    assert app.palette().color(QPalette.ColorRole.Window) == QColor(
+        *DARK.colors.chrome_window.rgba
+    )
+    assert "QMainWindow::separator" in app.styleSheet()
 
 
 def test_build_palette_maps_all_chrome_tokens(qapp):
@@ -73,12 +90,17 @@ def test_apply_sets_fusion_style_and_palette(qapp):
     from PySide6.QtGui import QColor, QPalette
 
     apply_theme()
-    assert qapp.style().objectName() == "fusion"
+    # style の特性検証: palette が正しく適用されているか (setStyleSheet の副作用対応)
     assert qapp.palette().color(QPalette.ColorRole.Window) == QColor(
         *DARK.colors.chrome_window.rgba
     )
-    apply_theme()  # 冪等 — 2度呼んでも fusion のまま・例外なし
-    assert qapp.style().objectName() == "fusion"
+    # separator stylesheet が app に設定されている
+    assert "QMainWindow::separator" in qapp.styleSheet()
+    apply_theme()  # 冪等 — 2度呼んでも palette 一貫・stylesheet 重複なし
+    assert qapp.palette().color(QPalette.ColorRole.Window) == QColor(
+        *DARK.colors.chrome_window.rgba
+    )
+    assert qapp.styleSheet().count("QMainWindow::separator") == 1
 
 
 def test_build_palette_role_mapping_with_distinct_values():
@@ -95,7 +117,7 @@ def test_build_palette_role_mapping_with_distinct_values():
     chrome_fields = [
         f.name for f in dataclasses.fields(DARK.colors) if f.name.startswith("chrome_")
     ]
-    assert len(chrome_fields) == 13
+    assert len(chrome_fields) == 14  # chrome_frame は QSS 専用 (palette 非写像)
     repl = {
         name: Color(i + 1, (i * 7 + 3) % 256, (i * 13 + 5) % 256)
         for i, name in enumerate(chrome_fields)
@@ -223,3 +245,137 @@ def test_build_main_window_theme_override(qtbot):
     finally:
         set_active(DARK)
         apply_mod.apply_theme()
+
+
+def test_apply_theme_does_not_rebuild_style_on_repeat(qapp):
+    """2回目の apply_theme が setStyle を再実行しない (QSS 設定後 objectName が
+    '' になる実測に対する property フラグ判定の回帰ガード)。setStyle が走ると
+    style() が別インスタンスに置き換わるため、参照保持＋is で観測する。"""  # noqa: RUF002
+    apply_theme()
+    style_before = qapp.style()  # 参照保持 (id 再利用フレーク回避)
+    apply_theme()
+    assert qapp.style() is style_before
+
+
+def test_apply_theme_sets_separator_stylesheet(qapp):
+    apply_theme()
+    sheet = qapp.styleSheet()
+    assert "QMainWindow::separator" in sheet
+    assert DARK.colors.chrome_frame.hex in sheet
+    apply_theme()  # 冪等 — 同一文字列の再設定で規則が重複しない
+    assert qapp.styleSheet().count("QMainWindow::separator") == 1
+
+
+def test_frame_region_sets_name_attribute_margins_and_qss(qtbot):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    from valisync.gui.theme.apply import frame_region
+
+    w = QWidget()
+    qtbot.addWidget(w)
+    QVBoxLayout(w).setContentsMargins(0, 0, 0, 0)
+    frame_region(w, "region_test")
+    assert w.objectName() == "region_test"
+    assert w.testAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+    m = w.layout().contentsMargins()
+    assert (m.left(), m.top(), m.right(), m.bottom()) == (1, 1, 1, 1)
+    assert "#region_test" in w.styleSheet()
+    assert DARK.colors.chrome_frame.hex in w.styleSheet()
+
+
+def test_frame_region_preserves_existing_name_and_margins(qtbot):
+    """objectName 既設なら尊重・余白が非ゼロ (既定余白等) なら不変 (spec §6.2)。"""
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    from valisync.gui.theme.apply import frame_region
+
+    w = QWidget()
+    qtbot.addWidget(w)
+    w.setObjectName("already_named")
+    QVBoxLayout(w).setContentsMargins(9, 9, 9, 9)
+    frame_region(w, "region_ignored")
+    assert w.objectName() == "already_named"
+    m = w.layout().contentsMargins()
+    assert (m.left(), m.top(), m.right(), m.bottom()) == (9, 9, 9, 9)
+    assert "#already_named" in w.styleSheet()
+
+
+def test_frame_region_border_paints_on_child_widget(qtbot):
+    """honest ピクセル: 枠が『子ウィジェットとして』実描画される (PR #116 蛍光緑親パターン)。
+
+    probe は QWidget サブクラス (_RegionProbe) — 素の QWidget は Qt が特別扱いし
+    WA_StyledBackground なしでも QSS を描いてしまうため sabotage を検出できない。
+    production の配線先 (FileBrowserView 等) もサブクラスであり、この条件が
+    PR #116 の対象そのもの。
+
+    sabotage 構成: frame_region の WA_StyledBackground 行を外すと枠は描かれず
+    RED になる (増分1 で実証)。
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    from valisync.gui.theme.apply import frame_region
+
+    parent = QWidget()
+    parent.setStyleSheet("background: #00ff00;")  # 蛍光緑 — 枠が透けたら即検出
+    parent.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+    parent.resize(200, 120)
+    qtbot.addWidget(parent)
+    child = _RegionProbe(parent)
+    QVBoxLayout(child).setContentsMargins(0, 0, 0, 0)
+    child.setGeometry(20, 20, 100, 60)
+    frame_region(child, "region_pixel_probe")
+    parent.show()
+    img = parent.grab().toImage()
+    # grab() は物理ピクセル (DPR≠1 で論理座標の点打ちは枠線 1px を外す) —
+    # 枠色ピクセルの計数で描画を実証する (この scene で chrome_frame 色は枠のみ)
+    frame_color = QColor(*DARK.colors.chrome_frame.rgba).rgb()
+    hits = sum(
+        1
+        for y in range(img.height())
+        for x in range(img.width())
+        if img.pixelColor(x, y).rgb() == frame_color
+    )
+    assert hits >= 100, f"枠線ピクセルが不足 ({hits}) — 枠が描画されていない"
+
+
+def test_apply_theme_applies_fusion_style_fresh_process():
+    """Fusion 適用の回帰ガード (レビュー Important 対応)。
+
+    QSS 設定後は style().objectName() が '' に壊れるため既存 qapp では検証不能。
+    fresh interpreter で separator QSS を空に patch し (styleSheet ガードが
+    素通りしてラップが起きない)、初回適用の Fusion を直接観測する。
+    setStyle コード路が実行されたことは property vs_fusion_applied で検証
+    (offscreen は fusion が default ゆえ objectName 検査は不十分)。
+    """
+    code = (
+        "import os; os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen'); "
+        "import sys; from PySide6.QtWidgets import QApplication; "
+        "app = QApplication(sys.argv); "
+        "from valisync.gui.theme import apply as apply_mod, qss; "
+        "qss.main_window_separator = lambda t=None: ''; "
+        "apply_mod.apply_theme(); "
+        "sys.exit(0 if app.property('vs_fusion_applied') else 1)"
+    )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_main_window_regions_have_boundary_frames(qtbot):
+    """4領域 (file/channel/diagnostics/central) に境界枠が配線される (spec §7)。"""
+    from valisync.gui.app import build_main_window
+
+    window = build_main_window()
+    qtbot.addWidget(window)
+    regions = {
+        "region_file_browser": window.file_browser_view,
+        "region_channel_browser": window.channel_browser_view,
+        "region_diagnostics": window.diagnostics_dock.widget(),
+        "region_central": window.central_stack,
+    }
+    for name, w in regions.items():
+        assert w.objectName() == name, name
+        assert f"#{name}" in w.styleSheet(), name
+        assert DARK.colors.chrome_frame.hex in w.styleSheet(), name

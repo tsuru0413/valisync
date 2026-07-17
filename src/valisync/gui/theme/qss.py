@@ -84,3 +84,19 @@ def rename_error_border(t: tokens.ThemeTokens | None = None) -> str:
 
 def error_label(t: tokens.ThemeTokens | None = None) -> str:
     return f"color: {_t(t).colors.error.hex};"
+
+
+def main_window_separator(t: tokens.ThemeTokens | None = None) -> str:
+    """ドック間/ドック↔中央のリサイズハンドルを境界線として描く (app レベル)。
+
+    幅 4px は Fusion 既定より僅かに狭い (スパイクで目視承認・掴み幅は十分)。
+    """
+    return (
+        f"QMainWindow::separator {{ background: {_t(t).colors.chrome_frame.hex};"
+        " width: 4px; height: 4px; }"
+    )
+
+
+def region_frame(object_name: str, t: tokens.ThemeTokens | None = None) -> str:
+    """領域コンテンツの 1px 境界枠 (ID セレクタで子への波及を遮断 — PR #116 の流儀)。"""
+    return f"#{object_name} {{ border: 1px solid {_t(t).colors.chrome_frame.hex}; }}"
