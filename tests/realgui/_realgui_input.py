@@ -78,6 +78,62 @@ def key(vk: int, *, down: bool = True, up: bool = True) -> None:
         _user32.keybd_event(vk, 0, KEYUP, 0)
 
 
+def press_grip_and_confirm(view, axis_idx: int, edge: str, gx: int, gy: int) -> None:
+    """LDOWN at a Y-axis grip, then jiggle a small IN-BAND move until pyqtgraph
+    has started the drag AND classified it as this grip.
+
+    The zone is classified exactly once, at the first *delivered* move past the
+    drag threshold (GraphicsScene moveDistance=5 logical px). pyqtgraph's
+    mouseRateLimit drops moves closer than its window (10ms at the default
+    100/s) and Qt compresses queued moves under load, so fixed-step driving can
+    make the first delivered move land 2+ steps (>=12.8 logical px) from the
+    press — outside the ~12px grip band — and the one-shot classification
+    mis-routes the gesture to zoom/pan (machine-load-dependent flake: 0/4 even
+    on main, diagnosed 2026-07-17 with per-step OS-echo/drag-event/zone
+    instrumentation). Jiggling ±1px around an in-band point until the
+    classification observable confirms pins the crossing inside the band
+    structurally. Only after confirmation may the cursor leave the band:
+    grip tracking is absolute per event (the finish event updates the edge
+    too), so later move coalescing is harmless.
+
+    ``scene.dragButtons`` guards against a false-positive from hover: hover
+    also writes ``_zone``, so the zone alone can read as the grip before the
+    drag has actually started.
+    """
+    import pytest
+
+    from valisync.gui.views.graph_panel_view import (
+        AXZONE_GRIP_BOTTOM,
+        AXZONE_GRIP_TOP,
+    )
+
+    expected = AXZONE_GRIP_TOP if edge == "top" else AXZONE_GRIP_BOTTOM
+    axis = view._y_axes[axis_idx]
+    scene = view.plot_widget.scene()
+    # 7 logical px into the band: past the threshold (5), and press(2px inside
+    # the spine edge) + 7 stays under the 12px band even at DPR 1.0.
+    j = round(7 * view.devicePixelRatioF())
+    jiggle_y = gy + j if edge == "top" else gy - j
+    at(gx, gy, LDOWN)
+    QApplication.processEvents()
+    time.sleep(0.05)
+    deadline = time.monotonic() + 3.0
+    n = 0
+    while time.monotonic() < deadline:
+        # 同一点への SetCursorPos は WM_MOUSEMOVE を生まない → ±1px 交互
+        at(gx, jiggle_y + (n % 2), MOVE)
+        n += 1
+        QApplication.processEvents()
+        if scene.dragButtons and getattr(axis, "_zone", None) == expected:
+            return
+        time.sleep(0.02)
+    at(gx, jiggle_y, LUP)  # 失敗時もボタンを離してから落とす (後続テスト保護)
+    pytest.fail(
+        f"grip drag crossing not confirmed (zone={getattr(axis, '_zone', None)},"
+        f" dragButtons={scene.dragButtons}, jiggles={n})"
+    )
+
+
 def wheel(x: float, y: float, delta: int) -> None:
     """カーソルを物理 (x, y) へ置き、実 OS ホイールを delta だけ回す。
 
