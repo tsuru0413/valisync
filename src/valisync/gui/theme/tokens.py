@@ -97,6 +97,7 @@ class Colors:
     chrome_highlight_text: Color
     chrome_placeholder: Color
     chrome_disabled_text: Color
+    chrome_frame: Color  # 領域境界線 (separator+1px枠) — border_chip と同値だが別役割
 
 
 @dataclass(frozen=True)
@@ -175,6 +176,7 @@ DARK = ThemeTokens(
         chrome_highlight_text=Color.from_hex("#11111b"),
         chrome_placeholder=Color.from_hex("#7f849c"),
         chrome_disabled_text=Color.from_hex("#6c7086"),
+        chrome_frame=Color.from_hex("#45475a"),
     ),
     spacing=Spacing(
         chip_margins=(6, 5, 6, 5),
@@ -226,6 +228,7 @@ LIGHT = ThemeTokens(
         chrome_highlight_text=Color.from_hex("#dce0e8"),
         chrome_placeholder=Color.from_hex("#8c8fa1"),
         chrome_disabled_text=Color.from_hex("#9ca0b0"),
+        chrome_frame=Color.from_hex("#bcc0cc"),
     ),
     spacing=DARK.spacing,
     radii=DARK.radii,

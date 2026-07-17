@@ -95,7 +95,7 @@ def test_build_palette_role_mapping_with_distinct_values():
     chrome_fields = [
         f.name for f in dataclasses.fields(DARK.colors) if f.name.startswith("chrome_")
     ]
-    assert len(chrome_fields) == 13
+    assert len(chrome_fields) == 14  # chrome_frame は QSS 専用 (palette 非写像)
     repl = {
         name: Color(i + 1, (i * 7 + 3) % 256, (i * 13 + 5) % 256)
         for i, name in enumerate(chrome_fields)
