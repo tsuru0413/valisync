@@ -10,10 +10,10 @@ import pytest
 from pytestqt.qtbot import QtBot
 
 from tests.realgui._realgui_input import (
-    LDOWN,
     LUP,
     MOVE,
     at,
+    press_grip_and_confirm,
     skip_unless_real_display,
     to_phys,
 )
@@ -63,12 +63,14 @@ def test_grip_drag_resizes_only_active_axis(qtbot: QtBot, tmp_path: Path) -> Non
     # Drag the bottom grip UP to SHRINK axis 0. Growing it by dragging DOWN is
     # correctly impossible here: model B never pushes the neighbour, and with two
     # contiguous axes there is no gap below axis 0 to grow into.
-    at(gx, gy, LDOWN)
-    time.sleep(0.05)
-    for k in range(1, 6):  # drag UP ~60px
-        at(gx, gy - k * 12, MOVE)
-        QApplication.processEvents()
-        time.sleep(0.03)
+    press_grip_and_confirm(view, 0, "bottom", gx, gy)
+    # 分類確定後は絶対追従 — 中間1点を経て目標 (~60px UP) で release。
+    at(gx, gy - 30, MOVE)
+    QApplication.processEvents()
+    time.sleep(0.02)
+    at(gx, gy - 60, MOVE)
+    QApplication.processEvents()
+    time.sleep(0.02)
     at(gx, gy - 60, LUP)
     for _ in range(4):
         QApplication.processEvents()
@@ -130,18 +132,14 @@ def test_grips_track_cursor_to_target(qtbot: QtBot, tmp_path: Path) -> None:
         grip_y = spine.top() + 2 if edge == "top" else spine.bottom() - 2
         gx, gy = to_phys(view, grip_x, grip_y)
         tx, ty = to_phys(view, grip_x, R.y() + target_ratio * R.height())
-        at(gx, gy, LDOWN)
-        time.sleep(0.05)
-        # Move to the target in small uniform steps (~8 phys px each). The zone is
-        # classified once, when pyqtgraph crosses its drag threshold; a single large
-        # first jump would cross it OUTSIDE the ~12px grip band and mis-route the
-        # gesture as zoom/pan. Small steps keep that first crossing inside the grip.
-        dy = ty - gy
-        n = max(2, (abs(dy) + 7) // 8)
-        for k in range(1, n + 1):
-            at(gx, gy + dy * k // n, MOVE)
-            QApplication.processEvents()
-            time.sleep(0.02)
+        press_grip_and_confirm(view, axis_idx, edge, gx, gy)
+        # 分類確定後は絶対追従 (finish イベントも edge を更新) — 中間1点→目標で release。
+        at(gx, (gy + ty) // 2, MOVE)
+        QApplication.processEvents()
+        time.sleep(0.02)
+        at(tx, ty, MOVE)
+        QApplication.processEvents()
+        time.sleep(0.02)
         at(tx, ty, LUP)
         for _ in range(4):
             QApplication.processEvents()

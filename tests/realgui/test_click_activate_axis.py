@@ -23,6 +23,7 @@ from tests.realgui._realgui_input import (
     LUP,
     MOVE,
     at,
+    press_grip_and_confirm,
     skip_unless_real_display,
     to_phys,
 )
@@ -111,16 +112,18 @@ def test_click_activation_enables_grip_resize(qtbot: QtBot, tmp_path: Path) -> N
     assert view._active_axis_index == 1, "click did not activate axis 1"
 
     # Subsequent real grip drag: axis 1's TOP grip dragged DOWN shrinks axis 1
-    # (model B: neighbour untouched, gap absorbs). Small uniform steps keep the
-    # first threshold crossing inside the grip band (see test_active_axis_resize).
+    # (model B: neighbour untouched, gap absorbs). 交差確認プロトコルで閾値交差を
+    # grip 帯内に固定する (press_grip_and_confirm docstring 参照)。
     spine1 = view._y_axes[1].sceneBoundingRect()
     gx, gy = to_phys(view, spine1.center().x(), spine1.top() + 2)
-    at(gx, gy, LDOWN)
-    time.sleep(0.05)
-    for k in range(1, 6):  # drag DOWN ~60px
-        at(gx, gy + k * 12, MOVE)
-        QApplication.processEvents()
-        time.sleep(0.03)
+    press_grip_and_confirm(view, 1, "top", gx, gy)
+    # 分類確定後は絶対追従 — 中間1点を経て目標 (~60px DOWN) で release。
+    at(gx, gy + 30, MOVE)
+    QApplication.processEvents()
+    time.sleep(0.02)
+    at(gx, gy + 60, MOVE)
+    QApplication.processEvents()
+    time.sleep(0.02)
     at(gx, gy + 60, LUP)
     for _ in range(4):
         QApplication.processEvents()
