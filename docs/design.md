@@ -91,4 +91,4 @@
 - 2026-07-17: `chrome_frame` 新設（surface1 系初期値・`border_chip` と同値の別役割）。
   4領域境界の視認性改善 — スパイク実機比較（現状／A separator のみ／B 1px 枠／C 背景差＋枠）
   でユーザーが B を選択（配色不変を優先・C は将来反復で再検討可）。設計は
-  [region-frames spec](superpowers/specs/2026-07-17-region-frames-design.md)。PR #TBD。
+  [region-frames spec](superpowers/specs/2026-07-17-region-frames-design.md)。PR #123。
