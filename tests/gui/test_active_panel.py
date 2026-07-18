@@ -220,3 +220,30 @@ def test_frame_disappears_when_second_panel_removed(
     only = area.tabs.widget(0).widget(0)  # type: ignore[attr-defined]
     assert vm.active_panel_index(0) == 0
     assert not only._active_frame.isVisible()
+
+
+def test_frames_independent_across_tabs(qtbot: QtBot, session: Session) -> None:
+    """タブ独立判定: タブA=1枚は枠なし・タブB=2枚はアクティブのみ枠 (spec §2)。"""
+    vm = GraphAreaVM(AppViewModel(session))
+    area = GraphAreaView(vm, panel_factory=lambda p: GraphPanelView(p))
+    qtbot.addWidget(area)
+    area.show()
+    qtbot.waitExposed(area)
+
+    # タブA (既存) = 1枚、タブB を追加
+    tab_b_index = vm.add_tab()  # 自動でアクティブ化+インデックス返す
+    vm.add_panel(tab_b_index)  # タブB を2枚に
+
+    # タブA = 1枚のパネル (枠なし)
+    only_a = area.tabs.widget(0).widget(0)  # type: ignore[attr-defined]
+
+    # タブB = 2枚のパネル (アクティブ=1は枠あり、非アクティブ=0は枠なし)
+    b0 = area.tabs.widget(tab_b_index).widget(0)  # type: ignore[attr-defined]
+    b1 = area.tabs.widget(tab_b_index).widget(1)  # type: ignore[attr-defined]
+
+    # タブA = 1枚 → 枠なし
+    assert not only_a._active_frame.isVisible()
+    # タブB = 2枚 → 新パネル (b1) が自動アクティブ化されたので枠あり
+    assert b1._active_frame.isVisible()
+    # タブB の非アクティブパネルは枠なし
+    assert not b0._active_frame.isVisible()
