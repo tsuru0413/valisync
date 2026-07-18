@@ -220,10 +220,16 @@ class GraphAreaView(QWidget):
         self._sync_active_frames()
 
     def _sync_active_frames(self) -> None:
-        """Re-apply the active-panel frame from VM state (rebuild 後と "active_panel")。"""
+        """Re-apply the active-panel frame from VM state (rebuild 後と "active_panel")。
+
+        枠はタブ内にパネルが2枚以上あるときのみ描く — 1枚ならアクティブは自明で
+        枠は情報を運ばない (増分A・DP15「1枚でも枠」を意図的に supersede)。
+        追跡/配送 (active_panel_index) は不変。
+        """
         for tab_index, panel_index, widget in self._panel_views:
             widget.set_panel_active(
                 panel_index == self.vm.active_panel_index(tab_index)
+                and len(self.vm.panels(tab_index)) >= 2
             )
 
     def _wire_panel(
