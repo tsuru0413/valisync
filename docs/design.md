@@ -113,4 +113,4 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   claude.ai/design 検討の持ち帰りメモ（2026-07-18 UIUX コンセプト）＋カード
   「コンセプトとメイン画面案」3a/4a。設計は
   [active-frame spec](superpowers/specs/2026-07-18-active-frame-multi-panel-design.md)。
-  PR #TBD（Task 4 で記入）。
+  PR #127。
