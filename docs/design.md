@@ -107,3 +107,10 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   4領域境界の視認性改善 — スパイク実機比較（現状／A separator のみ／B 1px 枠／C 背景差＋枠）
   でユーザーが B を選択（配色不変を優先・C は将来反復で再検討可）。設計は
   [region-frames spec](superpowers/specs/2026-07-17-region-frames-design.md)。PR #123。
+- 2026-07-19: アクティブパネル枠を複数プロット時のみに（トークン値変更なし・適用
+  条件のみ）。単一プロットの常時 amber 枠は情報を運ばず視線を奪う（UIUX 監査
+  課題C）— DP15「1枚でも枠（一貫性）」を意図的に supersede。出典:
+  claude.ai/design 検討の持ち帰りメモ（2026-07-18 UIUX コンセプト）＋カード
+  「コンセプトとメイン画面案」3a/4a。設計は
+  [active-frame spec](superpowers/specs/2026-07-18-active-frame-multi-panel-design.md)。
+  PR #TBD（Task 4 で記入）。
