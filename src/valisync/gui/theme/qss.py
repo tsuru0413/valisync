@@ -100,3 +100,13 @@ def main_window_separator(t: tokens.ThemeTokens | None = None) -> str:
 def region_frame(object_name: str, t: tokens.ThemeTokens | None = None) -> str:
     """領域コンテンツの 1px 境界枠 (ID セレクタで子への波及を遮断 — PR #116 の流儀)。"""
     return f"#{object_name} {{ border: 1px solid {_t(t).colors.chrome_frame.hex}; }}"
+
+
+def readout_panel(t: tokens.ThemeTokens | None = None) -> str:
+    """読み値ペインの面 (常設ドックテーブル背景)。"""
+    return f"#ReadoutPane {{ background: {_t(t).colors.surface_readout_panel.hex}; }}"
+
+
+def delta_value(color: tokens.Color) -> str:
+    """Δ 値ラベルの符号着色 (delta_positive/delta_negative を呼び出し側が選ぶ)。"""
+    return f"color: {color.hex};"
