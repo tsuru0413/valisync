@@ -343,29 +343,48 @@ def test_row_click_emits_entry_id(qtbot: QtBot):
     assert seen == [7]
 
 
-def test_delta_dy_sign_colors(qtbot: QtBot):
-    """Δy 正=delta_positive・負=delta_negative で着色 (値分岐せず DARK 値で存在確認)。"""
-    from valisync.core.statistics.range_stats import StatisticsResult
-    from valisync.gui.theme.tokens import active
+def test_delta_dy_sign_colors_value_diverged(qtbot: QtBot):
+    """Δy 正=delta_positive・負=delta_negative で着色。delta_negative は close_hover と
+    同値の別役割なので、値を分岐させたテーマで set_delta の呼び出し経路が
+    delta_negative(≠close_hover) を選ぶことを直接実証する(Task 1 レビュー Important
+    対応: delta_value は恒等関数で誤配線は呼び出し側=このコードにあるため、ここが
+    唯一の値分岐ガード)。"""
+    import dataclasses
 
-    w = CursorReadout()
-    qtbot.addWidget(w)
-    stats = StatisticsResult(mean=0, max=0, min=0, std=0, count=5)
-    w.set_delta(
-        1.0, 2.0,
-        [
-            DeltaReading("up", "#111", 1.0, 3.0, stats, True, entry_id=1),
-            DeltaReading("dn", "#222", 1.0, -3.0, stats, True, entry_id=2),
-        ],
+    from valisync.core.statistics.range_stats import StatisticsResult
+    from valisync.gui.theme.tokens import DARK, Color, set_active
+
+    # delta_negative を close_hover と別値へ分岐させたテーマを active に
+    alt = dataclasses.replace(
+        DARK,
+        colors=dataclasses.replace(
+            DARK.colors,
+            delta_negative=Color(1, 2, 3),
+            delta_positive=Color(4, 5, 6),
+        ),
     )
-    pos_hex = active().colors.delta_positive.hex
-    neg_hex = active().colors.delta_negative.hex
-    styles = w.dy_cell_styles()  # [(row_index, style_str), ...] 導入する introspection
-    assert any(pos_hex in s for _i, s in styles)
-    assert any(neg_hex in s for _i, s in styles)
+    set_active(alt)
+    try:
+        w = CursorReadout()
+        qtbot.addWidget(w)
+        stats = StatisticsResult(mean=0, max=0, min=0, std=0, count=5)
+        w.set_delta(
+            1.0, 2.0,
+            [
+                DeltaReading("up", "#111", 1.0, 3.0, stats, True, entry_id=1),
+                DeltaReading("dn", "#222", 1.0, -3.0, stats, True, entry_id=2),
+            ],
+        )
+        styles = w.dy_cell_styles()  # [(row_index, style_str), ...] introspection
+        joined = " ".join(s for _i, s in styles)
+        assert Color(4, 5, 6).hex in joined  # 正 → delta_positive
+        assert Color(1, 2, 3).hex in joined  # 負 → delta_negative
+        assert DARK.colors.close_hover.hex not in joined  # close_hover 誤配線でない
+    finally:
+        set_active(DARK)
 ```
 
-（`StatisticsResult` の実フィールドは既存 test_cursor_readout.py の import と生成に合わせる。`dy_cell_styles`/`placeholder_text`/`activate_row` は本タスクで導入する introspection/操作 API。）
+（`StatisticsResult` の実フィールドは既存 test_cursor_readout.py の import と生成に合わせる。`dy_cell_styles`/`placeholder_text`/`activate_row` は本タスクで導入する introspection/操作 API。この値分岐テストが Global Constraint「同値別役割2件は値分岐テスト必須」の delta_negative 分を担保する — Task 1 の恒等関数テストでは不足〔レビュー Important〕。）
 
 - [ ] **Step 2: RED 確認**
 
