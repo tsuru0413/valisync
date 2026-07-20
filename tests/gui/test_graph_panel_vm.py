@@ -2020,3 +2020,25 @@ def test_legacy_y_range_setter_marks_manual(
     vm.add_signal(key_big)
     vm.y_range = (0.0, 10.0)
     assert vm.axes[0].y_is_auto is False
+
+
+def test_overwrite_axis_resets_manual_range(vm_with_two_scales):
+    # spec §3.5-1: 総入替後の軸は旧内容の手動レンジを引き継がない。
+    vm, key_big, key_small = vm_with_two_scales
+    vm.add_signal(key_big)
+    vm.set_axis_range(0, 1000.0, 2000.0)
+    vm.overwrite_axis(key_small, 0)
+    assert vm.axes[0].y_is_auto is True
+    lo, hi = vm.axes[0].y_range
+    assert lo <= 0.0 and hi <= 200.0  # small にフィット (現行は 1000-2000 のまま fail)
+
+
+def test_placeholder_collapse_resets_manual_range(vm_with_two_scales):
+    # spec §3.5-2: 手動ズーム→全削除→追加で 1 本目が不可視にならない。
+    vm, key_big, key_small = vm_with_two_scales
+    vm.add_signal(key_big)
+    vm.set_axis_range(0, 1000.0, 2000.0)
+    vm.remove_entry(vm._plotted[0].entry_id)
+    assert vm.axes[0].y_is_auto is True and vm.axes[0].y_range is None
+    vm.add_signal(key_small)
+    assert vm.axes[0].y_range[1] <= 200.0

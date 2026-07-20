@@ -286,6 +286,11 @@ class GraphPanelVM(Observable):
         ``add_signal_to_axis`` (the Ctrl-add path) is left completely unchanged.
         """
         self._plotted = [e for e in self._plotted if e.axis_index != axis_index]
+        if 0 <= axis_index < len(self._axes):
+            ax = self._axes[axis_index]
+            # 内容総入替 — 旧内容に紐づく手動レンジは無意味 (spec §3.5-1)。
+            ax.y_range = None
+            ax.y_is_auto = True
         self.add_signal_to_axis(signal_key, axis_index)
 
     def create_new_axis(self, signal_key: str) -> None:
@@ -418,6 +423,10 @@ class GraphPanelVM(Observable):
             keep = self._axes[0] if self._axes else YAxisVM()
             keep.top_ratio, keep.height_ratio = 0.0, 1.0
             keep.column = self._column_count - 1
+            # 全削除 = 内容総入替の対称 — 旧手動レンジ/フラグを持ち越すと
+            # 空パネル 1 本目が off-scale で始まる (spec §3.5-2・レビュー捕捉)。
+            keep.y_range = None
+            keep.y_is_auto = True
             self._axes = [keep]
             return
         remap = {old: new for new, old in enumerate(used)}
