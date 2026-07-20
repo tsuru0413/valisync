@@ -28,8 +28,12 @@ def test_tall_pane_keeps_rows_compact_and_row_cells_aligned(qtbot: QtBot):
     w.set_global(
         1.0,
         [
-            CursorReading("A", "#111111", 10.0, True, entry_id=1, range_lo=0.0, range_hi=20.0),
-            CursorReading("B", "#222222", 30.0, True, entry_id=2, range_lo=0.0, range_hi=40.0),
+            CursorReading(
+                "A", "#111111", 10.0, True, entry_id=1, range_lo=0.0, range_hi=20.0
+            ),
+            CursorReading(
+                "B", "#222222", 30.0, True, entry_id=2, range_lo=0.0, range_hi=40.0
+            ),
         ],
     )
     for _ in range(3):
@@ -39,7 +43,9 @@ def test_tall_pane_keeps_rows_compact_and_row_cells_aligned(qtbot: QtBot):
     val_y = w._value_labels[0][0].geometry().center().y()
     assert abs(sw_y - val_y) <= 4, f"row0 swatch({sw_y}) と値({val_y}) が縦にずれている"
     # 上部圧縮: 最終行の底が host 高さの半分より十分上 (縦に散らばっていない)
-    assert w._swatch_labels[-1].geometry().bottom() < 250, "行が縦に広がって散らばっている"
+    assert w._swatch_labels[-1].geometry().bottom() < 250, (
+        "行が縦に広がって散らばっている"
+    )
 
 
 def test_pane_background_paints_as_child_widget(qtbot: QtBot):
