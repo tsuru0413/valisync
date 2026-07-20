@@ -209,6 +209,9 @@ class GraphPanelVM(Observable):
     @y_range.setter
     def y_range(self, val: tuple[float, float] | None) -> None:
         if self._axes and val is not None:
+            # Legacy single-axis setter (set_y_range routes through this) —
+            # a manual write, so mark axis 0 non-auto (Stage A).
+            self._axes[0].y_is_auto = False
             self._axes[0].set_range(val[0], val[1])
 
     @property
@@ -238,8 +241,8 @@ class GraphPanelVM(Observable):
     def add_signal(self, signal_key: str) -> None:
         """Append *signal_key* to the plot with the next palette colour.
 
-        Auto-fits x_range and y_range to the union of all plotted signals when
-        those ranges have not been set manually.
+        Auto-fits x_range and each auto axis's y_range to the union of its
+        *visible* signals.
         """
         self.add_signal_to_axis(signal_key, 0)
 
@@ -575,11 +578,19 @@ class GraphPanelVM(Observable):
         self._notify("signals")
 
     def toggle_entry_visibility(self, entry_id: int) -> None:
-        """Flip the visibility of the entry with *entry_id* (entry-addressed)."""
+        """Flip the visibility of the entry with *entry_id* (entry-addressed).
+
+        Membership is unchanged (recalc_axis_labels not needed) but the
+        visible set feeding auto axes is — refit so an auto axis keeps
+        matching reset_axis_y's visible-only rule immediately (spec §3.7;
+        the rest of the mutation-trigger sweep — axis-level/legacy toggle,
+        remove/move/insert — lands in a later increment).
+        """
         for e in self._plotted:
             if e.entry_id == entry_id:
                 e.visible = not e.visible
                 break
+        self._auto_fit_ranges()
         self._invalidate_cache()
         self._notify("signals")
 
@@ -645,9 +656,15 @@ class GraphPanelVM(Observable):
         self._notify("range")
 
     def set_axis_range(self, axis_index: int, lo: float, hi: float) -> None:
-        """Set the Y data range of one axis (active-axis zoom/pan target)."""
+        """Set the Y data range of one axis (active-axis zoom/pan target).
+
+        Single funnel for the axis-menu range dialog, active-axis zoom/pan
+        drags, and zoom_axis — marks the axis manual (Stage A) so later
+        add_signal calls stop chasing the visible union.
+        """
         if not (0 <= axis_index < len(self._axes)):
             return
+        self._axes[axis_index].y_is_auto = False
         self._axes[axis_index].set_range(min(lo, hi), max(lo, hi))
         self._notify("axes")
 
@@ -682,17 +699,16 @@ class GraphPanelVM(Observable):
             lo, hi = _padded_range(lo, hi)
         axis.set_range(lo, hi)
 
-    def reset_axis_y(self, axis_index: int) -> None:
-        """Fit one Y-axis to the visible values of the signals assigned to it.
+    def _visible_union_range(
+        self, axis_index: int
+    ) -> tuple[float | None, float | None]:
+        """軸上の可視エントリの整列ビュー有限値域の和集合 (reset_axis_y と同一規則).
 
-        Single-axis version of reset_y (the axis-menu "この軸をオートフィット").
-        Invisible entries are excluded and the fit uses the aligned (sorted,
-        keep-last) view — the same window that is actually drawn. Clears to None
-        when nothing is fittable so a later add_signal can auto-fit.
+        Y 値はオフセットで不変なので base の session.signal_map() を使う —
+        オフセット適用中に _signal_map の全チャンネル overlay 再構築 (prod 330k)
+        をフィットのたびに踏まない (spec §3.3 perf・設計レビュー捕捉)。
         """
-        if not (0 <= axis_index < len(self._axes)):
-            return
-        sig_map = self._signal_map()
+        sig_map = self._session.signal_map()
         lo: float | None = None
         hi: float | None = None
         for entry in self._plotted:
@@ -709,7 +725,24 @@ class GraphPanelVM(Observable):
             v_hi = float(finite_vals.max())
             lo = v_lo if lo is None else min(lo, v_lo)
             hi = v_hi if hi is None else max(hi, v_hi)
-        self._fit_axis(self._axes[axis_index], lo, hi)
+        return lo, hi
+
+    def reset_axis_y(self, axis_index: int) -> None:
+        """Fit one Y-axis to the visible values of the signals assigned to it,
+        restoring it to auto-fit (Stage A: y_is_auto=True) so later add_signal
+        calls keep tracking the visible union.
+
+        Single-axis version of reset_y (the axis-menu "この軸をオートフィット").
+        Invisible entries are excluded and the fit uses the aligned (sorted,
+        keep-last) view — the same window that is actually drawn. Clears to None
+        when nothing is fittable so a later add_signal can auto-fit.
+        """
+        if not (0 <= axis_index < len(self._axes)):
+            return
+        axis = self._axes[axis_index]
+        axis.y_is_auto = True
+        lo, hi = self._visible_union_range(axis_index)
+        self._fit_axis(axis, lo, hi)
         self._invalidate_cache()
         self._notify("range")
 
@@ -774,36 +807,12 @@ class GraphPanelVM(Observable):
         self._notify("range")
 
     def reset_y(self) -> None:
-        """Fit all Y-axes to visible values of signals assigned to them."""
-        sig_map = self._signal_map()
-
-        # Build list of signals per axis
-        axis_to_sigs: dict[int, list[str]] = {}
-        for entry in self._plotted:
-            if not entry.visible:
-                continue
-            axis_to_sigs.setdefault(entry.axis_index, []).append(entry.signal_key)
-
+        """Fit all Y-axes to visible values of signals assigned to them,
+        restoring each to auto-fit (Stage A: y_is_auto=True) so later
+        add_signal calls keep tracking the visible union."""
         for i, axis in enumerate(self._axes):
-            lo: float | None = None
-            hi: float | None = None
-            for sig_key in axis_to_sigs.get(i, []):
-                sig = sig_map.get(sig_key)
-                if sig is None or len(sig.values) == 0:
-                    continue
-                # Fit on the aligned (sorted, keep-last) view — this is what
-                # actually gets drawn. Raw sig.values still holds duplicate-ts
-                # samples that keep-last discards; letting those leak in would
-                # stretch y_range past what's ever visible on screen.
-                vs = sig.sorted_view()[1]
-                finite_vals = vs[np.isfinite(vs)]
-                if len(finite_vals) == 0:
-                    continue
-                v_lo = float(finite_vals.min())
-                v_hi = float(finite_vals.max())
-                lo = v_lo if lo is None else min(lo, v_lo)
-                hi = v_hi if hi is None else max(hi, v_hi)
-
+            axis.y_is_auto = True
+            lo, hi = self._visible_union_range(i)
             # Clear to None when nothing is fittable so a later add_signal can
             # auto-fit instead of being clipped to a stale window.
             self._fit_axis(axis, lo, hi)
@@ -1337,30 +1346,12 @@ class GraphPanelVM(Observable):
             if x_lo is not None and x_hi is not None:
                 self.x_range = (x_lo, x_hi)
 
-        # Build list of signals per axis
-        axis_to_sigs: dict[int, list[str]] = {}
-        for entry in self._plotted:
-            axis_to_sigs.setdefault(entry.axis_index, []).append(entry.signal_key)
-
         for i, axis in enumerate(self._axes):
-            if axis.y_range is None:
-                lo: float | None = None
-                hi: float | None = None
-                for sig_key in axis_to_sigs.get(i, []):
-                    sig = sig_map.get(sig_key)
-                    if sig is None or len(sig.values) == 0:
-                        continue
-                    # See reset_y: fit on the aligned view, not raw duplicate-ts
-                    # values that keep-last discards before rendering.
-                    vs = sig.sorted_view()[1]
-                    finite_vals = vs[np.isfinite(vs)]
-                    if len(finite_vals) == 0:
-                        continue
-                    v_lo = float(finite_vals.min())
-                    v_hi = float(finite_vals.max())
-                    lo = v_lo if lo is None else min(lo, v_lo)
-                    hi = v_hi if hi is None else max(hi, v_hi)
-
+            # Stage A: None ゲート (初回のみ) を廃し、auto の間は可視エントリの
+            # 和集合へ常時追従 (X の RN-02 と対称・UX-03 根治)。手動 (auto=False)
+            # は尊重 — レンジ外はオフスケールバッジが通知する (view 側)。
+            if axis.y_is_auto:
+                lo, hi = self._visible_union_range(i)
                 self._fit_axis(axis, lo, hi)
 
     def _make_cache_key(self) -> tuple[Any, ...]:
