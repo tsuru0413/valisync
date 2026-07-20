@@ -918,3 +918,98 @@ def test_expand_bottom_dock_resizes_vertical_with_captured_extent(qtbot):
     assert docks == [win.diagnostics_dock]
     assert sizes == [expected_extent]
     assert orient == Qt.Orientation.Vertical
+
+
+# ---------------------------------------------------------------------------
+# 外部 show() の整合 (edge-aware-dock-collapse ブランチレビュー Important 1)
+#
+# 畳み=hide() へ切替済みのため、View メニュー/ツールバーの toggleViewAction や
+# _on_load_error の diagnostics_dock.show() のような「集約状態機械を経由しない
+# 直接 show()」は素の show() を呼ぶだけで、レールタブ/_collapsed_docks/
+# QSettings のいずれも更新しない (孤立 UI + 次回起動での意図しない再畳み)。
+# ---------------------------------------------------------------------------
+
+
+def test_toggling_collapsed_dock_visible_reconciles_rail_and_state(qtbot):
+    from PySide6.QtCore import QSettings
+
+    import valisync.gui.views.main_window as mw
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitExposed(win)
+
+    win._collapse_dock(win.file_dock)
+    rail = win._collapse_rails[win.dockWidgetArea(win.file_dock)]
+    assert win.file_dock.isHidden()
+    assert not rail.is_empty()
+    assert "file_dock" in win._collapsed_docks
+
+    # toggleViewAction は QDockWidget 標準の show()/hide() トグルであり、
+    # collapse 状態機械 (_expand_dock) を経由しない外部トリガの代表例。
+    win.file_dock.toggleViewAction().trigger()
+
+    assert not win.file_dock.isHidden(), "toggleViewAction は show() を呼ぶはず"
+    assert rail.is_empty(), "外部 show() 後もレールにタブが残っている (孤立UI)"
+    assert "file_dock" not in win._collapsed_docks, (
+        "外部 show() 後も _collapsed_docks に残存 (次回起動で意図せず再畳み)"
+    )
+    settings = QSettings(mw._ORG, mw._APP)
+    saved = settings.value("dockCollapsed")
+    assert saved["file_dock"] is False, "永続化された畳み状態が更新されていない"
+
+
+def test_external_show_on_collapsed_diagnostics_dock_reconciles(qtbot):
+    """_on_load_error 相当 (diagnostics_dock.show() + raise_()) も同様に自己修復する。"""
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitExposed(win)
+
+    win._collapse_dock(win.diagnostics_dock)
+    rail = win._collapse_rails[win.dockWidgetArea(win.diagnostics_dock)]
+    assert win.diagnostics_dock.isHidden()
+
+    # _on_load_error と同型の直接呼び出し (状態機械を経由しない)。
+    win.diagnostics_dock.show()
+    win.diagnostics_dock.raise_()
+
+    assert not win.diagnostics_dock.isHidden()
+    assert rail.is_empty(), "外部 show() 後もレールにタブが残っている (孤立UI)"
+    assert "diagnostics_dock" not in win._collapsed_docks
+
+
+# ---------------------------------------------------------------------------
+# 起動時の畳みが未レイアウトの extent を捕捉しない (ブランチレビュー Important 2)
+#
+# _apply_saved_collapse は window.show() より前 (__init__ 内) に走るため、その
+# 時点で _collapse_dock が無条件に捕捉する extent はレイアウト未確定の既定値に
+# なり得る。隠れている (=まだ表示・レイアウトされていない) ドックからの捕捉は
+# スキップし、Qt 自身の restoreState プレースホルダによる復元に委ねる。
+# ---------------------------------------------------------------------------
+
+
+def test_startup_collapse_does_not_capture_stale_extent(qtbot):
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitExposed(win)
+    win._collapse_dock(win.file_dock)
+    win.save_state()
+
+    # win2.__init__ は _restore_state() -> _apply_saved_collapse() を実行する
+    # (起動時パスの再現)。win2.show() は意図的に呼ばない — 「表示・レイアウト
+    # される前」というタイミングそのものを再現するため。
+    win2 = build_main_window()
+    qtbot.addWidget(win2)
+
+    assert "file_dock" not in win2._expanded_extent, (
+        "起動時 (未表示) の畳みで extent を捕捉してしまっている"
+        "(未レイアウトの既定値が記録され、後の展開で誤ったサイズへ resize される)"
+    )

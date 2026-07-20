@@ -190,6 +190,9 @@ class MainWindow(QMainWindow):
         self._collapsible_bars: dict[str, CollapsibleDockTitleBar] = {}
         self._collapsed_docks: set[str] = set()
         self._expanded_extent: dict[str, int] = {}
+        # _collapse_dock/_expand_dock 自身の hide()/show() が visibilityChanged
+        # を再発火させる (無限再入防止・レビュー Important 1)。
+        self._suppress_dock_reconcile = False
         self._dock_rail_order = {  # 辺上の位置順 (File 上/Channel 下)
             "file_dock": 0,
             "channel_dock": 1,
@@ -204,6 +207,15 @@ class MainWindow(QMainWindow):
             dock.setTitleBarWidget(bar)
             bar.collapse_requested.connect(lambda d=dock: self._collapse_dock(d))
             self._collapsible_bars[dock.objectName()] = bar
+            # 集約状態機械 (_expand_dock) を経由しない外部 show() (View メニュー/
+            # ツールバーの toggleViewAction・_on_load_error の直接 show() 等) が
+            # 畳み状態を孤立させないよう、可視化を単一箇所で自己修復する
+            # (レビュー Important 1)。_restore_state() より前に接続すること —
+            # このループ時点では _collapsed_docks は空なので起動時の
+            # restoreState 由来の可視化変化は no-op。
+            dock.visibilityChanged.connect(
+                lambda visible, d=dock: self._on_dock_visibility_changed(d, visible)
+            )
 
         self._update_central()
 
@@ -641,8 +653,18 @@ class MainWindow(QMainWindow):
         if rail is None:
             return  # 対応外の辺 (通常起きない — 上は禁止済み)
         name = dock.objectName()
-        self._expanded_extent[name] = self._dock_extent(dock)
-        dock.hide()
+        # 起動時の _apply_saved_collapse は window.show() より前 (未表示・未
+        # レイアウト) に走るため、そこで extent を捕捉すると未確定の既定値を
+        # 記録してしまう (レビュー Important 2)。既に隠れている (=このドック
+        # のレイアウトはまだ確定していない) ドックからは捕捉しない — 展開時は
+        # resizeDocks をスキップし、Qt 自身の restoreState 復元に委ねる。
+        if not dock.isHidden():
+            self._expanded_extent[name] = self._dock_extent(dock)
+        try:
+            self._suppress_dock_reconcile = True
+            dock.hide()
+        finally:
+            self._suppress_dock_reconcile = False
         title = {
             "file_dock": "File Browser",
             "channel_dock": "Channel Browser",
@@ -658,7 +680,11 @@ class MainWindow(QMainWindow):
         name = dock.objectName()
         for rail in self._collapse_rails.values():
             rail.remove_tab(dock)
-        dock.show()
+        try:
+            self._suppress_dock_reconcile = True
+            dock.show()
+        finally:
+            self._suppress_dock_reconcile = False
         area = self.dockWidgetArea(dock)
         extent = self._expanded_extent.get(name)
         kind = rail_kind_for_area(area)
@@ -671,6 +697,21 @@ class MainWindow(QMainWindow):
             self.resizeDocks([dock], [extent], orient)
         self._collapsed_docks.discard(name)
         self._save_dock_collapsed()
+
+    def _on_dock_visibility_changed(self, dock: QDockWidget, visible: bool) -> None:
+        """畳み状態機械を経由しない外部 show() を自己修復する (レビュー Important 1)。
+
+        View メニュー/ツールバーの toggleViewAction、_on_load_error の
+        diagnostics_dock.show() など、_expand_dock を呼ばない経路で畳み済み
+        ドックが可視化された場合、レールタブ除去・_collapsed_docks 除籍・
+        永続化を _expand_dock に委譲して行う。hide 方向 (visible=False) は
+        素通り — 畳み対象でないドックを閉じる操作は通常の hide のままでよく、
+        ここで「畳む」処理はしない (collapse は chevron からのみ)。
+        """
+        if self._suppress_dock_reconcile:
+            return  # _collapse_dock/_expand_dock 自身の hide()/show() 由来 (再入防止)
+        if visible and dock.objectName() in self._collapsed_docks:
+            self._expand_dock(dock)
 
     def _apply_dock_corners(self) -> None:
         """FU-10: give the bottom-right corner to the Right area so the File/Channel
