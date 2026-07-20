@@ -44,7 +44,14 @@ def test_licenses_md_covers_every_svg():
 def test_registry_paths_resolve():
     from valisync.gui.theme.icons import ICONS
 
-    assert set(ICONS) == {"open", "open_folder", "export", "data_explorer"}
+    assert set(ICONS) == {
+        "open",
+        "open_folder",
+        "export",
+        "data_explorer",
+        "chevron_down",
+        "chevron_right",
+    }
     for name, rel in ICONS.items():
         assert (ICONS_DIR / rel).is_file(), f"{name} -> {rel}"
 
@@ -105,6 +112,14 @@ def test_icon_pixels_use_theme_tokens(qtbot):
     )
     # 同値でないテーマ前提の分離確認 (DARK: text #cdd6f4 / disabled #6c7086 は十分離れている)
     assert not _has_pixel_near(disabled, ct, tol=20)
+
+
+def test_chevron_icons_registered_and_render(qapp):
+    from valisync.gui.theme import icons
+
+    for name in ("chevron_down", "chevron_right"):
+        ico = icons.icon(name)
+        assert not ico.isNull(), name
 
 
 def test_shell_actions_use_registry_icons(qtbot):
