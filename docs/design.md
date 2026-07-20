@@ -128,4 +128,4 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   実現。chevron アイコンは vendored Lucide（`chrome_text` 着色）で追加のみ。出典: inbox
   決定メモ③（Diagnostics ドロワー化）＋ユーザー要望「File/Channel も折りたたみ可能に」
   で3ドック共通へ拡張。設計は
-  [collapsible-docks spec](superpowers/specs/2026-07-20-collapsible-docks-design.md)。PR #TBD。
+  [collapsible-docks spec](superpowers/specs/2026-07-20-collapsible-docks-design.md)。PR #131。
