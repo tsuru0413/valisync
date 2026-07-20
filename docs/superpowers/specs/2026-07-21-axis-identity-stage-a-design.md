@@ -1,6 +1,7 @@
 # 軸アイデンティティ契約 Stage A — critical 3 件（UX-01/02/03）根治 設計
 
-- 日付: 2026-07-21（敵対的設計レビュー 29 指摘反映済み — blocker 2・important 17 を全て取込）
+- 日付: 2026-07-21（敵対的設計レビュー 29 指摘反映済み — blocker 2・important 17 を全て取込。
+  ユーザー決定 2026-07-21: 複数波形の軸は**最初に登録された波形の情報を表示**〔混在マーカー不採用〕）
 - 出典: [UIUX 敵対的レビュー課題カタログ](../../uiux-adversarial-review-catalog.md)（PR #134）の
   critical 3 件＋デザイン推奨2「軸アイデンティティ契約」の Stage A。
 - 位置づけ: 独立バグ修正サブスペック。**増分E（比較データモデル・同名信号の自動重ね）の前提修正**
@@ -20,12 +21,13 @@
 
 **軸に表示される名前・単位・範囲は常に現状の真実である。**
 
-1. **name** = 軸に現存する最古（追加順）エントリの信号表示名。代表が削除・アンロードされたら
-   次の現存エントリへ交代する（残存名の放置を許さない — **VM 値だけでなく画面のラベルも**）。
-2. **unit** = 軸上の現存エントリの非空単位が**全一致するときのみ**表示。2 種以上が混在したら
-   単位を表示せず、ラベルに「（単位混在）」を明示する。空単位（unit 未定義の CSV 等）は
-   ワイルドカード扱い（非空単位が 1 種ならそれを表示 — 未知は嘘ではない。全エントリ空なら
-   単位なし・混在扱いもしない）。
+1. **name** = 軸に現存する最古（追加順）エントリ＝**代表波形**の信号表示名。代表が削除・
+   アンロードされたら次の現存エントリへ交代する（残存名の放置を許さない — **VM 値だけでなく
+   画面のラベルも**）。
+2. **unit** = **代表波形の単位**（name と常に同一信号のペア — 捏造ペアの根絶）。単位が混在して
+   いても代表の単位を表示する（**ユーザー決定 2026-07-21**: 「一つの軸に複数波形が存在する時は
+   1番最初に登録された波形の情報を表示する」— 混在マーカーは不採用。混在の可視化が必要に
+   なったら Stage B の軸ヘッダチップで再訪）。代表の単位が空なら単位表示なし。
 3. **y_range** = 軸ごとの auto フラグが立っている間、**可視**エントリの整列ビュー値域の
    和集合に常時追従する（X の RN-02 と対称）。手動設定後は尊重し、代わりに
    **現 X 窓内で 1px も描かれない可視曲線があることをオフスケールバッジで通知**する
@@ -35,17 +37,14 @@
 
 ## 3. 設計
 
-### 3.1 YAxisVM — `y_is_auto` フラグと `mixed_units`
+### 3.1 YAxisVM — `y_is_auto` フラグ
 
 ```python
 class YAxisVM(Observable):
-    def __init__(self, ..., y_is_auto: bool = True, mixed_units: bool = False): ...
+    def __init__(self, ..., y_is_auto: bool = True): ...
 ```
 
 - `y_is_auto`: 既定 True。`_x_range_is_auto`（`graph_panel_vm.py:167/625/759`）の per-axis 対称。
-- `mixed_units`: ラベル描画専用の派生状態（§3.2 の再計算が設定）。view が
-  「（単位混在）」suffix の描画に使う。`axis.name` 自体は汚さない（name は D&D・メニュー等の
-  他消費者があるため表示注釈を混ぜない）。
 - **注意（レビュー捕捉）**: auto=False への遷移を `YAxisVM.set_range` や `_fit_axis` に置いては
   ならない — auto フィット自身が同じ funnel を通るため、初回フィットでフラグが折れて
   「恒久 manual」＝UX-03 の None ゲートと同型が再発する。遷移は GraphPanelVM の
@@ -59,11 +58,13 @@ first-wins/last-wins の増分更新（`add_signal_to_axis:261-271`）と `overw
 ```
 for 各 axis:
     entries = 軸上の現存エントリ（_plotted の追加順）
-    axis.name = entries[0] の表示名（signal_key.split("::")[-1]）／entries 空なら ""
-    units = {e の unit for e in entries if unit 非空}（distinct）
-    axis.unit  = units の唯一要素 if len(units) == 1 else ""
-    axis.mixed_units = len(units) >= 2      # 全 unitless は unit=""・mixed=False
+    rep = entries[0] if entries else None   # 代表波形（ユーザー決定 2026-07-21）
+    axis.name = rep の表示名（signal_key.split("::")[-1]）if rep else ""
+    axis.unit = rep の unit（sig.metadata.get("unit", "")）if rep else ""
 ```
+
+name と unit は**常に代表波形の対**として一括更新する（別信号からの合成 = UX-01 の根因を
+構造的に不可能にする）。
 
 - 呼出点は §3.7 の全数表に従う（**各変異メソッドの末尾＝`_notify` 直前で全軸一括再計算** —
   O(plotted)・エントリ数十本規模で無視できる。`_compact_axes` 内へのフックは
@@ -72,8 +73,7 @@ for 各 axis:
   fast path（`:1068-1075` — 構造署名不変時。**Ctrl+join・同一軸内削除という UX-01 の主経路は
   こちらを通る**）と rebuild（`:1195-1196`）の両方を、共有ヘルパ
   `_apply_axis_label(axis_item, axis_vm)` に抽出して置換する:
-  - `mixed_units` → `setLabel(text=f"{name}（単位混在）", units=None)`（テキストマーカー —
-    UX-34 のグリフ混在を増やさない）
+  - 通常 → `setLabel(text=name, units=unit or None)`（代表波形の対）
   - name/unit とも空 → **明示クリア**（`setLabel(text="", units=None)` または
     `showLabel(False)`）。現行の `if axis_vm.name or axis_vm.unit:` ガードは「空への遷移」で
     setLabel を呼ばず、全エントリ削除→placeholder 化（配置署名不変→fast path）で
@@ -126,7 +126,7 @@ for 各 axis:
    再追加（現行は y_range 温存で「唯一の新信号すら不可視」になりうる — UX-03 検証所見。
    温存を assert する既存テストは無い）。
 2. **`_compact_axes` の placeholder 化**（全エントリ削除で `axes[0]` オブジェクトを温存する分岐
-   `:424-429`）: 同様に `y_range=None`・`y_is_auto=True`・name/unit/mixed_units クリア。
+   `:424-429`）: 同様に `y_range=None`・`y_is_auto=True`・name/unit クリア。
    これが無いと「手動ズーム→全削除→新規追加」で空パネルの 1 本目が旧手動レンジ上に載って
    不可視になり、§3.5-1 と非対称の穴が残る（レビュー捕捉・important）。
 
@@ -169,7 +169,7 @@ for 各 axis:
 | `remove_entry` / `remove_axis` | 削除 | `_compact_axes` の placeholder 化は §3.5-2 |
 | `remove_signal`（legacy・src 内呼出なし） | 削除 | **同処置**（dead-path 扱いにせず一貫させる — テスト経由の利用があるため） |
 | `prune_missing_signals:494-514` | 削除（**ファイルアンロード** — `graph_area_vm.py:67` から全パネル配送） | 漏らすと UXG-19（残存名）がアンロード経路で再発（レビュー捕捉・blocker 構成要素） |
-| `extract_axis` / `insert_axis`（クロスパネル軸移動 — `graph_area_vm.py:256/260`） | 軸移送 | YAxisVM はオブジェクトごと移送（`y_is_auto`/`mixed_units` も運ばれる）。挿入先で再計算＋auto なら即フィット。抽出元は既存の compact 経路 |
+| `extract_axis` / `insert_axis`（クロスパネル軸移動 — `graph_area_vm.py:256/260`） | 軸移送 | YAxisVM はオブジェクトごと移送（`y_is_auto` も運ばれる）。挿入先で再計算＋auto なら即フィット。抽出元は既存の compact 経路 |
 | `toggle_entry_visibility` | 可視性（曲線単位） | auto 軸のみ再フィット |
 | `toggle_axis_visibility:600-613` | 可視性（軸一括 — H キー軸フォールバック `view:1956`） | 同上（漏らすと H×2 往復で UX-03 再発） |
 | `toggle_visibility:557-564`（legacy・src 内呼出なし） | 可視性 | **同処置** |
@@ -178,7 +178,7 @@ for 各 axis:
 
 | 変更 | 影響 | 対応 |
 |---|---|---|
-| unit last-wins → 全一致時のみ表示 | **RED になる既存テストなし**（last-wins は untested）。`test_graph_panel_multi_axis.py:450-471` は同一 unit のため green のまま | 混在ケース・代表交代（削除/アンロード後）・全 unitless の新規 Layer A/B lock を追加 |
+| unit last-wins → **代表波形（最古エントリ）の対表示**（ユーザー決定 2026-07-21） | **RED になる既存テストなし**（last-wins は untested）。`test_graph_panel_multi_axis.py:450-471` は同一 unit のため green のまま | 異単位 join でも代表 unit 維持・代表交代（削除/アンロード後）で name/unit が**対で**交代・全削除で両方空、の新規 Layer A/B lock を追加 |
 | auto 和集合フィットの可視性除外（`reset_axis_y` と統一） | 現行 `_auto_fit_ranges` は不可視エントリも含めてフィット → 統一で初回フィット値が変わるケースあり | 新規則を test-lock（旧規則の lock は無い） |
 | 可視性トグル（entry/axis 両方）が auto 軸をフィットし直す | 新挙動（トグルでレンジが動く）。全エントリ非表示 → フィット対象空 → `set_range(None, None)` でクリア（auto のまま・再表示で再フィット） | 意図を spec 明記＋test-lock。手動軸は不変 |
 | `overwrite_axis`・placeholder 化のレンジ/フラグリセット | 温存 assert 無し（`test_graph_panel_multi_axis.py:664-670`・realgui H2 は signal keys のみ） | 新挙動を test-lock（§3.5 の 2 経路とも） |
@@ -192,27 +192,29 @@ for 各 axis:
 - **変更種別**: VM/純ロジック＋ウィジェット状態（ラベル文字列）
 - **触れるユーザージャーニー**: プロット→解析（多信号を軸に載せ単位を読む・削除して読み直す・ファイルを閉じる）
 - **E2E 受け入れ**:
-  - 混在単位の軸ラベルが単位を主張しない: E2E タイプ=入力経路(realgui) / 実 observable=
-    実 OS 操作（Ctrl+ドロップ join）後の `labelText` に「（単位混在）」・`labelUnits` 空 assert
-    ＋スクショ目視 / **prod スケール不要**（ラベル文字列はデータ規模非依存） /
+  - 異単位 join でも軸ラベルが代表波形の対のまま: E2E タイプ=入力経路(realgui) / 実 observable=
+    実 OS 操作（Ctrl+ドロップ join）後の `labelText`=代表名・`labelUnits`=**代表（1本目）の
+    unit** assert（現行 last-wins は 2 本目の unit を表示 → honest Red）＋スクショ目視 /
+    **prod スケール不要**（ラベル文字列はデータ規模非依存） /
     実経路=既存 D&D realgui（H3 join）へ assert 追加。**前提: fixture の 2 信号へ相異なる非空
     unit を session ロード後に注入**（`test_graph_panel_multi_axis.py:458-461` の
     `sig.metadata["unit"]` 注入パターン — 現行 fixture は unit 無し CSV のため注入なしでは
-    混在分岐に到達しない・レビュー捕捉）
+    first-wins/last-wins を弁別できない・レビュー捕捉）
   - 代表削除/アンロードで名前が交代・全削除で画面ラベルも消える: Layer A/B
-- **必要レイヤー**: A=必須（再計算規則: 全一致/混在/空単位ワイルドカード/全 unitless/代表交代/
-  アンロード（prune）/全削除で空）/ B=**必須＋経路指定**（`labelText`/`labelUnits` を
+- **必要レイヤー**: A=必須（再計算規則: 同単位/異単位でも代表の対/代表 unit 空/代表交代で
+  対交代/アンロード（prune）で交代/全削除で両方空）/ B=**必須＋経路指定**（`labelText`/`labelUnits` を
   **構造不変経路（構築済み view への join → fast path :1068-1075）と構造変更経路（新軸作成 →
   rebuild :1195-1196）の両方**で assert。fresh 構築のみの assert は fast path を exercise せず
   false-green — memory `gui_diff_update_layout_key_must_cover_unrewritten_fields` 同型。
   「全エントリ削除後 labelText 空」も Layer B 必須）/
   C=要（join 実配送は D&D＝合成再現不可のため既存 realgui へ assert 追加）/ perf=不要 /
   描画=不要（ラベルは `labelText` が実 observable）
-- **受け入れ要件**: Red=「unit V + unit A を join → labelUnits 空＋（単位混在）」「代表削除→
-  name 交代」「全削除→画面ラベル空」が現行実装で fail することを確認 / Green=§3.2 /
+- **受け入れ要件**: Red=「unit V + unit A を join → labelUnits == "V"（現行は "A"=last-wins で
+  fail）」「代表削除→ name/unit が次エントリの対へ」「全削除→画面ラベル空」が現行実装で
+  fail することを確認 / Green=§3.2 /
   Verify=quick_demo で VehSpd(km/h)+EngTrq(Nm) を同軸に載せ、軸ラベルが
-  「VehSpdInternal（単位混在）」となり単位表記が無いこと・EngTrq 削除で「VehSpdInternal (km/h)」
-  へ戻ること・ファイルを閉じてラベルが残らないことを目視
+  「VehSpdInternal (km/h)」のまま（Nm に化けない）こと・VehSpd 削除で「EngTrq (Nm)」へ対で
+  交代すること・ファイルを閉じてラベルが残らないことを目視
 - **②実質性**: labelText/labelUnits=自動アサート可。スクショは補助目視
 - **①証拠ゲート**: `- [ ] uv run pytest --realgui tests/realgui/test_signal_dnd_realclick.py`（join 系 scoped）＋証拠添付
 
