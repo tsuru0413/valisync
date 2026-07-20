@@ -1411,12 +1411,41 @@ def session_two_signals_vm(tmp_path: Path) -> tuple[GraphPanelVM, str, str]:
     return vm, key_a, key_b
 
 
+def _write_named_csv(path: Path, n_rows: int, signal_name: str) -> Path:
+    """Write a 1-signal CSV whose column header is *signal_name*.
+
+    Unlike the shared ``_write_csv`` (always header "s1"), this lets each
+    loaded group carry a distinct representative name — needed so the prune
+    test below can actually discriminate "stale name kept" from "name
+    recalculated" (a same-name fixture makes the assertion pass either way;
+    review finding on this task).
+    """
+    lines = [f"t,{signal_name}"]
+    for i in range(n_rows):
+        lines.append(f"{i * 0.01},{float(i % 50)}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
 @pytest.fixture
 def session_two_files_vm(tmp_path: Path) -> tuple[GraphPanelVM, str, str]:
-    """2信号(別グループ=別ファイル)。UXG-19 のファイル閉じ→prune 経路の検証用。"""
-    session, keys = _multi_group_session(tmp_path, n_groups=2)
+    """2信号(別グループ=別ファイル・別信号名)。UXG-19 のファイル閉じ→prune 経路の検証用。
+
+    file1="alpha" / file2="beta" と信号名を分けているのは意図的
+    (``_write_named_csv`` の docstring参照): 同名だと prune 後 assert が新旧どちらの
+    実装でも通ってしまい弁別力を失う。
+    """
+    session = Session()
+    g1 = session.load(
+        _write_named_csv(tmp_path / "f1.csv", 100, "alpha"), _csv_format(1)
+    )
+    g2 = session.load(
+        _write_named_csv(tmp_path / "f2.csv", 100, "beta"), _csv_format(1)
+    )
+    key1 = next(s.name for s in session.signals() if s.name.startswith(f"{g1.key}::"))
+    key2 = next(s.name for s in session.signals() if s.name.startswith(f"{g2.key}::"))
     vm = GraphPanelVM(session)
-    return vm, keys[0], keys[1]
+    return vm, key1, key2
 
 
 def test_axis_unit_stays_representative_on_mixed_join(
@@ -1457,9 +1486,15 @@ def test_axis_label_recalc_on_prune_missing_signals(
     session_two_files_vm: tuple[GraphPanelVM, str, str],
 ) -> None:
     # UXG-19 のアンロード経路: 代表信号のファイルを閉じたら残存名を許さない。
-    vm, key_file1, key_file2 = session_two_files_vm  # 別グループの2信号・同軸0へ
+    vm, key_file1, key_file2 = (
+        session_two_files_vm  # 別グループ・別信号名の2信号・同軸0へ
+    )
     vm.add_signal(key_file1)
     vm.add_signal(key_file2)
+    assert (
+        vm.axes[0].name == key_file1.split("::")[-1]
+    )  # prune 前: 代表=file1 ("alpha")
     vm._session.remove_group(key_file1.split("::")[0], force=True)
     vm.prune_missing_signals()
+    # prune 後: 代表交代="beta" — 弁別力ゼロだった旧 assert (両グループ同名 "s1") を是正。
     assert vm.axes[0].name == key_file2.split("::")[-1]
