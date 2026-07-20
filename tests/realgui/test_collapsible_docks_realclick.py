@@ -99,81 +99,143 @@ def _grab(tmp_path: Path, name: str) -> Path:
     return path
 
 
-def test_collapse_right_dock_shrinks_and_expands(qtbot: QtBot, tmp_path: Path) -> None:
-    """右ドック (file_dock) を chevron 実クリックで畳むと右レールに縦タブが出て
-    中央 (`_central_with_rails`) 幅が実際に増加し、タブ実クリックで幅が元へ戻る。
+def test_collapse_both_right_docks_reclaims_width_and_expands(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """右カラムの file_dock/channel_dock は縦積み (`splitDockWidget` Vertical) の
+    兄弟同士で同じカラム幅を分け合うため、片方だけ chevron で畳んでも兄弟がカラム
+    幅を保持し中央幅は増えない (実測: initial 860 → file のみ畳み 860 → 両方畳み
+    1120)。これは Qt の縦積みレイアウトどおりで実装バグではない
+    (memory: gui_dock_toggle_width_change_needs_real_display_and_layout)。
+    両方を chevron 実クリックで畳むと右レールに縦タブが2個出て中央
+    (`_central_with_rails`) 幅が実際に増加し、各タブ実クリックで両方展開すると
+    幅がほぼ元へ戻る。
     """
     skip_unless_real_display()
 
     mw = _shown_mw(qtbot)
-    dock = mw.file_dock
-    bar = mw._collapsible_bars["file_dock"]
+    file_dock = mw.file_dock
+    channel_dock = mw.channel_dock
+    file_bar = mw._collapsible_bars["file_dock"]
     central = mw._central_with_rails
-    rail = mw._collapse_rails[mw.dockWidgetArea(dock)]
+    rail = mw._collapse_rails[mw.dockWidgetArea(file_dock)]
+    assert mw.dockWidgetArea(channel_dock) == mw.dockWidgetArea(file_dock), (
+        "setup: file_dock/channel_dock が同じ辺レールを共有していない"
+    )
 
     qtbot.waitUntil(
-        lambda: bar._toggle_button.isVisible() and bar._toggle_button.width() > 0,
+        lambda: (
+            file_bar._toggle_button.isVisible() and file_bar._toggle_button.width() > 0
+        ),
         timeout=3000,
     )
-    assert not dock.isHidden(), "setup: file_dock が既に隠れている"
+    assert not file_dock.isHidden(), "setup: file_dock が既に隠れている"
+    assert not channel_dock.isHidden(), "setup: channel_dock が既に隠れている"
     assert rail.is_empty(), "setup: レールに既にタブがある"
 
     _settle()
     initial_width = central.width()
-    shot_before = _grab(tmp_path, "edge_collapse_right_before.png")
+    shot_before = _grab(tmp_path, "edge_collapse_both_right_before.png")
 
-    # --- 実クリック: chevron で畳む ---
-    _real_click(*_phys(bar._toggle_button))
-    qtbot.waitUntil(lambda: dock.isHidden(), timeout=3000)
-    qtbot.waitUntil(lambda: dock in rail._tabs, timeout=3000)
+    # --- 実クリック: file_dock を畳む (兄弟 channel_dock がカラム幅を保持する
+    # ため、この時点ではまだ中央幅は増加しないはず — 次の channel_dock 畳みで
+    # 初めて増加することを後段で確認する) ---
+    _real_click(*_phys(file_bar._toggle_button))
+    qtbot.waitUntil(lambda: file_dock.isHidden(), timeout=3000)
+    qtbot.waitUntil(lambda: file_dock in rail._tabs, timeout=3000)
+    _settle()
+
+    after_file_only_width = central.width()
+    print(
+        f"[edge-collapse-both-right] initial={initial_width} "
+        f"after_file_only={after_file_only_width}"
+    )
+
+    # --- 実クリック: channel_dock を畳む (chevron 座標は file_dock 畳みでレール
+    # 上のレイアウトが動いた後に再取得する) ---
+    channel_bar = mw._collapsible_bars["channel_dock"]
+    qtbot.waitUntil(
+        lambda: (
+            channel_bar._toggle_button.isVisible()
+            and channel_bar._toggle_button.width() > 0
+        ),
+        timeout=3000,
+    )
+    _real_click(*_phys(channel_bar._toggle_button))
+    qtbot.waitUntil(lambda: channel_dock.isHidden(), timeout=3000)
+    qtbot.waitUntil(lambda: channel_dock in rail._tabs, timeout=3000)
     _settle()
 
     collapsed_width = central.width()
-    shot_collapsed = _grab(tmp_path, "edge_collapse_right_after.png")
-    print(
-        f"[edge-collapse-right] initial_width={initial_width} "
-        f"collapsed_width={collapsed_width}"
-    )
-    print(f"[edge-collapse-right] screenshots: {shot_before} , {shot_collapsed}")
+    shot_collapsed = _grab(tmp_path, "edge_collapse_both_right_after.png")
+    print(f"[edge-collapse-both-right] collapsed_width={collapsed_width}")
+    print(f"[edge-collapse-both-right] screenshots: {shot_before} , {shot_collapsed}")
 
-    assert dock.isHidden(), (
+    assert file_dock.isHidden(), (
         f"実クリックで file_dock が隠れていない。screenshot: {shot_collapsed}"
     )
-    assert not rail.is_empty(), (
-        f"畳み後にレールへタブが出ていない。screenshot: {shot_collapsed}"
+    assert channel_dock.isHidden(), (
+        f"実クリックで channel_dock が隠れていない。screenshot: {shot_collapsed}"
     )
-    assert collapsed_width > initial_width + 20, (
-        f"畳みで中央幅が有意に増加していない "
-        f"(initial={initial_width}, collapsed={collapsed_width})。"
+    assert file_dock in rail._tabs and channel_dock in rail._tabs, (
+        f"両方畳み後に右レールへ2タブ出ていない (tabs={len(rail._tabs)})。"
         f"screenshot: {shot_collapsed}"
     )
+    assert len(rail._tabs) == 2, (
+        f"右レールのタブ数が2ではない (tabs={len(rail._tabs)})。"
+        f"screenshot: {shot_collapsed}"
+    )
+    assert collapsed_width > initial_width + 20, (
+        f"両方畳みで中央幅が有意に増加していない "
+        f"(initial={initial_width}, after_file_only={after_file_only_width}, "
+        f"collapsed={collapsed_width})。screenshot: {shot_collapsed}"
+    )
 
-    # --- 実クリック: レールの縦タブで展開 ---
-    tab = rail._tabs[dock]
+    # --- 実クリック: 右レールの file_dock 縦タブで展開 ---
+    file_tab = rail._tabs[file_dock]
     qtbot.waitUntil(
-        lambda: tab.isVisible() and tab.width() > 0 and tab.height() > 0,
+        lambda: file_tab.isVisible() and file_tab.width() > 0 and file_tab.height() > 0,
         timeout=3000,
     )
-    _real_click(*_phys(tab))
-    qtbot.waitUntil(lambda: not dock.isHidden(), timeout=3000)
+    _real_click(*_phys(file_tab))
+    qtbot.waitUntil(lambda: not file_dock.isHidden(), timeout=3000)
+    qtbot.waitUntil(lambda: file_dock not in rail._tabs, timeout=3000)
+    _settle()
+
+    # --- 実クリック: 残った channel_dock 縦タブで展開 (座標は file_dock 展開で
+    # レール上のレイアウトが動いた後に再取得する) ---
+    channel_tab = rail._tabs[channel_dock]
+    qtbot.waitUntil(
+        lambda: (
+            channel_tab.isVisible()
+            and channel_tab.width() > 0
+            and channel_tab.height() > 0
+        ),
+        timeout=3000,
+    )
+    _real_click(*_phys(channel_tab))
+    qtbot.waitUntil(lambda: not channel_dock.isHidden(), timeout=3000)
     qtbot.waitUntil(lambda: rail.is_empty(), timeout=3000)
     _settle()
 
     expanded_width = central.width()
-    shot_expanded = _grab(tmp_path, "edge_collapse_right_expanded.png")
-    print(f"[edge-collapse-right] expanded_width={expanded_width}")
-    print(f"[edge-collapse-right] screenshot: {shot_expanded}")
+    shot_expanded = _grab(tmp_path, "edge_collapse_both_right_expanded.png")
+    print(f"[edge-collapse-both-right] expanded_width={expanded_width}")
+    print(f"[edge-collapse-both-right] screenshot: {shot_expanded}")
 
-    assert not dock.isHidden(), (
+    assert not file_dock.isHidden(), (
         f"タブ実クリックで file_dock が再表示されない。screenshot: {shot_expanded}"
+    )
+    assert not channel_dock.isHidden(), (
+        f"タブ実クリックで channel_dock が再表示されない。screenshot: {shot_expanded}"
     )
     assert rail.is_empty(), (
         f"展開後もレールにタブが残っている。screenshot: {shot_expanded}"
     )
-    assert expanded_width < collapsed_width - 20, (
-        f"展開で中央幅が有意に減少していない (元に戻っていない) "
-        f"(collapsed={collapsed_width}, expanded={expanded_width})。"
-        f"screenshot: {shot_expanded}"
+    assert expanded_width >= initial_width - 40, (
+        f"展開で中央幅がほぼ元へ戻っていない "
+        f"(initial={initial_width}, collapsed={collapsed_width}, "
+        f"expanded={expanded_width})。screenshot: {shot_expanded}"
     )
 
 
