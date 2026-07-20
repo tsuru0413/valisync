@@ -749,3 +749,43 @@ def test_preview_window_is_parented_to_main_window(qtbot: QtBot) -> None:
     window = _make_window(qtbot)
     assert window.signal_preview_window.parent() is window  # type: ignore[union-attr]
     assert window.signal_preview_window.isWindow() is True  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------------------
+# 折りたたみ可能ドック (collapsible-docks 増分C Task 3)
+# ---------------------------------------------------------------------------
+
+
+def test_docks_have_collapsible_title_bars(qtbot):
+    from valisync.gui.app import build_main_window
+    from valisync.gui.views.collapsible_dock_title_bar import CollapsibleDockTitleBar
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    for dock in (win.file_dock, win.channel_dock, win.diagnostics_dock):
+        assert isinstance(dock.titleBarWidget(), CollapsibleDockTitleBar), (
+            dock.objectName()
+        )
+
+
+def test_collapse_state_roundtrips_through_qsettings(qtbot):
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    win.file_dock.titleBarWidget().set_collapsed(True)
+    win.save_state()  # closeEvent 相当
+    win2 = build_main_window()
+    qtbot.addWidget(win2)
+    assert win2.file_dock.titleBarWidget().is_collapsed()
+    assert not win2.channel_dock.titleBarWidget().is_collapsed()
+
+
+def test_reset_layout_expands_all_docks(qtbot):
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    win.diagnostics_dock.titleBarWidget().set_collapsed(True)
+    win._reset_layout()
+    assert not win.diagnostics_dock.titleBarWidget().is_collapsed()
