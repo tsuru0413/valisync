@@ -162,6 +162,32 @@ def test_readout_clear_callback_clears_active_panel_cursor(
     assert panels[1].cursor_t is None
 
 
+def test_sync_readout_calls_cursor_readings_once(
+    area_two_panels_two_signals: tuple[GraphAreaView, GraphAreaVM, str, str],
+) -> None:
+    """perf 回帰ガード (readout-pane I1 dedup): _sync_readout() の1呼び出しにつき
+    pvm.cursor_readings() は高々1回しか呼ばれない — drag hot path (VM "cursor" ->
+    readout_changed -> _sync_readout) での min/max リダクション二重実行を防ぐ。"""
+    area, vm, _sig_a, _sig_b = area_two_panels_two_signals
+    panels = vm.panels(0)
+    pvm = panels[1]  # active by default
+    pvm.set_cursor(0.5)
+
+    calls = 0
+    original = pvm.cursor_readings
+
+    def counting_cursor_readings() -> list:  # type: ignore[type-arg]
+        nonlocal calls
+        calls += 1
+        return original()
+
+    pvm.cursor_readings = counting_cursor_readings  # type: ignore[method-assign]
+
+    area._sync_readout()
+
+    assert calls == 1
+
+
 def test_readout_shows_active_panel_interp_label(
     area_two_panels_two_signals: tuple[GraphAreaView, GraphAreaVM, str, str],
 ) -> None:

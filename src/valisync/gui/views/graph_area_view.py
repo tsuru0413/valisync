@@ -397,7 +397,8 @@ class GraphAreaView(QWidget):
         if pvm.cursor_t is None:
             self.readout_pane.show_placeholder("プロットをクリックしてカーソルを設置")
             return
-        if not pvm.cursor_readings():
+        readings = pvm.cursor_readings()
+        if not readings:
             self.readout_pane.show_placeholder("表示中の信号がありません")
             return
         if pvm.delta_enabled and pvm.cursor_t_b is not None:
@@ -412,7 +413,7 @@ class GraphAreaView(QWidget):
         else:
             self.readout_pane.set_global(
                 pvm.cursor_t,
-                pvm.cursor_readings(),
+                readings,
                 interp_label=_INTERP_LABELS.get(pvm.interp_method, ""),
                 precision=pvm.value_precision,
             )
