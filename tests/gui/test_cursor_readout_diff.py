@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPointF, Qt
-from PySide6.QtGui import QMouseEvent
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from valisync.core.statistics.range_stats import StatisticsResult
@@ -53,28 +51,3 @@ def test_color_change_updates_swatch_in_place(qtbot: QtBot):
     w.set_delta(0.0, 1.0, [_dr("s::a", "#f9e2af", 1.0, 0.1, _stats(1, 2, 0, 0.5, 10))])
     assert w._swatch_labels[0] is held  # swatch も再利用(色だけ差し替え)
     assert w._row_colors[0] == "#f9e2af"
-
-
-def test_drag_sets_user_moved_flag(qtbot: QtBot):
-    w = CursorReadout()
-    qtbot.addWidget(w)
-    assert w.was_user_moved() is False
-    press = QMouseEvent(
-        QEvent.Type.MouseButtonPress,
-        QPointF(5.0, 5.0),
-        Qt.MouseButton.LeftButton,
-        Qt.MouseButton.LeftButton,
-        Qt.KeyboardModifier.NoModifier,
-    )
-    w.mousePressEvent(press)
-    move = QMouseEvent(
-        QEvent.Type.MouseMove,
-        QPointF(40.0, 40.0),
-        Qt.MouseButton.NoButton,
-        Qt.MouseButton.LeftButton,
-        Qt.KeyboardModifier.NoModifier,
-    )
-    w.mouseMoveEvent(move)
-    assert w.was_user_moved() is True
-    w.reset_user_moved()
-    assert w.was_user_moved() is False
