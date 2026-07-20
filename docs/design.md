@@ -139,4 +139,4 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   付随して撮影スクリプトの QSettings 隔離バグ（`setDefaultFormat`+`setPath` は
   `QSettings(org, app)` の NativeFormat に効かず実設定が漏れる）を conftest 同型の
   `_ORG`/`_APP` 差し替え＋clear で実効化（凍結比較の決定性を回復）。設計は
-  [edge-aware-dock-collapse spec](superpowers/specs/2026-07-20-edge-aware-dock-collapse-design.md)。PR #TBD。
+  [edge-aware-dock-collapse spec](superpowers/specs/2026-07-20-edge-aware-dock-collapse-design.md)。PR #133。
