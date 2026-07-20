@@ -98,6 +98,11 @@ class Colors:
     chrome_placeholder: Color
     chrome_disabled_text: Color
     chrome_frame: Color  # 領域境界線 (separator+1px枠) — border_chip と同値だが別役割
+    surface_readout_panel: (
+        Color  # 読み値ペイン面 — chrome_alternate_base と同値の別役割
+    )
+    delta_negative: Color  # Δ(B-A) 負値/基準比マイナス — close_hover と同値の別役割
+    delta_positive: Color  # Δ(B-A) 正値/基準比プラス (Catppuccin green)
 
 
 @dataclass(frozen=True)
@@ -177,6 +182,9 @@ DARK = ThemeTokens(
         chrome_placeholder=Color.from_hex("#7f849c"),
         chrome_disabled_text=Color.from_hex("#6c7086"),
         chrome_frame=Color.from_hex("#45475a"),
+        surface_readout_panel=Color.from_hex("#1e1e2e"),
+        delta_negative=Color.from_hex("#f38ba8"),
+        delta_positive=Color.from_hex("#a6e3a1"),
     ),
     spacing=Spacing(
         chip_margins=(6, 5, 6, 5),
@@ -229,6 +237,9 @@ LIGHT = ThemeTokens(
         chrome_placeholder=Color.from_hex("#8c8fa1"),
         chrome_disabled_text=Color.from_hex("#9ca0b0"),
         chrome_frame=Color.from_hex("#bcc0cc"),
+        surface_readout_panel=Color.from_hex("#eff1f5"),
+        delta_negative=Color.from_hex("#d20f39"),
+        delta_positive=Color.from_hex("#40a02b"),
     ),
     spacing=DARK.spacing,
     radii=DARK.radii,

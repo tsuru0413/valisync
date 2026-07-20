@@ -152,6 +152,36 @@ def _x_span(view) -> float:
     return abs(rng[1] - rng[0]) if rng else 1.0
 
 
+def _shown_area(qtbot: QtBot):
+    """Real-display GraphAreaView (one tab/panel, two signals/axes) + its panel.
+
+    readout-pane Task 4 moved CursorReadout ownership from GraphPanelView onto
+    GraphAreaView's single ``readout_pane``; tests that assert on the readout
+    (as opposed to the cursor lines themselves, which stay panel-local) need
+    the owning area, not a bare panel. Module-local copy of the pattern in
+    test_readout_realclick.py::_shown_area (kept per-file — established
+    cross-test-module convention in this directory).
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
+    from tests.gui._panel_factory import make_two_axis_area
+
+    area = make_two_axis_area()
+    qtbot.addWidget(area)
+    area.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+    area.setGeometry(300, 300, 900, 620)
+    area.show()
+    qtbot.waitExposed(area)
+    for _ in range(3):
+        QApplication.processEvents()
+    panel = area.tabs.widget(0).widget(0)  # type: ignore[attr-defined]
+    qtbot.waitUntil(
+        lambda: panel._view_boxes[0].sceneBoundingRect().height() > 100, timeout=3000
+    )
+    return area, panel
+
+
 def test_real_drag_cursor_line_moves_it(qtbot: QtBot, tmp_path) -> None:
     """A 線をトグルで設置→線を右へ実ドラッグ → 描画 x(line.value)が増加(②: 実ドラッグ結果)。"""
     skip_unless_real_display()
@@ -242,21 +272,25 @@ def test_real_drag_b_cursor_stats_live_recalc(qtbot: QtBot, tmp_path) -> None:
         view._on_cursor_line_b_dragged)  # graph_panel_view.py L1127
         # (sigPositionChanged.connect(on_dragged) inside _make_cursor_line)
     を挿入すると B ドラッグ後も統計が更新されず texts_before != texts_after が RED になる。
+
+    readout-pane Task 4/5: the readout table now lives on GraphAreaView's single
+    ``readout_pane`` (not the panel), so this test drives the panel's cursor VM
+    directly but reads ``area.readout_pane.row_texts()``.
     """
     skip_unless_real_display()
     from PySide6.QtWidgets import QApplication
 
-    view = _shown_panel(qtbot)
+    area, view = _shown_area(qtbot)
     view.vm.x_range = view.vm.x_range or (0.0, 1.0)
     view.vm.toggle_main_cursor(True)  # A: 50%
     view.vm.toggle_delta(True)  # B: 75%
     for _ in range(5):
         QApplication.processEvents()
     assert view.cursor_line_visible() and view.delta_line_visible()
-    assert view.readout_visible()
+    assert area.readout_visible()
 
     # Initial readout at B=75% — used to prove stats CHANGED after drag
-    texts_before = view._readout.row_texts()
+    texts_before = area.readout_pane.row_texts()
     assert texts_before, "delta-mode readout should have at least one signal row"
 
     # Drag B line from 75% → 85% with real OS mouse input
@@ -278,12 +312,12 @@ def test_real_drag_b_cursor_stats_live_recalc(qtbot: QtBot, tmp_path) -> None:
         QApplication.processEvents()
         time.sleep(0.02)
         if k == mid:
-            texts_mid = view._readout.row_texts()
+            texts_mid = area.readout_pane.row_texts()
     at(tx, gy, LUP)
     for _ in range(5):
         QApplication.processEvents()
 
-    texts_after = view._readout.row_texts()
+    texts_after = area.readout_pane.row_texts()
 
     # (1) mid-drag: readout rows are present and contain no placeholder text
     _PLACEHOLDERS = {"範囲外", "データなし", ""}

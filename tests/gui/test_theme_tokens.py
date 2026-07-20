@@ -109,6 +109,9 @@ def test_dark_values_frozen_snapshot():
         "chrome_placeholder": Color.from_hex("#7f849c"),
         "chrome_disabled_text": Color.from_hex("#6c7086"),
         "chrome_frame": Color.from_hex("#45475a"),
+        "surface_readout_panel": Color.from_hex("#1e1e2e"),
+        "delta_negative": Color.from_hex("#f38ba8"),
+        "delta_positive": Color.from_hex("#a6e3a1"),
     }
     actual_colors = {
         f.name: getattr(DARK.colors, f.name) for f in dataclasses.fields(DARK.colors)
@@ -224,6 +227,9 @@ def test_light_values_frozen_snapshot():
         "chrome_placeholder": Color.from_hex("#8c8fa1"),
         "chrome_disabled_text": Color.from_hex("#9ca0b0"),
         "chrome_frame": Color.from_hex("#bcc0cc"),
+        "surface_readout_panel": Color.from_hex("#eff1f5"),
+        "delta_negative": Color.from_hex("#d20f39"),
+        "delta_positive": Color.from_hex("#40a02b"),
     }
     for name, expected in golden.items():
         assert getattr(c, name) == expected, name

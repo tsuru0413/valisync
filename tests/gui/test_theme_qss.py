@@ -116,3 +116,36 @@ def test_region_frame_uses_chrome_frame_not_border_chip():
     for style in (qss.main_window_separator(alt), qss.region_frame("x", alt)):
         assert Color(1, 2, 3).hex in style
         assert DARK.colors.border_chip.hex not in style
+
+
+def test_readout_panel_uses_surface_readout_panel_not_chrome():
+    """surface_readout_panel は chrome_alternate_base と同値の別トークン。
+    値を分岐させたテーマで readout_panel がどちらを参照するか直接実証する。"""
+    import dataclasses
+
+    from valisync.gui.theme.tokens import Color
+
+    alt = dataclasses.replace(
+        DARK,
+        colors=dataclasses.replace(DARK.colors, surface_readout_panel=Color(1, 2, 3)),
+    )
+    s = qss.readout_panel(alt)
+    assert "#ReadoutPane" in s
+    assert Color(1, 2, 3).hex in s
+    assert DARK.colors.chrome_alternate_base.hex not in s
+
+
+def test_delta_value_uses_given_delta_token_not_close_hover():
+    """delta_negative は close_hover と同値の別トークン。値分岐で誤配線を実証。"""
+    import dataclasses
+
+    from valisync.gui.theme.tokens import Color
+
+    alt = dataclasses.replace(
+        DARK, colors=dataclasses.replace(DARK.colors, delta_negative=Color(1, 2, 3))
+    )
+    s = qss.delta_value(alt.colors.delta_negative)
+    assert Color(1, 2, 3).hex in s
+    assert DARK.colors.close_hover.hex not in s
+    # delta_positive は新規値: 生成関数が受け取った色をそのまま出す
+    assert DARK.colors.delta_positive.hex in qss.delta_value(DARK.colors.delta_positive)

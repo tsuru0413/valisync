@@ -1164,6 +1164,44 @@ def test_delta_readings_dy_none_when_out_of_range(tmp_path):
     assert r.value_a == pytest.approx(20.0)  # A still in range
 
 
+# ─── entry_id / value-range on readings (readout-pane 増分B Task 2) ─────────
+
+
+def test_cursor_readings_carry_entry_id(tmp_path: Path) -> None:
+    """行クリックの逆引き用に CursorReading.entry_id が plotted entry と一致する。"""
+    session, _ = _loaded_session(tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.set_cursor(0.5)
+    reading = vm.cursor_readings()[0]
+    assert reading.entry_id == vm._plotted[0].entry_id
+
+
+def test_delta_readings_carry_entry_id(tmp_path: Path) -> None:
+    session, _ = _loaded_session(tmp_path)
+    vm = GraphPanelVM(session)
+    vm.add_signal(_first_signal_key(session))
+    vm.set_cursor(0.3)
+    vm.toggle_delta(True)
+    vm.set_cursor_b(0.6)
+    reading = vm.delta_readings()[0]
+    assert reading.entry_id == vm._plotted[0].entry_id
+
+
+def test_cursor_reading_carries_value_range(tmp_path: Path) -> None:
+    """min-max 列用に CursorReading が信号の finite 値域を運ぶ。"""
+    session, _ = _loaded_session(tmp_path)
+    key = _first_signal_key(session)
+    vm = GraphPanelVM(session)
+    vm.add_signal(key)
+    vm.set_cursor(0.5)
+    r = vm.cursor_readings()[0]
+    sig = session.signal_map()[key]
+    _ts, vals = sig.finite_view()
+    assert r.range_lo == float(vals.min())
+    assert r.range_hi == float(vals.max())
+
+
 # ─── visible_stat_cols (spec §7) ─────────────────────────────────────────────
 
 

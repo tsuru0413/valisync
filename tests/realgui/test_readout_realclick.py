@@ -1,11 +1,12 @@
-"""Layer C: CursorReadout の ✕ / 右クリックメニューを実 OS 入力で検証(増分3b)。
+"""Layer C: CursorReadout ペインの右クリックメニューを実 OS 入力で検証(増分3b -> readout-pane)。
 
-新規経路: readout の ✕ ボタン実クリックで全カーソル消去・readout 本体を実右クリック
-→ メニューを実クリックで「表をコピー」→ clipboard に TSV。合成 click/trigger は Task
-4/5 の Layer B で callback 発火を証明済み。ここは「実ディスプレイに映って実 OS 入力で
-効く」ことのみを証拠化する(memory gui_realgui_synthetic_click_mislabeled_layer_c)。
+readout-pane Task 4 で CursorReadout の所有が GraphPanelView から GraphAreaView の
+単一ペイン(``area.readout_pane``)へ移った。旧 ✕ ボタン(close_button())は撤去済みで、
+全消去は右クリックメニュー「カーソルを消す」に一本化されている(``build_readout_menu``)。
+ここは「実ディスプレイに映って実 OS 入力で効く」ことのみを証拠化する
+(memory gui_realgui_synthetic_click_mislabeled_layer_c)。
 
-再利用: tests/gui/_panel_factory.make_two_axis_panel・test_global_cursor.py の
+再利用: tests/gui/_panel_factory.make_two_axis_area・test_global_cursor.py の
 _shown_panel 作法・test_axis_menu_offset.py の _menu_hang_watchdog/_open_menu_click_item
 モーダルメニューパターン(module-local 忠実コピー)。
 """
@@ -118,31 +119,38 @@ def _open_menu_click_item(dpr_widget, phys, item_text, shot_menu):  # type: igno
     return captured
 
 
-def _shown_panel(qtbot: QtBot):
+def _shown_area(qtbot: QtBot):
+    """Real-display GraphAreaView (one tab/panel, two signals/axes) + its panel.
+
+    Returns (area, panel) — ``panel`` is the sole GraphPanelView so tests can
+    drive its VM (cursor placement) directly, while the readout pane under test
+    lives on ``area.readout_pane`` (readout-pane Task 4 moved ownership there).
+    """
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
 
-    from tests.gui._panel_factory import make_two_axis_panel
+    from tests.gui._panel_factory import make_two_axis_area
 
-    view = make_two_axis_panel()
-    qtbot.addWidget(view)
-    view.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+    area = make_two_axis_area()
+    qtbot.addWidget(area)
+    area.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
     screen = QApplication.primaryScreen().availableGeometry()
-    view.setGeometry(screen.x() + 60, screen.y() + 60, 820, 620)
-    view.show()
-    view.raise_()
-    view.activateWindow()
-    qtbot.waitExposed(view)
+    area.setGeometry(screen.x() + 60, screen.y() + 60, 900, 620)
+    area.show()
+    area.raise_()
+    area.activateWindow()
+    qtbot.waitExposed(area)
     for _ in range(3):
         QApplication.processEvents()
+    panel = area.tabs.widget(0).widget(0)  # type: ignore[attr-defined]
     qtbot.waitUntil(
-        lambda: view._view_boxes[0].sceneBoundingRect().height() > 100, timeout=3000
+        lambda: panel._view_boxes[0].sceneBoundingRect().height() > 100, timeout=3000
     )
-    return view
+    return area, panel
 
 
 def _widget_center_phys(view, w) -> tuple[int, int]:
-    """物理スクリーン中心座標(w は view の子ウィジェット)。"""
+    """物理スクリーン中心座標(w は view と同じトップレベルウィンドウ内の子ウィジェット)。"""
     from PySide6.QtCore import QPoint
 
     dpr = view.devicePixelRatioF()
@@ -150,47 +158,58 @@ def _widget_center_phys(view, w) -> tuple[int, int]:
     return round(gp.x() * dpr), round(gp.y() * dpr)
 
 
-def test_real_click_close_button_clears(qtbot: QtBot, tmp_path) -> None:
-    """A カーソル設置 → readout ✕ を実クリック → カーソル消滅。"""
+def test_real_right_click_readout_clear_clears(qtbot: QtBot, tmp_path) -> None:
+    """A カーソル設置 → readout ペインを実右クリック → 「カーソルを消す」実クリック
+    → カーソル消滅。
+
+    旧 ✕ ボタン単クリック経路(close_button())は readout-pane 化で撤去され、全消去は
+    build_readout_menu() の「カーソルを消す」に一本化された。
+    """
     skip_unless_real_display()
     from PySide6.QtWidgets import QApplication
 
-    view = _shown_panel(qtbot)
-    view.vm.x_range = view.vm.x_range or (0.0, 1.0)
-    view.vm.toggle_main_cursor(True)
+    area, panel = _shown_area(qtbot)
+    panel.vm.x_range = panel.vm.x_range or (0.0, 1.0)
+    panel.vm.toggle_main_cursor(True)
     for _ in range(3):
         QApplication.processEvents()
-    assert view.cursor_line_visible()
-    btn = view._readout.close_button()
-    for _ in range(3):
-        QApplication.processEvents()
-    px, py = _widget_center_phys(view, btn)
-    at(px, py, LDOWN)
-    at(px, py, LUP)
+    assert panel.cursor_line_visible()
+
+    phys = _widget_center_phys(area, area.readout_pane)
+    shot_menu = tmp_path / "readout_menu_clear.png"
+    captured = _open_menu_click_item(area, phys, "カーソルを消す", shot_menu)
     for _ in range(5):
         QApplication.processEvents()
     with contextlib.suppress(Exception):
         QApplication.primaryScreen().grabWindow(0).save(
             str(tmp_path / "readout_closed.png")
         )
-    assert not view.cursor_line_visible()
+    assert captured.get("type") == "QMenu", (
+        "real right-click on the readout pane did not raise the readout menu "
+        f"(got {captured.get('type')!r}). screenshot: {shot_menu}"
+    )
+    actions = captured.get("actions") or []
+    assert "カーソルを消す" in actions, (
+        f"readout menu missing 'カーソルを消す': {actions!r}"
+    )
+    assert captured.get("clicked"), "real click on 'カーソルを消す' failed to fire"
+    assert not panel.cursor_line_visible()
 
 
 def test_real_right_click_readout_copy(qtbot: QtBot, tmp_path) -> None:
-    """A カーソル設置 → readout 実右クリック → 「表をコピー」実クリック → clipboard に TSV。"""
+    """A カーソル設置 → readout ペインを実右クリック → 「表をコピー」実クリック → clipboard に TSV。"""
     skip_unless_real_display()
     from PySide6.QtWidgets import QApplication
 
-    view = _shown_panel(qtbot)
-    view.vm.x_range = view.vm.x_range or (0.0, 1.0)
-    view.vm.toggle_main_cursor(True)
+    area, panel = _shown_area(qtbot)
+    panel.vm.x_range = panel.vm.x_range or (0.0, 1.0)
+    panel.vm.toggle_main_cursor(True)
     for _ in range(3):
         QApplication.processEvents()
     QApplication.clipboard().clear()
-    ro = view._readout
-    phys = _widget_center_phys(view, ro)
+    phys = _widget_center_phys(area, area.readout_pane)
     shot = tmp_path / "readout_menu.png"
-    captured = _open_menu_click_item(view, phys, "表をコピー", shot)
+    captured = _open_menu_click_item(area, phys, "表をコピー", shot)
     for _ in range(5):
         QApplication.processEvents()
     assert captured.get("type") == "QMenu"

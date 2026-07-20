@@ -53,7 +53,9 @@ def _vm_with_signal(tmp_path: Path) -> GraphPanelVM:
     return vm
 
 
-def test_setting_cursor_shows_line_and_readout(qtbot: QtBot, tmp_path: Path) -> None:
+def test_setting_cursor_shows_line(qtbot: QtBot, tmp_path: Path) -> None:
+    """readout-pane Task 4: the readout TABLE moved to GraphAreaView (see
+    tests/gui/test_readout_pane_binding.py); this only owns the cursor line."""
     vm = _vm_with_signal(tmp_path)
     view = GraphPanelView(vm)
     qtbot.addWidget(view)
@@ -63,55 +65,16 @@ def test_setting_cursor_shows_line_and_readout(qtbot: QtBot, tmp_path: Path) -> 
 
     assert view.cursor_line_visible()
     assert view.cursor_line_value() == 0.5
-    assert view.readout_visible()
     assert vm.cursor_readings()[0].value is not None
 
 
-def test_clearing_cursor_hides_line_and_readout(qtbot: QtBot, tmp_path: Path) -> None:
+def test_clearing_cursor_hides_line(qtbot: QtBot, tmp_path: Path) -> None:
     vm = _vm_with_signal(tmp_path)
     view = GraphPanelView(vm)
     qtbot.addWidget(view)
     vm.set_cursor(0.5)
     vm.set_cursor(None)
     assert not view.cursor_line_visible()
-    assert not view.readout_visible()
-
-
-def test_readout_position_preserved_on_cursor_update(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
-    """Readout anchors to the plot-area top-left only on first show; subsequent
-    cursor syncs must not reset a moved position. Clearing and re-setting the
-    cursor re-anchors to the plot area on re-appearance (PC-21).
-    """
-    vm = _vm_with_signal(tmp_path)
-    view = GraphPanelView(vm)
-    qtbot.addWidget(view)
-    view.resize(400, 300)
-    view.show()
-    qtbot.waitExposed(view)
-
-    # First cursor placement — readout anchors to the plot-area top-left + margin.
-    vm.set_cursor(0.5)
-    assert view.readout_visible()
-    anchor = view._plot_area_top_left()
-    assert anchor is not None
-    assert view._readout.pos() == QPoint(anchor.x() + 8, anchor.y() + 8)
-
-    # Move the readout elsewhere; a cursor-only update must NOT snap it back.
-    view._readout.move(200, 120)
-    assert view._readout.pos().x() == 200
-    vm.set_cursor(0.7)
-    assert view._readout.pos() == QPoint(200, 120)
-
-    # Clear cursor and set again — readout re-anchors to the plot area.
-    vm.set_cursor(None)
-    assert not view.readout_visible()
-    vm.set_cursor(0.3)
-    assert view.readout_visible()
-    anchor2 = view._plot_area_top_left()
-    assert anchor2 is not None
-    assert view._readout.pos() == QPoint(anchor2.x() + 8, anchor2.y() + 8)
 
 
 def test_legend_item_removed(qtbot: QtBot, tmp_path: Path) -> None:
@@ -757,22 +720,9 @@ def test_interp_menu_action_sets_vm(qtbot: QtBot) -> None:
     assert view.vm.interp_method == InterpolationMethod.NEAREST
 
 
-def test_readout_header_shows_current_interp(qtbot: QtBot) -> None:
-    from valisync.core.interpolation import InterpolationMethod
-
-    view = _shown_cursor_panel(qtbot)
-    view.vm.x_range = (0.0, 1.0)
-    view.vm.set_interp_method(InterpolationMethod.NEAREST)
-    view.vm.set_cursor(0.005)
-    assert "最近傍" in view._readout.header_text()
-
-
-def test_readout_close_clears_all_cursors(qtbot: QtBot) -> None:
-    view = _shown_cursor_panel(qtbot)
-    view.vm.x_range = (0.0, 1.0)
-    view.vm.toggle_main_cursor(True)
-    view.vm.toggle_delta(True)
-    assert view.vm.cursor_t is not None
-    view._readout.close_button().click()
-    assert view.vm.cursor_t is None  # 全消去 (A/B/Δ)
-    assert view._readout.isHidden()
+# NOTE (readout-pane Task 4): test_readout_header_shows_current_interp and
+# test_readout_close_clears_all_cursors used to live here, asserting against
+# view._readout directly. The readout TABLE (and its close/clear affordance)
+# moved to GraphAreaView's single pane — the equivalent assertions now live in
+# tests/gui/test_readout_pane_binding.py::test_readout_shows_active_panel_interp_label
+# and ::test_readout_clear_callback_clears_active_panel_cursor.

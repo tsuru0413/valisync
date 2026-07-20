@@ -9,12 +9,54 @@ from valisync.gui.viewmodels.graph_panel_vm import CursorReading, DeltaReading
 from valisync.gui.views.cursor_readout import CursorReadout
 
 
-def test_chip_background_paints_as_child_widget(qtbot: QtBot):
+def test_tall_pane_keeps_rows_compact(qtbot: QtBot):
+    """常設ペインは背丈が高くても行を上部に詰める (行を縦に伸ばさない)。
+
+    実機バグ (2026-07-20): splitter で縦に引き伸ばされると VBox 末尾の stretch 不在で
+    余剰縦スペースが grid に配分され行が広がる。実プラットフォーム(Windows)では、
+    伸びた行内で AlignRight の値セル(垂直センター喪失で top 揃え)と swatch/name
+    (center 揃え)が縦に割れて崩れた。この行内割れは QGridLayout の既定 vcenter により
+    headless では再現しない下流症状のため、ここでは**根因の行伸長**を「上部圧縮」で
+    直接ガードする (addStretch で行が伸びない=割れも起きない)。縦中心一致は補助 assert。
+    """
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    host = QWidget()
+    QVBoxLayout(host).addWidget(w := CursorReadout())
+    qtbot.addWidget(host)
+    host.resize(320, 600)  # tall splitter pane を模す
+    host.show()
+    qtbot.waitExposed(host)
+    w.set_global(
+        1.0,
+        [
+            CursorReading(
+                "A", "#111111", 10.0, True, entry_id=1, range_lo=0.0, range_hi=20.0
+            ),
+            CursorReading(
+                "B", "#222222", 30.0, True, entry_id=2, range_lo=0.0, range_hi=40.0
+            ),
+        ],
+    )
+    for _ in range(3):
+        qtbot.wait(1)
+    # 行内整列: 同一行の swatch と値セルの縦中心が一致する (割れていない)
+    sw_y = w._swatch_labels[0].geometry().center().y()
+    val_y = w._value_labels[0][0].geometry().center().y()
+    assert abs(sw_y - val_y) <= 4, f"row0 swatch({sw_y}) と値({val_y}) が縦にずれている"
+    # 上部圧縮: 最終行の底が host 高さの半分より十分上 (縦に散らばっていない)
+    assert w._swatch_labels[-1].geometry().bottom() < 250, (
+        "行が縦に広がって散らばっている"
+    )
+
+
+def test_pane_background_paints_as_child_widget(qtbot: QtBot):
     """QSS 背景が『子ウィジェット』として実描画される (WA_StyledBackground)。
 
     素の QWidget サブクラスは属性なしだと子として QSS background/border を
     描かず親の背景が透ける (Qt 仕様 — top-level は背景消去経路で描かれるため
     単体 grab では見逃す)。増分1 のデバッグテーマ検証で発覚した実バグ。
+    ペイン化後 (Task 3) は #ReadoutPane・surface_readout_panel が対象。
     """
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QWidget
@@ -27,6 +69,7 @@ def test_chip_background_paints_as_child_widget(qtbot: QtBot):
     parent.resize(400, 200)
     qtbot.addWidget(parent)
     w = CursorReadout(parent)
+    assert w.objectName() == "ReadoutPane"
     w.set_global(1.0, [CursorReading("csv::vCar", "#1f77b4", 12.3, True)])
     w.move(50, 50)
     w.setVisible(True)
@@ -34,10 +77,10 @@ def test_chip_background_paints_as_child_widget(qtbot: QtBot):
     parent.show()
     img = parent.grab().toImage()
     inner = img.pixelColor(50 + w.width() // 2, 50 + w.height() - 4)
-    assert inner.name() != "#00ff00", "チップ背景が描画されず親の緑が透けている"
-    # surface_chip (alpha 230) の緑上ブレンドでは R/B がほぼトークン値に一致する
-    chip = active().colors.surface_chip
-    assert abs(inner.red() - chip.r) < 12 and abs(inner.blue() - chip.b) < 12
+    assert inner.name() != "#00ff00", "ペイン背景が描画されず親の緑が透けている"
+    # surface_readout_panel は不透明 (alpha 255) — 緑を完全に覆う
+    panel = active().colors.surface_readout_panel
+    assert abs(inner.red() - panel.r) < 12 and abs(inner.blue() - panel.b) < 12
 
 
 def test_set_readings_builds_one_row_per_signal(qtbot: QtBot):
@@ -337,6 +380,7 @@ def test_stat_toggle_reretains_interp_label(qtbot: QtBot):
 
 
 def test_table_tsv_global(qtbot: QtBot):
+    """set_global の TSV は min-max 列を含む (Task 3: コンセプト 2a)。"""
     ro = CursorReadout()
     qtbot.addWidget(ro)
     ro.set_global(
@@ -349,9 +393,9 @@ def test_table_tsv_global(qtbot: QtBot):
     )
     tsv = ro.table_tsv()
     lines = tsv.splitlines()
-    assert lines[0].split("\t") == ["信号", "値"]
-    assert lines[1].split("\t") == ["spd [km/h]", "1.5"]
-    assert lines[2].split("\t") == ["rpm", "800"]
+    assert lines[0].split("\t") == ["信号", "A値", "min–max"]  # noqa: RUF001
+    assert lines[1].split("\t") == ["spd [km/h]", "1.5", ""]
+    assert lines[2].split("\t") == ["rpm", "800", ""]
 
 
 def test_table_tsv_delta_reflects_visible_stats(qtbot: QtBot):
@@ -367,16 +411,6 @@ def test_table_tsv_delta_reflects_visible_stats(qtbot: QtBot):
     )
     header = ro.table_tsv().splitlines()[0].split("\t")
     assert header == ["信号", "A値", "Δy", "mean"]  # 表示中の列のみ
-
-
-def test_close_button_fires_on_clear(qtbot: QtBot):
-    ro = CursorReadout()
-    qtbot.addWidget(ro)
-    fired: list[bool] = []
-    ro._on_clear = lambda: fired.append(True)
-    ro.set_global(0.0, [CursorReading("a", "#fff", 1.0, True)])
-    ro.close_button().click()
-    assert fired == [True]
 
 
 def _readout_menu_items(ro):
@@ -453,16 +487,9 @@ def test_readout_menu_clear_fires_on_clear(qtbot):
     assert fired == [True]
 
 
-def test_readout_has_move_cursor(qtbot: QtBot):
-    from PySide6.QtCore import Qt
-
-    ro = CursorReadout()
-    qtbot.addWidget(ro)
-    assert ro.cursor().shape() == Qt.CursorShape.SizeAllCursor
-
-
-def test_header_markers_and_chip_use_tokens(qtbot):
-    """配線検証: readout がカーソル/チップのトークンを消費する (凍結置換の対線)。"""
+def test_header_markers_and_pane_use_tokens(qtbot):
+    """配線検証: readout がカーソル/ペインのトークンを消費する (凍結置換の対線)。"""
+    from valisync.gui.theme import qss
     from valisync.gui.theme.tokens import active
 
     w = CursorReadout()
@@ -473,4 +500,104 @@ def test_header_markers_and_chip_use_tokens(qtbot):
     )
     assert c.cursor_a.hex in w._header.text()
     assert c.cursor_b.hex in w._header.text()
-    assert c.surface_chip.qss() in w.styleSheet()
+    assert w.styleSheet() == qss.readout_panel()
+
+
+# --- Task 3 (readout-pane 増分B): フロートチップ → 常設ペイン化 ---
+
+
+def test_pane_object_name_and_no_close_button(qtbot: QtBot):
+    """ペイン化: objectName=ReadoutPane・常時✕ボタンは撤去 (フロート廃止)。"""
+    w = CursorReadout()
+    qtbot.addWidget(w)
+    assert w.objectName() == "ReadoutPane"
+    assert not hasattr(w, "close_button")
+
+
+def test_set_global_renders_minmax_column(qtbot: QtBot):
+    """単一ファイル: 列 = 名前 | A値 | min-max (コンセプト 2a)。"""
+    w = CursorReadout()
+    qtbot.addWidget(w)
+    w.set_global(
+        1.0,
+        [
+            CursorReading(
+                "vCar",
+                "#1f77b4",
+                12.3,
+                True,
+                entry_id=1,
+                range_lo=0.0,
+                range_hi=100.0,
+            )
+        ],
+    )
+    assert w.column_headers() == ["A値", "min–max"]  # noqa: RUF001
+    # row_texts()[i] = (name, joined cells) - A値と min-max の両方を含む
+    _name, cells = w.row_texts()[0]
+    assert "12.3" in cells and "0" in cells and "100" in cells
+
+
+def test_show_placeholder_replaces_table(qtbot: QtBot):
+    w = CursorReadout()
+    qtbot.addWidget(w)
+    w.set_readings([CursorReading("csv::vCar", "#1f77b4", 12.3, True)])
+    assert len(w.row_texts()) == 1
+    w.show_placeholder("プロットをクリックしてカーソルを設置")
+    assert w.row_texts() == []
+    assert w.placeholder_text() == "プロットをクリックしてカーソルを設置"
+
+
+def test_row_click_emits_entry_id(qtbot: QtBot):
+    w = CursorReadout()
+    qtbot.addWidget(w)
+    w.set_global(
+        1.0,
+        [CursorReading("csv::vCar", "#1f77b4", 12.3, True, entry_id=7)],
+    )
+    seen: list[int] = []
+    w.row_activated.connect(seen.append)
+    w.activate_row(0)  # プログラム的行トリガ (realgui は実クリックで検証)
+    assert seen == [7]
+
+
+def test_delta_dy_sign_colors_value_diverged(qtbot: QtBot):
+    """Δy 正=delta_positive・負=delta_negative で着色。delta_negative は close_hover と
+    同値の別役割なので、値を分岐させたテーマで set_delta の呼び出し経路が
+    delta_negative(≠close_hover) を選ぶことを直接実証する(Task 1 レビュー Important
+    対応: delta_value は恒等関数で誤配線は呼び出し側=このコードにあるため、ここが
+    唯一の値分岐ガード)。"""
+    import dataclasses
+
+    from valisync.core.statistics.range_stats import StatisticsResult
+    from valisync.gui.theme.tokens import DARK, Color, set_active
+
+    # delta_negative を close_hover と別値へ分岐させたテーマを active に
+    alt = dataclasses.replace(
+        DARK,
+        colors=dataclasses.replace(
+            DARK.colors,
+            delta_negative=Color(1, 2, 3),
+            delta_positive=Color(4, 5, 6),
+        ),
+    )
+    set_active(alt)
+    try:
+        w = CursorReadout()
+        qtbot.addWidget(w)
+        stats = StatisticsResult(mean=0, max=0, min=0, std=0, count=5)
+        w.set_delta(
+            1.0,
+            2.0,
+            [
+                DeltaReading("up", "#111", 1.0, 3.0, stats, True, entry_id=1),
+                DeltaReading("dn", "#222", 1.0, -3.0, stats, True, entry_id=2),
+            ],
+        )
+        styles = w.dy_cell_styles()  # [(row_index, style_str), ...] introspection
+        joined = " ".join(s for _i, s in styles)
+        assert Color(4, 5, 6).hex in joined  # 正 → delta_positive
+        assert Color(1, 2, 3).hex in joined  # 負 → delta_negative
+        assert DARK.colors.close_hover.hex not in joined  # close_hover 誤配線でない
+    finally:
+        set_active(DARK)

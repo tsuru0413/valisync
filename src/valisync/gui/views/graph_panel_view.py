@@ -26,7 +26,7 @@ from typing import Any
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -672,6 +672,12 @@ class GraphPanelView(QWidget):
     # 購読側 (GraphAreaVM.set_active_panel) が同じ index への再設定を no-op に
     # しており冪等なので安全。
     activate_requested = Signal()
+    # Task 4 (readout-pane): the panel no longer owns a readout widget — cursor/
+    # delta/stat-column/precision changes emit this, and GraphAreaView pulls this
+    # panel's state via _sync_readout() IF it is the active panel. Connecting
+    # every panel's signal is safe (not just the active one) because
+    # _sync_readout() only ever reads the currently active tab/panel.
+    readout_changed = Signal()
 
     def __init__(
         self,
@@ -841,8 +847,6 @@ class GraphPanelView(QWidget):
         self.refresh()
 
         # ── Global cursor (R15) ──────────────────────────────────────────────
-        from valisync.gui.views.cursor_readout import CursorReadout
-
         # A (global) amber solid + B (delta) blue dashed.  Both are created,
         # z-ordered, attached and drag-wired identically (only pen + handler
         # differ) via _make_cursor_line, and re-attached together on every axis
@@ -859,29 +863,6 @@ class GraphPanelView(QWidget):
             ),
             self._on_cursor_line_b_dragged,
         )
-        self._readout = CursorReadout(self)
-        self._readout.setVisible(False)
-        # Wire stat-column toggle to VM so VM is the source of truth (spec §7).
-        # The lambda captures vm_ref to avoid a strong __self__ cycle through self.
-        vm_ref = self.vm
-
-        def _on_stat_toggled(col: str, on: bool) -> None:
-            cols = set(vm_ref.visible_stat_cols)
-            if on:
-                cols.add(col)
-            else:
-                cols.discard(col)
-            vm_ref.set_visible_stats(cols)
-
-        self._readout._on_stat_toggled = _on_stat_toggled
-        # X / readout メニュー「カーソルを消す」→ 全消去 (A/B/Δ・spec §4.3/§10)。
-        self._readout._on_clear = lambda: self.vm.toggle_main_cursor(False)
-        # readout メニュー「精度」選択 → VM 経由で value_precision を更新 (PC-10)。
-        self._readout._on_precision = lambda p: self.vm.set_value_precision(p)
-        # Track whether the readout has been placed at (8,8) for the current cursor
-        # session, so subsequent syncs don't snap a user-dragged readout back to
-        # the corner.  Reset to False whenever the readout is hidden (cursor cleared).
-        self._readout_placed: bool = False
         # ClickFocus so keyPressEvent (Escape during offset drag) reaches us; the
         # offset drag always begins with a click, so focus is guaranteed then.
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
@@ -1040,12 +1021,6 @@ class GraphPanelView(QWidget):
                 eff_height * R.height(),
             )
             self._y_axes[i].setGeometry(strip)
-
-        # 幾何変化(軸/カラム追加・リサイズ)後も readout をプロット矩形へ追従させる。
-        # _reposition_readout 内で was_user_moved を尊重。init 中の最初の refresh は
-        # _readout 未生成なので getattr ガードで skip する。
-        if getattr(self, "_readout_placed", False) and not self._readout.isHidden():
-            self._reposition_readout()
 
     def _axis_placement(self) -> list[tuple[int, int, int]]:
         """Map each VM axis to ``(vm_index, column, rank*2)``.
@@ -1260,6 +1235,10 @@ class GraphPanelView(QWidget):
         """Return the currently active curve's entry_id (None if none)."""
         return self._active_curve_id
 
+    def activate_curve_by_id(self, entry_id: int) -> None:
+        """Public entry point for GraphAreaView's readout row-click highlight (Task 4)."""
+        self._activate_curve(entry_id)
+
     def _activate_curve(self, entry_id: int) -> None:
         """Make *entry_id* the active curve: thick pen + activate its axis too.
 
@@ -1370,41 +1349,21 @@ class GraphPanelView(QWidget):
             if hasattr(self, name)
         ]
 
-    def _plot_area_top_left(self) -> QPoint | None:
-        """プロット描画領域(master ViewBox)の左上を GraphPanelView 座標で返す。
-
-        レイアウト未確定(ViewBox 無し)や破棄済み C++ オブジェクトなら None。
-        """
-        if not self._view_boxes:
-            return None
-        try:
-            scene_tl = self._view_boxes[0].sceneBoundingRect().topLeft()
-            view_pt = self.plot_widget.mapFromScene(scene_tl)
-            global_pt = self.plot_widget.viewport().mapToGlobal(view_pt)
-            return self.mapFromGlobal(global_pt)
-        except RuntimeError:
-            return None
-
-    def _reposition_readout(self) -> None:
-        """readout をプロット矩形左上+マージンへ移動(ユーザードラッグ位置は尊重・PC-21)。"""
-        if self._readout.was_user_moved():
-            return
-        tl = self._plot_area_top_left()
-        if tl is None:
-            return
-        self._readout.move(tl.x() + 8, tl.y() + 8)
-
     def _sync_cursor_from_vm(self) -> None:
-        """Reflect A/B cursor + readout from full VM state."""
+        """Reflect A/B cursor lines from full VM state.
+
+        The readout TABLE is owned by GraphAreaView (Task 4), not this panel;
+        this method only keeps the in-panel cursor lines/pens in sync and then
+        emits ``readout_changed`` so GraphAreaView pulls this panel's state if
+        it is the active one (GraphAreaView._sync_readout).
+        """
         t = self.vm.cursor_t
         if t is None:
             self._cursor_line.setVisible(False)
             self._cursor_line_b.setVisible(False)
-            self._readout.setVisible(False)
-            self._readout_placed = False
-            self._readout.reset_user_moved()
             self._active_cursor = None
             self._prev_showing_b = False
+            self.readout_changed.emit()
             return
         showing_b = self.vm.delta_enabled and self.vm.cursor_t_b is not None
         if self._active_cursor is None:
@@ -1425,33 +1384,8 @@ class GraphPanelView(QWidget):
             # C++ object during a rebuild, so it can never stick True.
             self._suppress_cursor_signal = False
         self._cursor_line.setVisible(True)
-        if self.vm.delta_enabled and self.vm.cursor_t_b is not None:
-            self._cursor_line_b.setVisible(True)
-            # Push VM's visible_stat_cols into the readout before rendering so
-            # the VM is the single source of truth (spec §7).
-            self._readout.sync_visible_stats(self.vm.visible_stat_cols)
-            self._readout.set_delta(
-                t,
-                self.vm.cursor_t_b,
-                self.vm.delta_readings(),
-                interp_label=_INTERP_LABELS.get(self.vm.interp_method, ""),
-                precision=self.vm.value_precision,
-            )
-        else:
-            self._cursor_line_b.setVisible(False)
-            self._readout.set_global(
-                t,
-                self.vm.cursor_readings(),
-                interp_label=_INTERP_LABELS.get(self.vm.interp_method, ""),
-                precision=self.vm.value_precision,
-            )
-        if not self._readout_placed:
-            # 初回表示時にプロット矩形左上へ配置(以降のカーソル同期では
-            # ユーザーがドラッグ移動した位置を乱さない)。
-            self._reposition_readout()
-            self._readout_placed = True
-        self._readout.setVisible(True)
-        self._readout.raise_()
+        self._cursor_line_b.setVisible(bool(showing_b))
+        self.readout_changed.emit()
 
     def _apply_cursor_pens(self) -> None:
         """Thicken the active cursor line (width 3.5) and normalise the other."""
@@ -1500,11 +1434,6 @@ class GraphPanelView(QWidget):
 
     def delta_line_value(self) -> float:
         return float(self._cursor_line_b.value())
-
-    def readout_visible(self) -> bool:
-        # isVisible() depends on ancestors being shown; isHidden() checks only
-        # this widget's own flag, so the test can work without show().
-        return not self._readout.isHidden()
 
     # ─── Gesture application (data-coordinate; the zoom/pan contract) ───────────
 

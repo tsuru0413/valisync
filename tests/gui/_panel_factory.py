@@ -13,7 +13,10 @@ from pathlib import Path
 
 from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.session import Session
+from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+from valisync.gui.views.graph_area_view import GraphAreaView
 from valisync.gui.views.graph_panel_view import GraphPanelView
 
 
@@ -85,3 +88,41 @@ def make_two_axis_panel() -> GraphPanelView:
     vm.add_signal_to_axis(keys[0], 0)
     vm.create_new_axis(keys[1])
     return GraphPanelView(vm)
+
+
+def make_two_axis_area() -> GraphAreaView:
+    """Build a GraphAreaView whose sole tab/panel holds two signals on two axes.
+
+    Same s1/s2 data and axis layout as ``make_two_axis_panel``, but wrapped in
+    the GraphAreaView container (single tab, single panel, auto-active) so
+    callers that need the panel's owning readout pane (readout-pane Task 4
+    moved CursorReadout ownership off GraphPanelView onto GraphAreaView) can
+    reach it via ``area.readout_pane``. The panel widget itself is
+    ``area.tabs.widget(0).widget(0)``.
+    """
+    d = Path(tempfile.mkdtemp())
+    csv = d / "data.csv"
+    rows = ["t,s1,s2"] + [
+        f"{i * 0.01:.3f},{i % 50}.0,{(i * 2) % 50}.0" for i in range(50)
+    ]
+    csv.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    session = Session()
+    session.load(
+        csv,
+        FormatDefinition(
+            name="fmt",
+            delimiter=Delimiter.COMMA,
+            timestamp_column=0,
+            timestamp_unit="sec",
+            signal_start_column=1,
+            signal_end_column=2,
+            has_header=True,
+        ),
+    )
+    keys = sorted(s.name for s in session.signals())
+    vm = GraphAreaVM(AppViewModel(session))
+    panel_vm = vm.panels(0)[0]  # GraphAreaVM always starts with one empty panel
+    panel_vm.add_signal_to_axis(keys[0], 0)
+    panel_vm.create_new_axis(keys[1])
+    return GraphAreaView(vm)
