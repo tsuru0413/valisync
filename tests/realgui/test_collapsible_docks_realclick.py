@@ -1,15 +1,18 @@
-"""Layer C: 折りたたみ可能ドックが実 OS クリックで実際に縮む/フロートする。
+"""Layer C: 辺対応の折りたたみ (edge-aware-dock-collapse) が実 OS クリックで
+実際に中央スペースを回収する。
 
 `--realgui` opt-in・実ディスプレイ+Windows 必須。この受け入れは Layer A/B で
-再チェック不能: `CollapsibleDockTitleBar.set_collapsed` の効果 (dock の
-`maximumHeight` クランプ→実レイアウトでの高さ縮小、`resizeDocks` による展開時の
-高さ復元) は headless では実ジオメトリが動かず確証できない
-(memory: gui_isvisible_true_for_offscreen_hidden_dock — QDockWidget.isVisible()
-は画面外/縮んでいなくても True を返しうる偽陰性計器なので、内容の非可視判定は
-`visibleRegion()` を使い isVisible() には頼らない)。
+再チェック不能: chevron クリック→`dock.hide()`+対応辺レールへのタブ追加、
+レールタブクリック→`dock.show()`+`resizeDocks` による幅/高さ復元は、QMainWindow の
+実ドックエリアレイアウトが実レイアウト/実ペイントを経ないと動かないため headless
+では確証できない
+(memory: gui_dock_toggle_width_change_needs_real_display_and_layout — dock
+toggle が中央幅/高さを変えるかは offscreen では確認できずレイアウト依存でもある。
+gui_isvisible_true_for_offscreen_hidden_dock — 内容の非可視判定は isVisible() に
+頼らず、本テストは明示 hide() 経路なので isHidden() で見る)。
 
-トグルボタンの物理座標はタイトルバー内ウィジェットの geometry から都度算出し、
-実 Win32 マウス入力 (`tests/realgui/_realgui_input`) でクリックする。
+トグル/レールタブの物理座標はウィジェットの geometry から都度算出し、実 Win32
+マウス入力 (`tests/realgui/_realgui_input`) でクリックする。
 """
 
 from __future__ import annotations
@@ -78,14 +81,13 @@ def _real_click(x: int, y: int) -> None:
         time.sleep(0.02)
 
 
-def _content_hidden(widget) -> bool:  # type: ignore[no-untyped-def]
-    """内容が実際に画面上へ描かれていないことの判定。
+def _settle(extra_pumps: int = 12) -> None:
+    """dock hide/show 後の QMainWindowLayout 再計算が確定するまで追加ポンプする。"""
+    from PySide6.QtWidgets import QApplication
 
-    isVisible() は隠蔽経路によっては偽陽性/偽陰性の罠がある計器
-    (gui_isvisible_true_for_offscreen_hidden_dock) なので使わず、
-    実際に描画対象になる visibleRegion の空判定で見る。
-    """
-    return widget.visibleRegion().isEmpty()
+    for _ in range(extra_pumps):
+        QApplication.processEvents()
+        time.sleep(0.02)
 
 
 def _grab(tmp_path: Path, name: str) -> Path:
@@ -97,91 +99,167 @@ def _grab(tmp_path: Path, name: str) -> Path:
     return path
 
 
-def test_real_click_toggle_collapses_file_dock_height_and_hides_content(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
-    """トグルボタンの実クリックで file_dock の高さが実際に縮み、内容が非可視化する。"""
+def test_collapse_right_dock_shrinks_and_expands(qtbot: QtBot, tmp_path: Path) -> None:
+    """右ドック (file_dock) を chevron 実クリックで畳むと右レールに縦タブが出て
+    中央 (`_central_with_rails`) 幅が実際に増加し、タブ実クリックで幅が元へ戻る。
+    """
     skip_unless_real_display()
 
     mw = _shown_mw(qtbot)
     dock = mw.file_dock
     bar = mw._collapsible_bars["file_dock"]
-    content = dock.widget()
-    assert content is not None
+    central = mw._central_with_rails
+    rail = mw._collapse_rails[mw.dockWidgetArea(dock)]
 
     qtbot.waitUntil(
         lambda: bar._toggle_button.isVisible() and bar._toggle_button.width() > 0,
         timeout=3000,
     )
+    assert not dock.isHidden(), "setup: file_dock が既に隠れている"
+    assert rail.is_empty(), "setup: レールに既にタブがある"
 
-    # 前提: 初期状態は展開・内容可視・タイトルバー高より十分大きい実高を持つ。
-    assert not bar.is_collapsed()
-    assert not _content_hidden(content), "setup: 展開状態で内容が既に非可視"
-    initial_height = dock.height()
-    title_h = bar.sizeHint().height()
-    assert initial_height > title_h + 40, (
-        f"setup: dock 高 {initial_height}px がタイトルバー高 {title_h}px を"
-        "十分超えていない (テスト前提が崩れている)"
+    _settle()
+    initial_width = central.width()
+    shot_before = _grab(tmp_path, "edge_collapse_right_before.png")
+
+    # --- 実クリック: chevron で畳む ---
+    _real_click(*_phys(bar._toggle_button))
+    qtbot.waitUntil(lambda: dock.isHidden(), timeout=3000)
+    qtbot.waitUntil(lambda: dock in rail._tabs, timeout=3000)
+    _settle()
+
+    collapsed_width = central.width()
+    shot_collapsed = _grab(tmp_path, "edge_collapse_right_after.png")
+    print(
+        f"[edge-collapse-right] initial_width={initial_width} "
+        f"collapsed_width={collapsed_width}"
+    )
+    print(f"[edge-collapse-right] screenshots: {shot_before} , {shot_collapsed}")
+
+    assert dock.isHidden(), (
+        f"実クリックで file_dock が隠れていない。screenshot: {shot_collapsed}"
+    )
+    assert not rail.is_empty(), (
+        f"畳み後にレールへタブが出ていない。screenshot: {shot_collapsed}"
+    )
+    assert collapsed_width > initial_width + 20, (
+        f"畳みで中央幅が有意に増加していない "
+        f"(initial={initial_width}, collapsed={collapsed_width})。"
+        f"screenshot: {shot_collapsed}"
     )
 
-    shot_before = _grab(tmp_path, "collapsible_before.png")
+    # --- 実クリック: レールの縦タブで展開 ---
+    tab = rail._tabs[dock]
+    qtbot.waitUntil(
+        lambda: tab.isVisible() and tab.width() > 0 and tab.height() > 0,
+        timeout=3000,
+    )
+    _real_click(*_phys(tab))
+    qtbot.waitUntil(lambda: not dock.isHidden(), timeout=3000)
+    qtbot.waitUntil(lambda: rail.is_empty(), timeout=3000)
+    _settle()
 
-    # --- 実クリック: 折りたたみトグル ---
+    expanded_width = central.width()
+    shot_expanded = _grab(tmp_path, "edge_collapse_right_expanded.png")
+    print(f"[edge-collapse-right] expanded_width={expanded_width}")
+    print(f"[edge-collapse-right] screenshot: {shot_expanded}")
+
+    assert not dock.isHidden(), (
+        f"タブ実クリックで file_dock が再表示されない。screenshot: {shot_expanded}"
+    )
+    assert rail.is_empty(), (
+        f"展開後もレールにタブが残っている。screenshot: {shot_expanded}"
+    )
+    assert expanded_width < collapsed_width - 20, (
+        f"展開で中央幅が有意に減少していない (元に戻っていない) "
+        f"(collapsed={collapsed_width}, expanded={expanded_width})。"
+        f"screenshot: {shot_expanded}"
+    )
+
+
+def test_collapse_bottom_dock_horizontal(qtbot: QtBot, tmp_path: Path) -> None:
+    """下ドック (diagnostics_dock) を chevron 実クリックで畳むと下レールに横チップが
+    出て中央高さが実際に増加し、チップ実クリックで高さが元へ戻る。
+    """
+    skip_unless_real_display()
+
+    mw = _shown_mw(qtbot)
+    dock = mw.diagnostics_dock
+    bar = mw._collapsible_bars["diagnostics_dock"]
+    central = mw._central_with_rails
+    rail = mw._collapse_rails[mw.dockWidgetArea(dock)]
+
+    qtbot.waitUntil(
+        lambda: bar._toggle_button.isVisible() and bar._toggle_button.width() > 0,
+        timeout=3000,
+    )
+    assert not dock.isHidden(), "setup: diagnostics_dock が既に隠れている"
+    assert rail.is_empty(), "setup: レールに既にタブがある"
+
+    _settle()
+    initial_height = central.height()
+    shot_before = _grab(tmp_path, "edge_collapse_bottom_before.png")
+
+    # --- 実クリック: chevron で畳む ---
     _real_click(*_phys(bar._toggle_button))
-    qtbot.waitUntil(lambda: bar.is_collapsed(), timeout=3000)
-    qtbot.waitUntil(lambda: dock.height() <= title_h + 8, timeout=3000)
+    qtbot.waitUntil(lambda: dock.isHidden(), timeout=3000)
+    qtbot.waitUntil(lambda: dock in rail._tabs, timeout=3000)
+    _settle()
 
-    shot_collapsed = _grab(tmp_path, "collapsible_after_collapse.png")
-    collapsed_height = dock.height()
+    collapsed_height = central.height()
+    shot_collapsed = _grab(tmp_path, "edge_collapse_bottom_after.png")
     print(
-        f"[collapsible] initial_height={initial_height} title_h={title_h} "
+        f"[edge-collapse-bottom] initial_height={initial_height} "
         f"collapsed_height={collapsed_height}"
     )
-    print(f"[collapsible] screenshots: {shot_before} , {shot_collapsed}")
+    print(f"[edge-collapse-bottom] screenshots: {shot_before} , {shot_collapsed}")
 
-    assert bar.is_collapsed(), f"実クリックでトグルが効いていない。{shot_collapsed}"
-    assert collapsed_height <= title_h + 8, (
-        f"折りたたみ後の dock 高 {collapsed_height}px がタイトルバー高 "
-        f"{title_h}px 付近まで縮んでいない。screenshot: {shot_collapsed}"
+    assert dock.isHidden(), (
+        f"実クリックで diagnostics_dock が隠れていない。screenshot: {shot_collapsed}"
     )
-    assert collapsed_height < initial_height * 0.5, (
-        f"折りたたみで dock 高が有意に減少していない "
+    assert not rail.is_empty(), (
+        f"畳み後にレールへタブが出ていない。screenshot: {shot_collapsed}"
+    )
+    assert collapsed_height > initial_height + 20, (
+        f"畳みで中央高さが有意に増加していない "
         f"(initial={initial_height}, collapsed={collapsed_height})。"
         f"screenshot: {shot_collapsed}"
     )
-    assert _content_hidden(content), (
-        f"折りたたみ後も内容が画面上に描画されている (visibleRegion 非空)。"
-        f"screenshot: {shot_collapsed}"
+
+    # --- 実クリック: レールの横チップで展開 ---
+    tab = rail._tabs[dock]
+    qtbot.waitUntil(
+        lambda: tab.isVisible() and tab.width() > 0 and tab.height() > 0,
+        timeout=3000,
     )
+    _real_click(*_phys(tab))
+    qtbot.waitUntil(lambda: not dock.isHidden(), timeout=3000)
+    qtbot.waitUntil(lambda: rail.is_empty(), timeout=3000)
+    _settle()
 
-    # --- 実クリック: 再トグルで展開 ---
-    _real_click(*_phys(bar._toggle_button))
-    qtbot.waitUntil(lambda: not bar.is_collapsed(), timeout=3000)
-    qtbot.waitUntil(lambda: dock.height() > title_h * 2, timeout=3000)
+    expanded_height = central.height()
+    shot_expanded = _grab(tmp_path, "edge_collapse_bottom_expanded.png")
+    print(f"[edge-collapse-bottom] expanded_height={expanded_height}")
+    print(f"[edge-collapse-bottom] screenshot: {shot_expanded}")
 
-    shot_expanded = _grab(tmp_path, "collapsible_after_expand.png")
-    expanded_height = dock.height()
-    print(f"[collapsible] expanded_height={expanded_height}")
-    print(f"[collapsible] screenshot: {shot_expanded}")
-
-    assert not bar.is_collapsed(), f"再クリックで展開に戻らない。{shot_expanded}"
-    assert expanded_height > title_h * 2, (
-        f"展開後の dock 高 {expanded_height}px がタイトルバー高 {title_h}px の"
-        f"2倍を超えて育っていない (実際に展開していない)。screenshot: {shot_expanded}"
-    )
-    assert expanded_height >= initial_height * 0.6, (
-        f"展開で高さが復元されていない "
-        f"(initial={initial_height}, expanded={expanded_height})。"
+    assert not dock.isHidden(), (
+        "タブ実クリックで diagnostics_dock が再表示されない。"
         f"screenshot: {shot_expanded}"
     )
-    assert not _content_hidden(content), (
-        f"展開後も内容が画面上に描画されていない (visibleRegion 空)。"
+    assert rail.is_empty(), (
+        f"展開後もレールにタブが残っている。screenshot: {shot_expanded}"
+    )
+    assert expanded_height < collapsed_height - 20, (
+        f"展開で中央高さが有意に減少していない (元に戻っていない) "
+        f"(collapsed={collapsed_height}, expanded={expanded_height})。"
         f"screenshot: {shot_expanded}"
     )
 
 
-def test_real_click_float_button_floats_file_dock(qtbot: QtBot, tmp_path: Path) -> None:
-    """フロートボタンの実クリックで file_dock が isFloating()==True になる。"""
+def test_float_disables_collapse_toggle(qtbot: QtBot, tmp_path: Path) -> None:
+    """フロートボタンの実クリックで file_dock がフロート化し、chevron (畳みトグル)
+    が無効化される (フロート中は畳み先の辺が無いため)。
+    """
     skip_unless_real_display()
 
     mw = _shown_mw(qtbot)
@@ -192,41 +270,24 @@ def test_real_click_float_button_floats_file_dock(qtbot: QtBot, tmp_path: Path) 
         lambda: bar._float_button.isVisible() and bar._float_button.width() > 0,
         timeout=3000,
     )
-    assert not dock.isFloating()
+    assert not dock.isFloating(), "setup: file_dock が既にフロートしている"
+    assert bar._toggle_button.isEnabled(), "setup: chevron が既に無効"
 
     _real_click(*_phys(bar._float_button))
     qtbot.waitUntil(lambda: dock.isFloating(), timeout=3000)
+    qtbot.waitUntil(lambda: not bar._toggle_button.isEnabled(), timeout=3000)
 
-    shot = _grab(tmp_path, "collapsible_float.png")
-    print(f"[collapsible] isFloating after real click = {dock.isFloating()}")
-    print(f"[collapsible] screenshot: {shot}")
+    shot = _grab(tmp_path, "edge_collapse_float.png")
+    print(
+        f"[edge-collapse-float] isFloating={dock.isFloating()} "
+        f"chevron_enabled={bar._toggle_button.isEnabled()}"
+    )
+    print(f"[edge-collapse-float] screenshot: {shot}")
 
     assert dock.isFloating(), (
         f"フロートボタンの実クリックで file_dock がフロート化しない。screenshot: {shot}"
     )
-
-
-def test_real_click_close_button_closes_file_dock(qtbot: QtBot, tmp_path: Path) -> None:
-    """閉じるボタンの実クリックで file_dock が isVisible()==False になる。"""
-    skip_unless_real_display()
-
-    mw = _shown_mw(qtbot)
-    dock = mw.file_dock
-    bar = mw._collapsible_bars["file_dock"]
-
-    qtbot.waitUntil(
-        lambda: bar._close_button.isVisible() and bar._close_button.width() > 0,
-        timeout=3000,
-    )
-    assert dock.isVisible()
-
-    _real_click(*_phys(bar._close_button))
-    qtbot.waitUntil(lambda: not dock.isVisible(), timeout=3000)
-
-    shot = _grab(tmp_path, "collapsible_close.png")
-    print(f"[collapsible] isVisible after real click on close = {dock.isVisible()}")
-    print(f"[collapsible] screenshot: {shot}")
-
-    assert not dock.isVisible(), (
-        f"閉じるボタンの実クリックで file_dock が閉じない。screenshot: {shot}"
+    assert not bar._toggle_button.isEnabled(), (
+        f"フロート中も chevron が有効なまま (畳み不可のはずが押せてしまう)。"
+        f"screenshot: {shot}"
     )
