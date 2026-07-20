@@ -43,6 +43,7 @@ from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 from valisync.gui.viewmodels.signal_preview_vm import SignalPreviewVM
 from valisync.gui.views.busy_overlay import BusyOverlay
+from valisync.gui.views.central_with_rails import CentralWithRails
 from valisync.gui.views.channel_browser_view import ChannelBrowserView
 from valisync.gui.views.collapsible_dock_title_bar import CollapsibleDockTitleBar
 from valisync.gui.views.csv_format_dialog import CsvFormatDialog
@@ -162,7 +163,9 @@ class MainWindow(QMainWindow):
         self.central_stack = QStackedWidget(self)
         self.central_stack.addWidget(self.welcome_view)  # index 0
         self.central_stack.addWidget(self.graph_area_view)  # index 1
-        self.setCentralWidget(self.central_stack)
+        # 畳んだドックの辺レールを中央の縁に置く枠で包む (edge-aware-collapse)。
+        self._central_with_rails = CentralWithRails(self.central_stack)
+        self.setCentralWidget(self._central_with_rails)
         self._update_central()
 
         # ── 領域境界フレーム (region-frames spec §7) — 対象はシェルが選ぶ ──────
