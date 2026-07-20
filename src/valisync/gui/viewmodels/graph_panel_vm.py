@@ -97,6 +97,9 @@ class CursorReading:
     in_range: bool
     label: str | None = None  # value_labels 命中時のみ (LD-07)
     unit: str = ""  # metadata['unit'] (PC-11)
+    entry_id: int = 0  # 逆引き用 (行クリック→曲線ハイライト)。既定0は非プロット文脈
+    range_lo: float | None = None  # 信号の finite 最小 (min-max 列)。None=値域不明
+    range_hi: float | None = None  # 信号の finite 最大
 
 
 @dataclass
@@ -111,6 +114,7 @@ class DeltaReading:
     in_range: bool
     label: str | None = None  # value_a の value_labels 命中時のみ (LD-07)
     unit: str = ""  # metadata['unit'] (PC-11)
+    entry_id: int = 0  # 逆引き用 (行クリック→曲線ハイライト)。既定0は非プロット文脈
 
 
 def _resolve_value_label(sig: Signal | None, value: float | None) -> str | None:
@@ -1000,10 +1004,21 @@ class GraphPanelVM(Observable):
                 continue
             sig = sig_map.get(entry.signal_key)
             if sig is None:
-                out.append(CursorReading(entry.signal_key, entry.color, None, False))
+                out.append(
+                    CursorReading(
+                        entry.signal_key,
+                        entry.color,
+                        None,
+                        False,
+                        entry_id=entry.entry_id,
+                    )
+                )
                 continue
             unit = sig.metadata.get("unit", "") if sig.metadata else ""
             val = self._session.interpolate(sig, self.cursor_t, self.interp_method)
+            _fts, _fvals = sig.finite_view()
+            r_lo = float(_fvals.min()) if _fvals.size else None
+            r_hi = float(_fvals.max()) if _fvals.size else None
             out.append(
                 CursorReading(
                     entry.signal_key,
@@ -1012,6 +1027,9 @@ class GraphPanelVM(Observable):
                     val is not None,
                     label=_resolve_value_label(sig, val),
                     unit=unit,
+                    entry_id=entry.entry_id,
+                    range_lo=r_lo,
+                    range_hi=r_hi,
                 )
             )
         return out
@@ -1167,6 +1185,7 @@ class GraphPanelVM(Observable):
                             count=0,
                         ),
                         False,
+                        entry_id=entry.entry_id,
                     )
                 )
                 continue
@@ -1185,6 +1204,7 @@ class GraphPanelVM(Observable):
                     va is not None,
                     label=_resolve_value_label(sig, va),
                     unit=unit,
+                    entry_id=entry.entry_id,
                 )
             )
         return out
