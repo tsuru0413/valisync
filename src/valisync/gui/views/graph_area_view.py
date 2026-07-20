@@ -16,6 +16,7 @@ so zooming one GraphPanelView updates the others through the VM layer.
 from __future__ import annotations
 
 import contextlib
+import weakref
 from collections.abc import Callable
 
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
@@ -34,6 +35,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QFrame,
+    QHBoxLayout,
     QLineEdit,
     QSplitter,
     QStyle,
@@ -47,7 +49,8 @@ from PySide6.QtWidgets import (
 from valisync.gui.theme import qss
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
-from valisync.gui.views.graph_panel_view import GraphPanelView
+from valisync.gui.views.cursor_readout import CursorReadout
+from valisync.gui.views.graph_panel_view import _INTERP_LABELS, GraphPanelView
 
 PanelFactory = Callable[[GraphPanelVM], QWidget]
 
@@ -140,10 +143,65 @@ class GraphAreaView(QWidget):
         self._rename_editor: _TabRenameEditor | None = None
         self.tabs.tabBarDoubleClicked.connect(self._begin_rename)
 
+        # readout-pane Task 4: 読み値は GraphPanelView 個別ではなく、この単一ペイン
+        # (QSplitter の右側) がアクティブパネルの状態を pull する (_sync_readout)。
+        self.readout_pane = CursorReadout()
+        self._readout_visible = True
+        self.readout_pane.row_activated.connect(self._on_readout_row_activated)
+        # weakref 経由で配線: readout_pane は self の Qt 子で、そこへ self の
+        # bound method を平の属性として直接ぶら下げると Python レベルの参照サイクル
+        # (readout_pane -> bound method -> self) ができ、self の Python wrapper が
+        # 単純な参照カウントでは解放されず循環 GC 待ちになる。無関係な兄弟オブジェクト
+        # (Qt 親を持たない一時 QWidget) が先に参照カウントで即時破棄され、その Qt 子
+        # 破棄カスケードで self の C++ 側だけ先に死んで Python wrapper が生き残ると、
+        # 後段の close() が "already deleted" で落ちる — tests/gui/test_graph_area_view.py
+        # ::TestClickAwayDeselect::test_press_on_ancestor_bubble_does_not_clear で実証済みの
+        # 実回帰 (Task 4 で追加した配線が原因)。weakref で参照サイクルを断つ。
+        self_ref = weakref.ref(self)
+
+        def _readout_clear() -> None:
+            view = self_ref()
+            if view is not None:
+                view._on_readout_clear()
+
+        def _readout_precision(p: int) -> None:
+            view = self_ref()
+            if view is not None:
+                view._on_readout_precision(p)
+
+        def _readout_stat_toggled(col: str, on: bool) -> None:
+            view = self_ref()
+            if view is not None:
+                view._on_readout_stat_toggled(col, on)
+
+        self.readout_pane._on_clear = _readout_clear
+        self.readout_pane._on_precision = _readout_precision
+        self.readout_pane._on_stat_toggled = _readout_stat_toggled
+
+        self._readout_split = QSplitter(Qt.Orientation.Horizontal, self)
+        self._readout_split.addWidget(self.tabs)
+        self._readout_split.addWidget(self.readout_pane)
+        self._readout_split.setStretchFactor(0, 1)  # プロット側が伸びる
+        self._readout_split.setStretchFactor(1, 0)
+
+        self.readout_toggle_button = QToolButton()
+        self.readout_toggle_button.setObjectName("readout_toggle_button")
+        self.readout_toggle_button.setCheckable(True)
+        self.readout_toggle_button.setChecked(True)
+        self.readout_toggle_button.setText("読み値")
+        self.readout_toggle_button.setToolTip("読み値ペインの表示切替")
+        self.readout_toggle_button.toggled.connect(self.set_readout_visible)
+
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.addWidget(self.sync_checkbox)
+        top_row.addWidget(self.readout_toggle_button)
+        top_row.addStretch(1)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.sync_checkbox, 0, Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(self.tabs)
+        layout.addLayout(top_row)
+        layout.addWidget(self._readout_split)
 
         unsubscribe = self.vm.subscribe(self._on_vm_change)
         self._unsubscribe = unsubscribe
@@ -172,6 +230,7 @@ class GraphAreaView(QWidget):
             self._update_sync_checkbox()
         elif change == "active_panel":
             self._sync_active_frames()  # 軽量: rebuild しない (クリック中の破棄禁止)
+            self._sync_readout()
         elif change == "sync":
             self._update_sync_checkbox()
         else:  # "tabs" | "panels"
@@ -218,6 +277,7 @@ class GraphAreaView(QWidget):
             self._syncing = False
         self._update_sync_checkbox()
         self._sync_active_frames()
+        self._sync_readout()
 
     def _sync_active_frames(self) -> None:
         """Re-apply the active-panel frame from VM state (rebuild 後と "active_panel")。
@@ -260,6 +320,10 @@ class GraphAreaView(QWidget):
                 tab_index, src, ax, panel_index, col, pos
             )
         )
+        # readout-pane Task 4: every panel's cursor/delta/stat/precision change
+        # pulls a re-sync of the single readout pane; _sync_readout() only ever
+        # reads the currently active tab/panel, so wiring every panel is safe.
+        widget.readout_changed.connect(lambda *_: self._sync_readout())
 
     def clear_active_axis(self) -> None:
         """全パネルのアクティブ Y 軸(view-transient)を解除する。FU-15 の単一解除点。"""
@@ -314,6 +378,88 @@ class GraphAreaView(QWidget):
         if self._syncing or index < 0:
             return
         self.vm.set_active_tab(index)
+        self._sync_readout()
+
+    # ─── Readout pane (readout-pane Task 4) ────────────────────────────────────
+
+    def _sync_readout(self) -> None:
+        """アクティブタブのアクティブパネル VM を単一ペインへ反映。"""
+        tab = self.tabs.currentIndex()
+        if tab < 0:
+            self.readout_pane.show_placeholder("表示中の信号がありません")
+            return
+        panels = self.vm.panels(tab)
+        active = self.vm.active_panel_index(tab)
+        if not panels or active < 0 or active >= len(panels):
+            self.readout_pane.show_placeholder("表示中の信号がありません")
+            return
+        pvm = panels[active]
+        if pvm.cursor_t is None:
+            self.readout_pane.show_placeholder("プロットをクリックしてカーソルを設置")
+            return
+        if not pvm.cursor_readings():
+            self.readout_pane.show_placeholder("表示中の信号がありません")
+            return
+        if pvm.delta_enabled and pvm.cursor_t_b is not None:
+            self.readout_pane.sync_visible_stats(pvm.visible_stat_cols)
+            self.readout_pane.set_delta(
+                pvm.cursor_t,
+                pvm.cursor_t_b,
+                pvm.delta_readings(),
+                interp_label=_INTERP_LABELS.get(pvm.interp_method, ""),
+                precision=pvm.value_precision,
+            )
+        else:
+            self.readout_pane.set_global(
+                pvm.cursor_t,
+                pvm.cursor_readings(),
+                interp_label=_INTERP_LABELS.get(pvm.interp_method, ""),
+                precision=pvm.value_precision,
+            )
+
+    def _on_readout_row_activated(self, entry_id: int) -> None:
+        """Pane row click -> highlight that entry_id's curve on the active panel."""
+        tab = self.tabs.currentIndex()
+        active = self.vm.active_panel_index(tab)
+        for t, p, widget in self._panel_views:
+            if t == tab and p == active:
+                widget.activate_curve_by_id(entry_id)
+                break
+
+    def _active_pvm_call(self, fn: Callable[[GraphPanelVM], None]) -> None:
+        """Look up the active tab/panel's VM and apply *fn* (no-op if absent)."""
+        tab = self.tabs.currentIndex()
+        if tab < 0:
+            return
+        panels = self.vm.panels(tab)
+        active = self.vm.active_panel_index(tab)
+        if not panels or active < 0 or active >= len(panels):
+            return
+        fn(panels[active])
+
+    def _on_readout_clear(self) -> None:
+        self._active_pvm_call(lambda pvm: pvm.toggle_main_cursor(False))
+
+    def _on_readout_precision(self, p: int) -> None:
+        self._active_pvm_call(lambda pvm: pvm.set_value_precision(p))
+
+    def _on_readout_stat_toggled(self, col: str, on: bool) -> None:
+        def _apply(pvm: GraphPanelVM) -> None:
+            cols = set(pvm.visible_stat_cols)
+            if on:
+                cols.add(col)
+            else:
+                cols.discard(col)
+            pvm.set_visible_stats(cols)
+
+        self._active_pvm_call(_apply)
+
+    def set_readout_visible(self, visible: bool) -> None:
+        self._readout_visible = visible
+        self.readout_pane.setVisible(visible)
+
+    def readout_visible(self) -> bool:
+        return self._readout_visible
 
     # ─── X-sync toggle ─────────────────────────────────────────────────────────
 
