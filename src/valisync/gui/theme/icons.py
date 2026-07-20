@@ -26,6 +26,8 @@ ICONS: dict[str, str] = {
     "data_explorer": "lucide/folder-tree.svg",
     "chevron_down": "lucide/chevron-down.svg",
     "chevron_right": "lucide/chevron-right.svg",
+    "chevron_left": "lucide/chevron-left.svg",
+    "chevron_up": "lucide/chevron-up.svg",
 }
 
 # ツールバー(24)/メニュー(16)等の実寸を直接登録し QIcon の拡大ボケを避ける
