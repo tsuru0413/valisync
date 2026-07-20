@@ -768,17 +768,51 @@ def test_docks_have_collapsible_title_bars(qtbot):
         )
 
 
+# ---------------------------------------------------------------------------
+# 辺対応の折りたたみ (edge-aware-dock-collapse Task 5) — hide+レール機構
+# ---------------------------------------------------------------------------
+
+
+def test_collapse_hides_dock_and_adds_rail_tab(qtbot):
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitExposed(win)
+    win._collapse_dock(win.file_dock)
+    assert win.file_dock.isHidden()  # ドックは hide
+    rail = win._collapse_rails[win.dockWidgetArea(win.file_dock)]
+    assert not rail.is_empty()  # 対応辺レールにタブ
+
+
+def test_expand_from_rail_shows_dock(qtbot):
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitExposed(win)
+    edge = win.dockWidgetArea(win.file_dock)
+    win._collapse_dock(win.file_dock)
+    win._expand_dock(win.file_dock)
+    assert not win.file_dock.isHidden()
+    assert win._collapse_rails[edge].is_empty()
+
+
 def test_collapse_state_roundtrips_through_qsettings(qtbot):
     from valisync.gui.app import build_main_window
 
     win = build_main_window()
     qtbot.addWidget(win)
-    win.file_dock.titleBarWidget().set_collapsed(True)
-    win.save_state()  # closeEvent 相当
+    win.show()
+    win._collapse_dock(win.file_dock)
+    win.save_state()
     win2 = build_main_window()
     qtbot.addWidget(win2)
-    assert win2.file_dock.titleBarWidget().is_collapsed()
-    assert not win2.channel_dock.titleBarWidget().is_collapsed()
+    win2.show()
+    assert win2.file_dock.isHidden()
+    assert not win2.channel_dock.isHidden()
 
 
 def test_reset_layout_expands_all_docks(qtbot):
@@ -786,9 +820,10 @@ def test_reset_layout_expands_all_docks(qtbot):
 
     win = build_main_window()
     qtbot.addWidget(win)
-    win.diagnostics_dock.titleBarWidget().set_collapsed(True)
+    win.show()
+    win._collapse_dock(win.diagnostics_dock)
     win._reset_layout()
-    assert not win.diagnostics_dock.titleBarWidget().is_collapsed()
+    assert not win.diagnostics_dock.isHidden()
 
 
 # ---------------------------------------------------------------------------
