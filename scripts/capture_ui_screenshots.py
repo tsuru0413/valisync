@@ -190,6 +190,14 @@ def main() -> int:
         print("captured 08_signal_preview.png")
         window.signal_preview_window.close()
 
+        # --- 09: Diagnostics ドックの折りたたみ状態 (増分C・FU-14) --------------
+        # 代表1ドックを畳んでタイトルバーのみのストリップ状態を記録する。
+        window._collapsible_bars["diagnostics_dock"].set_collapsed(True)
+        settle()
+        grab("09_collapsed")
+        window._collapsible_bars["diagnostics_dock"].set_collapsed(False)
+        settle()
+
     window.close()
     return 0
 

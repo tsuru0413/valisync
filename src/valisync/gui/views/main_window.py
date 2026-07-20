@@ -44,6 +44,7 @@ from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 from valisync.gui.viewmodels.signal_preview_vm import SignalPreviewVM
 from valisync.gui.views.busy_overlay import BusyOverlay
 from valisync.gui.views.channel_browser_view import ChannelBrowserView
+from valisync.gui.views.collapsible_dock_title_bar import CollapsibleDockTitleBar
 from valisync.gui.views.csv_format_dialog import CsvFormatDialog
 from valisync.gui.views.data_explorer_view import DataExplorerView
 from valisync.gui.views.diagnostics_view import DiagnosticsView
@@ -140,6 +141,18 @@ class MainWindow(QMainWindow):
         self.addDockWidget(
             Qt.DockWidgetArea.BottomDockWidgetArea, self.diagnostics_dock
         )
+
+        # ── 折りたたみタイトルバー (増分C・FU-14) ────────────────────────────
+        self._collapsible_bars: dict[str, CollapsibleDockTitleBar] = {}
+        for dock, title in (
+            (self.file_dock, "File Browser"),
+            (self.channel_dock, "Channel Browser"),
+            (self.diagnostics_dock, "Diagnostics"),
+        ):
+            bar = CollapsibleDockTitleBar(dock, self, title)
+            dock.setTitleBarWidget(bar)
+            bar.collapsed_changed.connect(self._save_dock_collapsed)
+            self._collapsible_bars[dock.objectName()] = bar
 
         # ── Central: Welcome / Graph Area を QStackedWidget で切替 ──────────────
         self.recent_files = RecentFiles()
@@ -521,6 +534,7 @@ class MainWindow(QMainWindow):
         settings = QSettings(_ORG, _APP)
         settings.setValue("geometry", self.saveGeometry())
         settings.setValue("windowState", self.saveState())
+        settings.setValue("dockCollapsed", self._dock_collapsed_map())
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Persist window state on close so it can be restored next launch (R2.3)."""
@@ -540,6 +554,31 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(geometry)
         if state:
             self.restoreState(state)
+        self._apply_saved_collapse()
+
+    def _dock_collapsed_map(self) -> dict[str, bool]:
+        return {
+            name: bar.is_collapsed() for name, bar in self._collapsible_bars.items()
+        }
+
+    def _save_dock_collapsed(self, *_: object) -> None:
+        settings = QSettings(_ORG, _APP)
+        settings.setValue("dockCollapsed", self._dock_collapsed_map())
+
+    def _apply_saved_collapse(self) -> None:
+        """QSettings の collapse 状態を各タイトルバーへ再適用。
+
+        restoreState はドックのサイズ/配置を戻すが collapse (内容 hide+maxHeight)
+        は runtime プロパティで乗らないため、_restore_state/_reset_layout の後に
+        明示再適用する (corner 再適用と同型)。
+        """
+        settings = QSettings(_ORG, _APP)
+        saved = settings.value("dockCollapsed") or {}
+        for name, bar in self._collapsible_bars.items():
+            collapsed = (
+                bool(saved.get(name, False)) if isinstance(saved, dict) else False
+            )
+            bar.set_collapsed(collapsed)
 
     def _apply_dock_corners(self) -> None:
         """FU-10: give the bottom-right corner to the Right area so the File/Channel
@@ -554,6 +593,8 @@ class MainWindow(QMainWindow):
         """Restore the default dock/toolbar arrangement captured at startup (SH-11)."""
         self.restoreState(self._default_state)
         self._apply_dock_corners()  # restoreState reset the FU-10 corner; re-apply
+        for bar in self._collapsible_bars.values():
+            bar.set_collapsed(False)  # 既定=全展開
 
     def _on_theme_selected(self, mode: ThemeMode) -> None:
         """テーマ radio 選択 — 保存のみ。set_active/apply_theme は呼ばない (再起動反映)。"""

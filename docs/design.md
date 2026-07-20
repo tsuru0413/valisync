@@ -121,3 +121,11 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   出典: claude.ai/design 検討の持ち帰りメモ（2026-07-18）＋カード「コンセプトと
   メイン画面案」2a/2b/4b。設計は
   [readout-pane spec](superpowers/specs/2026-07-19-readout-pane-design.md)。PR #129。
+- 2026-07-20: File/Channel/Diagnostics の3ドックに共通の折りたたみを追加（トークン
+  変更なし・構造 UI）。QDockWidget に最小化フラグが無いため `CollapsibleDockTitleBar`
+  を `setTitleBarWidget` で composition・畳み=内容 hide＋maxHeight クランプ・展開=
+  `resizeDocks` で高さ復元・QSettings 永続（`dockCollapsed`）。過去 defer した FU-14 を
+  実現。chevron アイコンは vendored Lucide（`chrome_text` 着色）で追加のみ。出典: inbox
+  決定メモ③（Diagnostics ドロワー化）＋ユーザー要望「File/Channel も折りたたみ可能に」
+  で3ドック共通へ拡張。設計は
+  [collapsible-docks spec](superpowers/specs/2026-07-20-collapsible-docks-design.md)。PR #131。
