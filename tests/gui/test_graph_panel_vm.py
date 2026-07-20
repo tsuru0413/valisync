@@ -2042,3 +2042,45 @@ def test_placeholder_collapse_resets_manual_range(vm_with_two_scales):
     assert vm.axes[0].y_is_auto is True and vm.axes[0].y_range is None
     vm.add_signal(key_small)
     assert vm.axes[0].y_range[1] <= 200.0
+
+
+# ─── Task 5: 変異トリガ全数接続 (move / insert / 可視性トグル / legacy) ────────
+
+
+def test_move_entry_to_new_axis_fits_and_labels(vm_with_two_scales):
+    # UX-02 根治: 移動先の新軸が 0-1 既定のままにならず、ラベルも付く。
+    vm, key_big, key_small = vm_with_two_scales
+    vm.add_signal(key_big)
+    vm.add_signal(key_small)
+    small_id = next(e.entry_id for e in vm._plotted if e.signal_key == key_small)
+    vm.move_entry_to_new_axis(small_id)
+    new_axis = vm.axes[-1]
+    assert new_axis.y_range is not None  # 現行 None で fail
+    assert new_axis.y_range[1] <= 200.0
+    assert new_axis.name == key_small.split("::")[-1]
+    # 移動元 (auto) も残存 big のみへ再フィット
+    assert vm.axes[0].y_range[0] >= 799
+
+
+def test_axis_visibility_toggle_refits_auto_axis(vm_with_two_scales):
+    # H キー軸フォールバック経路 (spec レビュー捕捉: Hx2 往復で UX-03 再発を防ぐ)。
+    vm, key_big, key_small = vm_with_two_scales
+    vm.add_signal(key_big)
+    vm.add_signal(key_small)
+    small_id = next(e.entry_id for e in vm._plotted if e.signal_key == key_small)
+    vm.toggle_entry_visibility(small_id)  # small 非表示 → big のみ
+    assert vm.axes[0].y_range[0] >= 799
+    vm.toggle_axis_visibility(0)  # 軸一括 OFF → 対象空 → クリア
+    assert vm.axes[0].y_range is None
+    vm.toggle_axis_visibility(0)  # 軸一括 ON → 全可視で和集合
+    lo, hi = vm.axes[0].y_range
+    assert lo <= 0.0 and hi >= 2275.0
+
+
+def test_remove_entry_refits_auto_axis(vm_with_two_scales):
+    vm, key_big, key_small = vm_with_two_scales
+    vm.add_signal(key_big)
+    vm.add_signal(key_small)
+    big_id = next(e.entry_id for e in vm._plotted if e.signal_key == key_big)
+    vm.remove_entry(big_id)
+    assert vm.axes[0].y_range[1] <= 200.0

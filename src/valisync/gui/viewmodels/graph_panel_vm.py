@@ -405,6 +405,9 @@ class GraphPanelVM(Observable):
         self.move_axis_to_column(
             new_index, axis.column, position
         )  # re-stack + notify "axes"
+        # クロスパネル移送 — auto 軸は挿入先の文脈で即フィット (spec §3.7)。
+        self._recalc_axis_labels()
+        self._auto_fit_ranges()
         self._invalidate_cache()
         self._notify("signals")
 
@@ -510,6 +513,7 @@ class GraphPanelVM(Observable):
         self._plotted = [e for e in self._plotted if e.signal_key != signal_key]
         self._compact_axes()
         self._recalc_axis_labels()
+        self._auto_fit_ranges()
         self._invalidate_cache()
         self._notify("signals")
 
@@ -533,6 +537,7 @@ class GraphPanelVM(Observable):
         self._plotted = kept
         self._compact_axes()
         self._recalc_axis_labels()
+        self._auto_fit_ranges()
         self._invalidate_cache()
         self._notify("signals")
 
@@ -583,6 +588,9 @@ class GraphPanelVM(Observable):
             if entry.signal_key == signal_key:
                 entry.visible = not entry.visible
                 break
+        # Membership is unchanged (recalc_axis_labels not needed) but the
+        # visible set feeding auto axes is — refit (spec §3.7).
+        self._auto_fit_ranges()
         self._invalidate_cache()
         self._notify("signals")
 
@@ -591,9 +599,7 @@ class GraphPanelVM(Observable):
 
         Membership is unchanged (recalc_axis_labels not needed) but the
         visible set feeding auto axes is — refit so an auto axis keeps
-        matching reset_axis_y's visible-only rule immediately (spec §3.7;
-        the rest of the mutation-trigger sweep — axis-level/legacy toggle,
-        remove/move/insert — lands in a later increment).
+        matching reset_axis_y's visible-only rule immediately (spec §3.7).
         """
         for e in self._plotted:
             if e.entry_id == entry_id:
@@ -626,6 +632,7 @@ class GraphPanelVM(Observable):
         self._plotted = [e for e in self._plotted if e.entry_id != entry_id]
         self._compact_axes()
         self._recalc_axis_labels()
+        self._auto_fit_ranges()
         self._invalidate_cache()
         self._notify("signals")
 
@@ -641,6 +648,9 @@ class GraphPanelVM(Observable):
         any_visible = any(e.visible for e in on_axis)
         for e in on_axis:
             e.visible = not any_visible
+        # Membership is unchanged (recalc_axis_labels not needed) but the
+        # visible set feeding auto axes is — refit (spec §3.7).
+        self._auto_fit_ranges()
         self._invalidate_cache()
         self._notify("signals")
 
@@ -767,6 +777,7 @@ class GraphPanelVM(Observable):
         self._plotted = [e for e in self._plotted if e.axis_index != axis_index]
         self._compact_axes()
         self._recalc_axis_labels()
+        self._auto_fit_ranges()
         self._invalidate_cache()
         self._notify("signals")
 
@@ -791,6 +802,10 @@ class GraphPanelVM(Observable):
         entry.axis_index = len(self._axes) - 1
         self._compact_axes()
         self._relayout_columns()
+        # UX-02: 作成系 (create_new_axis→add_signal_to_axis) と同経路 —
+        # 新軸は y_is_auto=True で生まれ即フィット・ラベルも代表から再導出。
+        self._recalc_axis_labels()
+        self._auto_fit_ranges()
         self._invalidate_cache()
         self._notify("axes")
 

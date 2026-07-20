@@ -662,3 +662,58 @@ class TestActivePanel:
         session = _make_session()
         vm = GraphAreaVM(AppViewModel(session))
         assert vm.inspect()["tabs"][0]["active_panel_index"] == 0
+
+
+# ─── Task 5: クロスパネル軸移動の再計算+refit (spec §3.7) ─────────────────────
+
+
+def _write_big_csv(path: Path) -> Path:
+    """Write a 2-row CSV with a large-range signal (mirrors vm_with_two_scales's 'big')."""
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["t", "big"])
+        writer.writerow(["0.0", "800.0"])
+        writer.writerow(["1.0", "2275.0"])
+    return path
+
+
+@pytest.fixture
+def area_vm_two_panels_two_scales(
+    tmp_path: Path,
+) -> tuple[GraphAreaVM, GraphPanelVM, GraphPanelVM, str]:
+    """GraphAreaVM: one tab, two panels sharing a session with a large-range
+    signal loaded (mirrors vm_with_two_scales's 'big') so a cross-panel
+    insert_axis auto-fit is observable. (area, src_vm, dst_vm, key_big)."""
+    app_vm = AppViewModel()
+    group_key = app_vm.request_load(
+        _write_big_csv(tmp_path / "big.csv"),
+        FormatDefinition(
+            name="big",
+            delimiter=Delimiter.COMMA,
+            timestamp_column=0,
+            timestamp_unit="sec",
+            signal_start_column=1,
+            signal_end_column=1,
+            has_header=True,
+        ),
+    )
+    area = GraphAreaVM(app_vm)
+    area.add_panel(0)
+    src_vm, dst_vm = area.panels(0)[0], area.panels(0)[1]
+    key_big = f"{group_key}::big"
+    return area, src_vm, dst_vm, key_big
+
+
+def test_cross_panel_insert_axis_recalcs_and_fits(
+    area_vm_two_panels_two_scales: tuple[GraphAreaVM, GraphPanelVM, GraphPanelVM, str],
+) -> None:
+    # spec §3.7: YAxisVM はオブジェクトごと移送 (y_is_auto も運ばれる)。
+    # auto 軸は挿入先で即フィット・手動軸は温存。
+    _area, src_vm, dst_vm, key_big = area_vm_two_panels_two_scales
+    src_vm.add_signal(key_big)
+    extracted = src_vm.extract_axis(0)
+    assert extracted is not None
+    axis, entries = extracted
+    dst_vm.insert_axis(axis, entries, column=dst_vm.column_count - 1, position=None)
+    assert dst_vm.axes[-1].name == key_big.split("::")[-1]
+    assert dst_vm.axes[-1].y_range is not None
