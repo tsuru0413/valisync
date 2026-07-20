@@ -9,6 +9,39 @@ from valisync.gui.viewmodels.graph_panel_vm import CursorReading, DeltaReading
 from valisync.gui.views.cursor_readout import CursorReadout
 
 
+def test_tall_pane_keeps_rows_compact_and_row_cells_aligned(qtbot: QtBot):
+    """常設ペインは背丈が高くても行を上部に詰め、行内セルの縦位置を揃える。
+
+    実機バグ (2026-07-20): splitter で縦に引き伸ばされると VBox 末尾の stretch 不在で
+    余剰縦スペースが grid に配分され行が広がり、AlignRight の値セル(垂直センター喪失で
+    top 揃え)と swatch/name(center 揃え)が1行内で縦に割れて崩れた。ここでは高い host に
+    載せ、行内整列と上部への圧縮を assert する。
+    """
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    host = QWidget()
+    QVBoxLayout(host).addWidget(w := CursorReadout())
+    qtbot.addWidget(host)
+    host.resize(320, 600)  # tall splitter pane を模す
+    host.show()
+    qtbot.waitExposed(host)
+    w.set_global(
+        1.0,
+        [
+            CursorReading("A", "#111111", 10.0, True, entry_id=1, range_lo=0.0, range_hi=20.0),
+            CursorReading("B", "#222222", 30.0, True, entry_id=2, range_lo=0.0, range_hi=40.0),
+        ],
+    )
+    for _ in range(3):
+        qtbot.wait(1)
+    # 行内整列: 同一行の swatch と値セルの縦中心が一致する (割れていない)
+    sw_y = w._swatch_labels[0].geometry().center().y()
+    val_y = w._value_labels[0][0].geometry().center().y()
+    assert abs(sw_y - val_y) <= 4, f"row0 swatch({sw_y}) と値({val_y}) が縦にずれている"
+    # 上部圧縮: 最終行の底が host 高さの半分より十分上 (縦に散らばっていない)
+    assert w._swatch_labels[-1].geometry().bottom() < 250, "行が縦に広がって散らばっている"
+
+
 def test_pane_background_paints_as_child_widget(qtbot: QtBot):
     """QSS 背景が『子ウィジェット』として実描画される (WA_StyledBackground)。
 

@@ -118,6 +118,10 @@ class CursorReadout(QWidget):
         self._placeholder.hide()
         outer.addWidget(self._placeholder)
         self._placeholder_text: str = ""
+        # 常設ペインは splitter で縦に引き伸ばされる。末尾 stretch が無いと余剰縦
+        # スペースが grid に配分され行が広がり、AlignRight の値セル(top 揃え)と
+        # swatch/name(center 揃え)が1行内で縦に割れる。stretch で内容を上部へ詰める。
+        outer.addStretch(1)
 
         self._rows: list[tuple[str, str]] = []
         # TSV エクスポート等の構造化アクセス用 (name [unit] 反映済み, セルはリストのまま)。
@@ -525,7 +529,10 @@ class CursorReadout(QWidget):
             if dy_col is not None and dy_style:
                 self._dy_cell_styles.append((i, dy_style))
         self._layout_sig = sig
-        self.adjustSize()
+        # updateGeometry (adjustSize でない): splitter 管理下でペインを sizeHint へ
+        # 強制 resize すると次のレイアウトで splitter が再展開し、カーソル移動ごとに
+        # 崩れ→正常のちらつきが出る。updateGeometry は sizeHint 変化を通知するのみ。
+        self.updateGeometry()
 
     def _update_in_place(
         self,
@@ -555,7 +562,7 @@ class CursorReadout(QWidget):
                 self._row_entry_ids[i] = entry_ids[i]
             if dy_col is not None and dy_style:
                 self._dy_cell_styles.append((i, dy_style))
-        self.adjustSize()
+        self.updateGeometry()  # adjustSize でない (ちらつき回避・_full_rebuild 参照)
 
     # ── Row click → activate (entry_id ハイライト) ─────────────────────────────
 
