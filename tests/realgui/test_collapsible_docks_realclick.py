@@ -88,7 +88,7 @@ def _content_hidden(widget) -> bool:  # type: ignore[no-untyped-def]
     return widget.visibleRegion().isEmpty()
 
 
-def _grab(tmp_path: Path, name: str) -> Path:  # type: ignore[no-untyped-def]
+def _grab(tmp_path: Path, name: str) -> Path:
     from PySide6.QtWidgets import QApplication
 
     path = tmp_path / name
