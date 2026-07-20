@@ -556,7 +556,7 @@ class MainWindow(QMainWindow):
             self.restoreState(state)
         self._apply_saved_collapse()
 
-    def _dock_collapsed_map(self) -> dict:
+    def _dock_collapsed_map(self) -> dict[str, bool]:
         return {
             name: bar.is_collapsed() for name, bar in self._collapsible_bars.items()
         }
