@@ -2,7 +2,7 @@
 name = "valisync"
 version = "0.1.0"
 description = "ADAS 時系列信号データ統合・同期・解析デスクトップアプリケーション"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
     "numpy>=2.0",
     "asammdf>=8.8.22",
@@ -70,7 +70,7 @@ ignore = [
 extend-immutable-calls = ["PySide6.QtCore.QModelIndex"]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.13"
 disallow_incomplete_defs = true
 check_untyped_defs = true
 no_implicit_optional = true
