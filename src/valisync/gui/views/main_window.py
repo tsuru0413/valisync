@@ -120,6 +120,12 @@ class MainWindow(QMainWindow):
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
             | QDockWidget.DockWidgetFeature.DockWidgetMovable
         )
+        # 辺対応の折りたたみは左/右/下のみ対応 (edge-aware-dock-collapse) — 上は禁止。
+        self.file_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+            | Qt.DockWidgetArea.BottomDockWidgetArea
+        )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.file_dock)
 
         # ── Channel Browser dock (right bottom) ──────────────────────────────
@@ -131,6 +137,12 @@ class MainWindow(QMainWindow):
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
             | QDockWidget.DockWidgetFeature.DockWidgetMovable
         )
+        # 辺対応の折りたたみは左/右/下のみ対応 (edge-aware-dock-collapse) — 上は禁止。
+        self.channel_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+            | Qt.DockWidgetArea.BottomDockWidgetArea
+        )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.channel_dock)
 
         # Stack them vertically
@@ -139,6 +151,12 @@ class MainWindow(QMainWindow):
         # ── Diagnostics dock (bottom, FB-02/FB-06 surface) ───────────────────
         self.diagnostics_dock = DiagnosticsView(self.diagnostics_vm)
         self.diagnostics_dock.entry_activated.connect(self._on_diagnostic_activated)
+        # 辺対応の折りたたみは左/右/下のみ対応 (edge-aware-dock-collapse) — 上は禁止。
+        self.diagnostics_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+            | Qt.DockWidgetArea.BottomDockWidgetArea
+        )
         self.addDockWidget(
             Qt.DockWidgetArea.BottomDockWidgetArea, self.diagnostics_dock
         )

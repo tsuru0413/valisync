@@ -789,3 +789,23 @@ def test_reset_layout_expands_all_docks(qtbot):
     win.diagnostics_dock.titleBarWidget().set_collapsed(True)
     win._reset_layout()
     assert not win.diagnostics_dock.titleBarWidget().is_collapsed()
+
+
+# ---------------------------------------------------------------------------
+# 辺対応の折りたたみ (edge-aware-dock-collapse Task 3)
+# ---------------------------------------------------------------------------
+
+
+def test_docks_forbid_top_area(qtbot):
+    from PySide6.QtCore import Qt
+
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    for dock in (win.file_dock, win.channel_dock, win.diagnostics_dock):
+        areas = dock.allowedAreas()
+        assert not (areas & Qt.DockWidgetArea.TopDockWidgetArea), dock.objectName()
+        assert areas & Qt.DockWidgetArea.RightDockWidgetArea
+        assert areas & Qt.DockWidgetArea.LeftDockWidgetArea
+        assert areas & Qt.DockWidgetArea.BottomDockWidgetArea
