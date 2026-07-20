@@ -120,4 +120,4 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   束縛・行クリックで波形ハイライト・単一時 A/min–max 列・比較時 A/B/Δ＋Δ符号着色。
   出典: claude.ai/design 検討の持ち帰りメモ（2026-07-18）＋カード「コンセプトと
   メイン画面案」2a/2b/4b。設計は
-  [readout-pane spec](superpowers/specs/2026-07-19-readout-pane-design.md)。PR #TBD。
+  [readout-pane spec](superpowers/specs/2026-07-19-readout-pane-design.md)。PR #129。
