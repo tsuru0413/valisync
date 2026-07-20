@@ -1388,3 +1388,78 @@ def test_move_entry_unknown_id_is_noop(qtbot: QtBot) -> None:
     vm.add_signal_to_axis(keys["a"], 0)
     vm.move_entry_to_new_axis(9999)
     assert len(vm.axes) == 1
+
+
+# ─── Task 2: 代表波形ラベルの一括再計算 (UX-01/UXG-19) ───────────────────────
+
+
+@pytest.fixture
+def session_two_signals_vm(tmp_path: Path) -> tuple[GraphPanelVM, str, str]:
+    """2信号(同一グループ=同一ファイル)。a: unit "V" / b: unit "A" を注入済み。
+
+    異単位 join (UX-01) の検証用 — 同ファイル内の別チャンネルとして2信号を積む
+    既存パターン (:256-278/:450-471) を複製し、unit だけ2信号それぞれに注入する。
+    """
+    session, _ = _loaded_session(tmp_path, n_signals=2)
+    key_a, key_b = _keys(session)
+    for sig in session.signals():
+        if sig.name == key_a:
+            sig.metadata["unit"] = "V"
+        elif sig.name == key_b:
+            sig.metadata["unit"] = "A"
+    vm = GraphPanelVM(session)
+    return vm, key_a, key_b
+
+
+@pytest.fixture
+def session_two_files_vm(tmp_path: Path) -> tuple[GraphPanelVM, str, str]:
+    """2信号(別グループ=別ファイル)。UXG-19 のファイル閉じ→prune 経路の検証用。"""
+    session, keys = _multi_group_session(tmp_path, n_groups=2)
+    vm = GraphPanelVM(session)
+    return vm, keys[0], keys[1]
+
+
+def test_axis_unit_stays_representative_on_mixed_join(
+    session_two_signals_vm: tuple[GraphPanelVM, str, str],
+) -> None:
+    # UX-01 根治: 異単位 join でも軸ラベルは代表 (1本目) の name/unit の対のまま。
+    vm, key_a, key_b = session_two_signals_vm  # a=unit "V", b=unit "A" を注入済み想定
+    vm.add_signal(key_a)
+    vm.add_signal(key_b)  # 既定経路は軸0へ join
+    assert vm.axes[0].name == key_a.split("::")[-1]
+    assert vm.axes[0].unit == "V"  # 現行 last-wins は "A" になり fail
+
+
+def test_axis_label_pair_succession_on_representative_removal(
+    session_two_signals_vm: tuple[GraphPanelVM, str, str],
+) -> None:
+    vm, key_a, key_b = session_two_signals_vm
+    vm.add_signal(key_a)
+    vm.add_signal(key_b)
+    rep_id = next(e for e in vm._plotted if e.signal_key == key_a).entry_id
+    vm.remove_entry(rep_id)
+    # 代表交代は name/unit が「対で」次エントリへ (片方だけの残存は捏造ペア)
+    assert vm.axes[0].name == key_b.split("::")[-1]
+    assert vm.axes[0].unit == "A"
+
+
+def test_axis_label_cleared_when_axis_emptied(
+    session_two_signals_vm: tuple[GraphPanelVM, str, str],
+) -> None:
+    vm, key_a, _ = session_two_signals_vm
+    vm.add_signal(key_a)
+    vm.remove_entry(vm._plotted[0].entry_id)
+    assert vm.axes[0].name == ""
+    assert vm.axes[0].unit == ""
+
+
+def test_axis_label_recalc_on_prune_missing_signals(
+    session_two_files_vm: tuple[GraphPanelVM, str, str],
+) -> None:
+    # UXG-19 のアンロード経路: 代表信号のファイルを閉じたら残存名を許さない。
+    vm, key_file1, key_file2 = session_two_files_vm  # 別グループの2信号・同軸0へ
+    vm.add_signal(key_file1)
+    vm.add_signal(key_file2)
+    vm._session.remove_group(key_file1.split("::")[0], force=True)
+    vm.prune_missing_signals()
+    assert vm.axes[0].name == key_file2.split("::")[-1]

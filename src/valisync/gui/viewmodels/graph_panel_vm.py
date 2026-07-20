@@ -258,18 +258,7 @@ class GraphPanelVM(Observable):
             )
         )
 
-        # Propagate unit + representative name from signal to axis.
-        sig = self._signal_map().get(signal_key)
-        if sig and 0 <= axis_index < len(self._axes):
-            axis = self._axes[axis_index]
-            unit = sig.metadata.get("unit", "")
-            if unit:
-                axis.unit = unit
-            # The first signal added to an axis is its representative label;
-            # later joined signals do not replace it (first-wins).
-            if not axis.name:
-                axis.name = signal_key.split("::")[-1]
-
+        self._recalc_axis_labels()
         self._auto_fit_ranges()
         self._invalidate_cache()
         self._notify("signals")
@@ -285,15 +274,15 @@ class GraphPanelVM(Observable):
     def overwrite_axis(self, signal_key: str, axis_index: int) -> None:
         """Replace all signals on *axis_index* with *signal_key*.
 
-        Existing plotted entries on that axis are dropped, the axis label/unit
-        are cleared so the new signal becomes the representative, then
+        Existing plotted entries on that axis are dropped, then
         ``add_signal_to_axis`` re-adds the signal, auto-fits, and notifies.
+        The axis label/unit need no explicit clear here: add_signal_to_axis's
+        ``_recalc_axis_labels`` re-derives them from whatever entry is now
+        the axis's oldest, so the new signal becomes the representative as a
+        side effect (y_range reset is Task 4).
         ``add_signal_to_axis`` (the Ctrl-add path) is left completely unchanged.
         """
         self._plotted = [e for e in self._plotted if e.axis_index != axis_index]
-        if 0 <= axis_index < len(self._axes):
-            self._axes[axis_index].name = ""
-            self._axes[axis_index].unit = ""
         self.add_signal_to_axis(signal_key, axis_index)
 
     def create_new_axis(self, signal_key: str) -> None:
@@ -433,6 +422,26 @@ class GraphPanelVM(Observable):
         for entry in self._plotted:
             entry.axis_index = remap[entry.axis_index]
 
+    def _recalc_axis_labels(self) -> None:
+        """全軸の name/unit を現存エントリから再導出する (Stage A 契約 §2.1-2).
+
+        代表 = 軸上の最古 (追加順) エントリ。name/unit は常に代表信号の対 —
+        増分更新 (name first-wins / unit last-wins) は別信号の捏造ペア (UX-01) を
+        生むため全廃した。ラベルはオフセット非依存なので base の signal_map を
+        使う (オフセット適用中の全チャンネル overlay 再構築を踏まない・spec §3.3)。
+        O(axes x plotted) — プロット済みエントリ有界で無視できる。
+        """
+        sig_map = self._session.signal_map()
+        for i, axis in enumerate(self._axes):
+            rep = next((e for e in self._plotted if e.axis_index == i), None)
+            if rep is None:
+                axis.name = ""
+                axis.unit = ""
+                continue
+            axis.name = rep.signal_key.split(KEY_SEPARATOR, 1)[-1]
+            sig = sig_map.get(rep.signal_key)
+            axis.unit = str(sig.metadata.get("unit", "")) if sig else ""
+
     def _relayout_columns(self) -> None:
         """Assign top_ratio/height_ratio per column, splitting height equally.
 
@@ -488,6 +497,7 @@ class GraphPanelVM(Observable):
         """
         self._plotted = [e for e in self._plotted if e.signal_key != signal_key]
         self._compact_axes()
+        self._recalc_axis_labels()
         self._invalidate_cache()
         self._notify("signals")
 
@@ -510,6 +520,7 @@ class GraphPanelVM(Observable):
             return
         self._plotted = kept
         self._compact_axes()
+        self._recalc_axis_labels()
         self._invalidate_cache()
         self._notify("signals")
 
@@ -594,6 +605,7 @@ class GraphPanelVM(Observable):
         """
         self._plotted = [e for e in self._plotted if e.entry_id != entry_id]
         self._compact_axes()
+        self._recalc_axis_labels()
         self._invalidate_cache()
         self._notify("signals")
 
@@ -712,6 +724,7 @@ class GraphPanelVM(Observable):
             return
         self._plotted = [e for e in self._plotted if e.axis_index != axis_index]
         self._compact_axes()
+        self._recalc_axis_labels()
         self._invalidate_cache()
         self._notify("signals")
 
