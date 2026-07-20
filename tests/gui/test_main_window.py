@@ -844,3 +844,77 @@ def test_docks_forbid_top_area(qtbot):
         assert areas & Qt.DockWidgetArea.RightDockWidgetArea
         assert areas & Qt.DockWidgetArea.LeftDockWidgetArea
         assert areas & Qt.DockWidgetArea.BottomDockWidgetArea
+
+
+def test_expand_right_dock_resizes_horizontal_with_captured_extent(qtbot):
+    """右ドック (VERTICAL レール) の展開は resizeDocks を
+    orientation=Horizontal・畳む直前に控えた幅で呼ぶ。
+
+    _dock_extent/_expand_dock の軸写像 (VERTICAL→Horizontal) を直接検証する
+    (Task 5 で増分C由来の同種 resizeDocks spy テストが削除され無検証だった)。
+    """
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitExposed(win)
+
+    win._collapse_dock(win.file_dock)
+    expected_extent = win._expanded_extent["file_dock"]
+
+    calls: list[tuple[list[QDockWidget], list[int], Qt.Orientation]] = []
+    original_resize_docks = win.resizeDocks
+
+    def _spy_resize_docks(
+        docks: list[QDockWidget], sizes: list[int], orient: Qt.Orientation
+    ) -> None:
+        calls.append((list(docks), list(sizes), orient))
+        original_resize_docks(docks, sizes, orient)
+
+    win.resizeDocks = _spy_resize_docks  # type: ignore[assignment]
+
+    win._expand_dock(win.file_dock)
+
+    assert calls, "展開で resizeDocks が呼ばれていない"
+    docks, sizes, orient = calls[-1]
+    assert docks == [win.file_dock]
+    assert sizes == [expected_extent]
+    assert orient == Qt.Orientation.Horizontal
+
+
+def test_expand_bottom_dock_resizes_vertical_with_captured_extent(qtbot):
+    """下ドック (HORIZONTAL レール) の展開は resizeDocks を
+    orientation=Vertical・畳む直前に控えた高さで呼ぶ。
+
+    _dock_extent/_expand_dock の軸写像 (HORIZONTAL→Vertical) を直接検証する
+    (Task 5 で増分C由来の同種 resizeDocks spy テストが削除され無検証だった)。
+    """
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitExposed(win)
+
+    win._collapse_dock(win.diagnostics_dock)
+    expected_extent = win._expanded_extent["diagnostics_dock"]
+
+    calls: list[tuple[list[QDockWidget], list[int], Qt.Orientation]] = []
+    original_resize_docks = win.resizeDocks
+
+    def _spy_resize_docks(
+        docks: list[QDockWidget], sizes: list[int], orient: Qt.Orientation
+    ) -> None:
+        calls.append((list(docks), list(sizes), orient))
+        original_resize_docks(docks, sizes, orient)
+
+    win.resizeDocks = _spy_resize_docks  # type: ignore[assignment]
+
+    win._expand_dock(win.diagnostics_dock)
+
+    assert calls, "展開で resizeDocks が呼ばれていない"
+    docks, sizes, orient = calls[-1]
+    assert docks == [win.diagnostics_dock]
+    assert sizes == [expected_extent]
+    assert orient == Qt.Orientation.Vertical
