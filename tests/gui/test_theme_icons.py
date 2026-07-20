@@ -51,6 +51,8 @@ def test_registry_paths_resolve():
         "data_explorer",
         "chevron_down",
         "chevron_right",
+        "chevron_left",
+        "chevron_up",
     }
     for name, rel in ICONS.items():
         assert (ICONS_DIR / rel).is_file(), f"{name} -> {rel}"
@@ -118,6 +120,14 @@ def test_chevron_icons_registered_and_render(qapp):
     from valisync.gui.theme import icons
 
     for name in ("chevron_down", "chevron_right"):
+        ico = icons.icon(name)
+        assert not ico.isNull(), name
+
+
+def test_chevron_left_up_registered_and_render(qapp):
+    from valisync.gui.theme import icons
+
+    for name in ("chevron_left", "chevron_up"):
         ico = icons.icon(name)
         assert not ico.isNull(), name
 

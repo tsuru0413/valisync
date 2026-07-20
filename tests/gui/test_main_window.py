@@ -768,17 +768,51 @@ def test_docks_have_collapsible_title_bars(qtbot):
         )
 
 
+# ---------------------------------------------------------------------------
+# 辺対応の折りたたみ (edge-aware-dock-collapse Task 5) — hide+レール機構
+# ---------------------------------------------------------------------------
+
+
+def test_collapse_hides_dock_and_adds_rail_tab(qtbot):
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitExposed(win)
+    win._collapse_dock(win.file_dock)
+    assert win.file_dock.isHidden()  # ドックは hide
+    rail = win._collapse_rails[win.dockWidgetArea(win.file_dock)]
+    assert not rail.is_empty()  # 対応辺レールにタブ
+
+
+def test_expand_from_rail_shows_dock(qtbot):
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitExposed(win)
+    edge = win.dockWidgetArea(win.file_dock)
+    win._collapse_dock(win.file_dock)
+    win._expand_dock(win.file_dock)
+    assert not win.file_dock.isHidden()
+    assert win._collapse_rails[edge].is_empty()
+
+
 def test_collapse_state_roundtrips_through_qsettings(qtbot):
     from valisync.gui.app import build_main_window
 
     win = build_main_window()
     qtbot.addWidget(win)
-    win.file_dock.titleBarWidget().set_collapsed(True)
-    win.save_state()  # closeEvent 相当
+    win.show()
+    win._collapse_dock(win.file_dock)
+    win.save_state()
     win2 = build_main_window()
     qtbot.addWidget(win2)
-    assert win2.file_dock.titleBarWidget().is_collapsed()
-    assert not win2.channel_dock.titleBarWidget().is_collapsed()
+    win2.show()
+    assert win2.file_dock.isHidden()
+    assert not win2.channel_dock.isHidden()
 
 
 def test_reset_layout_expands_all_docks(qtbot):
@@ -786,6 +820,196 @@ def test_reset_layout_expands_all_docks(qtbot):
 
     win = build_main_window()
     qtbot.addWidget(win)
-    win.diagnostics_dock.titleBarWidget().set_collapsed(True)
+    win.show()
+    win._collapse_dock(win.diagnostics_dock)
     win._reset_layout()
-    assert not win.diagnostics_dock.titleBarWidget().is_collapsed()
+    assert not win.diagnostics_dock.isHidden()
+
+
+# ---------------------------------------------------------------------------
+# 辺対応の折りたたみ (edge-aware-dock-collapse Task 3)
+# ---------------------------------------------------------------------------
+
+
+def test_docks_forbid_top_area(qtbot):
+    from PySide6.QtCore import Qt
+
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    for dock in (win.file_dock, win.channel_dock, win.diagnostics_dock):
+        areas = dock.allowedAreas()
+        assert not (areas & Qt.DockWidgetArea.TopDockWidgetArea), dock.objectName()
+        assert areas & Qt.DockWidgetArea.RightDockWidgetArea
+        assert areas & Qt.DockWidgetArea.LeftDockWidgetArea
+        assert areas & Qt.DockWidgetArea.BottomDockWidgetArea
+
+
+def test_expand_right_dock_resizes_horizontal_with_captured_extent(qtbot):
+    """右ドック (VERTICAL レール) の展開は resizeDocks を
+    orientation=Horizontal・畳む直前に控えた幅で呼ぶ。
+
+    _dock_extent/_expand_dock の軸写像 (VERTICAL→Horizontal) を直接検証する
+    (Task 5 で増分C由来の同種 resizeDocks spy テストが削除され無検証だった)。
+    """
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitExposed(win)
+
+    win._collapse_dock(win.file_dock)
+    expected_extent = win._expanded_extent["file_dock"]
+
+    calls: list[tuple[list[QDockWidget], list[int], Qt.Orientation]] = []
+    original_resize_docks = win.resizeDocks
+
+    def _spy_resize_docks(
+        docks: list[QDockWidget], sizes: list[int], orient: Qt.Orientation
+    ) -> None:
+        calls.append((list(docks), list(sizes), orient))
+        original_resize_docks(docks, sizes, orient)
+
+    win.resizeDocks = _spy_resize_docks  # type: ignore[assignment]
+
+    win._expand_dock(win.file_dock)
+
+    assert calls, "展開で resizeDocks が呼ばれていない"
+    docks, sizes, orient = calls[-1]
+    assert docks == [win.file_dock]
+    assert sizes == [expected_extent]
+    assert orient == Qt.Orientation.Horizontal
+
+
+def test_expand_bottom_dock_resizes_vertical_with_captured_extent(qtbot):
+    """下ドック (HORIZONTAL レール) の展開は resizeDocks を
+    orientation=Vertical・畳む直前に控えた高さで呼ぶ。
+
+    _dock_extent/_expand_dock の軸写像 (HORIZONTAL→Vertical) を直接検証する
+    (Task 5 で増分C由来の同種 resizeDocks spy テストが削除され無検証だった)。
+    """
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitExposed(win)
+
+    win._collapse_dock(win.diagnostics_dock)
+    expected_extent = win._expanded_extent["diagnostics_dock"]
+
+    calls: list[tuple[list[QDockWidget], list[int], Qt.Orientation]] = []
+    original_resize_docks = win.resizeDocks
+
+    def _spy_resize_docks(
+        docks: list[QDockWidget], sizes: list[int], orient: Qt.Orientation
+    ) -> None:
+        calls.append((list(docks), list(sizes), orient))
+        original_resize_docks(docks, sizes, orient)
+
+    win.resizeDocks = _spy_resize_docks  # type: ignore[assignment]
+
+    win._expand_dock(win.diagnostics_dock)
+
+    assert calls, "展開で resizeDocks が呼ばれていない"
+    docks, sizes, orient = calls[-1]
+    assert docks == [win.diagnostics_dock]
+    assert sizes == [expected_extent]
+    assert orient == Qt.Orientation.Vertical
+
+
+# ---------------------------------------------------------------------------
+# 外部 show() の整合 (edge-aware-dock-collapse ブランチレビュー Important 1)
+#
+# 畳み=hide() へ切替済みのため、View メニュー/ツールバーの toggleViewAction や
+# _on_load_error の diagnostics_dock.show() のような「集約状態機械を経由しない
+# 直接 show()」は素の show() を呼ぶだけで、レールタブ/_collapsed_docks/
+# QSettings のいずれも更新しない (孤立 UI + 次回起動での意図しない再畳み)。
+# ---------------------------------------------------------------------------
+
+
+def test_toggling_collapsed_dock_visible_reconciles_rail_and_state(qtbot):
+    from PySide6.QtCore import QSettings
+
+    import valisync.gui.views.main_window as mw
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitExposed(win)
+
+    win._collapse_dock(win.file_dock)
+    rail = win._collapse_rails[win.dockWidgetArea(win.file_dock)]
+    assert win.file_dock.isHidden()
+    assert not rail.is_empty()
+    assert "file_dock" in win._collapsed_docks
+
+    # toggleViewAction は QDockWidget 標準の show()/hide() トグルであり、
+    # collapse 状態機械 (_expand_dock) を経由しない外部トリガの代表例。
+    win.file_dock.toggleViewAction().trigger()
+
+    assert not win.file_dock.isHidden(), "toggleViewAction は show() を呼ぶはず"
+    assert rail.is_empty(), "外部 show() 後もレールにタブが残っている (孤立UI)"
+    assert "file_dock" not in win._collapsed_docks, (
+        "外部 show() 後も _collapsed_docks に残存 (次回起動で意図せず再畳み)"
+    )
+    settings = QSettings(mw._ORG, mw._APP)
+    saved = settings.value("dockCollapsed")
+    assert saved["file_dock"] is False, "永続化された畳み状態が更新されていない"
+
+
+def test_external_show_on_collapsed_diagnostics_dock_reconciles(qtbot):
+    """_on_load_error 相当 (diagnostics_dock.show() + raise_()) も同様に自己修復する。"""
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitExposed(win)
+
+    win._collapse_dock(win.diagnostics_dock)
+    rail = win._collapse_rails[win.dockWidgetArea(win.diagnostics_dock)]
+    assert win.diagnostics_dock.isHidden()
+
+    # _on_load_error と同型の直接呼び出し (状態機械を経由しない)。
+    win.diagnostics_dock.show()
+    win.diagnostics_dock.raise_()
+
+    assert not win.diagnostics_dock.isHidden()
+    assert rail.is_empty(), "外部 show() 後もレールにタブが残っている (孤立UI)"
+    assert "diagnostics_dock" not in win._collapsed_docks
+
+
+# ---------------------------------------------------------------------------
+# 起動時の畳みが未レイアウトの extent を捕捉しない (ブランチレビュー Important 2)
+#
+# _apply_saved_collapse は window.show() より前 (__init__ 内) に走るため、その
+# 時点で _collapse_dock が無条件に捕捉する extent はレイアウト未確定の既定値に
+# なり得る。隠れている (=まだ表示・レイアウトされていない) ドックからの捕捉は
+# スキップし、Qt 自身の restoreState プレースホルダによる復元に委ねる。
+# ---------------------------------------------------------------------------
+
+
+def test_startup_collapse_does_not_capture_stale_extent(qtbot):
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitExposed(win)
+    win._collapse_dock(win.file_dock)
+    win.save_state()
+
+    # win2.__init__ は _restore_state() -> _apply_saved_collapse() を実行する
+    # (起動時パスの再現)。win2.show() は意図的に呼ばない — 「表示・レイアウト
+    # される前」というタイミングそのものを再現するため。
+    win2 = build_main_window()
+    qtbot.addWidget(win2)
+
+    assert "file_dock" not in win2._expanded_extent, (
+        "起動時 (未表示) の畳みで extent を捕捉してしまっている"
+        "(未レイアウトの既定値が記録され、後の展開で誤ったサイズへ resize される)"
+    )

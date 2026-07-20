@@ -43,6 +43,7 @@ from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 from valisync.gui.viewmodels.signal_preview_vm import SignalPreviewVM
 from valisync.gui.views.busy_overlay import BusyOverlay
+from valisync.gui.views.central_with_rails import CentralWithRails
 from valisync.gui.views.channel_browser_view import ChannelBrowserView
 from valisync.gui.views.collapsible_dock_title_bar import CollapsibleDockTitleBar
 from valisync.gui.views.csv_format_dialog import CsvFormatDialog
@@ -119,6 +120,12 @@ class MainWindow(QMainWindow):
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
             | QDockWidget.DockWidgetFeature.DockWidgetMovable
         )
+        # 辺対応の折りたたみは左/右/下のみ対応 (edge-aware-dock-collapse) — 上は禁止。
+        self.file_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+            | Qt.DockWidgetArea.BottomDockWidgetArea
+        )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.file_dock)
 
         # ── Channel Browser dock (right bottom) ──────────────────────────────
@@ -130,6 +137,12 @@ class MainWindow(QMainWindow):
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
             | QDockWidget.DockWidgetFeature.DockWidgetMovable
         )
+        # 辺対応の折りたたみは左/右/下のみ対応 (edge-aware-dock-collapse) — 上は禁止。
+        self.channel_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+            | Qt.DockWidgetArea.BottomDockWidgetArea
+        )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.channel_dock)
 
         # Stack them vertically
@@ -138,21 +151,15 @@ class MainWindow(QMainWindow):
         # ── Diagnostics dock (bottom, FB-02/FB-06 surface) ───────────────────
         self.diagnostics_dock = DiagnosticsView(self.diagnostics_vm)
         self.diagnostics_dock.entry_activated.connect(self._on_diagnostic_activated)
+        # 辺対応の折りたたみは左/右/下のみ対応 (edge-aware-dock-collapse) — 上は禁止。
+        self.diagnostics_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+            | Qt.DockWidgetArea.BottomDockWidgetArea
+        )
         self.addDockWidget(
             Qt.DockWidgetArea.BottomDockWidgetArea, self.diagnostics_dock
         )
-
-        # ── 折りたたみタイトルバー (増分C・FU-14) ────────────────────────────
-        self._collapsible_bars: dict[str, CollapsibleDockTitleBar] = {}
-        for dock, title in (
-            (self.file_dock, "File Browser"),
-            (self.channel_dock, "Channel Browser"),
-            (self.diagnostics_dock, "Diagnostics"),
-        ):
-            bar = CollapsibleDockTitleBar(dock, self, title)
-            dock.setTitleBarWidget(bar)
-            bar.collapsed_changed.connect(self._save_dock_collapsed)
-            self._collapsible_bars[dock.objectName()] = bar
 
         # ── Central: Welcome / Graph Area を QStackedWidget で切替 ──────────────
         self.recent_files = RecentFiles()
@@ -162,7 +169,54 @@ class MainWindow(QMainWindow):
         self.central_stack = QStackedWidget(self)
         self.central_stack.addWidget(self.welcome_view)  # index 0
         self.central_stack.addWidget(self.graph_area_view)  # index 1
-        self.setCentralWidget(self.central_stack)
+        # 畳んだドックの辺レールを中央の縁に置く枠で包む (edge-aware-collapse)。
+        self._central_with_rails = CentralWithRails(self.central_stack)
+        self.setCentralWidget(self._central_with_rails)
+
+        # ── 辺対応の折りたたみ (edge-aware-dock-collapse) ────────────────────
+        from valisync.gui.views.dock_collapse_rail import DockCollapseRail
+
+        self._collapse_rails: dict[Qt.DockWidgetArea, DockCollapseRail] = {}
+        for edge in (
+            Qt.DockWidgetArea.LeftDockWidgetArea,
+            Qt.DockWidgetArea.RightDockWidgetArea,
+            Qt.DockWidgetArea.BottomDockWidgetArea,
+        ):
+            rail = DockCollapseRail(edge)
+            rail.expand_requested.connect(self._expand_dock)
+            self._central_with_rails.set_rail(edge, rail)
+            self._collapse_rails[edge] = rail
+
+        self._collapsible_bars: dict[str, CollapsibleDockTitleBar] = {}
+        self._collapsed_docks: set[str] = set()
+        self._expanded_extent: dict[str, int] = {}
+        # _collapse_dock/_expand_dock 自身の hide()/show() が visibilityChanged
+        # を再発火させる (無限再入防止・レビュー Important 1)。
+        self._suppress_dock_reconcile = False
+        self._dock_rail_order = {  # 辺上の位置順 (File 上/Channel 下)
+            "file_dock": 0,
+            "channel_dock": 1,
+            "diagnostics_dock": 0,
+        }
+        for dock, title in (
+            (self.file_dock, "File Browser"),
+            (self.channel_dock, "Channel Browser"),
+            (self.diagnostics_dock, "Diagnostics"),
+        ):
+            bar = CollapsibleDockTitleBar(dock, self, title)
+            dock.setTitleBarWidget(bar)
+            bar.collapse_requested.connect(lambda d=dock: self._collapse_dock(d))
+            self._collapsible_bars[dock.objectName()] = bar
+            # 集約状態機械 (_expand_dock) を経由しない外部 show() (View メニュー/
+            # ツールバーの toggleViewAction・_on_load_error の直接 show() 等) が
+            # 畳み状態を孤立させないよう、可視化を単一箇所で自己修復する
+            # (レビュー Important 1)。_restore_state() より前に接続すること —
+            # このループ時点では _collapsed_docks は空なので起動時の
+            # restoreState 由来の可視化変化は no-op。
+            dock.visibilityChanged.connect(
+                lambda visible, d=dock: self._on_dock_visibility_changed(d, visible)
+            )
+
         self._update_central()
 
         # ── 領域境界フレーム (region-frames spec §7) — 対象はシェルが選ぶ ──────
@@ -558,7 +612,7 @@ class MainWindow(QMainWindow):
 
     def _dock_collapsed_map(self) -> dict[str, bool]:
         return {
-            name: bar.is_collapsed() for name, bar in self._collapsible_bars.items()
+            name: (name in self._collapsed_docks) for name in self._collapsible_bars
         }
 
     def _save_dock_collapsed(self, *_: object) -> None:
@@ -566,19 +620,98 @@ class MainWindow(QMainWindow):
         settings.setValue("dockCollapsed", self._dock_collapsed_map())
 
     def _apply_saved_collapse(self) -> None:
-        """QSettings の collapse 状態を各タイトルバーへ再適用。
+        """QSettings の collapse 状態を新機構 (hide+レール) で再適用。
 
-        restoreState はドックのサイズ/配置を戻すが collapse (内容 hide+maxHeight)
-        は runtime プロパティで乗らないため、_restore_state/_reset_layout の後に
-        明示再適用する (corner 再適用と同型)。
+        restoreState はドックの配置/サイズを戻すが「畳み=hide+レールタブ」は
+        runtime 状態で乗らないため、_restore_state/_reset_layout の後に再適用する
+        (corner 再適用と同型)。
         """
         settings = QSettings(_ORG, _APP)
         saved = settings.value("dockCollapsed") or {}
-        for name, bar in self._collapsible_bars.items():
-            collapsed = (
-                bool(saved.get(name, False)) if isinstance(saved, dict) else False
+        if not isinstance(saved, dict):
+            return
+        docks = {d.objectName(): d for d in self._collapsible_bars_docks()}
+        for name, dock in docks.items():
+            if bool(saved.get(name, False)):
+                self._collapse_dock(dock)
+
+    def _collapsible_bars_docks(self) -> list[QDockWidget]:
+        return [self.file_dock, self.channel_dock, self.diagnostics_dock]
+
+    def _dock_extent(self, dock: QDockWidget) -> int:
+        area = self.dockWidgetArea(dock)
+        from valisync.gui.views.dock_collapse_rail import RailKind, rail_kind_for_area
+
+        kind = rail_kind_for_area(area)
+        return dock.width() if kind is RailKind.VERTICAL else dock.height()
+
+    def _collapse_dock(self, dock: QDockWidget) -> None:
+        if dock.isFloating():
+            return  # フロート中は畳まない (chevron も無効)
+        area = self.dockWidgetArea(dock)
+        rail = self._collapse_rails.get(area)
+        if rail is None:
+            return  # 対応外の辺 (通常起きない — 上は禁止済み)
+        name = dock.objectName()
+        # 起動時の _apply_saved_collapse は window.show() より前 (未表示・未
+        # レイアウト) に走るため、そこで extent を捕捉すると未確定の既定値を
+        # 記録してしまう (レビュー Important 2)。既に隠れている (=このドック
+        # のレイアウトはまだ確定していない) ドックからは捕捉しない — 展開時は
+        # resizeDocks をスキップし、Qt 自身の restoreState 復元に委ねる。
+        if not dock.isHidden():
+            self._expanded_extent[name] = self._dock_extent(dock)
+        try:
+            self._suppress_dock_reconcile = True
+            dock.hide()
+        finally:
+            self._suppress_dock_reconcile = False
+        title = {
+            "file_dock": "File Browser",
+            "channel_dock": "Channel Browser",
+            "diagnostics_dock": "Diagnostics",
+        }[name]
+        rail.add_tab(dock, title, self._dock_rail_order.get(name, 0))
+        self._collapsed_docks.add(name)
+        self._save_dock_collapsed()
+
+    def _expand_dock(self, dock: QDockWidget) -> None:
+        from valisync.gui.views.dock_collapse_rail import RailKind, rail_kind_for_area
+
+        name = dock.objectName()
+        for rail in self._collapse_rails.values():
+            rail.remove_tab(dock)
+        try:
+            self._suppress_dock_reconcile = True
+            dock.show()
+        finally:
+            self._suppress_dock_reconcile = False
+        area = self.dockWidgetArea(dock)
+        extent = self._expanded_extent.get(name)
+        kind = rail_kind_for_area(area)
+        if extent is not None and kind is not None:
+            orient = (
+                Qt.Orientation.Horizontal
+                if kind is RailKind.VERTICAL
+                else Qt.Orientation.Vertical
             )
-            bar.set_collapsed(collapsed)
+            self.resizeDocks([dock], [extent], orient)
+        self._collapsed_docks.discard(name)
+        self._save_dock_collapsed()
+
+    def _on_dock_visibility_changed(self, dock: QDockWidget, visible: bool) -> None:
+        """畳み状態機械を経由しない外部 show() を自己修復する (レビュー Important 1)。
+
+        View メニュー/ツールバーの toggleViewAction、_on_load_error の
+        diagnostics_dock.show() など、_expand_dock を呼ばない経路で畳み済み
+        ドックが可視化された場合、レールタブ除去・_collapsed_docks 除籍・
+        永続化を _expand_dock に委譲して行う。hide 方向 (visible=False) は
+        素通り — 畳み対象でないドックを閉じる操作は通常の hide のままでよく、
+        ここで「畳む」処理はしない (collapse は chevron からのみ)。
+        """
+        if self._suppress_dock_reconcile:
+            return  # _collapse_dock/_expand_dock 自身の hide()/show() 由来 (再入防止)
+        if visible and dock.objectName() in self._collapsed_docks:
+            self._expand_dock(dock)
 
     def _apply_dock_corners(self) -> None:
         """FU-10: give the bottom-right corner to the Right area so the File/Channel
@@ -591,10 +724,11 @@ class MainWindow(QMainWindow):
 
     def _reset_layout(self) -> None:
         """Restore the default dock/toolbar arrangement captured at startup (SH-11)."""
+        for dock in list(self._collapsible_bars_docks()):
+            if dock.objectName() in self._collapsed_docks:
+                self._expand_dock(dock)
         self.restoreState(self._default_state)
         self._apply_dock_corners()  # restoreState reset the FU-10 corner; re-apply
-        for bar in self._collapsible_bars.values():
-            bar.set_collapsed(False)  # 既定=全展開
 
     def _on_theme_selected(self, mode: ThemeMode) -> None:
         """テーマ radio 選択 — 保存のみ。set_active/apply_theme は呼ばない (再起動反映)。"""

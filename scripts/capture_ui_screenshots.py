@@ -63,12 +63,22 @@ def main() -> int:
     from PySide6.QtCore import QSettings
     from PySide6.QtWidgets import QApplication
 
-    # QSettings 隔離 — ユーザーの実ドック配置/ジオメトリ復元を遮断 (spec §6)
+    # QSettings 隔離 — 実 ValiSync 設定 (Recent Files / dockCollapsed / ドック配置 /
+    # geometry) の漏れ込みを断つ。QSettings(org, app) は Windows で NativeFormat
+    # (レジストリ) 固定で setDefaultFormat(IniFormat)+setPath では隔離できない
+    # (2 引数コンストラクタは defaultFormat を無視する) ため、conftest と同型に
+    # _ORG/_APP を撮影専用キーへ差し替え、毎回 clear して決定的な既定状態
+    # (全ドック展開・Recent 空) から撮る。tmp は fixture CSV 置き場としてのみ使う。
     tmp = Path(tempfile.mkdtemp(prefix="valisync_capture_"))
-    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
-    QSettings.setPath(
-        QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp / "settings")
-    )
+
+    import valisync.gui.theme.settings as _theme_settings
+    import valisync.gui.views.main_window as _main_window
+    import valisync.gui.views.recent_files as _recent_files
+
+    for _mod in (_main_window, _recent_files, _theme_settings):
+        _mod._ORG = "ValiSync-Capture"
+        _mod._APP = "ValiSync-Capture"
+    QSettings("ValiSync-Capture", "ValiSync-Capture").clear()
 
     app = QApplication(sys.argv)
     # テキストキャレットの点滅を無効化 — blink 位相の撮影レースで focus 中の
@@ -190,12 +200,16 @@ def main() -> int:
         print("captured 08_signal_preview.png")
         window.signal_preview_window.close()
 
-        # --- 09: Diagnostics ドックの折りたたみ状態 (増分C・FU-14) --------------
-        # 代表1ドックを畳んでタイトルバーのみのストリップ状態を記録する。
-        window._collapsible_bars["diagnostics_dock"].set_collapsed(True)
+        # --- 09: 辺対応の折りたたみ (右=縦レール+縦タブ / 下=横帯) --------------
+        # 右ドックは両方畳んで初めて幅が空く (縦積み兄弟) — 目標の2行縦タブ姿を撮る。
+        window._collapse_dock(window.file_dock)
+        window._collapse_dock(window.channel_dock)
+        window._collapse_dock(window.diagnostics_dock)
         settle()
         grab("09_collapsed")
-        window._collapsible_bars["diagnostics_dock"].set_collapsed(False)
+        window._expand_dock(window.file_dock)
+        window._expand_dock(window.channel_dock)
+        window._expand_dock(window.diagnostics_dock)
         settle()
 
     window.close()
