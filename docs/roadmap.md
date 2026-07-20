@@ -73,6 +73,8 @@ gantt
 
 **バケット分類**: 各 sub-spec は「① 今後実装予定（未着手の新機能）」と、既存機能の欠陥を束ねる「② 実装済みだが不足（改善サブスペック）」に分ける。②の全課題は ID 付きで [audit-findings-catalog.md](audit-findings-catalog.md) が一次情報源。
 
+**UIUX 敵対的レビュー（2026-07-20・PR #134）**: 実装済み GUI 全域を9レンズ×敵対的検証で監査し、確定 78 課題（UX-01..55／UXG-01..28 — audit catalog とは**別 ID 空間**・critical 3=軸表示の実バグ）とデザイン推奨6案・実施順（増分0 知覚の床 → 軸アイデンティティ契約 Stage A → 計測モードバー → 増分D再定義 → 増分E データサイドバー → 増分F 入口と出口）を [uiux-adversarial-review-catalog.md](uiux-adversarial-review-catalog.md) に集約。着手起点は Stage A（[設計 spec](superpowers/specs/2026-07-21-axis-identity-stage-a-design.md)・増分E の前提修正）。
+
 **① 機能サブスペック**（親 `valisync-gui` の要件分解。状態は CLAUDE.md Phase 表を一次とする）
 
 | sub-spec | 担当要件（親 R番号） | 状態 | バケット | 概要 |
