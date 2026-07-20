@@ -26,7 +26,8 @@
 | プロット面 | `plot_background` / `plot_foreground` | pyqtgraph 全体（背景・軸/文字） |
 | 信号 | `signal_palette`（10色巡回） | 曲線の自動色。ユーザー指定色はトークン外 |
 | カーソル | `cursor_a` / `cursor_b` | プロット線と readout マーカーで共有 |
-| readout チップ | `surface_chip` / `border_chip` / `text_primary` / `text_secondary` / `close_hover` | フロート表の面・枠・文字階層 |
+| readout ペイン | `surface_readout_panel` / `text_primary` / `text_secondary` / `delta_negative` / `delta_positive` | 常設読み値ペインの面・文字階層・Δ(B−A) 符号着色（負=赤/正=緑）。GraphAreaView 右ペイン・アクティブパネル束縛 |
+| readout チップ（旧・非常設） | `surface_chip` / `border_chip` / `close_hover` | 旧フロートチップ由来のトークン群（増分B でペイン化・`surface_chip`/`border_chip`/`close_hover` は他用途で存続） |
 | アクティブ強調 | `accent_active` / `accent_active_dark` / `grip_fill` | アクティブ軸/パネルの amber 系 |
 | インタラクション | `drop_highlight` / `axis_move_indicator` / `axis_move_fill` | D&D・軸移動の一時表示 |
 | フィードバック | `error` / `busy_spinner` / `text_releasing` / `preview_curve` | 検証エラー・非同期状態 |
@@ -114,3 +115,9 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   「コンセプトとメイン画面案」3a/4a。設計は
   [active-frame spec](superpowers/specs/2026-07-18-active-frame-multi-panel-design.md)。
   PR #127。
+- 2026-07-20: カーソル読み値をフロートチップ→常設ペイン化（`surface_readout_panel`/
+  `delta_negative`/`delta_positive` 新設）。GraphAreaView 右ペイン・アクティブパネル
+  束縛・行クリックで波形ハイライト・単一時 A/min–max 列・比較時 A/B/Δ＋Δ符号着色。
+  出典: claude.ai/design 検討の持ち帰りメモ（2026-07-18）＋カード「コンセプトと
+  メイン画面案」2a/2b/4b。設計は
+  [readout-pane spec](superpowers/specs/2026-07-19-readout-pane-design.md)。PR #TBD。

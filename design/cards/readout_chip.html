@@ -1,37 +1,51 @@
 <!-- @dsCard group="Components" -->
 <!doctype html>
 <html lang="ja"><head><meta charset="utf-8">
-<title>Cursor Readout チップ</title>
+<title>Cursor Readout パネル</title>
 <!-- @TOKENS_CSS -->
 <style>
   body { background: var(--vs-color-plot-background); margin: 24px; font-family: sans-serif; }
-  .chip {
+  .pane {
     display: inline-block;
-    background: var(--vs-color-surface-chip);
-    border: 1px solid var(--vs-color-border-chip);
-    border-radius: var(--vs-radius-chip);
-    padding: 5px 6px;
+    background: var(--vs-color-surface-readout-panel);
+    padding: 8px 10px;
     color: var(--vs-color-text-primary);
     font-size: 13px;
+    min-width: 260px;
+    vertical-align: top;
   }
-  .chip table { border-collapse: collapse; }
-  .chip td { padding: 1px 8px 1px 0; }
+  .pane + .pane { margin-left: 16px; }
+  .pane table { border-collapse: collapse; }
+  .pane td { padding: 1px 8px 1px 0; }
   .dot-a { color: var(--vs-color-cursor-a); }
   .dot-b { color: var(--vs-color-cursor-b); }
-  .head { display: flex; gap: 6px; margin-bottom: 3px; }
-  .close { margin-left: auto; color: var(--vs-color-text-primary); cursor: pointer; }
-  .close:hover { color: var(--vs-color-close-hover); }
+  .head { margin-bottom: 4px; }
   .colhead, .unit { color: var(--vs-color-text-secondary); font-size: var(--vs-font-small); }
   .sw { display: inline-block; width: 10px; height: 10px; }
   .val { text-align: right; }
+  .neg { color: var(--vs-color-delta-negative); }
+  .pos { color: var(--vs-color-delta-positive); }
+  .label { color: var(--vs-color-text-secondary); font-size: var(--vs-font-small); margin-bottom: 6px; }
 </style>
 </head><body>
-<div class="chip">
-  <div class="head"><span><span class="dot-a">●</span> 3.000 s&nbsp;&nbsp;<span class="dot-b">●</span> 6.000 s · <b>Δt 3.000 s</b> ─ 線形補間</span><span class="close">✕</span></div>
+<!-- 単一ファイル: 名前 | A値 | min-max (常設ペイン・カーソル連動) -->
+<div class="pane">
+  <div class="label">単一ファイル</div>
+  <div class="head"><span class="dot-a">●</span> 3.000 s ─ 線形補間</div>
+  <table>
+    <tr><td></td><td></td><td class="colhead val">A値</td><td class="colhead val">min–max</td></tr>
+    <tr><td><span class="sw" style="background:var(--vs-color-signal-palette-0)"></span></td><td>EngineSpeed <span class="unit">[rpm]</span></td><td class="val">1425</td><td class="val">800–2275</td></tr>
+    <tr><td><span class="sw" style="background:var(--vs-color-signal-palette-1)"></span></td><td>VehSpd <span class="unit">[km/h]</span></td><td class="val">72</td><td class="val">0–118.8</td></tr>
+  </table>
+</div>
+<!-- 比較(デルタ): A/B/Δ・Δ符号で赤緑着色 (delta_negative/delta_positive) -->
+<div class="pane">
+  <div class="label">比較 (A/B/Δ)</div>
+  <div class="head"><span class="dot-a">●</span> 3.000 s&nbsp;&nbsp;<span class="dot-b">●</span> 6.000 s · <b>Δt 3.000 s</b> ─ 線形補間</div>
   <table>
     <tr><td></td><td></td><td class="colhead val">A値</td><td class="colhead val">Δy</td><td class="colhead val">mean</td></tr>
-    <tr><td><span class="sw" style="background:var(--vs-color-signal-palette-0)"></span></td><td>EngineSpeed <span class="unit">[rpm]</span></td><td class="val">1425.000000</td><td class="val">+250.000000</td><td class="val">1391.2</td></tr>
-    <tr><td><span class="sw" style="background:var(--vs-color-signal-palette-1)"></span></td><td>VehSpd <span class="unit">[km/h]</span></td><td class="val">72.000000</td><td class="val">-3.600000</td><td class="val">58.8</td></tr>
+    <tr><td><span class="sw" style="background:var(--vs-color-signal-palette-0)"></span></td><td>EngineSpeed <span class="unit">[rpm]</span></td><td class="val">1425</td><td class="val pos">+250</td><td class="val">1391.2</td></tr>
+    <tr><td><span class="sw" style="background:var(--vs-color-signal-palette-1)"></span></td><td>VehSpd <span class="unit">[km/h]</span></td><td class="val">72</td><td class="val neg">−3.6</td><td class="val">58.8</td></tr>
   </table>
 </div>
 </body></html>
