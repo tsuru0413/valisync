@@ -9,13 +9,15 @@ from valisync.gui.viewmodels.graph_panel_vm import CursorReading, DeltaReading
 from valisync.gui.views.cursor_readout import CursorReadout
 
 
-def test_tall_pane_keeps_rows_compact_and_row_cells_aligned(qtbot: QtBot):
-    """常設ペインは背丈が高くても行を上部に詰め、行内セルの縦位置を揃える。
+def test_tall_pane_keeps_rows_compact(qtbot: QtBot):
+    """常設ペインは背丈が高くても行を上部に詰める (行を縦に伸ばさない)。
 
     実機バグ (2026-07-20): splitter で縦に引き伸ばされると VBox 末尾の stretch 不在で
-    余剰縦スペースが grid に配分され行が広がり、AlignRight の値セル(垂直センター喪失で
-    top 揃え)と swatch/name(center 揃え)が1行内で縦に割れて崩れた。ここでは高い host に
-    載せ、行内整列と上部への圧縮を assert する。
+    余剰縦スペースが grid に配分され行が広がる。実プラットフォーム(Windows)では、
+    伸びた行内で AlignRight の値セル(垂直センター喪失で top 揃え)と swatch/name
+    (center 揃え)が縦に割れて崩れた。この行内割れは QGridLayout の既定 vcenter により
+    headless では再現しない下流症状のため、ここでは**根因の行伸長**を「上部圧縮」で
+    直接ガードする (addStretch で行が伸びない=割れも起きない)。縦中心一致は補助 assert。
     """
     from PySide6.QtWidgets import QVBoxLayout, QWidget
 
