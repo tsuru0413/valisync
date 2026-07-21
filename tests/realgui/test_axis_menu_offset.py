@@ -210,12 +210,23 @@ def _open_menu_click_item(dpr_widget, phys, item_text: str, shot_menu: Path):  #
 def _two_curve_one_axis_panel():  # type: ignore[no-untyped-def]
     """Standalone GraphPanelView with TWO crossing signals on ONE axis.
 
-    ``a`` rises 0→1 and ``b`` falls 1→0, so both fit the SAME auto-fit y-range
-    ([0, 1] — set by the first-added signal; _auto_fit_ranges only fits an axis
-    while its y_range is None, so a 2nd signal outside the 1st's range would
-    render off-screen). They cross at the centre but are well separated
-    (>> CURVE_HIT_TOL_PX) away from it, so a click at frac≈0.25 resolves
-    unambiguously to ``b``. Returns (view, signal_key_a, signal_key_b).
+    ``a`` rises 0→1 and ``b`` rises -5→5 -- a MUCH wider span, chosen so the
+    axis-move test below can tell a fit new axis from an unfit one. Stage A's
+    ``_auto_fit_ranges`` does not fit an axis "only while y_range is None" (that
+    was the pre-Task-4 behaviour this docstring used to describe); while an
+    axis's ``y_is_auto`` flag is set it is fit to the visible union on EVERY
+    call, so both curves land in-range on their own axis regardless of add
+    order. ``a`` and ``b`` still cross (~i=27, well past the frac=0.25 hit point
+    used below) because ``a`` and ``b`` are linear in opposite directions.
+
+    The -5..5 span matters for UX-02 (spec review catch): with the old 0..1/1..0
+    pair, a "new axis" that came out of ``move_entry_to_new_axis`` UNFIT (bug:
+    y_range stays None) would still render inside pyqtgraph's own default view
+    range (0, 1) -- the pixel scan would find curve-coloured pixels in roughly
+    the right place by coincidence and stay green even with the bug. With b
+    spanning -5..5, an unfit axis's default (0, 1) range plots nearly the whole
+    curve well outside its assigned region, so the pixel scan is honestly
+    discriminating. Returns (view, signal_key_a, signal_key_b).
     """
     from valisync.core.models import Delimiter, FormatDefinition
     from valisync.core.session import Session
@@ -225,7 +236,7 @@ def _two_curve_one_axis_panel():  # type: ignore[no-untyped-def]
     d = Path(tempfile.mkdtemp())
     csv = d / "two.csv"
     rows = ["t,a,b"] + [
-        f"{i / 50.0:.4f},{i / 49.0:.4f},{1.0 - i / 49.0:.4f}" for i in range(50)
+        f"{i / 50.0:.4f},{i / 49.0:.4f},{-5.0 + 10.0 * i / 49.0:.4f}" for i in range(50)
     ]
     csv.write_text("\n".join(rows) + "\n", encoding="utf-8")
     session = Session()
@@ -408,8 +419,18 @@ def test_real_curve_menu_offset_shifts_curve(qtbot: QtBot, tmp_path: Path) -> No
 
 
 def test_real_curve_menu_move_to_new_axis(qtbot: QtBot, tmp_path: Path) -> None:
-    """2曲線1軸パネルで曲線bを実右クリック → 「新しい軸へ移動」を実クリック → 軸が2本に増える。"""
+    """2曲線1軸パネルで曲線bを実右クリック → 「新しい軸へ移動」を実クリック → 軸が2本に増える。
+
+    UX-02 も併せて検証する: 新軸は (a) y_range が曲線bのデータへフィットし、
+    (b) ラベルが伝搬し (非空)、(c) 曲線bの色ピクセルが新軸の担当帯に実在する
+    (grabWindow 走査・FU-12 型 backstop)。(c) の走査帯はパネル幾何
+    (top_ratio/height_ratio) から独立に求め、calculate_virtual_range を経由しない
+    ── フィット漏れ (y_range が None のまま) でもその関数自身は "内部的に一貫した"
+    座標を返してしまい、期待値/実測値の双方を同じ関数で作ると判別力がゼロになる
+    (FU-12 の教訓と同型・spec レビュー捕捉)。
+    """
     skip_unless_real_display()
+    from PySide6.QtGui import QColor
     from PySide6.QtWidgets import QApplication
 
     view, _key_a, key_b = _two_curve_one_axis_panel()
@@ -418,16 +439,22 @@ def test_real_curve_menu_move_to_new_axis(qtbot: QtBot, tmp_path: Path) -> None:
     assert len(view.vm.axes) == 1
     eid_b = view.entry_id_for(key_b)
 
-    # frac≈0.25 (NOT 0.5): a and b cross at the centre, so hit off-centre where
-    # b (~0.76) is well clear of a (~0.24).
+    # frac≈0.25 (NOT 0.5): a and b cross around i≈27, so hit off-centre where
+    # b (~-2.55) is well clear of a (~0.24).
     target = _curve_point_phys(view, eid_b, frac=0.25)
     shot_menu = tmp_path / "curve_move_00_menu.png"
     captured = _open_menu_click_item(view, target, "新しい軸へ移動", shot_menu)
 
     _pump_n(6)
+    # DWM compositor flush (FU-12 pattern): processEvents alone does not
+    # guarantee the OS has flushed the post-move repaint to the real screen
+    # buffer that grabWindow reads from below.
+    time.sleep(0.15)
+    QApplication.processEvents()
     shot_after = tmp_path / "curve_move_01_two_axes.png"
+    pixmap = QApplication.primaryScreen().grabWindow(0)
     with contextlib.suppress(Exception):
-        QApplication.primaryScreen().grabWindow(0).save(str(shot_after))
+        pixmap.save(str(shot_after))
 
     assert captured.get("type") == "QMenu", (
         f"real right-click did not raise the curve menu (got "
@@ -441,6 +468,60 @@ def test_real_curve_menu_move_to_new_axis(qtbot: QtBot, tmp_path: Path) -> None:
     assert len(view.vm.axes) == 2, (
         "a new axis was not created after a real click on '新しい軸へ移動' "
         f"(vm.axes={len(view.vm.axes)}). screenshots: {shot_menu}, {shot_after}"
+    )
+
+    # UX-02 (a): the new axis was fit to the moved curve's full range (-5..5),
+    # not left at whatever default/stale range it was created with.
+    new_axis = view.vm.axes[-1]
+    assert new_axis.y_range is not None and new_axis.y_range[0] <= -4.9, (
+        "new axis was not auto-fit to the moved curve's range "
+        f"(y_range={new_axis.y_range}, expected lo<=-4.9). "
+        f"screenshots: {shot_menu}, {shot_after}"
+    )
+    # UX-02 (b): the new axis's label propagated (non-empty AxisItem text).
+    assert view._y_axes[-1].labelText, (
+        "new axis has no label — move_entry_to_new_axis must derive the "
+        f"(name, unit) pair from the moved entry. screenshots: {shot_menu}, {shot_after}"
+    )
+
+    # UX-02 (c): FU-12-style real pixel scan — curve b's colour must actually
+    # appear, on the real screen, inside the new axis's assigned vertical band.
+    # The band is derived from panel geometry (top_ratio/height_ratio) alone,
+    # NOT from calculate_virtual_range, so an unfit axis (default (0,1) range)
+    # plots b almost entirely outside this band and the scan honestly misses.
+    plot_rect = view._view_boxes[0].sceneBoundingRect()  # shared 0..1 band frame
+    band_top_scene = plot_rect.y() + new_axis.top_ratio * plot_rect.height()
+    band_bot_scene = band_top_scene + new_axis.height_ratio * plot_rect.height()
+    _col_ignore, row_top = to_phys(view, plot_rect.center().x(), band_top_scene)
+    _col_ignore2, row_bot = to_phys(view, plot_rect.center().x(), band_bot_scene)
+    row_lo, row_hi = sorted((row_top, row_bot))
+
+    # X mapping is shared/linked across every axis's ViewBox (setXLink to a
+    # master) and is untouched by the per-axis Y-fit bug this test targets, so
+    # re-using the post-move curve-point helper for the column is safe even
+    # though its row cannot be trusted here.
+    col_center, _row_ignore = _curve_point_phys(view, eid_b, frac=0.25)
+    col_lo, col_hi = col_center - 4, col_center + 4
+
+    target_color = QColor(view.pen_color(eid_b))
+
+    def _is_b_pixel(color: QColor) -> bool:
+        return (
+            abs(color.red() - target_color.red()) <= 40
+            and abs(color.green() - target_color.green()) <= 40
+            and abs(color.blue() - target_color.blue()) <= 40
+        )
+
+    image = pixmap.toImage()
+    found = any(
+        _is_b_pixel(image.pixelColor(col, row))
+        for row in range(row_lo, row_hi + 1)
+        for col in range(col_lo, col_hi + 1)
+    )
+    assert found, (
+        "曲線bの色ピクセルが新軸の担当帯 (grabWindow 実測) に見つからなかった "
+        f"(color={target_color.name()}, col={col_lo}..{col_hi}, "
+        f"row={row_lo}..{row_hi}). screenshots: {shot_menu}, {shot_after}"
     )
 
 

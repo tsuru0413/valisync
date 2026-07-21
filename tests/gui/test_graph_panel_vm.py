@@ -1928,3 +1928,159 @@ def test_zoom_x_noop_when_x_range_none(tmp_path: Path) -> None:
     assert vm.x_range is None
     vm.zoom_x(0.9)  # no-op, no error
     assert vm.x_range is None
+
+
+# ─── Axis-identity Stage A: visible-union fit + auto flag transitions ───────
+
+
+@pytest.fixture
+def vm_with_two_scales(tmp_path: Path) -> tuple[GraphPanelVM, str, str]:
+    """GraphPanelVM に別値域の2信号を登録済み (未 plot) で返す。
+
+    (vm, key_big, key_small) — big は 800..2275、small は 0..118。テスト側が
+    add_signal の順序/タイミングを制御して auto フィットの遷移を検証するため、
+    ここでは plot せずセッション登録のみに留める (_ranged_sig と同型の最小パターン)。
+    """
+    session = Session()
+    big = Signal(
+        name="big",
+        timestamps=np.array([0.0, 1.0], dtype=np.float64),
+        values=np.array([800.0, 2275.0], dtype=np.float64),
+        file_format="CSV",
+        bus_type="",
+        source_file="",
+    )
+    small = Signal(
+        name="small",
+        timestamps=np.array([0.0, 1.0], dtype=np.float64),
+        values=np.array([0.0, 118.0], dtype=np.float64),
+        file_format="CSV",
+        bus_type="",
+        source_file="",
+    )
+    key_big = _register_signal(session, big, tmp_path)
+    key_small = _register_signal(session, small, tmp_path)
+    vm = GraphPanelVM(session)
+    return vm, key_big, key_small
+
+
+def test_auto_axis_refits_union_on_second_add(
+    vm_with_two_scales: tuple[GraphPanelVM, str, str],
+) -> None:
+    # UX-03 根治: 初回フィット後も auto の間は追加信号の和集合へ広がる。
+    vm, key_big, key_small = vm_with_two_scales  # big=800..2275, small=0..118
+    vm.add_signal(key_big)
+    first = vm.axes[0].y_range
+    assert first is not None and first[0] >= 799  # 初回は big のみ
+    vm.add_signal(key_small)
+    lo, hi = vm.axes[0].y_range
+    assert lo <= 0.0 and hi >= 2275.0  # 現行は (800,2275) のまま fail
+
+
+def test_manual_set_axis_range_stops_auto_and_add_respects_it(
+    vm_with_two_scales: tuple[GraphPanelVM, str, str],
+) -> None:
+    vm, key_big, key_small = vm_with_two_scales
+    vm.add_signal(key_big)
+    vm.set_axis_range(0, 1000.0, 2000.0)
+    assert vm.axes[0].y_is_auto is False
+    vm.add_signal(key_small)
+    assert vm.axes[0].y_range == (1000.0, 2000.0)  # 手動は尊重
+
+
+def test_reset_axis_y_restores_auto(
+    vm_with_two_scales: tuple[GraphPanelVM, str, str],
+) -> None:
+    vm, key_big, key_small = vm_with_two_scales
+    vm.add_signal(key_big)
+    vm.set_axis_range(0, 1000.0, 2000.0)
+    vm.reset_axis_y(0)
+    assert vm.axes[0].y_is_auto is True
+    vm.add_signal(key_small)  # auto 復帰後は再び和集合追従
+    assert vm.axes[0].y_range[0] <= 0.0
+
+
+def test_auto_fit_excludes_invisible_entries(
+    vm_with_two_scales: tuple[GraphPanelVM, str, str],
+) -> None:
+    # reset_axis_y と同一規則へ統一 (可視のみ・spec §4 挙動変更)。
+    vm, key_big, key_small = vm_with_two_scales
+    vm.add_signal(key_big)
+    vm.add_signal(key_small)
+    big_id = next(e.entry_id for e in vm._plotted if e.signal_key == key_big)
+    vm.toggle_entry_visibility(big_id)  # big を非表示 → small のみで再フィット
+    _lo, hi = vm.axes[0].y_range
+    assert hi <= 120.0
+
+
+def test_legacy_y_range_setter_marks_manual(
+    vm_with_two_scales: tuple[GraphPanelVM, str, str],
+) -> None:
+    vm, key_big, _ = vm_with_two_scales
+    vm.add_signal(key_big)
+    vm.y_range = (0.0, 10.0)
+    assert vm.axes[0].y_is_auto is False
+
+
+def test_overwrite_axis_resets_manual_range(vm_with_two_scales):
+    # spec §3.5-1: 総入替後の軸は旧内容の手動レンジを引き継がない。
+    vm, key_big, key_small = vm_with_two_scales
+    vm.add_signal(key_big)
+    vm.set_axis_range(0, 1000.0, 2000.0)
+    vm.overwrite_axis(key_small, 0)
+    assert vm.axes[0].y_is_auto is True
+    lo, hi = vm.axes[0].y_range
+    assert lo <= 0.0 and hi <= 200.0  # small にフィット (現行は 1000-2000 のまま fail)
+
+
+def test_placeholder_collapse_resets_manual_range(vm_with_two_scales):
+    # spec §3.5-2: 手動ズーム→全削除→追加で 1 本目が不可視にならない。
+    vm, key_big, key_small = vm_with_two_scales
+    vm.add_signal(key_big)
+    vm.set_axis_range(0, 1000.0, 2000.0)
+    vm.remove_entry(vm._plotted[0].entry_id)
+    assert vm.axes[0].y_is_auto is True and vm.axes[0].y_range is None
+    vm.add_signal(key_small)
+    assert vm.axes[0].y_range[1] <= 200.0
+
+
+# ─── Task 5: 変異トリガ全数接続 (move / insert / 可視性トグル / legacy) ────────
+
+
+def test_move_entry_to_new_axis_fits_and_labels(vm_with_two_scales):
+    # UX-02 根治: 移動先の新軸が 0-1 既定のままにならず、ラベルも付く。
+    vm, key_big, key_small = vm_with_two_scales
+    vm.add_signal(key_big)
+    vm.add_signal(key_small)
+    small_id = next(e.entry_id for e in vm._plotted if e.signal_key == key_small)
+    vm.move_entry_to_new_axis(small_id)
+    new_axis = vm.axes[-1]
+    assert new_axis.y_range is not None  # 現行 None で fail
+    assert new_axis.y_range[1] <= 200.0
+    assert new_axis.name == key_small.split("::")[-1]
+    # 移動元 (auto) も残存 big のみへ再フィット
+    assert vm.axes[0].y_range[0] >= 799
+
+
+def test_axis_visibility_toggle_refits_auto_axis(vm_with_two_scales):
+    # H キー軸フォールバック経路 (spec レビュー捕捉: Hx2 往復で UX-03 再発を防ぐ)。
+    vm, key_big, key_small = vm_with_two_scales
+    vm.add_signal(key_big)
+    vm.add_signal(key_small)
+    small_id = next(e.entry_id for e in vm._plotted if e.signal_key == key_small)
+    vm.toggle_entry_visibility(small_id)  # small 非表示 → big のみ
+    assert vm.axes[0].y_range[0] >= 799
+    vm.toggle_axis_visibility(0)  # 軸一括 OFF → 対象空 → クリア
+    assert vm.axes[0].y_range is None
+    vm.toggle_axis_visibility(0)  # 軸一括 ON → 全可視で和集合
+    lo, hi = vm.axes[0].y_range
+    assert lo <= 0.0 and hi >= 2275.0
+
+
+def test_remove_entry_refits_auto_axis(vm_with_two_scales):
+    vm, key_big, key_small = vm_with_two_scales
+    vm.add_signal(key_big)
+    vm.add_signal(key_small)
+    big_id = next(e.entry_id for e in vm._plotted if e.signal_key == key_big)
+    vm.remove_entry(big_id)
+    assert vm.axes[0].y_range[1] <= 200.0

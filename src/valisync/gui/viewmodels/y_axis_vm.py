@@ -18,6 +18,7 @@ class YAxisVM(Observable):
         column: int = 0,
         unit: str = "",
         name: str = "",
+        y_is_auto: bool = True,
     ) -> None:
         super().__init__()
         self.y_range = y_range
@@ -27,6 +28,9 @@ class YAxisVM(Observable):
         self.unit = unit
         # Display name of the representative (first-added) signal on this axis.
         self.name = name
+        # Y レンジが「自動フィット追従」か「手動固定」か (X の _x_range_is_auto の
+        # per-axis 対称・Stage A 契約 §2.3)。遷移は GraphPanelVM の手動系メソッド側。
+        self.y_is_auto = y_is_auto
 
     def set_range(self, lo: float | None, hi: float | None) -> None:
         """Set the vertical data range for this axis."""

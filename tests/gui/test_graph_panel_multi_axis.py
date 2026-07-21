@@ -1388,3 +1388,165 @@ def test_move_entry_unknown_id_is_noop(qtbot: QtBot) -> None:
     vm.add_signal_to_axis(keys["a"], 0)
     vm.move_entry_to_new_axis(9999)
     assert len(vm.axes) == 1
+
+
+# ─── Task 2: 代表波形ラベルの一括再計算 (UX-01/UXG-19) ───────────────────────
+
+
+@pytest.fixture
+def session_two_signals_vm(tmp_path: Path) -> tuple[GraphPanelVM, str, str]:
+    """2信号(同一グループ=同一ファイル)。a: unit "V" / b: unit "A" を注入済み。
+
+    異単位 join (UX-01) の検証用 — 同ファイル内の別チャンネルとして2信号を積む
+    既存パターン (:256-278/:450-471) を複製し、unit だけ2信号それぞれに注入する。
+    """
+    session, _ = _loaded_session(tmp_path, n_signals=2)
+    key_a, key_b = _keys(session)
+    for sig in session.signals():
+        if sig.name == key_a:
+            sig.metadata["unit"] = "V"
+        elif sig.name == key_b:
+            sig.metadata["unit"] = "A"
+    vm = GraphPanelVM(session)
+    return vm, key_a, key_b
+
+
+def _write_named_csv(path: Path, n_rows: int, signal_name: str) -> Path:
+    """Write a 1-signal CSV whose column header is *signal_name*.
+
+    Unlike the shared ``_write_csv`` (always header "s1"), this lets each
+    loaded group carry a distinct representative name — needed so the prune
+    test below can actually discriminate "stale name kept" from "name
+    recalculated" (a same-name fixture makes the assertion pass either way;
+    review finding on this task).
+    """
+    lines = [f"t,{signal_name}"]
+    for i in range(n_rows):
+        lines.append(f"{i * 0.01},{float(i % 50)}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def session_two_files_vm(tmp_path: Path) -> tuple[GraphPanelVM, str, str]:
+    """2信号(別グループ=別ファイル・別信号名)。UXG-19 のファイル閉じ→prune 経路の検証用。
+
+    file1="alpha" / file2="beta" と信号名を分けているのは意図的
+    (``_write_named_csv`` の docstring参照): 同名だと prune 後 assert が新旧どちらの
+    実装でも通ってしまい弁別力を失う。
+    """
+    session = Session()
+    g1 = session.load(
+        _write_named_csv(tmp_path / "f1.csv", 100, "alpha"), _csv_format(1)
+    )
+    g2 = session.load(
+        _write_named_csv(tmp_path / "f2.csv", 100, "beta"), _csv_format(1)
+    )
+    key1 = next(s.name for s in session.signals() if s.name.startswith(f"{g1.key}::"))
+    key2 = next(s.name for s in session.signals() if s.name.startswith(f"{g2.key}::"))
+    vm = GraphPanelVM(session)
+    return vm, key1, key2
+
+
+def test_axis_unit_stays_representative_on_mixed_join(
+    session_two_signals_vm: tuple[GraphPanelVM, str, str],
+) -> None:
+    # UX-01 根治: 異単位 join でも軸ラベルは代表 (1本目) の name/unit の対のまま。
+    vm, key_a, key_b = session_two_signals_vm  # a=unit "V", b=unit "A" を注入済み想定
+    vm.add_signal(key_a)
+    vm.add_signal(key_b)  # 既定経路は軸0へ join
+    assert vm.axes[0].name == key_a.split("::")[-1]
+    assert vm.axes[0].unit == "V"  # 現行 last-wins は "A" になり fail
+
+
+def test_axis_label_pair_succession_on_representative_removal(
+    session_two_signals_vm: tuple[GraphPanelVM, str, str],
+) -> None:
+    vm, key_a, key_b = session_two_signals_vm
+    vm.add_signal(key_a)
+    vm.add_signal(key_b)
+    rep_id = next(e for e in vm._plotted if e.signal_key == key_a).entry_id
+    vm.remove_entry(rep_id)
+    # 代表交代は name/unit が「対で」次エントリへ (片方だけの残存は捏造ペア)
+    assert vm.axes[0].name == key_b.split("::")[-1]
+    assert vm.axes[0].unit == "A"
+
+
+def test_axis_label_cleared_when_axis_emptied(
+    session_two_signals_vm: tuple[GraphPanelVM, str, str],
+) -> None:
+    vm, key_a, _ = session_two_signals_vm
+    vm.add_signal(key_a)
+    vm.remove_entry(vm._plotted[0].entry_id)
+    assert vm.axes[0].name == ""
+    assert vm.axes[0].unit == ""
+
+
+def test_axis_label_recalc_on_prune_missing_signals(
+    session_two_files_vm: tuple[GraphPanelVM, str, str],
+) -> None:
+    # UXG-19 のアンロード経路: 代表信号のファイルを閉じたら残存名を許さない。
+    vm, key_file1, key_file2 = (
+        session_two_files_vm  # 別グループ・別信号名の2信号・同軸0へ
+    )
+    vm.add_signal(key_file1)
+    vm.add_signal(key_file2)
+    assert (
+        vm.axes[0].name == key_file1.split("::")[-1]
+    )  # prune 前: 代表=file1 ("alpha")
+    vm._session.remove_group(key_file1.split("::")[0], force=True)
+    vm.prune_missing_signals()
+    # prune 後: 代表交代="beta" — 弁別力ゼロだった旧 assert (両グループ同名 "s1") を是正。
+    assert vm.axes[0].name == key_file2.split("::")[-1]
+
+
+# ─── Task 6: View ラベル共有ヘルパ (2サイト+空クリア・UX-01 view側) ─────────
+
+
+@pytest.fixture
+def built_view_two_units(
+    qtbot: QtBot, tmp_path: Path
+) -> tuple[GraphPanelView, GraphPanelVM, str, str]:
+    """view 構築済み・key_a(unit "V") が既に表示中・key_b(unit "A") は未表示。
+
+    session_two_signals_vm (:1397) の view 版 — fast path (join/削除で軸数不変)
+    は _reconcile_axes の分岐なので、VM 単体でなく実際に GraphPanelView を
+    構築して refresh() を通す必要がある。
+    """
+    session, _ = _loaded_session(tmp_path, n_signals=2)
+    key_a, key_b = _keys(session)
+    for sig in session.signals():
+        if sig.name == key_a:
+            sig.metadata["unit"] = "V"
+        elif sig.name == key_b:
+            sig.metadata["unit"] = "A"
+    vm = GraphPanelVM(session)
+    view = cast(GraphPanelView, _make_view(qtbot, vm))
+    vm.add_signal(key_a)
+    view.refresh()
+    return view, vm, key_a, key_b
+
+
+def test_label_updates_via_fast_path_on_join(
+    qtbot: QtBot,
+    built_view_two_units: tuple[GraphPanelView, GraphPanelVM, str, str],
+) -> None:
+    # UX-01 主経路: join は構造署名不変 = fast path。fresh 構築だけの assert は
+    # rebuild 側しか通らず false-green (memory gui_diff_update_layout_key...)。
+    view, vm, _key_a, key_b = built_view_two_units  # 構築済み・key_a(unit V) 表示中
+    vm.add_signal(key_b)  # unit A を join (軸数不変)
+    view.refresh()
+    assert view._y_axes[0].labelUnits == "V"  # 代表維持 (last-wins なら "A")
+
+
+def test_label_cleared_via_fast_path_on_last_removal(
+    qtbot: QtBot,
+    built_view_two_units: tuple[GraphPanelView, GraphPanelVM, str, str],
+) -> None:
+    view, vm, _key_a, _key_b = built_view_two_units
+    vm.remove_entry(vm._plotted[0].entry_id)  # 全削除 → placeholder (署名不変)
+    view.refresh()
+    # 旧ガード (name or unit のときのみ setLabel) は空への遷移で画面に
+    # 死んだラベルを残した (spec レビュー blocker)。
+    axis = view._y_axes[0]
+    assert axis.labelText in ("", None) or not axis.label.isVisible()

@@ -78,3 +78,22 @@ def test_effective_region_multiplicative_survives_min_height() -> None:
     assert eff_h > 0.0
     assert eff_h == pytest.approx(0.05 * (1.0 - 0.06))
     assert eff_top == pytest.approx(0.0 + 0.03 * 0.05)
+
+
+def test_y_is_auto_defaults_true() -> None:
+    assert YAxisVM().y_is_auto is True
+
+
+def test_y_is_auto_constructor_override() -> None:
+    assert YAxisVM(y_is_auto=False).y_is_auto is False
+
+
+def test_set_range_does_not_touch_auto_flag() -> None:
+    # auto フィットも手動 setter も同じ set_range funnel を通るため、
+    # フラグ遷移をここに置くと初回フィットで恒久 manual 化する (spec §3.1)。
+    axis = YAxisVM()
+    axis.set_range(0.0, 1.0)
+    assert axis.y_is_auto is True
+    axis.y_is_auto = False
+    axis.set_range(None, None)
+    assert axis.y_is_auto is False
