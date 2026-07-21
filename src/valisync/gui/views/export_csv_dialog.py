@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 
 from valisync.core.export.csv_exporter import CsvExportOptions
 from valisync.core.models import Signal
+from valisync.gui import strings as S
 from valisync.gui.theme import qss
 
 if TYPE_CHECKING:
@@ -106,7 +107,7 @@ class ExportCsvDialog(QDialog):
         btn_row = QHBoxLayout()
         all_btn = QPushButton("すべて選択")
         all_btn.clicked.connect(self._select_all)
-        none_btn = QPushButton("選択なし")
+        none_btn = QPushButton(S.EXPORT_DESELECT_ALL)
         none_btn.clicked.connect(self._select_none)
         btn_row.addWidget(all_btn)
         btn_row.addWidget(none_btn)
@@ -120,6 +121,7 @@ class ExportCsvDialog(QDialog):
         # 不変。マルチレート信号(独立ラスタ)では unified だけが安全な経路
         # (whole-branch review Important #1)。
         self._unified.setChecked(True)
+        self._unified.setToolTip(S.EXPORT_UNIFIED_TIMELINE_TOOLTIP)
         form.addRow("統合タイムライン", self._unified)
         self._delim = QComboBox(self)
         for label, ch in _DELIMS:
@@ -131,8 +133,9 @@ class ExportCsvDialog(QDialog):
         form.addRow("小数点", self._decimal)
         self._unit_row = QCheckBox(self)
         form.addRow("単位行を出力", self._unit_row)
-        self._round_trip = QCheckBox("ラウンドトリップ(無指定)", self)
+        self._round_trip = QCheckBox(S.EXPORT_ROUND_TRIP_LABEL, self)
         self._round_trip.setChecked(True)
+        self._round_trip.setToolTip(S.EXPORT_ROUND_TRIP_TOOLTIP)
         form.addRow("精度", self._round_trip)
         self._precision = QSpinBox(self)
         self._precision.setRange(0, 15)
@@ -155,6 +158,10 @@ class ExportCsvDialog(QDialog):
         )
         self._buttons.button(QDialogButtonBox.StandardButton.Ok).setText(
             "エクスポート…"
+        )
+        # Ok が既にカスタム文言のため、対の Cancel も translator 非依存の明示文言に揃える。
+        self._buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(
+            S.EXPORT_CANCEL
         )
         self._buttons.accepted.connect(self._on_accept)
         self._buttons.rejected.connect(self.reject)
@@ -217,7 +224,7 @@ class ExportCsvDialog(QDialog):
         opts = self._current_options()
         has_sel = bool(self._checked_keys())
         if opts is not None:
-            self._error.setText("" if has_sel else "少なくとも1信号を選択してください")
+            self._error.setText("" if has_sel else S.EXPORT_NO_SELECTION_ERROR)
         ok = opts is not None and has_sel
         self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(ok)
 

@@ -82,3 +82,21 @@ BUSY_EXPORTING_TMPL: Final = "{label} をエクスポート中…"
 # ── ステータスバー: 読込完了時の診断誘導 (判断点 #13) ────────────────────────
 STATUS_DIAG_ALERT_TMPL: Final = f" ・ ⚠ 警告/エラー {{n}} 件（{REF_DIAGNOSTICS}）"
 STATUS_DIAG_INFO_TMPL: Final = f" ・ ℹ 情報 {{n}} 件（{REF_DIAGNOSTICS}）"
+
+# ── ダイアログ: CSV エクスポート (export_csv_dialog・G-19/G-38/E-1/R-07) ─────
+EXPORT_DESELECT_ALL: Final = "すべて解除"
+EXPORT_UNIFIED_TIMELINE_TOOLTIP: Final = "全信号を共通時間列に整列して 1 表で出力します"
+EXPORT_ROUND_TRIP_LABEL: Final = "ラウンドトリップ（桁数指定なし）"
+EXPORT_ROUND_TRIP_TOOLTIP: Final = "元値を損なわない最大精度で出力します"
+EXPORT_CANCEL: Final = "キャンセル"
+EXPORT_NO_SELECTION_ERROR: Final = "少なくとも 1 つの信号を選択してください"
+
+# ── ダイアログ: 展開確認 (expansion_dialog・R-02 半角括弧) ────────────────────
+EXPANSION_OVER_LIMIT_TMPL: Final = (
+    "以下の信号は展開すると列数が上限 ({limit}) を超えます。\n"
+    "展開するものを選択してください（未選択はスキップ）。"
+)
+
+# ── ダイアログ: 信号プレビュー (signal_preview_window・R-05 em ダッシュ) ─────
+PREVIEW_UNAVAILABLE: Final = "この信号はプレビューできません"
+PREVIEW_TITLE_TMPL: Final = "信号プレビュー — {key}"
