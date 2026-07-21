@@ -65,14 +65,14 @@
 | main_window.py:617 | dialog | ja | CSV を書き出せませんでした。\n\n{err} | CSV を書き出せませんでした。\n\n{err} | 本文テンプレート。CSV は技術トークンとして ja 判定 |
 | main_window.py:634 | menu | ja | （履歴なし） | （履歴なし） | Recent Files メニューの空状態（disabled 項目）。既に日本語・全角括弧（noqa: RUF001 済） |
 | main_window.py:638 | menu | en | {path} | {path} | Recent Files の各項目=フルパスの純データ。i18n 対象外だが可視文言として計上。長パスの省略は Welcome 側（ElideMiddle）と非対称 — メニュー側は無省略 |
-| main_window.py:647 | other | en | unknown | 不明 | バージョン取得失敗時のフォールバック。L648 の f"v{ver}" に埋め込まれ「vunknown」と表示される — 「不明」に変えるなら「v不明」を避ける表示形（例: バージョン不明）の再考が必要 |
+| main_window.py:647 | other | en | unknown | バージョン不明 | バージョン取得失敗時のフォールバック。L648 の f"v{ver}" に埋め込まれ「vunknown」と表示される — 「不明」に変えるなら「v不明」を避ける表示形（例: バージョン不明）の再考が必要 ／ 【spec 確定反映】G-37 確定: f"v{ver}" 埋め込みのため表示テンプレート側で分岐（「v不明」合成事故の構造回避） |
 | main_window.py:648 | dialog | ja | ValiSync v{ver} — ADAS 信号解析デスクトップ | ValiSync v{ver} — ADAS 信号解析デスクトップ | About 本文テンプレート。ブランド名/ADAS は据え置きで既に日本語一次 |
 | main_window.py:651 | dialog | en | About ValiSync | ValiSync について | QMessageBox.about のタイトル。メニュー項目 L321 と要一致 |
 | main_window.py:731 | status | en | A {a:.3f} s | A {a:.3f} s | ステータスバー左の計測即値（カーソル A・mono）。カーソル名/単位は国際表記のため翻訳不要 |
 | main_window.py:732 | status | en | B {b:.3f} s | B {b:.3f} s | 計測即値（カーソル B）。翻訳不要 |
 | main_window.py:734 | status | en | Δt {b - a:.3f} s | Δt {b - a:.3f} s | 計測即値（Δt）。Δt は解析系の確立表記のため翻訳不要 |
-| main_window.py:853 | label | en | File Browser | ファイル | 畳んだドックの辺レールタブ文言。L140/L227 と三重定義 — 単一定数化推奨 ／ 【spec 確定反映】G-05 確定（L140/L227 と同一定数） |
-| main_window.py:854 | label | en | Channel Browser | 信号 | レールタブ文言。L157/L228 と三重定義 ／ 【spec 確定反映】G-06 確定（L157/L228 と同一定数） |
+| main_window.py:853 | label | en | File Browser | ファイルブラウザ | 畳んだドックの辺レールタブ文言。L140/L227 と三重定義 — 単一定数化推奨 ／ 【spec 確定反映】G-05 ★#1 確定（L140/L227 と同一定数） |
+| main_window.py:854 | label | en | Channel Browser | チャンネルブラウザ | レールタブ文言。L157/L228 と三重定義 ／ 【spec 確定反映】G-06 ★#2 確定（L157/L228 と同一定数） |
 | main_window.py:855 | label | en | Diagnostics | 診断 | レールタブ文言。L229 と重複・DiagnosticsView（別クラスタ）と要整合 ／ 【spec 確定反映】G-07 確定（L229 と同一定数） |
 | main_window.py:925 | status | ja | ライト | ライト | L930 のステータステンプレートに埋め込まれるラベル。メニュー L287 と定数共有推奨 |
 | main_window.py:926 | status | ja | ダーク | ダーク | 同上（L288 と共有推奨） |
@@ -165,15 +165,15 @@
 | analysis_actions.py:164 | tooltip | ja | カーソル A を有効化すると使えます | カーソル A を有効化すると使えます | disabled 時のみ設定（有効時は空文字にリセット） |
 | cursor_readout.py:35 | status | ja | 範囲外 | 範囲外 | テーブル値セルの欠測表示（TSV コピーにも出る） |
 | cursor_readout.py:36 | status | ja | データなし | データなし | Δ統計 count==0 時の統計セル表示（TSV にも出る） |
-| cursor_readout.py:37 | header | en | mean | 平均 | _STAT_COLS は列見出し・列選択メニュー（build_column_menu L436）・TSV 見出し・VM キー（visible_stat_cols）が同一文字列 — 日本語化は表示写像の導入が必要（キーは英語のまま維持） |
-| cursor_readout.py:37 | header | en | max | 最大 | 同上（表示写像必須）。L239 の「max（全区間）」との用語整合も同時判断 |
-| cursor_readout.py:37 | header | en | min | 最小 | 同上（表示写像必須） |
-| cursor_readout.py:37 | header | en | std | 標準偏差 | 同上。列幅が伸びるため「σ」等の短縮表記も選択肢 — 要判断 |
-| cursor_readout.py:37 | header | en | count | 点数 | 同上（表示写像必須）。「個数」「サンプル数」との用語選定要 |
+| cursor_readout.py:37 | header | en | mean | mean | _STAT_COLS は列見出し・列選択メニュー（build_column_menu L436）・TSV 見出し・VM キー（visible_stat_cols）が同一文字列 — 日本語化は表示写像の導入が必要（キーは英語のまま維持） ／ 【spec 確定反映】G-29 ★#4 確定: 英語維持（意図的英語 — VM キー/TSV と同一文字列） |
+| cursor_readout.py:37 | header | en | max | max | 同上（表示写像必須）。L239 の「max（全区間）」との用語整合も同時判断 ／ 【spec 確定反映】G-29 確定: 英語維持 |
+| cursor_readout.py:37 | header | en | min | min | 同上（表示写像必須） ／ 【spec 確定反映】G-29 確定: 英語維持 |
+| cursor_readout.py:37 | header | en | std | std | 同上。列幅が伸びるため「σ」等の短縮表記も選択肢 — 要判断 ／ 【spec 確定反映】G-29 確定: 英語維持 |
+| cursor_readout.py:37 | header | en | count | count | 同上（表示写像必須）。「個数」「サンプル数」との用語選定要 ／ 【spec 確定反映】G-29 確定: 英語維持 |
 | cursor_readout.py:236 | header | mixed | A {t:.3f} s（{interp_label}） | A {t:.3f} s（{interp_label}） | Global モード時刻ヘッダ（動的テンプレート・L241 に RichText 版の同型あり）。A/s は記号・単位で翻訳不要 |
 | cursor_readout.py:239 | header | ja | A値 | A値 | Global モード列見出し |
-| cursor_readout.py:239 | header | mixed | min（全区間） | 最小（全区間） | _STAT_COLS の min を日本語化するなら整合必須（英語維持なら現状どおり）— クラスタ内で統一判断 |
-| cursor_readout.py:239 | header | mixed | max（全区間） | 最大（全区間） | 同上 |
+| cursor_readout.py:239 | header | mixed | min（全区間） | min（全区間） | _STAT_COLS の min を日本語化するなら整合必須（英語維持なら現状どおり）— クラスタ内で統一判断 ／ 【spec 確定反映】G-29 確定: 英語維持（統計列名と連動） |
+| cursor_readout.py:239 | header | mixed | max（全区間） | max（全区間） | 同上 ／ 【spec 確定反映】G-29 確定: 英語維持 |
 | cursor_readout.py:286 | header | mixed | A {t_a:.3f} s ・ B {t_b:.3f} s（{interp_label}） | A {t_a:.3f} s ・ B {t_b:.3f} s（{interp_label}） | Delta モード時刻ヘッダ（動的テンプレート・L293 に RichText 版）。Δt は意図的に非表示（ステータスバー即値と重複回避・spec §2.5） |
 | cursor_readout.py:290 | header | ja | A値 | A値 | Delta モード列見出し（L239 と同文言の別リテラル） |
 | cursor_readout.py:290 | header | en | Δy | Δy | 記号のみ・翻訳不要 |
@@ -187,14 +187,14 @@
 | graph_area_view.py:171 | tooltip | ja | 新規タブ (Ctrl+T) | 新規タブ (Ctrl+T) | 括弧全角/半角の統一判断（ショートカット併記の書式はアプリ全体で統一を推奨） ／ 【spec 確定反映】R-02 確定（ASCII のみは半角括弧） |
 | graph_area_view.py:234 | button | ja | 読み値 | 読み値 | readout ペイン表示トグル（checkable QToolButton・タブ corner） |
 | graph_area_view.py:235 | tooltip | ja | 読み値ペインの表示切替 | 読み値ペインの表示切替 |  |
-| graph_panel_view.py:815 | label | en | Time | 時間 | X 軸ラベル（units="s" は別引数・pyqtgraph が "Time (s)" と合成表示）。プロット軸は英語維持の判断もあり — 要決定 |
+| graph_panel_view.py:815 | label | en | Time | Time | X 軸ラベル（units="s" は別引数・pyqtgraph が "Time (s)" と合成表示）。プロット軸は英語維持の判断もあり — 要決定 ／ 【spec 確定反映】G-30 ★#5 確定: 英語維持（意図的英語 — 計測ツールのプロット軸慣例） |
 | graph_panel_view.py:841 | button | en | + | + | 記号のみ・翻訳不要（パネル追加ボタン） |
 | graph_panel_view.py:842 | tooltip | ja | パネルを追加 | パネルを追加 | build_context_menu の "Add Panel"(L2538) と同機能 — 文言統一の基準にする |
 | graph_panel_view.py:850 | button | en | × | × | 記号のみ（U+00D7・noqa RUF001 付き）・翻訳不要 |
 | graph_panel_view.py:851 | tooltip | ja | パネルを削除 | パネルを削除 | "Remove Panel"(L2541) と同機能 — 統一基準 |
 | graph_panel_view.py:1884 | tooltip | en | Δt = {delta_t:+.3g} s | Δt = {delta_t:+.3f} s | オフセットドラッグ中の追従ツールチップ。記号+単位のみで翻訳不要（動的テンプレート） ／ 【spec 確定反映】R-06/E-4 確定（4画面 {:+.3f} s 統一 — .3g→.3f は意図的表示変更） |
 | graph_panel_view.py:1959 | title | ja | 時間オフセットの適用 | 時間オフセットの適用 |  |
-| graph_panel_view.py:1962 | dialog | mixed | Δt = {delta_t:+.3g} s を適用します。対象を選択してください。 | {delta_t:+.3f} s を適用します | Δt は記号で維持（動的テンプレート） ／ 【spec 確定反映】R-06/E-4 確定（4画面 {:+.3f} s 統一 — .3g→.3f は意図的表示変更） |
+| graph_panel_view.py:1962 | dialog | mixed | Δt = {delta_t:+.3g} s を適用します。対象を選択してください。 | Δt = {delta_t:+.3f} s を適用します。対象を選択してください。 | Δt は記号で維持（動的テンプレート） ／ 【spec 確定反映】R-06/E-4 確定（.3g→.3f のみ変更・文構造は現状維持） |
 | graph_panel_view.py:1964 | dialog | ja | この信号のみ | この信号のみ | scope radio。L2389/L2444 と同文言の三重定義 — 共通化候補 |
 | graph_panel_view.py:1965 | dialog | ja | 同じファイルグループ全体 | 同じファイルグループ全体 | scope radio（三重定義・同上） |
 | graph_panel_view.py:1969 | dialog | en | OK / Cancel（QDialogButtonBox 標準ボタン） | OK / キャンセル | 根本解決は qtbase_ja の QTranslator 導入（全ダイアログ一括）— 個別 setText は対症。5 箇所ある button box の代表と同型 |
@@ -269,9 +269,9 @@
 | data_explorer_view.py:228 | context_menu | en | Load File | ファイルを開く | 【spec 確定反映】★#9/G-12 確定「ファイルを開く」（File>開く… と同一操作同一文言）。コンテキストメニューはニーモニクス非付与（★#14） |
 | data_explorer_view.py:231 | context_menu | en | Remove from Data Sources | データソースから削除 | ニーモニクス案「データソースから削除(&D)」。未登録パスでは disabled |
 | diagnostics_view.py:32 | other | en | ⛔ / ⚠ / ℹ（_LEVEL_ICON: error/warning/info） | ⛔ / ⚠ / ℹ | レベル列の絵文字グリフ（言語非依存）。CLAUDE.md のとおり Lucide 等アイコン化は運用反復で個別判断 — 増分Dでは据え置き可 |
-| diagnostics_view.py:36 | header | ja | レベル | データソース | 既に適正 ／ 【spec 確定反映】G-04 ★#7 ユーザー確定（診断の発生元ファイルを指す列） |
+| diagnostics_view.py:36 | header | ja | レベル | レベル | 既に適正 |
 | diagnostics_view.py:36 | header | en | # | # | 受信順序番号（seq）列の簡潔ヘッダ。記号のままで可（spec §4.3/§4.4 の「時刻」を順序番号で充足する設計判断済） |
-| diagnostics_view.py:36 | header | ja | ソース | ソース | ファイル由来を指す。DataExplorer の「データソース」（フォルダ）とは別概念 — 用語衝突に留意（必要なら「ファイル」へ） |
+| diagnostics_view.py:36 | header | ja | ソース | データソース | ファイル由来を指す。DataExplorer の「データソース」（フォルダ）とは別概念 — 用語衝突に留意（必要なら「ファイル」へ） ／ 【spec 確定反映】G-04 ★#7 ユーザー確定（診断の発生元ファイルを指す列・フォルダ登録系は「データソースフォルダ」で文脈区別） |
 | diagnostics_view.py:36 | header | ja | メッセージ | メッセージ | 既に適正 |
 | diagnostics_view.py:36 | header | ja | 対象 | 対象 | 既に適正（signal_name 表示専用列） |
 | diagnostics_view.py:38 | placeholder | ja | 診断はありません | 診断はありません | フィルタ後ゼロ件でも同文言（spec §7）。既に適正 |
@@ -355,9 +355,9 @@
 | core/loaders/csv_loader.py:85 | diagnostic | en | Header has {n} columns, expected at least {min} | ヘッダの列数が {n} 列です（{min} 列以上が必要） | line_number 付き error 診断。line 157（データ行版）と文型統一 |
 | core/loaders/csv_loader.py:116 | diagnostic | ja | 重複ヘッダ {names} を連番で改名（name[idx] 方式） | 重複ヘッダ {names} を連番で改名（name[idx] 方式） | 既に適正。「name[idx]」は実際の改名記法の литeral 表記（翻訳対象外） |
 | core/loaders/csv_loader.py:157 | diagnostic | en | Row has {n} columns, expected at least {min} | 行の列数が {n} 列です（{min} 列以上が必要） | line_number 付き error 診断。line 85（ヘッダ版）と文型統一 |
-| core/loaders/csv_loader.py:174 | diagnostic | en | Non-numeric timestamp {ts!r} | 非数値のタイムスタンプ {ts} | {ts!r} は repr 引用表示（'abc' 形式）— 日本語化後も引用表示を維持。line 189「非有限タイムスタンプ」と対の用語（非数値/非有限） |
-| core/loaders/csv_loader.py:189 | diagnostic | ja | 非有限タイムスタンプ {ts!r}（時刻軸が破損） | 非有限タイムスタンプ {ts}（時刻軸が破損） | 既に適正。mdf_loader:440 の「時刻軸が破損」と用語一致済み |
-| core/loaders/csv_loader.py:212 | diagnostic | en | Non-numeric value {val!r} in signal column | 信号列に非数値の値 {val} | line_number/column_number 付き error 診断。{val!r} は repr 引用表示を維持 |
+| core/loaders/csv_loader.py:174 | diagnostic | en | Non-numeric timestamp {ts!r} | 非数値のタイムスタンプ {ts!r} | {ts!r} は repr 引用表示（'abc' 形式）— 日本語化後も引用表示を維持。line 189「非有限タイムスタンプ」と対の用語（非数値/非有限） ／ 【spec 確定反映】R-01 確定: repr 引用は日本語化後も維持 |
+| core/loaders/csv_loader.py:189 | diagnostic | ja | 非有限タイムスタンプ {ts!r}（時刻軸が破損） | 非有限タイムスタンプ {ts!r}（時刻軸が破損） | 既に適正。mdf_loader:440 の「時刻軸が破損」と用語一致済み ／ 【spec 確定反映】R-01 確定: repr 引用維持 |
+| core/loaders/csv_loader.py:212 | diagnostic | en | Non-numeric value {val!r} in signal column | 信号列に非数値の値 {val!r} | line_number/column_number 付き error 診断。{val!r} は repr 引用表示を維持 ／ 【spec 確定反映】R-01 確定: repr 引用維持 |
 | core/loaders/csv_loader.py:236 | diagnostic | ja | タイムスタンプ列: 非単調 {n} 箇所・重複 {m} 点（表示/演算は整列ビューで補正） | タイムスタンプ列: 非単調 {n} 箇所・重複 {m} 点（表示/演算は整列ビューで補正） | 既に適正（LD-04・ファイル単位1件）。mdf_loader:492 は「重複タイムスタンプ {m} 点」と語がやや異なる — 揃えるか要判断 |
 | core/loaders/csv_loader.py:245 | diagnostic | ja | データ行が 0 行です | データ行が 0 行です | 既に適正（LD-09）。検出器の「データ行がありません」（detector:102）と文言が異なるが表示文脈が違う（成功+warning vs 検出不能）ため現状維持で可 |
 | core/loaders/csv_loader.py:260 | diagnostic | ja | '{name}': 非有限値 {n} 個（'nan'/'inf' 文字列由来） | 信号 '{name}': 非有限値 {n} 個（'nan'/'inf' 文字列由来） | LD-06。プレフィックスが「'{name}':」のみで mdf_loader の「Signal '{name}':」系と不揃い — 「信号 '{name}':」への統一を提案（signal_name フィールドは別途保持済み） |
@@ -382,9 +382,9 @@
 |---|---|---|---|---|---|
 | core/downsampler/downsampler.py:76 | other | en | n must be a plain integer, got {type} | 点数は整数で指定してください（現在 {type}） | 非到達 — ダウンサンプラは描画パイプライン内部からのみ呼ばれ、GUI 側に捕捉・表示サイトなし |
 | core/downsampler/downsampler.py:78 | other | en | n must be ≥ 2, got {n!r} | 点数は 2 以上で指定してください（現在 {n}） | 非到達 — downsampler.py:76 と同根拠 |
-| core/export/csv_exporter.py:32 | label | mixed | delimiter と decimal は空文字にできません | 区切り文字と小数点記号は空にできません | export_csv_dialog.py:213 で str(exc) を _error ラベルに生表示。両コンボは固定候補（空なし）のため実質非到達（公開 API 向け防御） |
+| core/export/csv_exporter.py:32 | label | mixed | delimiter と decimal は空文字にできません | 区切り文字と小数点記号は空にできません | 【spec 確定反映】G-45 対象（防御的 — コンボ固定候補で通常操作では出ないが翻訳する）。表示経路: export_csv_dialog.py:213 |
 | core/export/csv_exporter.py:35 | label | mixed | delimiter と decimal に同じ文字は使えません | 区切り文字と小数点記号に同じ文字は使えません | export_csv_dialog.py:213 の _error ラベルに生表示。区切り=カンマ × 小数点=カンマ の選択で到達可（両コンボにカンマあり・export_csv_dialog.py:41-47） |
-| core/export/csv_exporter.py:37 | label | mixed | precision は 0 以上または None | 小数点以下の桁数は 0 以上を指定してください | 表示経路は export_csv_dialog.py:213 の _error ラベルだが、小数桁スピンは 0–15（export_csv_dialog.py:138）のため実質非到達（防御的） |
+| core/export/csv_exporter.py:37 | label | mixed | precision は 0 以上または None | 小数点以下の桁数は 0 以上を指定してください | 【spec 確定反映】G-45 対象（防御的 — スピン範囲制約で通常操作では出ないが翻訳する）。表示経路: export_csv_dialog.py:213 |
 | core/export/csv_exporter.py:112 | dialog | ja | 選択した信号が同一の時間軸を共有していません。共有タイムラインで書き出すには統合タイムラインを有効にしてください。 | 選択した信号が同一の時間軸を共有していません。共有タイムラインで書き出すには統合タイムラインを有効にしてください。 | エクスポート実行時に main_window.py:615（ステータスバー「⛔ エクスポート失敗: {err}」）＋617（QMessageBox「エクスポートエラー」本文）へ生表示。統合タイムライン OFF × マルチレート信号で到達可。既に日本語で規約適合（変更不要案として同文） |
 | core/formula/engine.py:173 | other | en | unexpected character {ch!r} at position {start} | 位置 {pos} に解釈できない文字 {ch} があります | 非到達 — SyntaxError は engine.py:453 の「formula syntax error: {exc}」にラップされる。数式 GUI 未実装 |
 | core/formula/engine.py:193 | other | en | expected {kind}, got {got!r} at position {pos} | 位置 {pos} には {expected} が必要ですが {got} が見つかりました | 非到達 — engine.py:173 と同根拠（453 でラップ・数式 GUI 未実装） |
@@ -401,9 +401,9 @@
 | core/loaders/format_def_manager.py:92 | other | en | FormatDefinition '{name}' not found in {data_dir} | フォーマット定義 '{name}' が見つかりません（保存先: {dir}） | 非到達 — GUI 呼出サイトなし（FileNotFoundError・format_def_manager.py:16 と同根拠） |
 | core/loaders/signal_group_manager.py:37 | dialog | en | unsupported file_format: {file_format!r} | 対応していないファイル形式です: {fmt} | 内部不変量。読み込み中に発生すれば main_window.py:450 → QMessageBox「読み込みエラー」に生表示されるが、ローダーは正規 file_format のみ設定するため実質非到達（防御的） |
 | core/loaders/signal_group_manager.py:53 | other | en | no Signal_Group registered under key: {key!r} | 指定されたキーのデータが見つかりません: {key} | 非到達 — GUI 側は KeyError を捕捉して continue（main_window.py:492）。未捕捉経路は画面表示なし（excepthook なし） |
-| core/models/format_def.py:37 | label | en | name must be 1-64 characters, got {n}: {name!r} | 名前は 1–64 文字で指定してください（現在 {n} 文字: {name}） | csv_format_dialog.py:137 で str(exc) を _error QLabel に生表示。name は検出ファイル名 stem 由来でダイアログから編集不可 → 64 文字超のファイル名では OK 無効のまま常時表示（到達可） |
-| core/models/format_def.py:41 | label | en | timestamp_column must be 0-255, got {timestamp_column} | 時間列は 0–255 の範囲で指定してください（現在 {n}） | 表示経路は csv_format_dialog.py:137 の _error ラベルだが、ダイアログの QSpinBox が 0–255 にクランプするため実質非到達（公開 API 向け防御） |
-| core/models/format_def.py:45 | label | en | timestamp_unit must be 'sec' or 'msec', got {timestamp_unit!r} | 時間単位は sec または msec を指定してください（現在 {unit}） | 表示経路は csv_format_dialog.py:137 の _error ラベルだが、時間単位コンボは sec/msec 固定のため実質非到達（防御的） |
+| core/models/format_def.py:37 | label | en | name must be 1-64 characters, got {n}: {name!r} | 名前は 1–64 文字で指定してください（現在 {n} 文字: {name!r}） | csv_format_dialog.py:137 で str(exc) を _error QLabel に生表示。name は検出ファイル名 stem 由来でダイアログから編集不可 → 64 文字超のファイル名では OK 無効のまま常時表示（到達可） ／ 【spec 確定反映】G-44 確定（R-01: repr 引用維持） |
+| core/models/format_def.py:41 | label | en | timestamp_column must be 0-255, got {timestamp_column} | 時間列は 0–255 の範囲で指定してください（現在 {n}） | 【spec 確定反映】G-44 対象（防御的 — QSpinBox クランプで通常操作では出ないが 8 訳の完全性のため翻訳する）。表示経路: csv_format_dialog.py:137 |
+| core/models/format_def.py:45 | label | en | timestamp_unit must be 'sec' or 'msec', got {timestamp_unit!r} | 時間単位は sec または msec を指定してください（現在 {unit}） | 【spec 確定反映】G-44 対象（防御的 — コンボ固定候補で通常操作では出ないが翻訳する）。表示経路: csv_format_dialog.py:137 |
 | core/models/format_def.py:49 | label | en | signal columns must satisfy 0 <= signal_start_column ({start}) <= signal_end_column ({end}) <= 255 | 信号列は開始 ({start}) ≤ 終了 ({end}) かつ 0–255 の範囲で指定してください | csv_format_dialog.py:137 の _error ラベルに生表示。スピンボックスで開始 > 終了 にすると到達可 |
 | core/models/format_def.py:54 | label | en | timestamp_column ({t}) must not overlap signal columns [{start}, {end}] | 時間列 ({t}) を信号列の範囲 {start}–{end} に重ねることはできません | csv_format_dialog.py:137 の _error ラベルに生表示。時間列スピンを信号列範囲内へ動かすと到達可 |
 | core/models/load_result.py:21 | dialog | en | level must be 'error', 'warning' or 'info', got {level!r} | 診断レベルは error・warning・info のいずれかを指定してください（現在 {level}） | 内部不変量。Diagnostic はローダーが読み込み中に生成するため、発生すれば main_window.py:450 → QMessageBox「読み込みエラー」に生表示されるが実質非到達（防御的） |
