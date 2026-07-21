@@ -16,7 +16,6 @@ collaborators and connects their signals.
 from __future__ import annotations
 
 import threading
-import weakref
 from collections.abc import Callable
 from pathlib import Path
 
@@ -102,19 +101,11 @@ class MainWindow(QMainWindow):
         self.diagnostics_vm = DiagnosticsViewModel()
 
         # spec §2.2: Analyze メニューと各パネルの空白右クリックメニューが共有する
-        # 解析系 QAction 群。dispatch は weakref 経由 -- self の Qt 子である QAction
-        # の triggered スロットが self (MainWindow) を平の参照 (束縛メソッド) で握る
-        # と、GraphAreaView の readout_pane 配線と同型の参照循環になり、無関係な
-        # 兄弟の破棄カスケードで self の C++ 側だけ先に死にうる (GraphPanelView 側
-        # の bare フォールバックで実際に踏んだ回帰と同型 -- tests/gui/
-        # test_graph_area_view.py::TestClickAwayDeselect で実証済み)。
-        self_ref = weakref.ref(self)
-
-        def _dispatch_active_panel() -> GraphPanelVM | None:
-            window = self_ref()
-            return window._active_panel_vm() if window is not None else None
-
-        self._analysis_actions = build_analysis_actions(self, _dispatch_active_panel)
+        # 解析系 QAction 群。trigger 時の配送先は固定 dispatch ではなく、メニューを
+        # 開く直前に sync_analysis_actions が再ターゲットする書き換え可能な内部状態
+        # (analysis_actions.py 参照) -- ここでは QWidget を close over しないので
+        # 参照循環にはならない。
+        self._analysis_actions = build_analysis_actions(self)
 
         # ── Views ────────────────────────────────────────────────────────────
         self.file_browser_view = FileBrowserView(self.file_browser_vm)

@@ -238,14 +238,24 @@ class TestAnalyzeMenu:
         )
         assert analyze_cursor_a is blank_cursor_a
 
-    def test_about_to_show_sync_does_not_fire_vm_handlers(
+    def test_about_to_show_sync_transition_does_not_fire_vm_handlers(
         self, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """誤発火ガード (spec §2.2 blocker): Analyze の aboutToShow による
-        setChecked 同期だけでは toggle_main_cursor/toggle_delta が呼ばれない。"""
+        """誤発火ガード実質化 (レビュー指摘): 旧版はカーソル未設置パネルで検証して
+        おり、sync は checked=False のまま無変化 (setChecked(False) は何もしない)
+        だったため toggled 配線でも発火せず恒真だった。カーソル設置済みの状態で
+        aboutToShow を発火させ、setChecked(False→True) の遷移が実際に起きること
+        を確認した上でハンドラ非発火 (calls == []) と cursor_t 不変を検証する。
+        sabotage (toggled 配線への変更) で RED になることを実装時に確認済み。"""
         window = _make_window(qtbot)
         pvm = window.graph_area_view.active_panel_vm()  # type: ignore[attr-defined]
         assert pvm is not None
+        pvm.set_cursor(
+            0.3
+        )  # 既に設置済み。toggle_main_cursor(True) の既定中央と異なる値。
+        cursor_a = window._analysis_actions.cursor_a  # type: ignore[attr-defined]
+        assert cursor_a.isChecked() is False  # aboutToShow 前 (前提)
+
         calls: list[str] = []
         monkeypatch.setattr(
             pvm,
@@ -258,18 +268,26 @@ class TestAnalyzeMenu:
             lambda *a, **k: calls.append("delta"),
         )
         _analyze_menu(window).aboutToShow.emit()
+
+        assert (
+            cursor_a.isChecked() is True
+        )  # 遷移が実際に起きたことの確認 (テストの前提)
         assert calls == []
+        assert pvm.cursor_t == pytest.approx(0.3)  # setChecked だけでは変異しない
 
     def test_triggering_cursor_a_from_analyze_dispatches_to_active_panel(
         self, qtbot: QtBot
     ) -> None:
+        """実際のメニュー表示は必ず aboutToShow → (ユーザー操作) trigger の順。
+        aboutToShow で再ターゲットされて初めて trigger がアクティブパネルへ届く
+        (spec §2.2 レビュー修正: 共有ターゲットは sync 時点まで None)。"""
         window = _make_window(qtbot)
         pvm = window.graph_area_view.active_panel_vm()  # type: ignore[attr-defined]
         assert pvm is not None
         pvm.x_range = (0.0, 1.0)
-        cursor_a = next(
-            a for a in _analyze_menu(window).actions() if a.text() == "カーソル A"
-        )
+        menu = _analyze_menu(window)
+        menu.aboutToShow.emit()
+        cursor_a = next(a for a in menu.actions() if a.text() == "カーソル A")
         cursor_a.trigger()
         assert pvm.cursor_t == pytest.approx(0.5)
 

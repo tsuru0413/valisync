@@ -347,20 +347,36 @@ def test_sub_toggle_action_drives_vm(qtbot: QtBot, tmp_path: Path) -> None:
     assert vm.cursor_t_b == pytest.approx(0.75)
 
 
-def test_setchecked_sync_alone_does_not_drive_vm(qtbot: QtBot, tmp_path: Path) -> None:
-    """誤発火ガード (spec §2.2 blocker): aboutToShow/build 時の setChecked 同期
-    だけではハンドラが起動しない -- 純粋な setChecked(bool) は toggled は発火させ
-    ても triggered は発火させない (Qt 仕様) ため、メニューを開いただけでカーソルが
-    動く事故が構造的に起きない。"""
+def test_sync_checked_transition_does_not_drive_vm(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """誤発火ガード実質化 (レビュー指摘): 旧版は setChecked(True) 直後に
+    setChecked(False) する往復だったため、toggled 配線でも「置いて→消す」が
+    相殺し vm.cursor_t は結局 None に戻る恒真テストだった (toggled でも green)。
+
+    ここでは実際にチェック状態が False→True へ**一度だけ**遷移する
+    build_context_menu() 呼び出し (sync_analysis_actions の setChecked) を
+    検証する -- 遷移前に既にカーソルを設置しておき、toggle_main_cursor(True) の
+    既定中央値 (0.5) とは異なる値 (0.3) にしておくことで、toggled 配線が誤発火
+    すれば cursor_t が 0.5 に化けて検知できる。sabotage (toggled 配線への変更)
+    で RED になることを実装時に確認済み。
+    """
     vm = _vm_with_signal(tmp_path)
     vm.x_range = (0.0, 1.0)
+    vm.set_cursor(0.3)  # 既に設置済み。中心値 0.5 とは異なる値。
     view = GraphPanelView(vm)
     qtbot.addWidget(view)
-    menu = view.build_context_menu()  # sync_analysis_actions が checked を同期済み
-    main = next(a for a in menu.actions() if a.text() == "カーソル A")
-    main.setChecked(True)
-    main.setChecked(False)
-    assert vm.cursor_t is None  # setChecked だけでは vm は一切変異しない
+    cursor_a = view._analysis_actions.cursor_a
+    assert cursor_a.isChecked() is False  # 未 sync の初期状態 (前提)
+
+    calls: list[bool] = []
+    monkeypatch.setattr(vm, "toggle_main_cursor", lambda on: calls.append(on))
+
+    view.build_context_menu()  # sync_analysis_actions が False→True へ遷移させる
+
+    assert cursor_a.isChecked() is True  # 遷移が実際に起きたことの確認 (テストの前提)
+    assert calls == []  # setChecked 由来ではハンドラが1回も呼ばれない
+    assert vm.cursor_t == pytest.approx(0.3)  # (spy を外しても) 実際に不変
 
 
 # --- Task 5 (LD-07): カーソル readout の value_labels 併記 ---

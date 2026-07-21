@@ -3,8 +3,7 @@
 Analyze メニュー (MainWindow) と各パネルの空白右クリックメニュー
 (GraphPanelView.build_context_menu) はチェック状態・文言が乖離しないよう、この
 モジュールが生成する **同一の QAction インスタンス** を掲載する。生成箇所を1つに
-閉じ込め、呼び出し側は ``dispatch`` (トリガ時点で対象 GraphPanelVM を解決する
-callable) だけを差し替える。
+閉じ込める。
 
 配線規約 (レビュー blocker): 共有 checkable QAction の VM 変異は **triggered 配線
 のみ**。``toggled`` は禁止 — aboutToShow / メニュー構築時の ``setChecked`` 同期は
@@ -12,6 +11,16 @@ callable) だけを差し替える。
 triggered だけに繋ぐことで「メニューを開いただけでカーソルが動く」事故を構造的に
 防ぐ ([[gui_qactiongroup_exclusive_radio_menu]] の適用範囲を共有 checkable 全体へ
 拡大)。
+
+再ターゲット可能な dispatch (設計レビュー修正・spec §2.2 拘束): trigger 時に
+「対象にするパネル」を解決する先は、共有 QAction インスタンス内部が持つ**書き換え
+可能なターゲット**であって、生成時に固定した callable ではない。呼び出し側
+(MainWindow の Analyze aboutToShow / GraphPanelView.build_context_menu) は
+``sync_analysis_actions(actions, pvm)`` を呼ぶたびにターゲットを *pvm* へ再設定
+する。メニューは常にモーダル (exec) で1つずつしか開かないため、trigger 時点で
+「生きている」ターゲットは常に直前に同期した1つだけ — Analyze 経由はアクティブ
+パネル、空白メニュー経由は右クリックされたパネル (=そのメニューを build した
+self.vm) に正しく配送される。
 """
 
 from __future__ import annotations
@@ -33,41 +42,48 @@ _INTERP_LABELS: dict[InterpolationMethod, str] = {
     InterpolationMethod.NEAREST: "最近傍",
 }
 
-# トリガ時点で対象にする GraphPanelVM を返す callable。None は「対象なし (no-op)」。
-Dispatch = Callable[[], GraphPanelVM | None]
-
 
 @dataclass(frozen=True)
 class AnalysisActions:
-    """Analyze メニューと空白メニューが共有する解析系 QAction 群。"""
+    """Analyze メニューと空白メニューが共有する解析系 QAction 群。
+
+    ``set_target`` は生成元の :func:`build_analysis_actions` クロージャが握る
+    単一の書き換え可能な状態 (trigger 時のターゲット) を差し替える関数。
+    ``sync_analysis_actions`` からのみ呼ぶ — 個別に呼ぶ場合は checked/enabled
+    の同期を忘れないこと。
+    """
 
     cursor_a: QAction
     cursor_b: QAction
     clear_cursors: QAction
     interp_actions: dict[InterpolationMethod, QAction]
     step_hint: QAction
+    set_target: Callable[[GraphPanelVM | None], None]
 
 
-def _set_interp_method(dispatch: Dispatch, method: InterpolationMethod) -> None:
-    pvm = dispatch()
-    if pvm is not None:
-        pvm.set_interp_method(method)
-
-
-def build_analysis_actions(parent: QObject, dispatch: Dispatch) -> AnalysisActions:
+def build_analysis_actions(parent: QObject) -> AnalysisActions:
     """解析系 QAction を1セット生成する (単一定義 — spec §2.2)。
 
-    *dispatch* は呼び出し元ごとに異なる (Analyze メニュー=アクティブパネル・
-    空白メニュー=右クリックされたパネル)。カーソル値そのものはタブ内共有
-    (CursorState) のため大半の操作は結果が一致するが、A/B の「中央/75%に設置」は
-    パネルの x_range に依存するため dispatch の解決先が実際に効く。
+    QAction の triggered スロットは、このクロージャが閉じ込める単一の書き換え
+    可能なターゲット (初期値 None) だけを参照する — QWidget (self) を直接
+    close over しないため、Qt 親子関係を介した参照循環も作らない。ターゲットの
+    書き換えは ``sync_analysis_actions`` が担う。
     """
+    target: GraphPanelVM | None = None
+
+    def _get_target() -> GraphPanelVM | None:
+        return target
+
+    def _set_target(pvm: GraphPanelVM | None) -> None:
+        nonlocal target
+        target = pvm
+
     cursor_a = QAction("カーソル A", parent)
     cursor_a.setCheckable(True)
     cursor_a.setStatusTip("表示範囲の中央に設置 / 解除")
 
     def _toggle_a(checked: bool) -> None:
-        pvm = dispatch()
+        pvm = _get_target()
         if pvm is not None:
             pvm.toggle_main_cursor(checked)
 
@@ -78,7 +94,7 @@ def build_analysis_actions(parent: QObject, dispatch: Dispatch) -> AnalysisActio
     cursor_b.setStatusTip("Shift+クリックで設置")
 
     def _toggle_b(checked: bool) -> None:
-        pvm = dispatch()
+        pvm = _get_target()
         if pvm is not None:
             pvm.toggle_delta(checked)
 
@@ -87,7 +103,7 @@ def build_analysis_actions(parent: QObject, dispatch: Dispatch) -> AnalysisActio
     clear_cursors = QAction("カーソルを消す", parent)
 
     def _clear(_checked: bool = False) -> None:
-        pvm = dispatch()
+        pvm = _get_target()
         if pvm is not None:
             pvm.toggle_main_cursor(False)  # A/B 全消去 (set_cursor(None) の不変条件)
 
@@ -100,9 +116,17 @@ def build_analysis_actions(parent: QObject, dispatch: Dispatch) -> AnalysisActio
         act = QAction(label, parent)
         act.setCheckable(True)
         act.setActionGroup(interp_group)
-        # *_ + m=method (キーワード既定値) はループ変数の late-binding を避ける
-        # 既存規約 (旧 build_context_menu の補間 radio で使われていたパターン)。
-        act.triggered.connect(lambda *_, m=method: _set_interp_method(dispatch, m))
+
+        def _set_interp(
+            _checked: bool = False, m: InterpolationMethod = method
+        ) -> None:
+            pvm = _get_target()
+            if pvm is not None:
+                pvm.set_interp_method(m)
+
+        # _checked/m=method (キーワード既定値) はループ変数の late-binding を
+        # 避ける既存規約 (旧 build_context_menu の補間 radio で使われていたパターン)。
+        act.triggered.connect(_set_interp)
         interp_actions[method] = act
 
     # 情報行 (spec §2.2): 操作ではなく既存ジェスチャの説明のみ。無効化して選択不可に。
@@ -115,16 +139,23 @@ def build_analysis_actions(parent: QObject, dispatch: Dispatch) -> AnalysisActio
         clear_cursors=clear_cursors,
         interp_actions=interp_actions,
         step_hint=step_hint,
+        set_target=_set_target,
     )
 
 
 def sync_analysis_actions(actions: AnalysisActions, pvm: GraphPanelVM | None) -> None:
-    """*pvm* (対象なしは None) の状態から checked/enabled を同期する。
+    """*pvm* を trigger 時のターゲットとして再設定した上で checked/enabled を同期する。
+
+    レビュー修正 (spec §2.2 拘束): 呼び出し元 (Analyze の aboutToShow /
+    GraphPanelView.build_context_menu) はメニューを開く直前に必ずこれを呼ぶ。
+    メニューはモーダル (exec) なので trigger 時点で「生きている」ターゲットは
+    常に直前にここで設定した1つ — 複数パネル環境でも取り違えない。
 
     setChecked は toggled は発火させても triggered は発火させないため、ここで
-    無条件に呼んでも共有 QAction の triggered ハンドラは起動しない — Analyze の
-    aboutToShow / build_context_menu 構築時の両方から安全に呼べる。
+    無条件に呼んでも共有 QAction の triggered ハンドラ (= 上のターゲット再設定を
+    含む) は起動しない。
     """
+    actions.set_target(pvm)
     has_a = pvm is not None and pvm.cursor_t is not None
     actions.cursor_a.setEnabled(pvm is not None)
     actions.cursor_a.setChecked(has_a)
