@@ -66,9 +66,16 @@ from valisync.gui.adapters.qt_signal_models import (
     encode_axis_move,
 )
 from valisync.gui.theme import qss, tokens
-from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM, RenderCurve
 from valisync.gui.viewmodels.y_axis_vm import YAxisVM
 from valisync.gui.views.cursor_shapes import CursorKind, cursor
+from valisync.gui.views.offscale_badge import (
+    BADGE_PX as _OFFSCALE_BADGE_PX,
+)
+from valisync.gui.views.offscale_badge import (
+    OffscaleBadge,
+    offscale_directions,
+)
 
 # Interp method → menu/readout label (PC-09). Single source of truth so the
 # context-menu radio group and the CursorReadout header never drift apart.
@@ -774,6 +781,14 @@ class GraphPanelView(QWidget):
         self._axis_move_line: QGraphicsLineItem | None = None
         self._axis_move_highlight: QGraphicsRectItem | None = None
         self._axis_move_dimmed_index: int | None = None
+        # Off-scale badges (spec §3.6 / UX-03): one clickable ▲/▼ per manual axis
+        # whose visible curves lie fully outside its range. Keyed (axis_index,
+        # direction); scene items (like the axis-move feedback), so they must be
+        # removed explicitly on a structural rebuild before ci.clear() or they
+        # orphan (memory gui_pyqtgraph_additem_ignorebounds_lifetime). The offscale
+        # state is data-driven (render curves); geometry places/repositions it.
+        self._offscale_badges: dict[tuple[int, str], OffscaleBadge] = {}
+        self._axis_offscale: dict[int, tuple[bool, bool]] = {}
 
         self.plot_widget = pg.GraphicsLayoutWidget()
         # The central layout reserves a fixed-width gutter container in columns
@@ -1009,6 +1024,11 @@ class GraphPanelView(QWidget):
                     # Defensive: skip sync if a cursor line's C++ object is dead.
                     self._sync_cursor_from_vm()
 
+        # Off-scale badges (spec §3.6): judge from the render's own X-window-sliced
+        # RenderCurve values (LOD preserves bucket min/max so range-safe), NOT the
+        # full-signal range. Runs only on this signals/axes/range refresh path.
+        self._sync_offscale_badges(curves)
+
     def _sync_overlay_geometry(self) -> None:
         """Align secondary ViewBoxes AND axis spines to absolute region strips.
 
@@ -1036,6 +1056,108 @@ class GraphPanelView(QWidget):
                 eff_height * R.height(),
             )
             self._y_axes[i].setGeometry(strip)
+        # Reposition off-scale badges too: this also runs on the master's
+        # sigResized (window resize without a refresh), so badges track the plot
+        # rect. Uses the last-computed offscale state (data unchanged on resize).
+        self._position_offscale_badges()
+
+    # ─── Off-scale badges (spec §3.6 / UX-03) ──────────────────────────────────
+
+    def _sync_offscale_badges(self, curves: list[RenderCurve]) -> None:
+        """Re-evaluate the manual axes' off-scale badges (spec §3.6).
+
+        The judgment input is the render's own X-window-sliced RenderCurve values
+        — LOD preserves bucket min/max so the value range is faithful. render_data
+        yields VISIBLE entries only (hidden curves aren't rendered), so no extra
+        visibility filter is needed. Auto axes never badge (their range follows the
+        data). Evaluated on this refresh only, never on cursor/offset drags.
+        """
+        by_axis: dict[int, list[tuple[float, float] | None]] = {}
+        for c in curves:
+            finite = c.values[np.isfinite(c.values)]
+            win = (float(finite.min()), float(finite.max())) if len(finite) else None
+            by_axis.setdefault(c.axis_index, []).append(win)
+        offscale: dict[int, tuple[bool, bool]] = {}
+        for i, axis_vm in enumerate(self.vm.axes):
+            if not axis_vm.y_is_auto and axis_vm.y_range is not None:
+                offscale[i] = offscale_directions(axis_vm.y_range, by_axis.get(i, []))
+            else:
+                offscale[i] = (False, False)
+        self._axis_offscale = offscale
+        self._position_offscale_badges()
+
+    def _position_offscale_badges(self) -> None:
+        """Create/remove/position badges from the stored off-scale state + geometry.
+
+        Placement (spec §3.6): the LEFT EDGE of the plot rectangle (right of all
+        axis gutters, column-independent), top of the region for ▲ / bottom for ▼.
+        A region shorter than ``3 * _OFFSCALE_BADGE_PX`` collapses to a single badge
+        (▲ priority when both directions are off-scale — a click auto-fits anyway).
+        """
+        if not self._view_boxes:
+            self._clear_offscale_badges()
+            return
+        r = self._view_boxes[0].sceneBoundingRect()
+        x = r.left()
+        desired: set[tuple[int, str]] = set()
+        for i, axis_vm in enumerate(self.vm.axes):
+            up, down = self._axis_offscale.get(i, (False, False))
+            if not up and not down:
+                continue
+            region_top = r.y() + axis_vm.top_ratio * r.height()
+            region_h = axis_vm.height_ratio * r.height()
+            collapse = region_h < 3 * _OFFSCALE_BADGE_PX
+            if collapse and up and down:
+                self._place_badge(i, "up", x, region_top)
+                desired.add((i, "up"))
+                continue
+            if up:
+                self._place_badge(i, "up", x, region_top)
+                desired.add((i, "up"))
+            if down:
+                bottom_y = region_top + region_h - _OFFSCALE_BADGE_PX
+                self._place_badge(i, "down", x, bottom_y)
+                desired.add((i, "down"))
+        for key in list(self._offscale_badges):
+            if key not in desired:
+                self._remove_badge(key)
+
+    def _place_badge(self, axis_index: int, direction: str, x: float, y: float) -> None:
+        """Create (once) or reposition the badge for ``(axis_index, direction)``.
+
+        The reset target axis index is bound at creation. Structural rebuilds clear
+        badges (see _reconcile_axes) so a reused badge always maps to the same axis;
+        on the fast path axis indices are stable, so the binding stays correct.
+        """
+        key = (axis_index, direction)
+        badge = self._offscale_badges.get(key)
+        if badge is None:
+            badge = OffscaleBadge(direction)
+            badge.clicked.connect(lambda ai=axis_index: self.vm.reset_axis_y(ai))
+            self.plot_widget.scene().addItem(badge)
+            self._offscale_badges[key] = badge
+        badge.setPos(x, y)
+        badge.setVisible(True)
+
+    def _remove_badge(self, key: tuple[int, str]) -> None:
+        """Remove a badge scene item and drop it from the registry."""
+        badge = self._offscale_badges.pop(key, None)
+        if badge is not None:
+            scene = badge.scene()
+            if scene is not None:
+                scene.removeItem(badge)
+
+    def _clear_offscale_badges(self) -> None:
+        """Remove every badge scene item and forget the off-scale state.
+
+        Called on a structural rebuild BEFORE ci.clear() — badges live straight in
+        the scene, so ci.clear() would leave them as stale orphans (mirrors the
+        secondary-ViewBox / axis-move-feedback discipline). refresh() recreates
+        them from fresh state right after.
+        """
+        for key in list(self._offscale_badges):
+            self._remove_badge(key)
+        self._axis_offscale = {}
 
     def _axis_placement(self) -> list[tuple[int, int, int]]:
         """Map each VM axis to ``(vm_index, column, rank*2)``.
@@ -1097,6 +1219,9 @@ class GraphPanelView(QWidget):
                     _fb_scene.removeItem(_fb_item)
         self._axis_move_line = None
         self._axis_move_highlight = None
+        # Off-scale badges are scene items too — remove them before ci.clear() so
+        # they don't orphan; refresh() recreates them from fresh state afterwards.
+        self._clear_offscale_badges()
 
         # Secondary ViewBoxes and AxisItems live straight in the scene (so
         # waveforms draw unclipped and spines sit at absolute strips), so
