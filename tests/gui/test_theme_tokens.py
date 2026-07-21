@@ -20,9 +20,11 @@ from valisync.gui.theme.tokens import (
 
 
 def test_color_hex_roundtrip():
-    c = Color.from_hex("#1f77b4")
-    assert (c.r, c.g, c.b, c.a) == (31, 119, 180, 255)
-    assert c.hex == "#1f77b4"
+    # 任意の hex 値 (旧 matplotlib tab10 パレット由来の値から置換 — このテストは
+    # Color.from_hex の丸め/構成要素検証で、パレット値と無関係な純ユーティリティ)。
+    c = Color.from_hex("#4b6fa5")
+    assert (c.r, c.g, c.b, c.a) == (75, 111, 165, 255)
+    assert c.hex == "#4b6fa5"
     assert Color.from_hex("#4FC3F7").hex == "#4fc3f7"  # 小文字正規化
 
 
