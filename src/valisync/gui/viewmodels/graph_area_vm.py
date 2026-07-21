@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
-from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+from valisync.gui.viewmodels.graph_panel_vm import CursorState, GraphPanelVM
 from valisync.gui.viewmodels.observable import Observable
 
 
@@ -26,6 +26,10 @@ class _Tab:
     panels: list[GraphPanelVM] = field(default_factory=list)
     x_sync_enabled: bool = True
     active_panel_index: int = 0
+    # タブ内全パネルが共有する計測カーソル状態 (spec §2.1)。default_factory は
+    # 単体構築時の保険 — 実運用の生成点 (__init__/add_tab/add_panel) は常に
+    # 同一オブジェクトをパネルとタブの双方へ明示注入する。
+    cursor_state: CursorState = field(default_factory=CursorState)
 
 
 class GraphAreaVM(Observable):
@@ -44,9 +48,13 @@ class GraphAreaVM(Observable):
         # Guards re-entrancy while pushing a synced range to sibling panels.
         self._propagating = False
         self._panel_unsubs: dict[int, Callable[[], None]] = {}
-        # Start with one tab containing one empty GraphPanelVM.
-        first_panel = GraphPanelVM(self._session)
-        self._tabs: list[_Tab] = [_Tab(name="Tab 1", panels=[first_panel])]
+        # Start with one tab containing one empty GraphPanelVM, sharing a single
+        # CursorState with its tab from the outset (spec §2.1).
+        first_cursor_state = CursorState()
+        first_panel = GraphPanelVM(self._session, cursor_state=first_cursor_state)
+        self._tabs: list[_Tab] = [
+            _Tab(name="Tab 1", panels=[first_panel], cursor_state=first_cursor_state)
+        ]
         self.active_tab_index: int = 0
         self._subscribe_panel(first_panel)
         # Own panel reconciliation for app-level data events (load/unload).
@@ -100,7 +108,7 @@ class GraphAreaVM(Observable):
             unsub()
 
     def _on_panel_change(self, panel: GraphPanelVM, change: str) -> None:
-        """Propagate a panel's X-range (when synced) or cursor (always) to siblings."""
+        """Propagate a panel's X-range (when synced) or cursor/delta (always) to siblings."""
         if self._propagating:
             return
         for tab_index, tab in enumerate(self._tabs):
@@ -109,11 +117,36 @@ class GraphAreaVM(Observable):
             if change == "range" and tab.x_sync_enabled and panel.x_range is not None:
                 lo, hi = panel.x_range
                 self.propagate_x_range(tab_index, lo, hi)
-            elif change == "cursor":
-                # Cursor is a time value broadcast to all sibling panels regardless
-                # of the X-sync toggle; each panel renders it within its own range.
-                self.propagate_cursor(tab_index, panel.cursor_t)
+            elif change in ("cursor", "delta"):
+                # CursorState is a SHARED object per tab (spec §2.1): every
+                # sibling panel already reads the post-change value the instant
+                # it's written, so there is nothing to push. Distribution is a
+                # bare re-emit of the SAME tag so each sibling's own View
+                # (subscribed only to its own panel VM) refreshes via the
+                # lightweight cursor-line path instead of falling back to a
+                # full refresh() (any OTHER tag would). NEVER call
+                # _invalidate_cache here — cursor is not part of the render
+                # cache key, so invalidating on every cursor move would nuke
+                # the tab's whole LOD cache for nothing (perf regression).
+                self._broadcast_tag(tab_index, change)
+                self._notify("cursor")  # area-level: statusbar/readout pull (§2.4)
             return
+
+    def _broadcast_tag(self, tab_index: int, tag: str) -> None:
+        """Re-emit *tag* on every panel of the tab at *tab_index*.
+
+        Loops over ALL panels in the tab, including the one that originated
+        the change — same shape as the pre-sharing propagate_cursor/
+        propagate_x_range — and relies on _propagating to short-circuit the
+        resulting re-entrant _on_panel_change calls rather than special-
+        casing the source panel out of the loop.
+        """
+        self._propagating = True
+        try:
+            for sibling in self._tabs[tab_index].panels:
+                sibling._notify(tag)
+        finally:
+            self._propagating = False
 
     # ─── Tab management ───────────────────────────────────────────────────────
 
@@ -124,8 +157,11 @@ class GraphAreaVM(Observable):
         """
         if name is None:
             name = f"Tab {len(self._tabs) + 1}"
-        panel = GraphPanelVM(self._session)
-        self._tabs.append(_Tab(name=name, panels=[panel]))
+        # New tab gets its OWN fresh CursorState (spec §2.1) — tabs are
+        # independent measurement contexts, never sharing across tabs.
+        cursor_state = CursorState()
+        panel = GraphPanelVM(self._session, cursor_state=cursor_state)
+        self._tabs.append(_Tab(name=name, panels=[panel], cursor_state=cursor_state))
         self._subscribe_panel(panel)
         self.active_tab_index = len(self._tabs) - 1
         self._notify("tabs")
@@ -181,7 +217,9 @@ class GraphAreaVM(Observable):
         tab = self._tabs[tab_index]
         if len(tab.panels) >= 8:
             raise ValueError("Tab already has 8 panels — the maximum allowed (R6.5)")
-        panel = GraphPanelVM(self._session)
+        # Share the tab's existing CursorState (spec §2.1 blocker): a new panel
+        # must see whatever A/B/Δ is already live in the tab, not roll it back.
+        panel = GraphPanelVM(self._session, cursor_state=tab.cursor_state)
         tab.panels.append(panel)
         self._subscribe_panel(panel)
         # PC-07: 作った=使う。新規パネルを自動アクティブ化("panels" の rebuild が
@@ -284,13 +322,16 @@ class GraphAreaVM(Observable):
             self._propagating = False
 
     def propagate_cursor(self, tab_index: int, t: float | None) -> None:
-        """Push cursor time *t* to every panel in the tab (R15.1), guarded against re-entry."""
-        self._propagating = True
-        try:
-            for panel in self._tabs[tab_index].panels:
-                panel.set_cursor(t)
-        finally:
-            self._propagating = False
+        """Broadcast a "cursor" notify to every panel in the tab (R15.1).
+
+        *t* is accepted but unused: CursorState is now a single object shared
+        by every panel in the tab (spec §2.1), so the moment one panel's
+        setter writes cursor_t, every sibling already reads the same value —
+        there is nothing left to push. Kept only for call-signature
+        compatibility with the pre-sharing version (and any external caller).
+        """
+        del t
+        self._broadcast_tag(tab_index, "cursor")
 
     def apply_offset(self, signal_key: str, delta_t: float, scope: str) -> None:
         """Forward an offset request to the AppViewModel (View-layer wiring target).
