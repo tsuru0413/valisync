@@ -224,7 +224,15 @@ def _offscale_panel():  # type: ignore[no-untyped-def]
     keys = sorted(s.name for s in session.signals())  # ['a', 'b']
     vm = GraphPanelVM(session)
     vm.add_signal_to_axis(keys[0], 0)  # a -> low band
+    # Pin explicit non-amber colours (spec 2026-07-21-perception-floor-inc0
+    # design.md §2-5): the new default signal_palette[1] #E69F00(230,159,0)
+    # sits within +/-20/channel of the accent-amber badge colour #f59e0b and
+    # would make the badge pixel scan below misdetect the second curve as a
+    # badge. set_color right after each add pins the drawn colour regardless
+    # of palette cycling order.
+    vm.set_color(vm._plotted[-1].entry_id, "#56B4E9")
     vm.add_signal_to_axis(keys[1], 0)  # b -> high band; both on axis 0
+    vm.set_color(vm._plotted[-1].entry_id, "#00C08B")
     return GraphPanelView(vm), keys[0], keys[1]
 
 
@@ -262,12 +270,17 @@ def _badge_rect_phys(view, axis_index: int, direction: str):  # type: ignore[no-
 def _count_amber(image, rect) -> int:  # type: ignore[no-untyped-def]
     """Count accent-amber (#f59e0b) pixels inside *rect* on the grabbed screen.
 
-    Per-channel tolerance is asymmetric on purpose: the second curve's colour is
-    signal_palette[1] = #ff7f0e (255,127,14) — an ORANGE that shares amber's red
-    and blue but differs in green (127 vs 158). A GREEN tolerance of +/-20 keeps
-    the amber triangle interior while excluding the orange curve (delta 31), which
-    matters for the ABSENCE scan when the fitted curve is drawn back into the
-    top region. Blue (a) is excluded on every channel.
+    Per-channel tolerance is kept asymmetric (R/B +/-25, G +/-20) from the
+    original audit, but the curves are no longer left to whatever colour the
+    palette cycle hands out: the default signal_palette[1] is now #E69F00
+    (230,159,0), which sits within +/-20/channel of amber (#f59e0b,
+    245,158,11) on every channel and would misdetect as a badge pixel.
+    ``_offscale_panel`` therefore pins each curve explicitly via
+    ``vm.set_color`` to colours that miss the RED tolerance alone — low band
+    'a' -> #56B4E9 (86,180,233, R delta 159) and high band 'b' -> #00C08B
+    (0,192,139, R delta 245) — so neither curve's fitted line can register as
+    amber in either the PRESENCE or ABSENCE scans, independent of the G/B
+    channels.
     """
     from valisync.gui.theme import tokens
 

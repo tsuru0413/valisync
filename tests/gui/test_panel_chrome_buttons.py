@@ -48,6 +48,16 @@ def test_set_removable_toggles_remove_button(qtbot: QtBot) -> None:
     assert remove_btn.isEnabled()
 
 
+def test_panel_buttons_min_height_24(qtbot: QtBot) -> None:
+    # UX-38: 常用ボタンの当たり判定の高さを 24px 以上へ保証する [fixedSize は使わない
+    # -- text ボタンの視覚幅を縮めずに縦方向のみ広げる]。
+    view = _make_panel(qtbot)
+    for name in ("add_panel_button", "remove_panel_button"):
+        assert _button(view, name).minimumHeight() >= 24, (
+            f"{name} minimumHeight {_button(view, name).minimumHeight()} < 24 (UX-38)"
+        )
+
+
 def test_plot_widget_stays_at_panel_origin(qtbot: QtBot) -> None:
     # SH-06 regression: chrome must overlay (float), not reserve a layout row.
     # A reserved row shifts plot_widget down ~27px so panel-space mouse events

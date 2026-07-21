@@ -95,6 +95,40 @@ def _cb_view_with_signals(
     return view
 
 
+def _cb_view_with_units(
+    qtbot: QtBot, names_and_units: list[tuple[str, str]]
+) -> ChannelBrowserView:
+    """Build a ChannelBrowserView whose active file's signals carry the given
+    (name, unit) pairs, in that order (registration == tree order, since the
+    default sort is passthrough). Used by the UX-29 Unit-column-width tests,
+    which need explicit control over per-signal units."""
+    import numpy as np
+
+    from valisync.core.models import Signal
+
+    app_vm = AppViewModel()
+
+    def _sig(name: str, unit: str) -> Signal:
+        return Signal(
+            name=name,
+            timestamps=np.array([0.0]),
+            values=np.array([1.0]),
+            file_format="MDF4",
+            bus_type="",
+            source_file="",
+            metadata={"unit": unit},
+        )
+
+    app_vm.session.group_signals = lambda k: [  # type: ignore[method-assign]
+        _sig(name, unit) for name, unit in names_and_units
+    ]
+    app_vm.set_active_file("g")
+    vm = ChannelBrowserVM(app_vm)
+    view = ChannelBrowserView(vm)
+    qtbot.addWidget(view)
+    return view
+
+
 def _select(view: ChannelBrowserView, row: int) -> None:
     index = view.model.index(row, 0)
     view.tree.selectionModel().select(
@@ -458,3 +492,144 @@ def test_sorting_enabled_does_not_materialize_children(
     qtbot.wait(10)  # let the tree react to the sort
     parents = [n for n in view.model._top if n.key is None]
     assert parents and all(n.children is None for n in parents)
+
+
+# ─── Column width defaults (UX-29) ────────────────────────────────────────────
+# spec §1.5-13: Name stretches to fill remaining space; Unit is Interactive
+# and sized from a bounded content sample -- ResizeToContents must never be
+# used on Unit (prod 264k-330k rows would re-walk sizeHintForColumn on every
+# reset, an FU-22-class freeze).
+
+
+def test_name_column_stretches_unit_column_is_interactive(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    from PySide6.QtWidgets import QHeaderView
+
+    app_vm, key = _setup_app(tmp_path)
+    app_vm.set_active_file(key)
+    vm = ChannelBrowserVM(app_vm)
+    view = _make_view(qtbot, vm)
+
+    header = view.tree.header()
+    assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.Stretch
+    assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.Interactive
+    # QTreeView defaults stretchLastSection to True, which would silently
+    # force-stretch Unit (the last column) regardless of the Interactive mode
+    # set on it above -- must be disabled for Interactive to actually stick.
+    assert not header.stretchLastSection()
+
+
+def test_unit_column_width_truncates_sample_at_50_rows(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """A Unit string beyond the first 50 rows must not influence the sampled
+    column width -- proves the sample is bounded (never a full O(rows) scan,
+    the ResizeToContents hazard this design deliberately avoids)."""
+    names_and_units = [(f"sig{i}", "V") for i in range(50)] + [
+        ("sig_overflow", "X" * 200)
+    ]
+    view = _cb_view_with_units(qtbot, names_and_units)
+
+    samples = view._sample_unit_values(50)
+    assert len(samples) == 50
+    assert all(s == "V" for s in samples)  # the 200-char overflow never sampled
+
+    # If the 200-char overflow unit had been sampled, the width would be
+    # clamped to the 120px cap; confirm it stayed near the short "V" samples.
+    assert view.tree.columnWidth(1) < 100
+
+
+def test_unit_column_width_falls_back_to_min_when_model_empty(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """No active file -> no rows to sample; must not crash and must fall back
+    to exactly _UNIT_COLUMN_MIN_WIDTH (not 0px, which would hide the column)."""
+    from valisync.gui.views.channel_browser_view import _UNIT_COLUMN_MIN_WIDTH
+
+    app_vm = AppViewModel()
+    vm = ChannelBrowserVM(app_vm)
+    view = _make_view(qtbot, vm)
+    assert view.tree.columnWidth(1) == _UNIT_COLUMN_MIN_WIDTH
+
+
+def test_unit_column_width_clamps_to_max_when_sample_has_long_unit(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """Positive control for the 120px cap (companion to the truncation test
+    above, which keeps its long string OUTSIDE the 50-row window): a long
+    Unit string INSIDE the window must actually drive the width to exactly
+    _UNIT_COLUMN_MAX_WIDTH, proving the clamp branch engages rather than
+    merely never overflowing by coincidence."""
+    from valisync.gui.views.channel_browser_view import _UNIT_COLUMN_MAX_WIDTH
+
+    names_and_units = [(f"sig{i}", "V") for i in range(49)] + [("sig_long", "X" * 200)]
+    view = _cb_view_with_units(qtbot, names_and_units)
+    assert view.tree.columnWidth(1) == _UNIT_COLUMN_MAX_WIDTH
+
+
+def test_sampling_reflects_real_leaf_units_once_group_materialized(
+    qtbot: QtBot,
+) -> None:
+    """has_materialized_children() positive branch: once a group's children
+    are already materialized (e.g. by a prior user expansion), the bounded
+    Unit-column sample descends into it and picks up the REAL leaf unit
+    strings, not just the group's own blank Unit cell. Distinguished from the
+    not-yet-materialized case by an actual width increase (a relative
+    comparison, not a hardcoded pixel value, to stay robust to font-metric
+    differences across environments) -- the negative branch (never forcing
+    materialization) is already covered by
+    test_sorting_enabled_does_not_materialize_children in the sort section
+    above."""
+    import numpy as np
+
+    from valisync.core.models import Signal
+
+    long_unit = "kilometers_per_hour_precise"
+    app_vm = AppViewModel()
+
+    def _sig(name: str, unit: str) -> Signal:
+        return Signal(
+            name=name,
+            timestamps=np.array([0.0]),
+            values=np.array([1.0]),
+            file_format="MDF4",
+            bus_type="",
+            source_file="",
+            metadata={"unit": unit},
+        )
+
+    app_vm.session.group_signals = lambda k: [  # type: ignore[method-assign]
+        _sig("g::Arr[0]", long_unit),
+        _sig("g::Arr[1]", long_unit),
+        _sig("g::Scalar", "V"),
+    ]
+    app_vm.set_active_file("g")
+    vm = ChannelBrowserVM(app_vm)
+    view = ChannelBrowserView(vm)
+    qtbot.addWidget(view)
+
+    group_index = view.model.index(0, 0, QModelIndex())
+
+    # Not yet materialized: sampling must not force it (FU-22 B) -- the group
+    # contributes only its own blank Unit cell, so the sample never sees the
+    # long leaf unit and width tracks "V" alone.
+    before_samples = view._sample_unit_values(50)
+    assert long_unit not in before_samples
+    width_before = view.tree.columnWidth(1)
+
+    # Simulate a real user expansion: Qt's item view reaches a group's
+    # children via index()/rowCount(), exactly like SignalTreeModel.index()
+    # does when the tree actually expands that node.
+    view.model.index(0, 0, group_index)
+    assert view.model.has_materialized_children(group_index)
+
+    # sort() reorders _top/_Node.children IN PLACE (unlike a signals/filter
+    # reset, which calls _rebuild() and would construct fresh _Node objects,
+    # re-losing the materialized state) -- it is the reset vehicle that
+    # matches "the user re-sorts after already expanding a node".
+    view.model.sort(0, Qt.SortOrder.AscendingOrder)
+
+    after_samples = view._sample_unit_values(50)
+    assert long_unit in after_samples
+    assert view.tree.columnWidth(1) > width_before

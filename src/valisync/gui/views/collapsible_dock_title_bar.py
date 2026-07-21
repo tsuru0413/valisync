@@ -56,6 +56,9 @@ class CollapsibleDockTitleBar(QWidget):
         self._float_button.setAutoRaise(True)
         self._float_button.setText("❐")
         self._float_button.setToolTip("フロート")
+        # UX-38: 当たり判定の高さを 24px へ (text ボタンは既定 ~19px と縦不足)。
+        # fixedSize は使わない — 幅を縮めるとヒット幅がむしろ縮む。
+        self._float_button.setMinimumHeight(24)
         self._float_button.clicked.connect(
             lambda: self._dock.setFloating(not self._dock.isFloating())
         )
@@ -65,6 +68,7 @@ class CollapsibleDockTitleBar(QWidget):
         self._close_button.setAutoRaise(True)
         self._close_button.setText("✕")
         self._close_button.setToolTip("閉じる")
+        self._close_button.setMinimumHeight(24)  # UX-38: 当たり判定の高さ 24px。
         self._close_button.clicked.connect(self._dock.close)
         lay.addWidget(self._close_button)
 

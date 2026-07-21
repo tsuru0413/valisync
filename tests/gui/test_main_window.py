@@ -1013,3 +1013,96 @@ def test_startup_collapse_does_not_capture_stale_extent(qtbot):
         "起動時 (未表示) の畳みで extent を捕捉してしまっている"
         "(未レイアウトの既定値が記録され、後の展開で誤ったサイズへ resize される)"
     )
+
+
+# ---------------------------------------------------------------------------
+# 初期ドック比率 File:Channel = 1:4 (UX-21 応急・spec §1.5-12)
+#
+# 適用は初回 show 後 (singleShot(0)) — pre-show は dock extent 未確定で
+# resizeDocks が no-op になる既知の罠 (_collapse_dock の Important 2 コメントと
+# 同型)。ここでは呼出記録 (spy) のみを検証する — offscreen での dock 実寸
+# assert は false-green (memory
+# gui_dock_toggle_width_change_needs_real_display_and_layout)。実効性は
+# Task 9 のカタログを実ディスプレイで確認する。
+# ---------------------------------------------------------------------------
+
+
+def _spy_resize_docks(
+    win: object,
+) -> list[tuple[list[QDockWidget], list[int], Qt.Orientation]]:
+    """win.resizeDocks を差し替えて呼出記録 (docks, sizes, orient) を返す。"""
+    calls: list[tuple[list[QDockWidget], list[int], Qt.Orientation]] = []
+    original = win.resizeDocks  # type: ignore[attr-defined]
+
+    def _spy(
+        docks: list[QDockWidget], sizes: list[int], orient: Qt.Orientation
+    ) -> None:
+        calls.append((list(docks), list(sizes), orient))
+        original(docks, sizes, orient)
+
+    win.resizeDocks = _spy  # type: ignore[attr-defined,method-assign]
+    return calls
+
+
+def test_default_dock_ratio_applied_after_first_show_when_no_saved_state(qtbot):
+    """保存 state 無しの初回 show 後、File:Channel=1:4 で resizeDocks が呼ばれる。"""
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    calls = _spy_resize_docks(win)
+
+    win.show()
+    qtbot.waitExposed(win)
+    qtbot.wait(50)  # singleShot(0) の実行を消化
+
+    ratio_calls = [c for c in calls if set(c[0]) == {win.file_dock, win.channel_dock}]
+    assert ratio_calls, "初回 show 後に 1:4 の resizeDocks が呼ばれていない"
+    docks, sizes, orient = ratio_calls[-1]
+    assert docks == [win.file_dock, win.channel_dock]
+    assert sizes == [1, 4]
+    assert orient == Qt.Orientation.Vertical
+
+
+def test_default_dock_ratio_not_applied_when_saved_state_present(qtbot):
+    """保存 state ありの場合は初回 show 後に 1:4 を強制適用しない (ユーザー配置を尊重)。"""
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitExposed(win)
+    win.save_state()
+
+    win2 = build_main_window()
+    qtbot.addWidget(win2)
+    calls = _spy_resize_docks(win2)
+
+    win2.show()
+    qtbot.waitExposed(win2)
+    qtbot.wait(50)
+
+    ratio_calls = [c for c in calls if set(c[0]) == {win2.file_dock, win2.channel_dock}]
+    assert not ratio_calls, "保存 state があるのに 1:4 が強制適用されている"
+
+
+def test_reset_layout_reapplies_default_dock_ratio(qtbot):
+    """_reset_layout() 後にも同じ 1:4 が再適用される (spec (c) — 初回起動と Reset
+    Layout の比率一致)。"""
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    win.show()
+    qtbot.waitExposed(win)
+    qtbot.wait(50)  # 初回 show 後の適用を消化しておく
+
+    calls = _spy_resize_docks(win)
+    win._reset_layout()
+
+    ratio_calls = [c for c in calls if set(c[0]) == {win.file_dock, win.channel_dock}]
+    assert ratio_calls, "_reset_layout() 後に 1:4 の resizeDocks が呼ばれていない"
+    docks, sizes, orient = ratio_calls[-1]
+    assert docks == [win.file_dock, win.channel_dock]
+    assert sizes == [1, 4]
+    assert orient == Qt.Orientation.Vertical

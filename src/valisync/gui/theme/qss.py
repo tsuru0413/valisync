@@ -110,3 +110,16 @@ def readout_panel(t: tokens.ThemeTokens | None = None) -> str:
 def delta_value(color: tokens.Color) -> str:
     """Δ 値ラベルの符号着色 (delta_positive/delta_negative を呼び出し側が選ぶ)。"""
     return f"color: {color.hex};"
+
+
+def line_edit_frame(t: tokens.ThemeTokens | None = None) -> str:
+    """QLineEdit の常時枠 (UX-49) — Fusion 導出色は未フォーカス枠を描かず
+    プレースホルダだけの行と区別できないため app QSS で明示する。
+    QSpinBox 内部の qt_spinbox_lineedit は自枠の内側に二重枠を作るため除外
+    (spec §1.2 carve-out)。"""
+    c = _t(t).colors
+    return (
+        f"QLineEdit {{ border: 1px solid {c.chrome_frame.hex}; }}\n"
+        f"QLineEdit:focus {{ border: 1px solid {c.chrome_highlight.hex}; }}\n"
+        "QLineEdit#qt_spinbox_lineedit { border: none; }"
+    )

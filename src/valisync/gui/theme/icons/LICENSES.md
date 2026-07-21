@@ -11,6 +11,7 @@
 | lucide/folder-open.svg | Lucide v1.24.0 | ISC |
 | lucide/folder.svg | Lucide v1.24.0 | ISC |
 | lucide/save.svg | Lucide v1.24.0 | ISC |
+| lucide/download.svg | Lucide v1.24.0 | ISC |
 | lucide/folder-tree.svg | Lucide v1.24.0 | ISC |
 | lucide/chevron-down.svg | Lucide v1.24.0 | ISC |
 | lucide/chevron-right.svg | Lucide v1.24.0 | ISC |

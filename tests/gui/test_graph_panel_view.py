@@ -1399,6 +1399,41 @@ def test_cursor_pens_and_frame_use_tokens(qtbot: QtBot, tmp_path: Path) -> None:
     assert not view._drop_frame.isVisibleTo(view)
 
 
+def test_axis_move_feedback_uses_axis_move_indicator_not_accent_active(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """axis_move_indicator は accent_active と同値 (DARK/LIGHT 双方 #f59e0b・spec §3)。
+
+    値を分岐させたテーマで軸移動フィードバック線 (``_ensure_feedback_items``) が
+    axis_move_indicator を、アクティブ枠 (``qss.active_panel_frame``) は
+    accent_active を参照することを直接実証する — 双方向の誤配線ガード。
+    """
+    import dataclasses
+
+    from valisync.gui.theme import qss
+    from valisync.gui.theme.tokens import DARK, Color, set_active
+
+    alt = dataclasses.replace(
+        DARK,
+        colors=dataclasses.replace(DARK.colors, axis_move_indicator=Color(1, 2, 3)),
+    )
+    set_active(alt)
+    try:
+        view = _make_panel_view(qtbot, tmp_path)
+        view._ensure_feedback_items()
+        assert view._axis_move_line is not None
+        line_color = view._axis_move_line.pen().color().name()
+        assert line_color == Color(1, 2, 3).hex  # axis_move_indicator (分岐値)
+        assert line_color != DARK.colors.accent_active.hex  # accent_active 誤配線でない
+
+        # アクティブ枠は accent_active のまま (未分岐の元値・axis_move への非追随)
+        frame_style = qss.active_panel_frame(alt)
+        assert DARK.colors.accent_active.hex in frame_style
+        assert Color(1, 2, 3).hex not in frame_style
+    finally:
+        set_active(DARK)
+
+
 def test_drop_highlight_border_paints_as_child(qtbot: QtBot, tmp_path: Path) -> None:
     """ドロップ強調の 2px 実線枠が子ウィジェットとして実ピクセル描画される。
 

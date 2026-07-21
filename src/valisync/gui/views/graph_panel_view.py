@@ -827,12 +827,16 @@ class GraphPanelView(QWidget):
         add_panel_btn.setObjectName("add_panel_button")
         add_panel_btn.setText("+")
         add_panel_btn.setToolTip("パネルを追加")
+        # UX-38: 当たり判定の高さを 24px へ (fixedSize は使わない — 幅を縮めると
+        # 視覚不変と矛盾しヒット幅がむしろ縮む)。
+        add_panel_btn.setMinimumHeight(24)
         add_panel_btn.clicked.connect(lambda: self.add_panel_requested.emit())
         chrome_layout.addWidget(add_panel_btn)
         self._remove_panel_button = QToolButton(self._panel_chrome)
         self._remove_panel_button.setObjectName("remove_panel_button")
         self._remove_panel_button.setText("×")  # noqa: RUF001
         self._remove_panel_button.setToolTip("パネルを削除")
+        self._remove_panel_button.setMinimumHeight(24)  # UX-38: 当たり判定の高さ 24px。
         self._remove_panel_button.setEnabled(self._removable)
         self._remove_panel_button.clicked.connect(
             lambda: self.remove_panel_requested.emit()

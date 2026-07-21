@@ -17,6 +17,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDockWidget,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QPushButton,
     QStackedWidget,
@@ -33,6 +34,7 @@ _LEVEL_ICON = {"error": "⛔", "warning": "⚠", "info": "ℹ"}  # noqa: RUF001
 # "時刻" is satisfied by DiagnosticEntry.seq (spec §4.3: wall-clock time OR
 # receipt-order sequence number is acceptable) — header kept terse ("#").
 _HEADERS = ("レベル", "#", "ソース", "メッセージ", "対象")
+_MESSAGE_COLUMN = 3  # index of "メッセージ" within _HEADERS
 _PLACEHOLDER_TEXT = "診断はありません"
 
 
@@ -71,6 +73,18 @@ class DiagnosticsView(QDockWidget):
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.cellDoubleClicked.connect(self._on_double_click)
+
+        # UX-07 応急: メッセージ列は残り幅いっぱいに広げ、他は内容幅で詰める。
+        # 診断件数は有界(ResizeToContents の O(n) sizeHint 走査でも安全 — spec
+        # §1.5-14、ChannelBrowser Unit 列とは前提が異なる)。
+        table_header = self._table.horizontalHeader()
+        for col in range(len(_HEADERS)):
+            table_header.setSectionResizeMode(
+                col,
+                QHeaderView.ResizeMode.Stretch
+                if col == _MESSAGE_COLUMN
+                else QHeaderView.ResizeMode.ResizeToContents,
+            )
 
         self._placeholder = QLabel(_PLACEHOLDER_TEXT)
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)

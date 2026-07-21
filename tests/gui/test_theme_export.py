@@ -29,16 +29,16 @@ def test_build_css_contains_all_color_fields_and_values():
     # 色: Color.css() 形式 (alpha 0-1)
     assert "--vs-color-plot-background: rgba(0,0,0,1.000);" in css
     assert "--vs-color-surface-chip: rgba(17,17,27,0.902);" in css
-    # palette 10 本が index 付きで展開される
-    for i in range(10):
+    # palette 8 本が index 付きで展開される
+    for i in range(8):
         assert f"--vs-color-signal-palette-{i}: rgba(" in css
     # spacing/radii/typography/grid_alpha
     assert "--vs-spacing-chip-margins: 6px 5px 6px 5px;" in css
     assert "--vs-spacing-chip-vspace: 3px;" in css
     assert "--vs-radius-chip: 5px;" in css
     assert "--vs-radius-active-frame: 2px;" in css
-    assert "--vs-font-small: 9px;" in css
-    assert "--vs-grid-alpha: 60;" in css
+    assert "--vs-font-small: 10px;" in css
+    assert "--vs-grid-alpha: 150;" in css
 
 
 def test_build_css_is_deterministic():
@@ -50,12 +50,12 @@ def test_build_json_roundtrips_all_tokens():
     # 全色フィールドが hex/css/rgba を持つ
     assert data["colors"]["cursor_a"]["hex"] == "#f9e2af"
     assert data["colors"]["surface_chip"]["rgba"] == [17, 17, 27, 230]
-    assert len(data["colors"]["signal_palette"]) == 10
-    assert data["colors"]["signal_palette"][0]["hex"] == "#1f77b4"
+    assert len(data["colors"]["signal_palette"]) == 8
+    assert data["colors"]["signal_palette"][0]["hex"] == "#56b4e9"
     assert data["spacing"]["chip_margins"] == [6, 5, 6, 5]
     assert data["radii"]["chip"] == 5
-    assert data["typography"]["small_px"] == 9
-    assert data["grid_alpha"] == 60
+    assert data["typography"]["small_px"] == 10
+    assert data["grid_alpha"] == 150
 
 
 def test_build_json_is_deterministic_and_sorted():

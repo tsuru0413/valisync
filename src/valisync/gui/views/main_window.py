@@ -19,8 +19,8 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt
-from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QKeySequence
+from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QKeySequence, QShowEvent
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
@@ -320,10 +320,14 @@ class MainWindow(QMainWindow):
         self._rebuild_recent_menu()
         # SH-11: 永続状態で上書きされる前の既定配置を捕捉 (Reset Layout 用)。
         self._default_state = self.saveState()
-        self._restore_state()
+        self._state_restored = self._restore_state()
         # restoreState resets dock corner config to Qt defaults, so re-apply FU-10
         # after the startup restore (and after Reset Layout -- see _reset_layout).
         self._apply_dock_corners()
+        # UX-21 応急: 初期ドック比率 File:Channel≈1:4 (spec §1.5-12)。ここではまだ
+        # 未表示 (pre-show) — dock extent が未確定で resizeDocks が no-op になる
+        # 罠を踏むため、実際の適用は showEvent 後まで遅延する。
+        self._default_dock_ratio_applied = False
 
     # ─── Load pipeline ─────────────────────────────────────────────────────────
 
@@ -595,20 +599,51 @@ class MainWindow(QMainWindow):
         self.save_state()
         super().closeEvent(event)
 
-    def _restore_state(self) -> None:
+    def showEvent(self, event: QShowEvent) -> None:
+        """UX-21 応急: 初回 show 後に既定ドック比率を一度だけ適用する (spec §1.5-12b)。
+
+        pre-show (__init__ 時点) は dock extent が未確定で resizeDocks が no-op
+        になる (_collapse_dock の Important 2 コメントと同型の罠) ため、
+        singleShot(0) で「show イベント自体の処理が終わった後」まで遅延する。
+        """
+        super().showEvent(event)
+        if not self._default_dock_ratio_applied:
+            self._default_dock_ratio_applied = True
+            if not self._state_restored:
+                QTimer.singleShot(0, self._apply_default_dock_ratio)
+
+    def _apply_default_dock_ratio(self) -> None:
+        """初期ドック比率 File:Channel≈1:4 (UX-21 応急・spec §1.5-12)。
+
+        pre-show は dock extent 未確定で no-op になるため初回 show 後に呼ぶ
+        (_apply_saved_collapse が hide 主体の別手法で回避しているのと同じ
+        pre-show 罠 — こちらは resizeDocks が extent を要するため遅延で回避)。
+        """
+        self.resizeDocks(
+            [self.file_dock, self.channel_dock], [1, 4], Qt.Orientation.Vertical
+        )
+
+    def _restore_state(self) -> bool:
         """Restore geometry/dock state saved by a previous session.
 
         Guarded against missing/corrupt values: absent keys return None and
         both restoreGeometry/restoreState silently ignore falsy byte-arrays.
+
+        Returns whether ``restoreState()`` actually applied a saved
+        ``windowState`` (its own bool, propagated — spec §1.5-12a). Absent a
+        saved state this is False, which is what gates the UX-21 default dock
+        ratio: a user's own saved layout must not be clobbered.
         """
         settings = QSettings(_ORG, _APP)
         geometry = settings.value("geometry")
         state = settings.value("windowState")
         if geometry:
             self.restoreGeometry(geometry)
+        restored = False
         if state:
-            self.restoreState(state)
+            restored = self.restoreState(state)
         self._apply_saved_collapse()
+        return restored
 
     def _dock_collapsed_map(self) -> dict[str, bool]:
         return {
@@ -729,6 +764,10 @@ class MainWindow(QMainWindow):
                 self._expand_dock(dock)
         self.restoreState(self._default_state)
         self._apply_dock_corners()  # restoreState reset the FU-10 corner; re-apply
+        # spec §1.5-12c: _default_state was captured before the 1:4 ratio is ever
+        # applied (it's saved at the top of __init__), so without this the
+        # startup ratio and Reset Layout would silently diverge.
+        self._apply_default_dock_ratio()
 
     def _on_theme_selected(self, mode: ThemeMode) -> None:
         """テーマ radio 選択 — 保存のみ。set_active/apply_theme は呼ばない (再起動反映)。"""
