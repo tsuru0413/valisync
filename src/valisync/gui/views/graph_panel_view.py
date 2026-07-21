@@ -712,6 +712,8 @@ class GraphPanelView(QWidget):
         reset_dialog_fn: Callable[[str], str | None] | None = None,
         time_dialog_fn: Callable[[str, float], float | None] | None = None,
         analysis_actions: AnalysisActions | None = None,
+        x_sync_getter: Callable[[], bool] | None = None,
+        x_sync_setter: Callable[[bool], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.vm = vm
@@ -724,6 +726,11 @@ class GraphPanelView(QWidget):
         # ならない (build_context_menu で毎回 self.vm へ再ターゲットする設計 —
         # analysis_actions.py の docstring 参照)。
         self._analysis_actions = analysis_actions or build_analysis_actions(self)
+        # spec §2.3: X 軸同期 (タブ内全パネル) の所有は GraphAreaView 側のまま —
+        # このパネルは getter/setter ペアを注入されるだけで area に非依存を保つ
+        # (bare ハーネス/単独構成では未注入 = 空白メニューに項目を出さない)。
+        self._x_sync_getter = x_sync_getter
+        self._x_sync_setter = x_sync_setter
         self._apply_dialog_fn = apply_dialog_fn
         self._color_dialog_fn = color_dialog_fn or self._default_color_dialog
         self._range_dialog_fn = range_dialog_fn
@@ -2524,7 +2531,8 @@ class GraphPanelView(QWidget):
         return float(edit.text())
 
     def build_context_menu(self) -> QMenu:
-        """Build the blank-area panel menu (add/remove panel, reset axes, interp)."""
+        """Build the blank-area panel menu (add/remove panel, reset axes, grid,
+        X-axis sync, interp)."""
         menu = QMenu(self)
         menu.addAction("Add Panel").triggered.connect(
             lambda *_: self.add_panel_requested.emit()
@@ -2540,6 +2548,18 @@ class GraphPanelView(QWidget):
         grid_act.setChecked(self.vm.grid_enabled)
         # setChecked BEFORE toggled.connect so the initial state-set does not fire the handler
         grid_act.toggled.connect(lambda checked: self.vm.toggle_grid(checked))
+        # spec §2.3 (v3 決定4): Sync X は右クリックのみ。所有は area 側のままなので
+        # getter/setter が両方注入されているときだけ項目を出す (未注入 = bare ハー
+        # ネス/単独構成 — area 非依存を保つ)。共有 checkable QAction ではなく毎回
+        # 使い捨てで作るが、build 時の setChecked が誤発火しないよう triggered
+        # 配線 (toggled 禁止 — spec 拘束) にする。
+        getter = self._x_sync_getter
+        setter = self._x_sync_setter
+        if getter is not None and setter is not None:
+            sync_act = menu.addAction("X軸同期（タブ内全パネル）")  # noqa: RUF001
+            sync_act.setCheckable(True)
+            sync_act.setChecked(getter())
+            sync_act.triggered.connect(lambda checked: setter(checked))
         menu.addSeparator()
         # 解析系 QAction (カーソル A/B/消去/補間方式) は AnalysisActions ファクトリの
         # 共有インスタンス (spec §2.2) — Analyze メニューと文言/チェック状態が乖離し

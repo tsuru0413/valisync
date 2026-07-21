@@ -9,9 +9,14 @@ Panel widgets are built by ``panel_factory`` (default: a real GraphPanelView,
 sharing the injected ``analysis_actions`` — spec §2.2 — with every panel and the
 Analyze menu). Injecting the factory keeps the container decoupled and testable.
 
-X-axis sync (Task 8.4): a sync toggle drives ``GraphAreaVM.set_x_sync``; the
-propagation itself is in the VM (a panel's X-range change drives its siblings),
-so zooming one GraphPanelView updates the others through the VM layer.
+X-axis sync (Task 8.4; right-click-only since 計測 IA 刷新 spec §2.3 / v3 決定4):
+each panel's blank-area context menu carries a "X軸同期(タブ内全パネル)" toggle
+(ASCII-safe parens here — the real menu label uses full-width parens, see
+``build_context_menu``) that drives ``GraphAreaVM.set_x_sync`` through an
+injected getter/setter pair (ownership of the flag stays here, in the area, so
+GraphPanelView stays area-independent). The propagation itself is in the VM
+(a panel's X-range change drives its siblings), so zooming one GraphPanelView
+updates the others through the VM layer.
 """
 
 from __future__ import annotations
@@ -34,7 +39,6 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLineEdit,
@@ -108,10 +112,34 @@ class GraphAreaView(QWidget):
             # reparent teardown で "already deleted")。weakref で断ち切る。
             self_ref = weakref.ref(self)
 
+            # spec §2.3: X 軸同期の所有は area 側のまま — パネルには getter/setter
+            # ペアだけを注入する (GraphPanelView の area 非依存を維持)。self を直接
+            # close over すると、これらの closure は生成される GraphPanelView (self
+            # の Qt 子孫) の属性としてぶら下がるため、panel_factory と同じ参照循環
+            # 事故 (weakref コメント参照) を再現する — weakref 経由に統一する。
+            def _get_x_sync() -> bool:
+                view = self_ref()
+                if view is None:
+                    return False
+                tabs = view.vm.tabs()
+                if not tabs:
+                    return False
+                return tabs[view.vm.active_tab_index].x_sync_enabled
+
+            def _set_x_sync(enabled: bool) -> None:
+                view = self_ref()
+                if view is not None:
+                    view.vm.set_x_sync(view.vm.active_tab_index, enabled)
+
             def panel_factory(panel_vm: GraphPanelVM) -> QWidget:
                 view = self_ref()
                 aa = view._analysis_actions if view is not None else None
-                return GraphPanelView(panel_vm, analysis_actions=aa)
+                return GraphPanelView(
+                    panel_vm,
+                    analysis_actions=aa,
+                    x_sync_getter=_get_x_sync,
+                    x_sync_setter=_set_x_sync,
+                )
 
         self._panel_factory: PanelFactory = panel_factory
         # Guards against re-entrancy when we programmatically set the current
@@ -132,20 +160,16 @@ class GraphAreaView(QWidget):
         # "active_panel" の軽量経路が rebuild なしで枠を再適用するために使う。
         self._panel_views: list[tuple[int, int, GraphPanelView]] = []
 
-        # X-sync toggle for the active tab (R7.3).
-        self.sync_checkbox = QCheckBox("Sync X")
-        self.sync_checkbox.toggled.connect(self._on_sync_toggled)
-
         self.tabs = QTabWidget(self)
         self.tabs.currentChanged.connect(self._on_current_changed)
 
-        # SH-02: 新規タブのアフォーダンス (コーナー "+" と Ctrl+T)。
+        # SH-02: 新規タブのアフォーダンス ("+"・後段で読み値トグルと横並びの corner
+        # コンテナへ入れる — spec §2.3。Ctrl+T は独立。
         new_tab_btn = QToolButton(self.tabs)
         new_tab_btn.setObjectName("new_tab_button")
         new_tab_btn.setText("+")
         new_tab_btn.setToolTip("新規タブ (Ctrl+T)")
         new_tab_btn.clicked.connect(lambda: self.add_tab())
-        self.tabs.setCornerWidget(new_tab_btn, Qt.Corner.TopRightCorner)
 
         self._new_tab_shortcut = QShortcut(QKeySequence("Ctrl+T"), self)
         self._new_tab_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -208,15 +232,22 @@ class GraphAreaView(QWidget):
         self.readout_toggle_button.setToolTip("読み値ペインの表示切替")
         self.readout_toggle_button.toggled.connect(self.set_readout_visible)
 
-        top_row = QHBoxLayout()
-        top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.addWidget(self.sync_checkbox)
-        top_row.addWidget(self.readout_toggle_button)
-        top_row.addStretch(1)
+        # spec §2.3: corner コンテナ化。専用のタブ行 (旧 top_row) は撤去し、"+" と
+        # 読み値トグルをタブバー右肩の corner widget に横並びで収める
+        # (test-lock 追随: cornerWidget().objectName() 単一ボタン assert は
+        # findChild(QToolButton, "new_tab_button") へ — 個々のボタンの objectName
+        # は変えない)。
+        corner = QWidget(self.tabs)
+        corner.setObjectName("tab_corner_container")
+        corner_layout = QHBoxLayout(corner)
+        corner_layout.setContentsMargins(0, 0, 0, 0)
+        corner_layout.setSpacing(4)
+        corner_layout.addWidget(new_tab_btn)
+        corner_layout.addWidget(self.readout_toggle_button)
+        self.tabs.setCornerWidget(corner, Qt.Corner.TopRightCorner)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addLayout(top_row)
         layout.addWidget(self._readout_split)
 
         unsubscribe = self.vm.subscribe(self._on_vm_change)
@@ -243,12 +274,14 @@ class GraphAreaView(QWidget):
     def _on_vm_change(self, change: str) -> None:
         if change == "active":
             self._sync_current()
-            self._update_sync_checkbox()
         elif change == "active_panel":
             self._sync_active_frames()  # 軽量: rebuild しない (クリック中の破棄禁止)
             self._sync_readout()
         elif change == "sync":
-            self._update_sync_checkbox()
+            # spec §2.3: sync 状態を映す常設ウィジェットはもう無い (右クリック時に
+            # getter で都度読む) — 反映不要。ここで _rebuild() へ落とすと sync
+            # トグルのたびタブ全体を無駄に再構築してしまうため、明示的な no-op。
+            pass
         else:  # "tabs" | "panels"
             self._rebuild()
 
@@ -291,7 +324,6 @@ class GraphAreaView(QWidget):
             self.tabs.setCurrentIndex(self.vm.active_tab_index)
         finally:
             self._syncing = False
-        self._update_sync_checkbox()
         self._sync_active_frames()
         self._sync_readout()
 
@@ -488,21 +520,6 @@ class GraphAreaView(QWidget):
 
     def readout_visible(self) -> bool:
         return self._readout_visible
-
-    # ─── X-sync toggle ─────────────────────────────────────────────────────────
-
-    def _on_sync_toggled(self, checked: bool) -> None:
-        self.vm.set_x_sync(self.vm.active_tab_index, checked)
-
-    def _update_sync_checkbox(self) -> None:
-        """Reflect the active tab's sync flag without echoing back to the VM."""
-        tabs = self.vm.tabs()
-        if not tabs:
-            return
-        enabled = tabs[self.vm.active_tab_index].x_sync_enabled
-        self.sync_checkbox.blockSignals(True)
-        self.sync_checkbox.setChecked(enabled)
-        self.sync_checkbox.blockSignals(False)
 
     # ─── Commands (delegate to VM; rejections are swallowed as UI no-ops) ───────
 

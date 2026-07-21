@@ -156,28 +156,6 @@ class TestPanelFactory:
 # ─── Lifecycle: no leaks, clean unsubscribe ────────────────────────────────────
 
 
-class TestSyncCheckboxHitArea:
-    def test_sync_checkbox_not_stretched_to_full_width(self, qtbot: QtBot) -> None:
-        """FU-17: Sync X チェックボックスは内容幅に固定され、右余白が
-        クリック判定に含まれない (全幅ストレッチしない)."""
-        from PySide6.QtWidgets import QCheckBox
-
-        view = _make_area(qtbot)
-        view.resize(900, 600)  # type: ignore[attr-defined]
-        view.show()  # type: ignore[attr-defined]
-        qtbot.waitExposed(view)  # type: ignore[arg-type]
-
-        cb = view.sync_checkbox  # type: ignore[attr-defined]
-        # 内容幅 (sizeHint) 近傍に固定 = 全幅 900 まで伸びない。
-        assert cb.width() <= cb.sizeHint().width() + 8, (
-            f"checkbox stretched to {cb.width()} (sizeHint {cb.sizeHint().width()})"
-        )
-        # content 端よりはるか右の余白は checkbox 本体を返さない (dead margin 消失)。
-        far_right = view.width() - 20  # type: ignore[attr-defined]
-        hit = view.childAt(far_right, cb.y() + cb.height() // 2)  # type: ignore[attr-defined]
-        assert not isinstance(hit, QCheckBox), "right margin still hits the checkbox"
-
-
 class TestLifecycle:
     def test_rebuild_does_not_leak_pages(self, qtbot: QtBot) -> None:
         """Each _rebuild must dispose old pages; QTabWidget.clear() alone leaks
