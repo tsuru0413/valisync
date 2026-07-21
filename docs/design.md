@@ -129,6 +129,7 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   決定メモ③（Diagnostics ドロワー化）＋ユーザー要望「File/Channel も折りたたみ可能に」
   で3ドック共通へ拡張。設計は
   [collapsible-docks spec](superpowers/specs/2026-07-20-collapsible-docks-design.md)。PR #131。
+  PR #137。
 - 2026-07-21: 軸アイデンティティ契約 Stage A（PR #135・トークン変更なし・構造 UI＋表示規則）。
   軸ラベル=代表（最古）波形の name/unit の対（ユーザー決定: 混在時も代表を表示・マーカー不採用）／
   per-axis `y_is_auto` 可視和集合フィット／オフスケールバッジ新設（色は既存 `accent_active`・
