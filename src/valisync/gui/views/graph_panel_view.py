@@ -67,6 +67,7 @@ from valisync.gui.adapters.qt_signal_models import (
 )
 from valisync.gui.theme import qss, tokens
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+from valisync.gui.viewmodels.y_axis_vm import YAxisVM
 from valisync.gui.views.cursor_shapes import CursorKind, cursor
 
 # Interp method → menu/readout label (PC-09). Single source of truth so the
@@ -647,6 +648,20 @@ class _AlignedAxisItem(pg.AxisItem):
         ev.accept()
 
 
+def _apply_axis_label(axis_item: pg.AxisItem, axis_vm: YAxisVM) -> None:
+    """軸ラベル適用の唯一の経路 (fast path / rebuild 共有・spec §3.2).
+
+    両方空のときも明示的にクリアする — 旧ガード (真のときのみ setLabel) は
+    「空への遷移」(全削除→placeholder・構造署名不変) で古いラベルを画面に
+    残した (Stage A 設計レビュー blocker)。
+    """
+    if axis_vm.name or axis_vm.unit:
+        axis_item.setLabel(text=axis_vm.name or None, units=axis_vm.unit or None)
+    else:
+        axis_item.setLabel(text="", units=None)
+        axis_item.showLabel(False)
+
+
 class GraphPanelView(QWidget):
     """PyQtGraph waveform view bound to a :class:`GraphPanelVM`."""
 
@@ -1067,11 +1082,7 @@ class GraphPanelView(QWidget):
         # strips (no grid row-stretch).
         if self._column_containers and signature == self._build_signature:
             for i, _col, _row in placement:
-                axis_vm = self.vm.axes[i]
-                if axis_vm.name or axis_vm.unit:
-                    self._y_axes[i].setLabel(
-                        text=axis_vm.name or None, units=axis_vm.unit or None
-                    )
+                _apply_axis_label(self._y_axes[i], self.vm.axes[i])
             return
 
         # Structure changed: rebuild.
@@ -1192,8 +1203,7 @@ class GraphPanelView(QWidget):
             # and wire the panel view reference so click events reach set_active_axis.
             axis.set_vm_axis_index(i)
             axis.set_panel_view(self)
-            if axis_vm.name or axis_vm.unit:
-                axis.setLabel(text=axis_vm.name or None, units=axis_vm.unit or None)
+            _apply_axis_label(axis, axis_vm)
             self._y_axes.append(axis)
 
             # Add the axis straight to the scene (like the secondary ViewBoxes);

@@ -1498,3 +1498,55 @@ def test_axis_label_recalc_on_prune_missing_signals(
     vm.prune_missing_signals()
     # prune 後: 代表交代="beta" — 弁別力ゼロだった旧 assert (両グループ同名 "s1") を是正。
     assert vm.axes[0].name == key_file2.split("::")[-1]
+
+
+# ─── Task 6: View ラベル共有ヘルパ (2サイト+空クリア・UX-01 view側) ─────────
+
+
+@pytest.fixture
+def built_view_two_units(
+    qtbot: QtBot, tmp_path: Path
+) -> tuple[GraphPanelView, GraphPanelVM, str, str]:
+    """view 構築済み・key_a(unit "V") が既に表示中・key_b(unit "A") は未表示。
+
+    session_two_signals_vm (:1397) の view 版 — fast path (join/削除で軸数不変)
+    は _reconcile_axes の分岐なので、VM 単体でなく実際に GraphPanelView を
+    構築して refresh() を通す必要がある。
+    """
+    session, _ = _loaded_session(tmp_path, n_signals=2)
+    key_a, key_b = _keys(session)
+    for sig in session.signals():
+        if sig.name == key_a:
+            sig.metadata["unit"] = "V"
+        elif sig.name == key_b:
+            sig.metadata["unit"] = "A"
+    vm = GraphPanelVM(session)
+    view = cast(GraphPanelView, _make_view(qtbot, vm))
+    vm.add_signal(key_a)
+    view.refresh()
+    return view, vm, key_a, key_b
+
+
+def test_label_updates_via_fast_path_on_join(
+    qtbot: QtBot,
+    built_view_two_units: tuple[GraphPanelView, GraphPanelVM, str, str],
+) -> None:
+    # UX-01 主経路: join は構造署名不変 = fast path。fresh 構築だけの assert は
+    # rebuild 側しか通らず false-green (memory gui_diff_update_layout_key...)。
+    view, vm, _key_a, key_b = built_view_two_units  # 構築済み・key_a(unit V) 表示中
+    vm.add_signal(key_b)  # unit A を join (軸数不変)
+    view.refresh()
+    assert view._y_axes[0].labelUnits == "V"  # 代表維持 (last-wins なら "A")
+
+
+def test_label_cleared_via_fast_path_on_last_removal(
+    qtbot: QtBot,
+    built_view_two_units: tuple[GraphPanelView, GraphPanelVM, str, str],
+) -> None:
+    view, vm, _key_a, _key_b = built_view_two_units
+    vm.remove_entry(vm._plotted[0].entry_id)  # 全削除 → placeholder (署名不変)
+    view.refresh()
+    # 旧ガード (name or unit のときのみ setLabel) は空への遷移で画面に
+    # 死んだラベルを残した (spec レビュー blocker)。
+    axis = view._y_axes[0]
+    assert axis.labelText in ("", None) or not axis.label.isVisible()
