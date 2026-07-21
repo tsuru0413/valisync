@@ -237,11 +237,26 @@ def test_drop_on_y_band_overwrites_axis(qtbot: QtBot, tmp_path: Path) -> None:
 
 
 def test_ctrl_drop_on_y_band_joins_axis(qtbot: QtBot, tmp_path: Path) -> None:
-    """H3: Ctrl-held drop on an existing axis's Y band → join (both signals kept)."""
+    """H3: Ctrl-held drop on an existing axis's Y band → join (both signals kept).
+
+    Also covers UX-01 (axis identity contract, Stage A): the two signals carry
+    DIFFERENT units (V / A), injected right after load. If the axis label were
+    derived "last-wins" from whichever signal joined most recently, a Ctrl-join
+    would silently repaint the label from the pre-existing representative's unit
+    to the newcomer's — a fabricated (name, unit) pair (spec UX-01). The
+    representative-signal contract keeps the label pinned to the FIRST-added
+    signal's pair regardless of what joins later.
+    """
     skip_unless_real_display()
     from PySide6.QtWidgets import QApplication
 
     browser, panel, keys = _make_browser_and_panel(qtbot, tmp_path)
+    # Inject right after load, before axis creation, so axis 0's initial label
+    # is already representative-derived from keys[0] ("V") when it is created
+    # below (Layer B pattern: test_graph_panel_multi_axis.py:458-461).
+    sig_map = panel.vm._session.signal_map()
+    sig_map[keys[0]].metadata["unit"] = "V"
+    sig_map[keys[1]].metadata["unit"] = "A"
     _prepare_one_axis(panel, keys, qtbot)  # keys[0] on axis 0
 
     _select_rows(browser, [1])
@@ -267,6 +282,13 @@ def test_ctrl_drop_on_y_band_joins_axis(qtbot: QtBot, tmp_path: Path) -> None:
             and keys[1] in panel.signal_keys_drawn()
         ),
         timeout=2000,
+    )
+    # UX-01: 異単位 join でも軸ラベルは代表 (1本目) の対のまま
+    # (last-wins だったら "A" になる).
+    axis_item = panel._y_axes[0]
+    assert axis_item.labelUnits == "V", (
+        f"axis label unit was {axis_item.labelUnits!r}, expected representative "
+        f"'V' (last-wins would give 'A'). screenshot: {tmp_path / 'h3.png'}"
     )
 
 
