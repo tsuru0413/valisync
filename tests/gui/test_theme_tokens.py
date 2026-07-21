@@ -51,7 +51,7 @@ def test_dark_all_color_fields_are_color():
     for f in dataclasses.fields(DARK.colors):
         v = getattr(DARK.colors, f.name)
         if f.name == "signal_palette":
-            assert len(v) == 10 and all(isinstance(c, Color) for c in v)
+            assert len(v) == 8 and all(isinstance(c, Color) for c in v)
         else:
             assert isinstance(v, Color), f.name
 
@@ -66,31 +66,29 @@ def test_dark_values_frozen_snapshot():
         "plot_background": Color(0, 0, 0),
         "plot_foreground": Color(150, 150, 150),
         "signal_palette": (
-            Color.from_hex("#1f77b4"),
-            Color.from_hex("#ff7f0e"),
-            Color.from_hex("#2ca02c"),
-            Color.from_hex("#d62728"),
-            Color.from_hex("#9467bd"),
-            Color.from_hex("#8c564b"),
-            Color.from_hex("#e377c2"),
-            Color.from_hex("#7f7f7f"),
-            Color.from_hex("#bcbd22"),
-            Color.from_hex("#17becf"),
+            Color.from_hex("#56b4e9"),
+            Color.from_hex("#e69f00"),
+            Color.from_hex("#00c08b"),
+            Color.from_hex("#f0e442"),
+            Color.from_hex("#ff6e4a"),
+            Color.from_hex("#d98bc0"),
+            Color.from_hex("#9a8cff"),
+            Color.from_hex("#c8c8c8"),
         ),
         "cursor_a": Color.from_hex("#f9e2af"),
-        "cursor_b": Color.from_hex("#89b4fa"),
+        "cursor_b": Color.from_hex("#74c7ec"),
         "surface_chip": Color(17, 17, 27, 230),
         "border_chip": Color.from_hex("#45475a"),
         "text_primary": Color.from_hex("#cdd6f4"),
-        "text_secondary": Color.from_hex("#7f849c"),
+        "text_secondary": Color.from_hex("#9399b2"),
         "close_hover": Color.from_hex("#f38ba8"),
         "accent_active": Color.from_hex("#f59e0b"),
         "accent_active_dark": Color.from_hex("#b45309"),
         "grip_fill": Color.from_hex("#ffffff"),
-        "drop_highlight": Color.from_hex("#1f77b4"),
-        "axis_move_indicator": Color(255, 165, 0),
-        "axis_move_fill": Color(255, 165, 0, 60),
-        "error": Color.from_hex("#c0392b"),
+        "drop_highlight": Color.from_hex("#94e2d5"),
+        "axis_move_indicator": Color.from_hex("#f59e0b"),
+        "axis_move_fill": Color(245, 158, 11, 60),
+        "error": Color.from_hex("#f38ba8"),
         "busy_spinner": Color(120, 160, 255),
         "text_releasing": Color(128, 128, 128),
         "preview_curve": Color.from_hex("#4FC3F7"),
@@ -136,8 +134,8 @@ def test_dark_values_frozen_snapshot():
     assert {
         f.name: getattr(DARK.typography, f.name)
         for f in dataclasses.fields(DARK.typography)
-    } == {"small_px": 9}
-    assert DARK.grid_alpha == 60
+    } == {"small_px": 10}
+    assert DARK.grid_alpha == 150
 
 
 def test_active_default_and_set():
