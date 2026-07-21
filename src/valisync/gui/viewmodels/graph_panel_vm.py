@@ -1143,6 +1143,35 @@ class GraphPanelVM(Observable):
             )
         return out
 
+    def legend_readings(self) -> list[CursorReading]:
+        """凡例行 (カーソル未設置・信号あり・計測 IA spec §2.6): 名前/色/単位/entry_id のみ。
+
+        value=None/in_range=False はダミー — 凡例モードは値セルを描かないので
+        CursorReadout.set_legend は読まない。cursor_readings() と異なり cursor_t
+        の有無を問わず可視エントリを返す(呼び出し側 GraphAreaView がカーソル
+        未設置のときだけこれを使う)。
+        """
+        sig_map = self._signal_map()
+        out: list[CursorReading] = []
+        for entry in self._plotted:
+            if not entry.visible:
+                continue
+            sig = sig_map.get(entry.signal_key)
+            unit = (
+                sig.metadata.get("unit", "") if sig is not None and sig.metadata else ""
+            )
+            out.append(
+                CursorReading(
+                    entry.signal_key,
+                    entry.color,
+                    None,
+                    False,
+                    unit=unit,
+                    entry_id=entry.entry_id,
+                )
+            )
+        return out
+
     # ─── Delta cursor + range stats (R16/R17) ────────────────────────────────
 
     def _default_cursor_x(self, frac: float) -> float:

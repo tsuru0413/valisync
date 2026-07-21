@@ -402,7 +402,7 @@ def test_stat_toggle_reretains_interp_label(qtbot: QtBot):
 
 
 def test_table_tsv_global(qtbot: QtBot):
-    """set_global の TSV は min-max 列を含む (Task 3: コンセプト 2a)。"""
+    """set_global の TSV は min/max 独立2列を含む (計測 IA spec §2.6: UX-25/33)。"""
     ro = CursorReadout()
     qtbot.addWidget(ro)
     ro.set_global(
@@ -415,9 +415,14 @@ def test_table_tsv_global(qtbot: QtBot):
     )
     tsv = ro.table_tsv()
     lines = tsv.splitlines()
-    assert lines[0].split("\t") == ["信号", "A値", "min–max"]  # noqa: RUF001
-    assert lines[1].split("\t") == ["spd [km/h]", "1.5", ""]
-    assert lines[2].split("\t") == ["rpm", "800", ""]
+    assert lines[0].split("\t") == [
+        "信号",
+        "A値",
+        "min（全区間）",  # noqa: RUF001
+        "max（全区間）",  # noqa: RUF001
+    ]
+    assert lines[1].split("\t") == ["spd [km/h]", "1.5", "", ""]
+    assert lines[2].split("\t") == ["rpm", "800", "", ""]
 
 
 def test_table_tsv_delta_reflects_visible_stats(qtbot: QtBot):
@@ -537,7 +542,7 @@ def test_pane_object_name_and_no_close_button(qtbot: QtBot):
 
 
 def test_set_global_renders_minmax_column(qtbot: QtBot):
-    """単一ファイル: 列 = 名前 | A値 | min-max (コンセプト 2a)。"""
+    """単一ファイル: 列 = 名前 | A値 | min(全区間) | max(全区間) (UX-25/33: 独立2列)。"""
     w = CursorReadout()
     qtbot.addWidget(w)
     w.set_global(
@@ -554,10 +559,102 @@ def test_set_global_renders_minmax_column(qtbot: QtBot):
             )
         ],
     )
-    assert w.column_headers() == ["A値", "min–max"]  # noqa: RUF001
-    # row_texts()[i] = (name, joined cells) - A値と min-max の両方を含む
+    assert w.column_headers() == [
+        "A値",
+        "min（全区間）",  # noqa: RUF001
+        "max（全区間）",  # noqa: RUF001
+    ]
+    # row_texts()[i] = (name, joined cells) - A値と min/max 両方を含む
     _name, cells = w.row_texts()[0]
     assert "12.3" in cells and "0" in cells and "100" in cells
+
+
+def test_set_global_min_max_are_separate_right_aligned_columns(qtbot: QtBot):
+    """min/max が独立2列で右揃えセルとして描かれることを grid 直接検査で確認する
+
+    (row_texts() の joined 文字列だけでは「1列に融合 vs 2列独立」を区別できない
+    ため、grid の列位置と alignment を直接見る)。
+    """
+    from PySide6.QtCore import Qt
+
+    w = CursorReadout()
+    qtbot.addWidget(w)
+    w.set_global(
+        1.0,
+        [
+            CursorReading(
+                "vCar", "#1f77b4", 12.3, True, entry_id=1, range_lo=0.0, range_hi=100.0
+            )
+        ],
+    )
+    a_cell = w._grid.itemAtPosition(1, 2).widget()
+    min_cell = w._grid.itemAtPosition(1, 3).widget()
+    max_cell = w._grid.itemAtPosition(1, 4).widget()
+    assert a_cell.text() == "12.3"
+    assert min_cell.text() == "0"
+    assert max_cell.text() == "100"
+    assert min_cell.alignment() & Qt.AlignmentFlag.AlignRight
+    assert max_cell.alignment() & Qt.AlignmentFlag.AlignRight
+
+
+def test_set_legend_renders_swatch_name_unit_no_columns(qtbot: QtBot):
+    """凡例モード: 列ヘッダなし・値セルなし・スウォッチ+名前+[unit] のみ (spec §2.6)。"""
+    w = CursorReadout()
+    qtbot.addWidget(w)
+    w.set_legend(
+        [CursorReading("spd", "#1f77b4", None, False, unit="km/h", entry_id=3)]
+    )
+    assert w.column_headers() == []
+    assert w._grid.itemAtPosition(0, 2) is None  # 列見出し行が無い
+    assert w._grid.itemAtPosition(0, 1) is not None  # 名前セルは row 0
+    name, cells = w.row_texts()[0]
+    assert name == "spd [km/h]"
+    assert cells == ""  # 値セルが無いので結合セルは空文字
+    assert w._header.isHidden()  # 凡例モードは時刻ヘッダを表示しない
+
+
+def test_legend_mode_hides_time_header(qtbot: QtBot):
+    w = CursorReadout()
+    qtbot.addWidget(w)
+    w.set_global(1.0, [CursorReading("a", "#fff", 1.0, True)])
+    assert not w._header.isHidden()
+    w.set_legend([CursorReading("a", "#fff", None, False)])
+    assert w._header.isHidden()
+    assert w.header_text() == ""
+
+
+def test_legend_row_at_resolves_via_name_label(qtbot: QtBot):
+    """凡例モード (値セルなし) でも _row_at が行を解決できる — 名前ラベルの
+    geometry にフォールバックし、計測モードと同じ行クリック経路を共有する
+    (spec §2.6: 行クリック→曲線ハイライトは両モードで機能)。
+    """
+    w = CursorReadout()
+    qtbot.addWidget(w)
+    w.set_legend([CursorReading("csv::vCar", "#1f77b4", None, False, entry_id=9)])
+    pos = w._name_labels[0].geometry().center()
+    assert w._row_at(pos) == 0
+
+
+def test_legend_mode_row_click_activates_curve(qtbot: QtBot):
+    w = CursorReadout()
+    qtbot.addWidget(w)
+    w.set_legend([CursorReading("csv::vCar", "#1f77b4", None, False, entry_id=9)])
+    seen: list[int] = []
+    w.row_activated.connect(seen.append)
+    w.activate_row(0)
+    assert seen == [9]
+
+
+def test_table_tsv_legend_has_no_value_column(qtbot: QtBot):
+    """凡例モードの TSV は値列を持たない (計測モードの「値」フォールバックとの
+    混同防止 — spec §2.6)。
+    """
+    w = CursorReadout()
+    qtbot.addWidget(w)
+    w.set_legend([CursorReading("spd", "#1f77b4", None, False, unit="km/h")])
+    lines = w.table_tsv().splitlines()
+    assert lines[0].split("\t") == ["信号"]
+    assert lines[1].split("\t") == ["spd [km/h]"]
 
 
 def test_show_placeholder_replaces_table(qtbot: QtBot):

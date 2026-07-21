@@ -187,6 +187,9 @@ class GraphAreaView(QWidget):
         # (QSplitter の右側) がアクティブパネルの状態を pull する (_sync_readout)。
         self.readout_pane = CursorReadout()
         self._readout_visible = True
+        # 信号ゼロ時の自動収納 (spec §2.6) — トグル状態 (_readout_visible) とは
+        # 独立した第3状態。実際の可視性は両者の AND (_apply_readout_visibility)。
+        self._readout_stowed = False
         self.readout_pane.row_activated.connect(self._on_readout_row_activated)
         # weakref 経由で配線: readout_pane は self の Qt 子で、そこへ self の
         # bound method を平の属性として直接ぶら下げると Python レベルの参照サイクル
@@ -428,27 +431,40 @@ class GraphAreaView(QWidget):
         self.vm.set_active_tab(index)
         self._sync_readout()
 
-    # ─── Readout pane (readout-pane Task 4) ────────────────────────────────────
+    # ─── Readout pane (readout-pane Task 4 -> 計測 IA Task 8) ──────────────────
 
     def _sync_readout(self) -> None:
-        """アクティブタブのアクティブパネル VM を単一ペインへ反映。"""
+        """アクティブタブのアクティブパネル VM を単一ペインへ反映する。
+
+        3方向に分岐する (spec §2.6): 信号ゼロ (アクティブパネル不在/信号なし) は
+        ペインを自動収納 (readout_stowed)。カーソル未設置+信号ありは凡例モード
+        (set_legend)。カーソル設置は計測モード (set_global/set_delta・既存)。
+        spec-B 案b の「プロットをクリックしてカーソルを設置」プレースホルダは
+        凡例モードへ supersede 済み — このメソッドはもう呼ばない。
+        """
         tab = self.tabs.currentIndex()
         if tab < 0:
-            self.readout_pane.show_placeholder("表示中の信号がありません")
+            self._stow_readout()
             return
         panels = self.vm.panels(tab)
         active = self.vm.active_panel_index(tab)
         if not panels or active < 0 or active >= len(panels):
-            self.readout_pane.show_placeholder("表示中の信号がありません")
+            self._stow_readout()
             return
         pvm = panels[active]
         if pvm.cursor_t is None:
-            self.readout_pane.show_placeholder("プロットをクリックしてカーソルを設置")
+            legend = pvm.legend_readings()
+            if not legend:
+                self._stow_readout()
+                return
+            self._unstow_readout()
+            self.readout_pane.set_legend(legend)
             return
         readings = pvm.cursor_readings()
         if not readings:
-            self.readout_pane.show_placeholder("表示中の信号がありません")
+            self._stow_readout()
             return
+        self._unstow_readout()
         if pvm.delta_enabled and pvm.cursor_t_b is not None:
             self.readout_pane.sync_visible_stats(pvm.visible_stat_cols)
             self.readout_pane.set_delta(
@@ -465,6 +481,23 @@ class GraphAreaView(QWidget):
                 interp_label=_INTERP_LABELS.get(pvm.interp_method, ""),
                 precision=pvm.value_precision,
             )
+
+    def _stow_readout(self) -> None:
+        """信号ゼロ — ペインを自動収納する (トグルの ON/OFF 状態は変更しない)。
+
+        ユーザーの表示意思 (_readout_visible) を保持したまま画面から消し、
+        信号が現れれば _sync_readout が自動的に元へ戻す (spec §2.6)。
+        """
+        self._readout_stowed = True
+        self._apply_readout_visibility()
+
+    def _unstow_readout(self) -> None:
+        self._readout_stowed = False
+        self._apply_readout_visibility()
+
+    def _apply_readout_visibility(self) -> None:
+        """実際の可視性 = トグル ON かつ収納中でない (両者の AND・spec §2.6)。"""
+        self.readout_pane.setVisible(self._readout_visible and not self._readout_stowed)
 
     def _on_readout_row_activated(self, entry_id: int) -> None:
         """Pane row click -> highlight that entry_id's curve on the active panel."""
@@ -516,10 +549,15 @@ class GraphAreaView(QWidget):
 
     def set_readout_visible(self, visible: bool) -> None:
         self._readout_visible = visible
-        self.readout_pane.setVisible(visible)
+        self._apply_readout_visibility()
 
     def readout_visible(self) -> bool:
+        """トグルの ON/OFF 状態 (収納中かどうかは含まない — readout_stowed 参照)。"""
         return self._readout_visible
+
+    def readout_stowed(self) -> bool:
+        """信号ゼロによる自動収納中かどうか (spec §2.6)。"""
+        return self._readout_stowed
 
     # ─── Commands (delegate to VM; rejections are swallowed as UI no-ops) ───────
 

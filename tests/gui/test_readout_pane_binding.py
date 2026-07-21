@@ -98,13 +98,48 @@ def test_readout_binds_to_active_panel(
     assert not any("sigB" in name for name, _ in rows_a)
 
 
-def test_readout_placeholder_without_cursor(
+def test_readout_shows_legend_without_cursor(
     area_two_panels_two_signals: tuple[GraphAreaView, GraphAreaVM, str, str],
 ) -> None:
-    """カーソル未設置時はプレースホルダ (値表示は完全カーソル連動)。"""
-    area, _vm, _sig_a, _sig_b = area_two_panels_two_signals
-    assert area.readout_pane.placeholder_text() != ""
-    assert area.readout_pane.row_texts() == []
+    """カーソル未設置+信号ありは凡例モード (計測 IA spec §2.6)。
+
+    supersede 記録: この意図的反転は
+    tests/gui/test_readout_pane_binding.py::test_readout_placeholder_without_cursor
+    (readout-pane 増分B・spec-B 案b「カーソル未設置時はプレースホルダ文言」) を
+    計測 IA design spec (docs/superpowers/specs/2026-07-21-measurement-ia-design.md
+    §2.6) が supersede した結果。旧テストは「プレースホルダ文言が出る」を assert
+    していたが、新仕様では信号がある限りプレースホルダは出ず凡例行が出る。
+    """
+    area, _vm, _sig_a, sig_b = area_two_panels_two_signals
+    assert area.readout_pane.placeholder_text() == ""
+    assert not area.readout_stowed()
+    rows = area.readout_pane.row_texts()
+    assert any(sig_b in name for name, _ in rows)  # panel 1 (sigB) がアクティブ
+
+
+def test_readout_stows_when_active_panel_has_no_signals(
+    area_two_panels_two_signals: tuple[GraphAreaView, GraphAreaVM, str, str],
+) -> None:
+    """信号ゼロ (アクティブパネルの信号を全削除) → ペイン自動収納 (spec §2.6)。
+
+    トグル状態 (readout_visible) はユーザーの表示意思として不変 — 信号が戻れば
+    ペインは自動的に再表示される (readout_stowed が両者を分離する第3状態)。
+    """
+    area, vm, _sig_a, sig_b = area_two_panels_two_signals
+    panels = vm.panels(0)
+    assert not area.readout_stowed()
+    assert area.readout_pane.isVisible()
+
+    panels[1].remove_signal(sig_b)  # panel 1 (アクティブ) の信号がゼロになる
+
+    assert area.readout_stowed()
+    assert area.readout_visible() is True  # トグル状態は不変
+    assert not area.readout_pane.isVisible()
+
+    panels[1].add_signal(sig_b)  # 信号が戻る → 自動的に再表示
+
+    assert not area.readout_stowed()
+    assert area.readout_pane.isVisible()
 
 
 def test_readout_toggle_hides_pane(
