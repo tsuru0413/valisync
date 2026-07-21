@@ -64,7 +64,7 @@ def apply_theme(t: tokens.ThemeTokens | None = None) -> None:
         app.setPalette(build_palette(tt))
         # 領域境界: separator は app レベル QSS でしか描けない (palette 非対応)
         # 冪等: 同一内容なら setStyleSheet を呼ばず (Qt 副作用回避)
-        new_sheet = qss.main_window_separator(tt)
+        new_sheet = qss.main_window_separator(tt) + "\n" + qss.line_edit_frame(tt)
         if app.styleSheet() != new_sheet:
             app.setStyleSheet(new_sheet)
 

@@ -189,3 +189,48 @@ def test_delta_value_uses_given_delta_token_not_close_hover():
     assert DARK.colors.close_hover.hex not in s
     # delta_positive は新規値: 生成関数が受け取った色をそのまま出す
     assert DARK.colors.delta_positive.hex in qss.delta_value(DARK.colors.delta_positive)
+
+
+def test_line_edit_frame_contains_base_rule_focus_and_carveout():
+    """QLineEdit 常時枠 (UX-49)。base / :focus / qt_spinbox_lineedit carve-out の3規則。"""
+    s = qss.line_edit_frame(DARK)
+    # base rule: QLineEdit { border: 1px solid chrome_frame; }
+    assert "QLineEdit {" in s
+    assert DARK.colors.chrome_frame.hex in s
+    assert "border: 1px solid" in s
+    # :focus rule: QLineEdit:focus { border: 1px solid chrome_highlight; }
+    assert "QLineEdit:focus {" in s
+    assert DARK.colors.chrome_highlight.hex in s
+    # carve-out: QLineEdit#qt_spinbox_lineedit { border: none; }
+    assert "QLineEdit#qt_spinbox_lineedit" in s
+    assert "border: none" in s
+
+
+def test_line_edit_frame_uses_chrome_frame_not_border_chip():
+    """chrome_frame は border_chip と同値の別トークン (spec §4)。
+    値を分岐させたテーマで line_edit_frame がどちらを参照するか直接実証する。"""
+    import dataclasses
+
+    from valisync.gui.theme.tokens import Color
+
+    alt = dataclasses.replace(
+        DARK, colors=dataclasses.replace(DARK.colors, chrome_frame=Color(1, 2, 3))
+    )
+    s = qss.line_edit_frame(alt)
+    assert Color(1, 2, 3).hex in s
+    assert DARK.colors.border_chip.hex not in s
+
+
+def test_line_edit_frame_uses_chrome_highlight_not_close_hover():
+    """chrome_highlight は close_hover と同値の別トークン (DARK #89b4fa)。
+    値を分岐させたテーマで line_edit_frame:focus がどちらを参照するか直接実証する。"""
+    import dataclasses
+
+    from valisync.gui.theme.tokens import Color
+
+    alt = dataclasses.replace(
+        DARK, colors=dataclasses.replace(DARK.colors, chrome_highlight=Color(1, 2, 3))
+    )
+    s = qss.line_edit_frame(alt)
+    assert Color(1, 2, 3).hex in s
+    assert DARK.colors.close_hover.hex not in s

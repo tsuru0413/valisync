@@ -379,3 +379,19 @@ def test_main_window_regions_have_boundary_frames(qtbot):
         assert w.objectName() == name, name
         assert f"#{name}" in w.styleSheet(), name
         assert DARK.colors.chrome_frame.hex in w.styleSheet(), name
+
+
+def test_app_sheet_includes_line_edit_frame_rules(qapp):
+    """app stylesheet に QLineEdit 枠・focus・carve-out の3規則が含まれる (UX-49)。"""
+    apply_theme()
+    sheet = qapp.styleSheet()
+    # base rule
+    assert "QLineEdit {" in sheet
+    assert "border: 1px solid" in sheet
+    assert DARK.colors.chrome_frame.hex in sheet
+    # :focus rule
+    assert "QLineEdit:focus {" in sheet
+    assert DARK.colors.chrome_highlight.hex in sheet
+    # carve-out
+    assert "QLineEdit#qt_spinbox_lineedit" in sheet
+    assert "border: none" in sheet
