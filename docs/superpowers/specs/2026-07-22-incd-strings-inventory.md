@@ -15,8 +15,8 @@
 | browsers | 38 | 13 / 23 / 2 |
 | gui-extra | 45 | 25 / 16 / 4 |
 | core | 32 | 13 / 14 / 5 |
-| core-extra | 40 | 1 / 36 / 3 |
-| **計** | **368** | **198 / 143 / 27** |
+| core-extra | 37 | 1 / 33 / 3 |
+| **計** | **365** | **198 / 140 / 27** |
 
 ## シェル（main_window / shell_actions / welcome / busy_overlay / recent_files）
 
@@ -71,17 +71,17 @@
 | main_window.py:731 | status | en | A {a:.3f} s | A {a:.3f} s | ステータスバー左の計測即値（カーソル A・mono）。カーソル名/単位は国際表記のため翻訳不要 |
 | main_window.py:732 | status | en | B {b:.3f} s | B {b:.3f} s | 計測即値（カーソル B）。翻訳不要 |
 | main_window.py:734 | status | en | Δt {b - a:.3f} s | Δt {b - a:.3f} s | 計測即値（Δt）。Δt は解析系の確立表記のため翻訳不要 |
-| main_window.py:853 | label | en | File Browser | ファイルブラウザ | 畳んだドックの辺レールタブ文言。L140/L227 と三重定義 — 単一定数化推奨 |
-| main_window.py:854 | label | en | Channel Browser | チャンネルブラウザ | レールタブ文言。L157/L228 と三重定義 |
-| main_window.py:855 | label | en | Diagnostics | 診断 | レールタブ文言。L229 と重複・DiagnosticsView（別クラスタ）と要整合 |
+| main_window.py:853 | label | en | File Browser | ファイル | 畳んだドックの辺レールタブ文言。L140/L227 と三重定義 — 単一定数化推奨 ／ 【spec 確定反映】G-05 確定（L140/L227 と同一定数） |
+| main_window.py:854 | label | en | Channel Browser | 信号 | レールタブ文言。L157/L228 と三重定義 ／ 【spec 確定反映】G-06 確定（L157/L228 と同一定数） |
+| main_window.py:855 | label | en | Diagnostics | 診断 | レールタブ文言。L229 と重複・DiagnosticsView（別クラスタ）と要整合 ／ 【spec 確定反映】G-07 確定（L229 と同一定数） |
 | main_window.py:925 | status | ja | ライト | ライト | L930 のステータステンプレートに埋め込まれるラベル。メニュー L287 と定数共有推奨 |
 | main_window.py:926 | status | ja | ダーク | ダーク | 同上（L288 と共有推奨） |
 | main_window.py:927 | status | ja | オート | オート | 同上。メニュー側 L289 は「オート (OS に合わせる)」と補足付きで意図的に非対称 |
 | main_window.py:930 | status | ja | テーマを「{label}」に変更しました。再起動で反映されます | テーマを「{label}」に変更しました。再起動で反映されます | 動的テンプレート（timeout 8s）。{label}=L925-927 の dict 値。語調基準に一致 |
 | shell_actions.py:24 | menu | ja | 開く… | 開く… | File メニュー＋ツールバー共有 QAction。ニーモニクス提案: 「開く(&O)…」 |
 | shell_actions.py:27 | status | ja | 計測ファイルを開く | 計測ファイルを開く | statusTip 兼 tooltip 基底（tooltip は L57 で「{status} (Ctrl+O)」に合成）。既に日本語 |
-| shell_actions.py:31 | menu | ja | フォルダを開く… | フォルダを開く… | ニーモニクス提案: 「フォルダを開く(&F)…」（File メニュー内スコープなので親メニューの &F と衝突しない） |
-| shell_actions.py:34 | status | ja | データソースフォルダを登録する | データソースフォルダを登録する | statusTip 兼 tooltip 基底。既に日本語 |
+| shell_actions.py:31 | menu | ja | フォルダを開く… | データエクスプローラ | ニーモニクス提案: 「フォルダを開く(&F)…」（File メニュー内スコープなので親メニューの &F と衝突しない） ／ 【spec 確定反映】G-39/R-03 確定: 素形定数（ツールバーと共有）・File メニュー表示は mn() で「データエクスプローラ(&D)」・三点リーダ除去 |
+| shell_actions.py:34 | status | ja | データソースフォルダを登録する | データエクスプローラを開く | statusTip 兼 tooltip 基底。既に日本語 ／ 【spec 確定反映】G-39 確定: statusTip を両導線同一へ（旧「登録する」は実挙動と乖離のため廃止） |
 | shell_actions.py:38 | menu | ja | エクスポート… | エクスポート… | ニーモニクス提案: 「エクスポート(&E)…」。データ読込まで disabled |
 | shell_actions.py:41 | status | ja | 表示中の信号を CSV に書き出す | 表示中の信号を CSV に書き出す | statusTip 兼 tooltip 基底。CSV は技術トークンとして ja 判定 |
 | shell_actions.py:57 | tooltip | ja | {status} ({shortcut}) | {status} ({shortcut}) | tooltip 合成テンプレート（言語中立の書式）。合成結果は日本語＋ショートカット表記のため据え置き |
@@ -113,7 +113,7 @@
 | csv_format_dialog.py:89 | button | en | OK / Cancel | OK / キャンセル | QDialogButtonBox 標準ボタン（無翻訳の Qt 英語）。qtbase_ja QTranslator 導入で一括日本語化可能 |
 | csv_format_dialog.py:137 | diagnostic | en | {exc} | {exc} | FormatDefinition の ValueError をエラーラベルへ転写する動的文言。実体はクラスタ外 valisync/core/models/format_def.py:36-57 で完全英語（例 "timestamp_column must be 0-255, got 300"）— ユーザー可視の英語診断の代表例。日本語文言案（例「時間列は 0–255 の範囲で指定してください」「時間列は信号列の範囲と重ねられません」）を GUI 写像層か core 側で用意する判断要 |
 | expansion_dialog.py:53 | title | ja | 大きな信号の展開確認 | 大きな信号の展開確認 |  |
-| expansion_dialog.py:60 | dialog | ja | 以下の信号は展開すると列数が上限（{EXPANSION_COLUMN_LIMIT}）を超えます。\n展開するものを選択してください（未選択はスキップ）。 | 以下の信号は展開すると列数が上限（{EXPANSION_COLUMN_LIMIT}）を超えます。\n展開するものを選択してください（未選択はスキップ）。 | f-string テンプレート（定数埋め込み）。全角括弧に noqa: RUF001 既設 — 括弧幅方針を全体で決める際の参照点 |
+| expansion_dialog.py:60 | dialog | ja | 以下の信号は展開すると列数が上限（{EXPANSION_COLUMN_LIMIT}）を超えます。\n展開するものを選択してください（未選択はスキップ）。 | 以下の信号は展開すると列数が上限 ({EXPANSION_COLUMN_LIMIT}) を超えます。\n展開するものを選択してください（未選択はスキップ）。 | f-string テンプレート（定数埋め込み）。全角括弧に noqa: RUF001 既設 — 括弧幅方針を全体で決める際の参照点 ／ 【spec 確定反映】R-02 確定: 数値のみの括りは半角括弧＋前スペース・日本語含む補足は全角のまま |
 | expansion_dialog.py:71 | label | ja | {name} — {column_count} 列 | {name} — {column_count} 列 | per-channel チェックボックスの動的テンプレート。{name} は信号名データ。em-dash 区切りは readout 系の「名前｜A値」等と別様式 — 統一判断は任意 |
 | expansion_dialog.py:92 | button | ja | すべて展開 | すべて展開 | ニーモニクス案: 「すべて展開(&E)」 |
 | expansion_dialog.py:93 | button | ja | すべてスキップ | すべてスキップ | ニーモニクス案: 「すべてスキップ(&S)」 |
@@ -146,7 +146,7 @@
 | signal_preview_window.py:40 | status | ja | プレビューできません | この信号はプレビューできません | 空状態文言（QStackedWidget index 1）。主語を補い状況を明示する案 — 現状維持も可 |
 | signal_preview_window.py:45 | label | ja | プレビュー | プレビュー | タブ見出し |
 | signal_preview_window.py:50 | label | ja | 信号プロパティ | 信号プロパティ | タブ見出し |
-| signal_preview_window.py:61 | title | ja | 信号プレビュー - {key} | 信号プレビュー - {key} | 動的テンプレート（{key} は信号キーデータ）。区切りは半角ハイフン — Windows タイトル慣例どおりで維持可 |
+| signal_preview_window.py:61 | title | ja | 信号プレビュー - {key} | 信号プレビュー — {key} | 動的テンプレート（{key} は信号キーデータ）。区切りは半角ハイフン — Windows タイトル慣例どおりで維持可 ／ 【spec 確定反映】R-05 確定（区切りは em ダッシュ「 — 」） |
 | signal_preview_window.py:82 | label | ja | {label}: {value} | {label}: {value} | プロパティタブの行は完全動的。ラベル実体はクラスタ外 valisync/gui/viewmodels/signal_preview_vm.py:49-82（名前/単位/サンプル数/時間範囲/最小値/最大値/由来/コメント/ラベル — 既に日本語）。時間範囲の "{min:.4g} - {max:.4g} s" 数値フォーマットも同所 — VM ファイル担当の棚卸しに含めること |
 
 ## グラフ系（graph_panel / graph_area / analysis_actions / cursor_readout / offscale_badge）
@@ -192,7 +192,7 @@
 | graph_panel_view.py:842 | tooltip | ja | パネルを追加 | パネルを追加 | build_context_menu の "Add Panel"(L2538) と同機能 — 文言統一の基準にする |
 | graph_panel_view.py:850 | button | en | × | × | 記号のみ（U+00D7・noqa RUF001 付き）・翻訳不要 |
 | graph_panel_view.py:851 | tooltip | ja | パネルを削除 | パネルを削除 | "Remove Panel"(L2541) と同機能 — 統一基準 |
-| graph_panel_view.py:1884 | tooltip | en | Δt = {delta_t:+.3g} s | Δt = {delta_t:+.3g} s | オフセットドラッグ中の追従ツールチップ。記号+単位のみで翻訳不要（動的テンプレート） |
+| graph_panel_view.py:1884 | tooltip | en | Δt = {delta_t:+.3g} s | Δt = {delta_t:+.3f} s | オフセットドラッグ中の追従ツールチップ。記号+単位のみで翻訳不要（動的テンプレート） ／ 【spec 確定反映】R-06/E-4 確定（4画面 {:+.3f} s 統一 — .3g→.3f は意図的表示変更） |
 | graph_panel_view.py:1959 | title | ja | 時間オフセットの適用 | 時間オフセットの適用 |  |
 | graph_panel_view.py:1962 | dialog | mixed | Δt = {delta_t:+.3g} s を適用します。対象を選択してください。 | {delta_t:+.3f} s を適用します | Δt は記号で維持（動的テンプレート） ／ 【spec 確定反映】R-06/E-4 確定（4画面 {:+.3f} s 統一 — .3g→.3f は意図的表示変更） |
 | graph_panel_view.py:1964 | dialog | ja | この信号のみ | この信号のみ | scope radio。L2389/L2444 と同文言の三重定義 — 共通化候補 |
@@ -266,7 +266,7 @@
 | data_explorer_view.py:99 | button | en | Remove Source | データソースを削除 | ツールバー QAction。line 231「Remove from Data Sources」と動詞「削除」で統一。ニーモニクス案「データソースを削除(&R)」 |
 | data_explorer_view.py:115 | title | en | Select Data Source Folder | データソースフォルダを選択 | QFileDialog.getExistingDirectory のダイアログタイトル |
 | data_explorer_view.py:127 | status | ja | 削除するデータソースをリストから選択してください | 削除するデータソースをリストから選択してください | statusBar().showMessage（4000ms）。既に適正 |
-| data_explorer_view.py:228 | context_menu | en | Load File | ファイルを開く | 完了系文言「〜を読み込みました」と動詞「読み込む」で統一。ニーモニクス案「ファイルを読み込む(&L)」。ディレクトリ選択時は disabled ／ 【spec 確定反映】★#9 確定（G-12 — File>開く… と同一操作同一文言） |
+| data_explorer_view.py:228 | context_menu | en | Load File | ファイルを開く | 【spec 確定反映】★#9/G-12 確定「ファイルを開く」（File>開く… と同一操作同一文言）。コンテキストメニューはニーモニクス非付与（★#14） |
 | data_explorer_view.py:231 | context_menu | en | Remove from Data Sources | データソースから削除 | ニーモニクス案「データソースから削除(&D)」。未登録パスでは disabled |
 | diagnostics_view.py:32 | other | en | ⛔ / ⚠ / ℹ（_LEVEL_ICON: error/warning/info） | ⛔ / ⚠ / ℹ | レベル列の絵文字グリフ（言語非依存）。CLAUDE.md のとおり Lucide 等アイコン化は運用反復で個別判断 — 増分Dでは据え置き可 |
 | diagnostics_view.py:36 | header | ja | レベル | レベル | 既に適正 |
@@ -363,7 +363,7 @@
 | core/loaders/csv_loader.py:260 | diagnostic | ja | '{name}': 非有限値 {n} 個（'nan'/'inf' 文字列由来） | 信号 '{name}': 非有限値 {n} 個（'nan'/'inf' 文字列由来） | LD-06。プレフィックスが「'{name}':」のみで mdf_loader の「Signal '{name}':」系と不揃い — 「信号 '{name}':」への統一を提案（signal_name フィールドは別途保持済み） |
 | core/loaders/mdf_loader.py:102 | diagnostic | ja | 構造化チャンネル | 構造化チャンネル | line 108 の展開診断メッセージの shape_desc フラグメント（単独表示はされない）。対訳表では line 108 テンプレートと一体で扱う |
 | core/loaders/mdf_loader.py:104 | diagnostic | ja | {d1}x{d2}… 配列 | {d1}x{d2}… 配列 | line 108 の shape_desc フラグメント（"x".join(shape[1:]) + " 配列"）。次元数可変。line 108 テンプレートと一体で扱う |
-| core/loaders/mdf_loader.py:108 | diagnostic | mixed | Signal '{base_name}': {shape_desc}を {n} 本に展開 | 信号 '{name}': {shape_desc}を {n} 本に展開 | LD-14 展開の info 診断。「Signal '{name}':」プレフィックスは mdf_loader 内 4 箇所（108/295/440/477/492）共通 — 「信号 '{name}':」への一括統一を提案。csv_loader:260 の「'{name}':」（信号なし）とも表記揺れあり |
+| core/loaders/mdf_loader.py:108 | diagnostic | mixed | Signal '{base_name}': {shape_desc}を {n} 本に展開 | 信号 '{name}': {shape_desc}を {n} 本に展開 | LD-14 展開の info 診断。「Signal '{name}':」プレフィックスは mdf_loader 内 5 箇所（108/295/440/477/492）＋csv_loader:260 の計 6 箇所を「信号 '{name}':」へ一括統一（G-03） |
 | core/loaders/mdf_loader.py:252 | diagnostic | en | File not found or not accessible: {file_path} | ファイルが見つからないか、アクセスできません: {path} | csv_loader:40 と同一文言 — 同一訳で統一。error 診断（モーダル＋Diagnostics dock 表示） |
 | core/loaders/mdf_loader.py:265 | diagnostic | en | Failed to parse MDF '{file_name}': {exc} | MDF '{file}' の解析に失敗しました: {exc} | {exc} は asammdf 例外の英語文字列がそのまま入る（翻訳不能・そのまま残す判断が必要） |
 | core/loaders/mdf_loader.py:295 | diagnostic | mixed | Signal '{name}': 展開列数 {n} が上限 {limit} を超えるためスキップ | 信号 '{name}': 展開列数 {n} が上限 {limit} を超えるためスキップ | LD-14 warning 診断。プレフィックスのみ英語 → 「信号 '{name}':」へ統一 |
@@ -410,9 +410,6 @@
 | core/models/signal.py:30 | dialog | en | timestamps ({n}) and values ({m}) must have the same length | 時刻列 ({n} 点) と値列 ({m} 点) の長さが一致していません | 防御的不変量・実質非到達。読み込み中に発生すれば main_window.py:450 → QMessageBox「読み込みエラー」本文＋Diagnostics 行に生表示 |
 | core/models/signal.py:36 | dialog | en | timestamps contains non-finite value at index {idx} | 時刻列の {idx} 番目に非有限値が含まれています | 読み込み経路で発生時 main_window.py:450 → QMessageBox「読み込みエラー」に生表示。病的な入力データで到達しうる（ローダー診断が先行しない場合の最終防衛線） |
 | core/models/signal_group.py:21 | dialog | en | source_path must be absolute, got: {source_path} | ソースパスは絶対パスである必要があります: {path} | 実質非到達（ローダーは絶対パスで生成する防御的不変量）。読み込み中に発生すれば main_window.py:450 → QMessageBox「読み込みエラー」に生表示 |
-| core/session.py:52 | other | en | failed to load {file_path}: {'; '.join(messages)} | {path} の読み込みに失敗しました: {messages} | 非到達 — LoadError は .messages 属性を持つため main_window.py:450 は個別 messages を表示し str() 自体は未描画。load_worker.py:206 の task.fail(str(exc)) は LoadTask.error_message に保存されるが描画する view が存在しない |
-| core/session.py:153 | dialog | en | CSV files require a FormatDefinition | CSV の読み込みにはフォーマット定義が必要です | 表示経路は LoadController → main_window.py:450 [str(err)] → QMessageBox「読み込みエラー」本文＋Diagnostics ドック error 行。ただし GUI は CSV フォーマットを事前解決（main_window.py:388-392）するため実質非到達（防御的） |
-| core/session.py:160 | dialog | en | no loader supports file: {file_path} | 対応していないファイル形式です: {path} | 到達可 — 「すべてのファイル (*)」フィルタ（main_window.py:571）や非対応ファイルの D&D（graph_area_view.py:661 dropEvent → _load_file）で発生し、main_window.py:450 経由で QMessageBox「読み込みエラー」本文＋Diagnostics ドック行に生表示 |
 | core/session.py:362 | other | en | window must be in 1..{n} (signal length), got {window} | 窓幅は 1–{n}（信号長）の範囲で指定してください（現在 {window}） | 非到達 — 移動平均など派生信号の GUI（gui-derived サブスペック）未実装 |
 | core/session.py:402 | other | en | {op} requires at least 2 samples, got {n} | {op} には 2 点以上のサンプルが必要です（現在 {n} 点） | 非到達 — 派生信号 GUI 未実装（session.py:362 と同根拠） |
 | core/statistics/range_stats.py:40 | other | en | t_start must be finite, got {t_start!r} | 開始時刻は有限値で指定してください（現在 {t}） | 非到達 — 範囲統計はカーソル A/B 位置（常に有限）から呼ばれ、GUI 側に捕捉・表示サイトなし |
