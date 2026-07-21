@@ -22,7 +22,7 @@ ICONS_DIR = Path(__file__).resolve().parent / "icons"
 ICONS: dict[str, str] = {
     "open": "lucide/folder-open.svg",
     "open_folder": "lucide/folder.svg",
-    "export": "lucide/save.svg",
+    "export": "lucide/download.svg",
     "data_explorer": "lucide/folder-tree.svg",
     "chevron_down": "lucide/chevron-down.svg",
     "chevron_right": "lucide/chevron-right.svg",
