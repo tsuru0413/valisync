@@ -664,6 +664,34 @@ class TestActivePanel:
         assert vm.inspect()["tabs"][0]["active_panel_index"] == 0
 
 
+# ─── Task 2: タブ注入 CursorState (spec §2.1) ────────────────────────────────
+
+
+@pytest.fixture
+def area_with_signals() -> GraphAreaVM:
+    """タブ内共有 CursorState の検証専用 GraphAreaVM (信号データは不要)。"""
+    return GraphAreaVM(AppViewModel(_make_session()))
+
+
+def test_add_panel_preserves_tab_cursor_state(area_with_signals: GraphAreaVM) -> None:
+    area = area_with_signals
+    p0 = area.panels(0)[0]
+    p0.set_cursor(3.0)
+    p0.set_cursor_b(5.0)
+    area.add_panel(0)
+    p1 = area.panels(0)[1]
+    # 巻き戻し禁止 (blocker): 既存値が不変で新パネルから同値が読める
+    assert (p0.cursor_t, p0.cursor_t_b, p0.delta_enabled) == (3.0, 5.0, True)
+    assert (p1.cursor_t, p1.cursor_t_b, p1.delta_enabled) == (3.0, 5.0, True)
+
+
+def test_tabs_have_independent_cursor_state(area_with_signals: GraphAreaVM) -> None:
+    area = area_with_signals
+    area.add_tab()
+    area.panels(0)[0].set_cursor(3.0)
+    assert area.panels(1)[0].cursor_t is None
+
+
 # ─── Task 5: クロスパネル軸移動の再計算+refit (spec §3.7) ─────────────────────
 
 

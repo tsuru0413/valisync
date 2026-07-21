@@ -57,7 +57,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from valisync.core.interpolation import InterpolationMethod
 from valisync.gui.adapters.qt_signal_models import (
     AXIS_INDEX_MIME,
     SIGNAL_KEYS_MIME,
@@ -68,6 +67,11 @@ from valisync.gui.adapters.qt_signal_models import (
 from valisync.gui.theme import qss, tokens
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM, RenderCurve
 from valisync.gui.viewmodels.y_axis_vm import YAxisVM
+from valisync.gui.views.analysis_actions import (
+    AnalysisActions,
+    build_analysis_actions,
+    sync_analysis_actions,
+)
 from valisync.gui.views.cursor_shapes import CursorKind, cursor
 from valisync.gui.views.offscale_badge import (
     BADGE_PX as _OFFSCALE_BADGE_PX,
@@ -76,14 +80,6 @@ from valisync.gui.views.offscale_badge import (
     OffscaleBadge,
     offscale_directions,
 )
-
-# Interp method → menu/readout label (PC-09). Single source of truth so the
-# context-menu radio group and the CursorReadout header never drift apart.
-_INTERP_LABELS: dict[InterpolationMethod, str] = {
-    InterpolationMethod.LINEAR: "線形",
-    InterpolationMethod.ZERO_ORDER_HOLD: "前値保持",
-    InterpolationMethod.NEAREST: "最近傍",
-}
 
 # ─── Axis interaction zones (R9.1 / R10.1) ────────────────────────────────────
 
@@ -715,9 +711,26 @@ class GraphPanelView(QWidget):
         | None = None,
         reset_dialog_fn: Callable[[str], str | None] | None = None,
         time_dialog_fn: Callable[[str, float], float | None] | None = None,
+        analysis_actions: AnalysisActions | None = None,
+        x_sync_getter: Callable[[], bool] | None = None,
+        x_sync_setter: Callable[[bool], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.vm = vm
+        # spec §2.2: Analyze メニューと空白右クリックメニューが共有する解析系
+        # QAction 群。GraphAreaView 経由 (MainWindow が生成した1セット) で注入され
+        # るのが本来の配線で、未注入 (bare ハーネス/単独構成) 時は同一ファクトリで
+        # ローカル生成する (既存の headless/realgui テストが GraphPanelView(vm)
+        # 単体で組み立てる形を壊さないための互換路)。build_analysis_actions は
+        # QWidget を close over しないので、self をここで参照しても参照循環には
+        # ならない (build_context_menu で毎回 self.vm へ再ターゲットする設計 —
+        # analysis_actions.py の docstring 参照)。
+        self._analysis_actions = analysis_actions or build_analysis_actions(self)
+        # spec §2.3: X 軸同期 (タブ内全パネル) の所有は GraphAreaView 側のまま —
+        # このパネルは getter/setter ペアを注入されるだけで area に非依存を保つ
+        # (bare ハーネス/単独構成では未注入 = 空白メニューに項目を出さない)。
+        self._x_sync_getter = x_sync_getter
+        self._x_sync_setter = x_sync_setter
         self._apply_dialog_fn = apply_dialog_fn
         self._color_dialog_fn = color_dialog_fn or self._default_color_dialog
         self._range_dialog_fn = range_dialog_fn
@@ -1986,7 +1999,21 @@ class GraphPanelView(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             self.activate_requested.emit()  # PC-07: どのゾーンでも押下=活性化
             zone = self._zone_at(event.position())
-            if zone in (ZONE_X_INNER, ZONE_X_OUTER):
+            if zone == ZONE_PLOT and bool(
+                event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+            ):
+                # UX-13: Shift+クリックは計測ジェスチャとして曲線ヒット(DP16 候補)・
+                # カーソル線 10px ヒット帯より優先(spec §2.2 優先規則) — B を A 線近傍や
+                # 曲線上に置く典型操作が press 候補/線ドラッグに奪われないため、他の
+                # ZONE_PLOT 分岐より前に確定させる。X/Y 軸ゾーンは対象外(zone 条件で除外)。
+                t = self._data_value(event.position(), "x")
+                if t is not None:
+                    if self.vm.cursor_t is None:
+                        self.vm.set_cursor(t)  # A 未設置 -> A を設置 (B は置かない)
+                    else:
+                        self.vm.set_cursor_b(t)  # A 設置済み -> B 設置 (暗黙 delta)
+                event.accept()
+            elif zone in (ZONE_X_INNER, ZONE_X_OUTER):
                 self._deactivate_curve()  # X zone is a different target -> deactivate
                 self._drag_zone = zone
                 self._drag_start = event.position()
@@ -2437,7 +2464,7 @@ class GraphPanelView(QWidget):
         menu.addAction("時刻を指定…").triggered.connect(
             lambda *_: self._prompt_cursor_time(which)
         )
-        label = "カーソルを消す" if which == "A" else "サブカーソルを消す"
+        label = "カーソルを消す" if which == "A" else "カーソル B（Δ）を消す"  # noqa: RUF001
         menu.addAction(label).triggered.connect(lambda *_: self._clear_cursor(which))
         return menu
 
@@ -2478,7 +2505,8 @@ class GraphPanelView(QWidget):
         dlg.setWindowTitle("カーソル時刻を指定")
         lay = QVBoxLayout(dlg)
         lay.addWidget(QLabel(f"{which} カーソルの時刻 (秒):"))
-        edit = QLineEdit(f"{current:.6g}")
+        # 固定小数3桁 (UX-14/48・spec §2.5 — 他の時刻表示面と統一)。
+        edit = QLineEdit(f"{current:.3f}")
         lay.addWidget(edit)
         box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -2504,7 +2532,8 @@ class GraphPanelView(QWidget):
         return float(edit.text())
 
     def build_context_menu(self) -> QMenu:
-        """Build the blank-area panel menu (add/remove panel, reset axes, interp)."""
+        """Build the blank-area panel menu (add/remove panel, reset axes, grid,
+        X-axis sync, interp)."""
         menu = QMenu(self)
         menu.addAction("Add Panel").triggered.connect(
             lambda *_: self.add_panel_requested.emit()
@@ -2520,36 +2549,36 @@ class GraphPanelView(QWidget):
         grid_act.setChecked(self.vm.grid_enabled)
         # setChecked BEFORE toggled.connect so the initial state-set does not fire the handler
         grid_act.toggled.connect(lambda checked: self.vm.toggle_grid(checked))
+        # spec §2.3 (v3 決定4): Sync X は右クリックのみ。所有は area 側のままなので
+        # getter/setter が両方注入されているときだけ項目を出す (未注入 = bare ハー
+        # ネス/単独構成 — area 非依存を保つ)。共有 checkable QAction ではなく毎回
+        # 使い捨てで作るが、build 時の setChecked が誤発火しないよう triggered
+        # 配線 (toggled 禁止 — spec 拘束) にする。
+        getter = self._x_sync_getter
+        setter = self._x_sync_setter
+        if getter is not None and setter is not None:
+            sync_act = menu.addAction("X軸同期（タブ内全パネル）")  # noqa: RUF001
+            sync_act.setCheckable(True)
+            sync_act.setChecked(getter())
+            sync_act.triggered.connect(lambda checked: setter(checked))
         menu.addSeparator()
-        main_act = menu.addAction("メインカーソル")
-        main_act.setCheckable(True)
-        main_act.setChecked(self.vm.cursor_t is not None)
-        # setChecked BEFORE toggled.connect so the initial state-set does not fire the handler
-        main_act.toggled.connect(lambda checked: self.vm.toggle_main_cursor(checked))
-        sub_act = menu.addAction("サブカーソル（Δ）")  # noqa: RUF001
-        sub_act.setCheckable(True)
-        sub_act.setChecked(self.vm.delta_enabled)
-        sub_act.setEnabled(self.vm.cursor_t is not None)  # greyed out until main ON
-        # setChecked BEFORE toggled.connect so the initial state-set does not fire the handler
-        sub_act.toggled.connect(lambda checked: self.vm.toggle_delta(checked))
-        if not sub_act.isEnabled():
-            sub_act.setToolTip("メインカーソルを有効化すると使えます")
+        # 解析系 QAction (カーソル A/B/消去/補間方式) は AnalysisActions ファクトリの
+        # 共有インスタンス (spec §2.2) — Analyze メニューと文言/チェック状態が乖離し
+        # ないよう、生成済みの同一 QAction を addAction するだけ。sync_analysis_
+        # actions は checked/enabled の同期と同時に trigger 時の配送先も self.vm
+        # (=右クリックされたこのパネル) へ再ターゲットする (レビュー修正 — メニュー
+        # はモーダルなので、次に開く別パネルの build_context_menu が呼ばれるまで
+        # このターゲットのまま安全)。
+        sync_analysis_actions(self._analysis_actions, self.vm)
+        menu.addAction(self._analysis_actions.cursor_a)
+        cursor_b_act = self._analysis_actions.cursor_b
+        menu.addAction(cursor_b_act)
+        if not cursor_b_act.isEnabled():
             menu.setToolTipsVisible(True)
-        from PySide6.QtGui import QActionGroup
-
+        menu.addAction(self._analysis_actions.clear_cursors)
         interp = menu.addMenu("補間方式")
-        interp_group = QActionGroup(interp)
-        interp_group.setExclusive(True)
-        for label, method in (
-            ("線形", InterpolationMethod.LINEAR),
-            ("前値保持", InterpolationMethod.ZERO_ORDER_HOLD),
-            ("最近傍", InterpolationMethod.NEAREST),
-        ):
-            act = interp.addAction(label)
-            act.setCheckable(True)
-            act.setActionGroup(interp_group)
-            act.setChecked(method == self.vm.interp_method)  # BEFORE triggered.connect
-            act.triggered.connect(lambda *_, m=method: self.vm.set_interp_method(m))
+        for act in self._analysis_actions.interp_actions.values():
+            interp.addAction(act)
         return menu
 
     def build_axis_menu(self, axis_index: int) -> QMenu:

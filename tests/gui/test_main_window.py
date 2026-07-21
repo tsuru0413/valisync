@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDockWidget
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
@@ -187,6 +188,108 @@ class TestDataExplorerAction:
         """open_data_explorer is a no-op placeholder; must not raise."""
         window = _make_window(qtbot)
         window.action_data_explorer.trigger()  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------------------
+# Analyze menu (計測 IA 刷新 spec §2.2) -- AnalysisActions 共有・配線規約
+# ---------------------------------------------------------------------------
+
+
+def _analyze_menu(window: object):
+    # submenu の生存は .menu() を呼んだ QAction ラッパの寿命に紐づく (shiboken) —
+    # ラッパを保持しないと genexpr の一時変数が捨てられた時点で GC され、戻り値の
+    # QMenu が "already deleted" になる (memory gui_pyside_qaction_submenu_shiboken_lifetime)。
+    act = next(
+        a
+        for a in window.menuBar().actions()  # type: ignore[attr-defined]
+        if a.text() == "&Analyze"
+    )
+    menu = act.menu()
+    menu._keepalive = act  # type: ignore[attr-defined]
+    return menu
+
+
+class TestAnalyzeMenu:
+    def test_menu_has_four_items_and_disabled_info_row(self, qtbot: QtBot) -> None:
+        window = _make_window(qtbot)
+        menu = _analyze_menu(window)
+        texts = [a.text() for a in menu.actions()]
+        assert "カーソル A" in texts
+        assert "カーソル B（Δ）" in texts  # noqa: RUF001
+        assert "カーソルを消す" in texts
+        assert any(
+            a.text() == "補間方式" and a.menu() is not None for a in menu.actions()
+        )
+        step = next(a for a in menu.actions() if a.text() == "← / → サンプルステップ")
+        assert not step.isEnabled()
+
+    def test_blank_menu_shares_same_qaction_as_analyze_menu(self, qtbot: QtBot) -> None:
+        """空白右クリックメニューと Analyze メニューは同一 QAction を掲載する
+        (checked/文言の乖離を構造防止 -- spec §2.2)。"""
+        window = _make_window(qtbot)
+        analyze_cursor_a = next(
+            a for a in _analyze_menu(window).actions() if a.text() == "カーソル A"
+        )
+        panel_view = window.graph_area_view.tabs.widget(0).widget(0)  # type: ignore[union-attr]
+        blank_cursor_a = next(
+            a
+            for a in panel_view.build_context_menu().actions()  # type: ignore[attr-defined]
+            if a.text() == "カーソル A"
+        )
+        assert analyze_cursor_a is blank_cursor_a
+
+    def test_about_to_show_sync_transition_does_not_fire_vm_handlers(
+        self, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """誤発火ガード実質化 (レビュー指摘): 旧版はカーソル未設置パネルで検証して
+        おり、sync は checked=False のまま無変化 (setChecked(False) は何もしない)
+        だったため toggled 配線でも発火せず恒真だった。カーソル設置済みの状態で
+        aboutToShow を発火させ、setChecked(False→True) の遷移が実際に起きること
+        を確認した上でハンドラ非発火 (calls == []) と cursor_t 不変を検証する。
+        sabotage (toggled 配線への変更) で RED になることを実装時に確認済み。"""
+        window = _make_window(qtbot)
+        pvm = window.graph_area_view.active_panel_vm()  # type: ignore[attr-defined]
+        assert pvm is not None
+        pvm.set_cursor(
+            0.3
+        )  # 既に設置済み。toggle_main_cursor(True) の既定中央と異なる値。
+        cursor_a = window._analysis_actions.cursor_a  # type: ignore[attr-defined]
+        assert cursor_a.isChecked() is False  # aboutToShow 前 (前提)
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            pvm,
+            "toggle_main_cursor",
+            lambda *a, **k: calls.append("main"),
+        )
+        monkeypatch.setattr(
+            pvm,
+            "toggle_delta",
+            lambda *a, **k: calls.append("delta"),
+        )
+        _analyze_menu(window).aboutToShow.emit()
+
+        assert (
+            cursor_a.isChecked() is True
+        )  # 遷移が実際に起きたことの確認 (テストの前提)
+        assert calls == []
+        assert pvm.cursor_t == pytest.approx(0.3)  # setChecked だけでは変異しない
+
+    def test_triggering_cursor_a_from_analyze_dispatches_to_active_panel(
+        self, qtbot: QtBot
+    ) -> None:
+        """実際のメニュー表示は必ず aboutToShow → (ユーザー操作) trigger の順。
+        aboutToShow で再ターゲットされて初めて trigger がアクティブパネルへ届く
+        (spec §2.2 レビュー修正: 共有ターゲットは sync 時点まで None)。"""
+        window = _make_window(qtbot)
+        pvm = window.graph_area_view.active_panel_vm()  # type: ignore[attr-defined]
+        assert pvm is not None
+        pvm.x_range = (0.0, 1.0)
+        menu = _analyze_menu(window)
+        menu.aboutToShow.emit()
+        cursor_a = next(a for a in menu.actions() if a.text() == "カーソル A")
+        cursor_a.trigger()
+        assert pvm.cursor_t == pytest.approx(0.5)
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +479,7 @@ def test_on_loaded_status_bar_shows_info_not_alert_for_info_only(qtbot, tmp_path
         ),
     )
     window._on_loaded(outcome)
-    msg = window.statusBar().currentMessage()
+    msg = window.status_message()  # spec §2.4: 右ラベルへ移設 (showMessage 廃止)
     assert "ℹ 2 件の情報" in msg  # noqa: RUF001
     assert "⚠" not in msg
 
@@ -393,7 +496,7 @@ def test_on_loaded_status_bar_shows_alert_count_excluding_info(qtbot, tmp_path):
         ),
     )
     window._on_loaded(outcome)
-    msg = window.statusBar().currentMessage()
+    msg = window.status_message()  # spec §2.4: 右ラベルへ移設 (showMessage 廃止)
     assert "⚠ 1 件の診断" in msg
 
 
@@ -537,8 +640,8 @@ def test_on_load_cancelled_updates_status_without_dialog(qtbot, monkeypatch):
     dialogs = []
     monkeypatch.setattr(mw.QMessageBox, "critical", lambda *a, **k: dialogs.append(a))
     window._on_load_cancelled(Path("big.mf4"))
-    assert "キャンセル" in window.statusBar().currentMessage()
-    assert "big.mf4" in window.statusBar().currentMessage()
+    assert "キャンセル" in window.status_message()  # 右ラベルへ移設 (spec §2.4)
+    assert "big.mf4" in window.status_message()
     assert dialogs == []  # モーダル無し(spec §6)
     assert window.diagnostics_vm.counts() == (0, 0)  # 診断追記無し
 
@@ -1106,3 +1209,132 @@ def test_reset_layout_reapplies_default_dock_ratio(qtbot):
     assert docks == [win.file_dock, win.channel_dock]
     assert sizes == [1, 4]
     assert orient == Qt.Orientation.Vertical
+
+
+# ---------------------------------------------------------------------------
+# Status bar 刷新 (計測 IA・spec §2.4): 左=即値 / 右=メッセージ・statusTip 横取り
+# ---------------------------------------------------------------------------
+
+
+def test_set_status_message_writes_right_label(qtbot):
+    window = _make_window(qtbot)
+    window.set_status_message("読み込みました")
+    assert window.status_message() == "読み込みました"
+
+
+def test_set_status_message_timeout_auto_clears(qtbot):
+    window = _make_window(qtbot)
+    window.set_status_message("一時メッセージ", timeout_ms=50)
+    assert window.status_message() == "一時メッセージ"
+    qtbot.wait(150)
+    assert window.status_message() == ""
+
+
+def test_set_status_message_restart_cancels_prior_timer(qtbot):
+    """再呼び出しは前タイマーを破棄する — 古いクリアが新メッセージを消さない。"""
+    window = _make_window(qtbot)
+    window.set_status_message("first", timeout_ms=50)
+    window.set_status_message("second")  # timeout=0 → 常設
+    qtbot.wait(150)
+    assert window.status_message() == "second"
+
+
+def test_status_tip_event_intercepted_keeps_immediate_visible(qtbot):
+    """blocker: QStatusTipEvent を横取りし右ラベルへ流す — 左即値は隠れない (§2.4)。
+
+    横取りを外すと Qt 既定処理が内部 showMessage(tip) を駆動し、addWidget した
+    左即値ラベル (非常設) を一時的に隠す。sendEvent 後に左が isVisible のまま
+    かつ右ラベルに tip が出ることで、既定処理へ通していないことを直接実証する。
+    """
+    from PySide6.QtGui import QStatusTipEvent
+    from PySide6.QtWidgets import QApplication
+
+    window = _make_window(qtbot)
+    window.graph_area_vm.active_panel().set_cursor(3.0)  # 左 A ラベルに文字を出す
+    window.show()
+    qtbot.waitExposed(window)
+
+    QApplication.sendEvent(window, QStatusTipEvent("メニューを開く"))
+
+    assert window.status_message() == "メニューを開く"  # 右ラベルへ反映
+    assert window._status_cursor_a.isVisible()  # 左即値は隠れていない
+
+
+def test_immediate_values_show_on_cursor_set(qtbot):
+    """カーソル設置で左即値 (A/B/Δt) が .3f 書式で出る・未設置は空文字。"""
+    window = _make_window(qtbot)
+    panel = window.graph_area_vm.active_panel()
+
+    assert window._status_cursor_a.text() == ""  # 初期は空
+    assert window._status_cursor_b.text() == ""
+    assert window._status_cursor_delta.text() == ""
+
+    panel.set_cursor(3.0)
+    assert window._status_cursor_a.text() == "A 3.000 s"
+    assert window._status_cursor_b.text() == ""  # B 未設置
+    assert window._status_cursor_delta.text() == ""  # Δt は A/B 双方要
+
+    panel.set_cursor_b(6.0)  # A 設置済みなので暗黙 delta で B 設置
+    assert window._status_cursor_b.text() == "B 6.000 s"
+    assert window._status_cursor_delta.text() == "Δt 3.000 s"
+
+    panel.set_cursor(None)  # A 消去 → B/Δt も消える
+    assert window._status_cursor_a.text() == ""
+    assert window._status_cursor_b.text() == ""
+    assert window._status_cursor_delta.text() == ""
+
+
+def test_immediate_values_swap_on_tab_switch(qtbot):
+    """タブ切替で左即値がそのタブの CursorState に入れ替わる (§2.4)。"""
+    window = _make_window(qtbot)
+    vm = window.graph_area_vm
+    vm.active_panel().set_cursor(3.0)
+    assert window._status_cursor_a.text() == "A 3.000 s"
+
+    vm.add_tab()  # 新タブ (別 CursorState・アクティブ化 → "tabs" notify)
+    assert window._status_cursor_a.text() == ""  # 新タブは未設置
+
+    vm.set_active_tab(0)  # 元タブへ戻る → "active" notify
+    assert window._status_cursor_a.text() == "A 3.000 s"
+
+
+def test_immediate_label_a_uses_chrome_cursor_a_not_cursor_a(qtbot):
+    """chrome_cursor_a は cursor_a と DARK 同値の別役割 — 値分岐で誤配線を実証。
+
+    DARK では両者同値のため値ベース assert は盲目。chrome_cursor_a だけを分岐
+    させたテーマで A 即値ラベルの色がどちらを参照するか直接実証する。
+    """
+    import dataclasses
+
+    from valisync.gui.theme.tokens import DARK, Color, set_active
+
+    alt = dataclasses.replace(
+        DARK, colors=dataclasses.replace(DARK.colors, chrome_cursor_a=Color(1, 2, 3))
+    )
+    set_active(alt)
+    try:
+        window = _make_window(qtbot)
+        sheet = window._status_cursor_a.styleSheet()
+        assert Color(1, 2, 3).hex in sheet
+        assert DARK.colors.cursor_a.hex not in sheet
+    finally:
+        set_active(DARK)
+
+
+def test_immediate_label_b_uses_chrome_cursor_b_not_cursor_b(qtbot):
+    """chrome_cursor_b は cursor_b と DARK 同値の別役割 — 値分岐で誤配線を実証。"""
+    import dataclasses
+
+    from valisync.gui.theme.tokens import DARK, Color, set_active
+
+    alt = dataclasses.replace(
+        DARK, colors=dataclasses.replace(DARK.colors, chrome_cursor_b=Color(1, 2, 3))
+    )
+    set_active(alt)
+    try:
+        window = _make_window(qtbot)
+        sheet = window._status_cursor_b.styleSheet()
+        assert Color(1, 2, 3).hex in sheet
+        assert DARK.colors.cursor_b.hex not in sheet
+    finally:
+        set_active(DARK)

@@ -60,7 +60,7 @@ def main() -> int:
     # 物理マウスを画面隅へ退避 — hover 効果を撮影状態から排除 (spec §7-2)
     ctypes.windll.user32.SetCursorPos(5, 5)
 
-    from PySide6.QtCore import QSettings
+    from PySide6.QtCore import QCoreApplication, QEvent, QSettings
     from PySide6.QtWidgets import QApplication
 
     # QSettings 隔離 — 実 ValiSync 設定 (Recent Files / dockCollapsed / ドック配置 /
@@ -107,6 +107,13 @@ def main() -> int:
         deadline = time.monotonic() + secs
         while time.monotonic() < deadline:
             app.processEvents()
+            # processEvents() 単独では QEvent.DeferredDelete が実 exec() ループ
+            # (ここでは未使用) 経由でしか flush されず、deleteLater() 済みウィジェット
+            # が生存し続ける (Qt の仕様 — 実アプリの app.exec() 下では自然に解消する
+            # ため production バグではない)。readout の凡例→計測モード等の連続
+            # full_rebuild で旧行が残存し重ね描画されるスクショ限定の artifact を
+            # 明示的 flush で根治 (計測 IA Task 10 で発見)。
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     args.out.mkdir(parents=True, exist_ok=True)
 

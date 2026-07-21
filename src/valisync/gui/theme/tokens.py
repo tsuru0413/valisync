@@ -98,6 +98,11 @@ class Colors:
     chrome_placeholder: Color
     chrome_disabled_text: Color
     chrome_frame: Color  # 領域境界線 (separator+1px枠) — border_chip と同値だが別役割
+    # ステータスバー左のカーソル A/B 即値色 — DARK は cursor_a/cursor_b と同値の
+    # 別役割 (プロット面 cursor_a/b は淡色でクローム明面上は不可視のため別トークン)。
+    # LIGHT は明面 (chrome_window) で WCAG AA (≥4.5:1) を満たす濃色を実測選定。
+    chrome_cursor_a: Color
+    chrome_cursor_b: Color
     surface_readout_panel: (
         Color  # 読み値ペイン面 — chrome_alternate_base と同値の別役割
     )
@@ -180,6 +185,10 @@ DARK = ThemeTokens(
         chrome_placeholder=Color.from_hex("#7f849c"),
         chrome_disabled_text=Color.from_hex("#6c7086"),
         chrome_frame=Color.from_hex("#45475a"),
+        # DARK は cursor_a/cursor_b と同値 (暗面ではプロット色がそのままクローム上
+        # でも可視) — 値分岐テーマテストで別役割を実証する。
+        chrome_cursor_a=Color.from_hex("#f9e2af"),
+        chrome_cursor_b=Color.from_hex("#74c7ec"),
         surface_readout_panel=Color.from_hex("#1e1e2e"),
         delta_negative=Color.from_hex("#f38ba8"),
         delta_positive=Color.from_hex("#a6e3a1"),
@@ -235,6 +244,11 @@ LIGHT = ThemeTokens(
         chrome_placeholder=Color.from_hex("#8c8fa1"),
         chrome_disabled_text=Color.from_hex("#9ca0b0"),
         chrome_frame=Color.from_hex("#bcc0cc"),
+        # LIGHT は明面 (chrome_window #eff1f5) で AA を満たす濃色を実測選定
+        # (amber 4.90:1 / sapphire 5.34:1)。淡い Latte yellow/sapphire は明面で
+        # 2.3-2.8:1 しか出ず不可視のため、色相を保ったまま暗くした値を採る。
+        chrome_cursor_a=Color.from_hex("#8a6100"),
+        chrome_cursor_b=Color.from_hex("#106a8f"),
         surface_readout_panel=Color.from_hex("#eff1f5"),
         delta_negative=Color.from_hex("#d20f39"),
         delta_positive=Color.from_hex("#40a02b"),

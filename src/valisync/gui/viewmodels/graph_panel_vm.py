@@ -146,6 +146,22 @@ class _PlottedEntry:
     entry_id: int = 0
 
 
+@dataclass
+class CursorState:
+    """タブ内全パネルが共有する計測カーソル状態(transient — 永続化しない)。
+
+    既定値は本 dataclass が唯一持つ。GraphPanelVM.__init__ 側で4フィールドへ
+    個別に既定値代入すると、注入済みの共有オブジェクト(タブ内の他パネルと
+    同一参照)を新規パネル生成のたびに巻き戻してしまう
+    (spec §2.1 敵対的レビュー blocker)。
+    """
+
+    cursor_t: float | None = None
+    cursor_t_b: float | None = None
+    delta_enabled: bool = False
+    interp_method: InterpolationMethod = InterpolationMethod.LINEAR
+
+
 class GraphPanelVM(Observable):
     """ViewModel for the main graph panel with dynamic Level-of-Detail.
 
@@ -153,9 +169,15 @@ class GraphPanelVM(Observable):
     ----------
     session:
         The application Session — the *only* gateway to core modules.
+    cursor_state:
+        共有 CursorState(spec §2.1)。タブ内の全パネルへ同一オブジェクトを
+        注入すると、カーソル移動が扇状に共有される(配布でなく共有)。
+        None のときは自前の(非共有)状態を新規に持つ。
     """
 
-    def __init__(self, session: Session) -> None:
+    def __init__(
+        self, session: Session, cursor_state: CursorState | None = None
+    ) -> None:
         super().__init__()
         self._session = session
         self._plotted: list[_PlottedEntry] = []
@@ -173,13 +195,12 @@ class GraphPanelVM(Observable):
         # Cache: maps cache-key → list[RenderCurve]
         self._cache: dict[tuple[Any, ...], list[RenderCurve]] = {}
 
-        # Global cursor (R15) — transient, never persisted.
-        self.cursor_t: float | None = None
-        self.interp_method: InterpolationMethod = InterpolationMethod.LINEAR
+        # Global cursor (R15) + Delta (R16/R17) — shared per-tab state (spec §2.1).
+        # Must NOT assign into the 4 fields here: an injected state is the SAME
+        # object other panels in the tab already reference, and writing defaults
+        # into it would roll back their cursor to None (レビュー blocker).
+        self._cursor_state: CursorState = cursor_state or CursorState()
 
-        # Delta cursor + range stats (R16/R17) — transient, never persisted.
-        self.cursor_t_b: float | None = None
-        self.delta_enabled: bool = False
         # Stat column visibility (spec §7) — which of the 5 stat columns to show
         # in Delta readout. GraphPanelView syncs this into CursorReadout on each
         # render so the VM is the single source of truth.
@@ -1020,6 +1041,46 @@ class GraphPanelVM(Observable):
 
     # ─── Global cursor (R15) ─────────────────────────────────────────────────
 
+    # 4 プロパティは全て _cursor_state へ委譲 (spec §2.1)。API 名/挙動は不変
+    # (R15-17 テスト資産は書換え不要) — 実体をタブ内共有の CursorState に
+    # 差し替えたことが唯一の変更。
+
+    @property
+    def cursor_t(self) -> float | None:
+        """A (main) cursor time — None when unset."""
+        return self._cursor_state.cursor_t
+
+    @cursor_t.setter
+    def cursor_t(self, value: float | None) -> None:
+        self._cursor_state.cursor_t = value
+
+    @property
+    def cursor_t_b(self) -> float | None:
+        """B (Delta) cursor time — None when unset."""
+        return self._cursor_state.cursor_t_b
+
+    @cursor_t_b.setter
+    def cursor_t_b(self, value: float | None) -> None:
+        self._cursor_state.cursor_t_b = value
+
+    @property
+    def delta_enabled(self) -> bool:
+        """Whether the B (Delta) cursor is currently shown."""
+        return self._cursor_state.delta_enabled
+
+    @delta_enabled.setter
+    def delta_enabled(self, value: bool) -> None:
+        self._cursor_state.delta_enabled = value
+
+    @property
+    def interp_method(self) -> InterpolationMethod:
+        """Interpolation method used for cursor value reads."""
+        return self._cursor_state.interp_method
+
+    @interp_method.setter
+    def interp_method(self, value: InterpolationMethod) -> None:
+        self._cursor_state.interp_method = value
+
     def set_cursor(self, t: float | None) -> None:
         """Set the global (A) cursor time and notify.
 
@@ -1082,6 +1143,35 @@ class GraphPanelVM(Observable):
             )
         return out
 
+    def legend_readings(self) -> list[CursorReading]:
+        """凡例行 (カーソル未設置・信号あり・計測 IA spec §2.6): 名前/色/単位/entry_id のみ。
+
+        value=None/in_range=False はダミー — 凡例モードは値セルを描かないので
+        CursorReadout.set_legend は読まない。cursor_readings() と異なり cursor_t
+        の有無を問わず可視エントリを返す(呼び出し側 GraphAreaView がカーソル
+        未設置のときだけこれを使う)。
+        """
+        sig_map = self._signal_map()
+        out: list[CursorReading] = []
+        for entry in self._plotted:
+            if not entry.visible:
+                continue
+            sig = sig_map.get(entry.signal_key)
+            unit = (
+                sig.metadata.get("unit", "") if sig is not None and sig.metadata else ""
+            )
+            out.append(
+                CursorReading(
+                    entry.signal_key,
+                    entry.color,
+                    None,
+                    False,
+                    unit=unit,
+                    entry_id=entry.entry_id,
+                )
+            )
+        return out
+
     # ─── Delta cursor + range stats (R16/R17) ────────────────────────────────
 
     def _default_cursor_x(self, frac: float) -> float:
@@ -1108,8 +1198,19 @@ class GraphPanelVM(Observable):
         self._notify("delta")
 
     def set_cursor_b(self, t: float) -> None:
-        """Move the Delta (B) cursor and notify (local — not broadcast)."""
+        """Move the Delta (B) cursor and notify (local — not broadcast).
+
+        No-op when A is unset — same "B requires A" guard as toggle_delta,
+        since a B with no A is meaningless. Otherwise implicitly turns Delta
+        on (half-set removed, UX-13/46): dragging/placing B always means the
+        user wants a delta, so there is no separate "B set but delta off"
+        state to represent. notify stays the existing single "delta" tag
+        (test_set_cursor_b_notifies_delta locks this contract).
+        """
+        if self.cursor_t is None:
+            return
         self.cursor_t_b = t
+        self.delta_enabled = True
         self._notify("delta")
 
     def _reference_timestamps(

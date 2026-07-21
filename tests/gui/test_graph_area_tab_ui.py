@@ -26,14 +26,24 @@ def _make_area(qtbot: QtBot):  # type: ignore[no-untyped-def]
 
 
 def test_corner_new_tab_button_adds_tab(qtbot: QtBot) -> None:
+    # 計測 IA 刷新 spec §2.3: corner widget は「+」単体ではなく読み値トグルとの
+    # 横並びコンテナ。cornerWidget() 自体の objectName ではなく子ボタンを探す。
     view = _make_area(qtbot)
-    btn = view.tabs.cornerWidget()
+    container = view.tabs.cornerWidget()
+    btn = container.findChild(QToolButton, "new_tab_button")
     assert isinstance(btn, QToolButton)
-    assert btn.objectName() == "new_tab_button"
     assert view.tabs.count() == 1
     btn.click()
     assert view.tabs.count() == 2
     assert view.vm.active_tab_index == 1  # add_tab is new tab active
+
+
+def test_corner_container_holds_new_tab_and_readout_toggle(qtbot: QtBot) -> None:
+    """spec §2.3: corner widget = 「+」と読み値トグルの横並びコンテナ (両方 findChild で見つかる)。"""
+    view = _make_area(qtbot)
+    container = view.tabs.cornerWidget()
+    assert container.findChild(QToolButton, "new_tab_button") is not None
+    assert container.findChild(QToolButton, "readout_toggle_button") is not None
 
 
 def test_ctrl_t_shortcut_adds_tab(qtbot: QtBot) -> None:

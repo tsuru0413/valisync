@@ -182,3 +182,39 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   実証し、決定的撮影の再現性を確認。**claude.ai/design への再同期のみマージ後に実施**
   （controller）。設計は
   [inc0 spec](superpowers/specs/2026-07-21-perception-floor-inc0-design.md)。
+- 2026-07-22: 計測 IA 刷新（旧・計測モードバーの全面再設計・トークン2個新設）。**ユーザー
+  決定 v3（モックアップ3版で確定・5点）**: (1) 専用計測バーは作らない、(2) カーソル即値
+  （A/B/Δt）はステータスバー左に常設（既存メッセージは右へ）、(3) カーソル A/B の表示
+  切替・補間方式は Analyze メニュー＋右クリックのみ、(4) グリッド・Sync X は右クリック
+  のみ（既存 Sync X チェックボックスは撤去）、(5) タブ行右肩には「読み値」トグルのみ
+  残す。**supersede 2件**: spec-B（readout-pane 増分B）案b「カーソル未設置時はプレース
+  ホルダ文言」→ **凡例モード**（色スウォッチ＋信号名＋[unit]、信号がある限りこれで代替
+  し信号ゼロのときだけペイン収納）／UIUX 敵対的レビューカタログ UX-32 の「Sync X を
+  View メニューへ追加」推奨 → 決定(4) の右クリックのみで supersede。
+  **新トークン `chrome_cursor_a`/`chrome_cursor_b`**（ステータスバー左の計測即値専用・
+  DARK は既存 `cursor_a`/`cursor_b` と同値の別役割）。LIGHT は明面（`chrome_window`
+  #eff1f5）で発光しない `cursor_a`/`cursor_b` に代え実測選定した濃色 `#8a6100`
+  （4.90:1）/`#106a8f`（5.34:1）— いずれも WCAG AA (4.5:1) 達成。構造面: タブ内全
+  パネルが同一 `CursorState` オブジェクトを共有（transient・rebuild/`add_panel` 後も
+  不変）に置き換え、`set_cursor_b` を「A 未設置なら no-op・それ以外は delta_enabled
+  を暗黙 true にした上で notify は従来どおり `"delta"` 単発」へ対称化。Shift+クリック
+  でカーソル B を直接設置（曲線上/カーソル線近傍でも ZONE_PLOT 全域で最優先）。時刻
+  書式を `.4g` から固定小数3桁へ、readout ヘッダを「A/B ラベル色付き・● マーカー廃止」
+  の新書式へ。**①ゲートで検出した production バグ根治1件**: `GraphAreaVM` の area
+  レベル `_notify("cursor")` が `GraphAreaView._on_vm_change` の汎用 `_rebuild()` に
+  落ち、カーソル移動・線ドラッグのたびタブ内全パネル（ドラッグ中の InfiniteLine 含む）
+  を破棄再構築していた実バグを検出・修正（`"cursor"` 専用の軽量経路 `_sync_readout()`
+  を新設）。**Task 10 で追加発見（凍結スクショの信頼性に関わる・production 非該当）**:
+  凍結カタログ 03/04/05/09 の readout ペインに旧モード（凡例）の行テキストが新モード
+  （計測）の行と重なって描画される artifact を検出。実機再現実験で根因を特定 — 撮影
+  スクリプトの `settle()` は `app.processEvents()` のみを回すが、`deleteLater()` は
+  実 `app.exec()` ループ配下でのみ確実に flush される Qt の仕様で、`processEvents()`
+  単独では 200 回ポンプしても解放されない（実アプリは `app.exec()` を実際に回すため
+  この artifact は起きない＝production 非該当と実証）。`scripts/capture_ui_screenshots.py`
+  の `settle()` に `QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)`
+  を明示追加して根治（撮影専用ツールの修正・トークン/production コード変更なし）。
+  **凍結ベースライン更新済み**（`screenshots_catalog_dark/light` 両テーマを in-place
+  再撮影 → 撮影直後のカタログとの完全一致 exit 0・9/9 states 両テーマで決定的撮影を
+  実証）・エクスポート一式（`design_export/{dark,light}`）も新トークン反映済みで再生成
+  済み。**claude.ai/design への再同期のみマージ後に実施**（controller）。設計は
+  [measurement-ia spec](superpowers/specs/2026-07-21-measurement-ia-design.md)。

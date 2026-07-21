@@ -156,28 +156,6 @@ class TestPanelFactory:
 # ─── Lifecycle: no leaks, clean unsubscribe ────────────────────────────────────
 
 
-class TestSyncCheckboxHitArea:
-    def test_sync_checkbox_not_stretched_to_full_width(self, qtbot: QtBot) -> None:
-        """FU-17: Sync X チェックボックスは内容幅に固定され、右余白が
-        クリック判定に含まれない (全幅ストレッチしない)."""
-        from PySide6.QtWidgets import QCheckBox
-
-        view = _make_area(qtbot)
-        view.resize(900, 600)  # type: ignore[attr-defined]
-        view.show()  # type: ignore[attr-defined]
-        qtbot.waitExposed(view)  # type: ignore[arg-type]
-
-        cb = view.sync_checkbox  # type: ignore[attr-defined]
-        # 内容幅 (sizeHint) 近傍に固定 = 全幅 900 まで伸びない。
-        assert cb.width() <= cb.sizeHint().width() + 8, (
-            f"checkbox stretched to {cb.width()} (sizeHint {cb.sizeHint().width()})"
-        )
-        # content 端よりはるか右の余白は checkbox 本体を返さない (dead margin 消失)。
-        far_right = view.width() - 20  # type: ignore[attr-defined]
-        hit = view.childAt(far_right, cb.y() + cb.height() // 2)  # type: ignore[attr-defined]
-        assert not isinstance(hit, QCheckBox), "right margin still hits the checkbox"
-
-
 class TestLifecycle:
     def test_rebuild_does_not_leak_pages(self, qtbot: QtBot) -> None:
         """Each _rebuild must dispose old pages; QTabWidget.clear() alone leaks
@@ -211,6 +189,39 @@ class TestLifecycle:
 
         assert len(vm._callbacks) == 0
         vm.add_tab()  # a notify after destruction must not raise
+
+    def test_cursor_change_does_not_rebuild_panels(self, qtbot: QtBot) -> None:
+        """カーソル変更の area 通知 (_on_panel_change の _notify("cursor")) は
+        パネルを rebuild してはならない (spec §2.1/§2.4)。
+
+        カーソル/Δ の area 通知は readout/ステータス即値の pull 専用の軽量経路。
+        ここで else の _rebuild() に落ちると、カーソル移動・線ドラッグのたびに全パネル
+        (ドラッグ中の InfiniteLine を含む) を破棄再構築し、実ドラッグが破棄済み
+        アイテムへ誤配送されてハングする (①ゲートの
+        test_real_drag_b_cursor_stats_live_recalc で実機検出)。パネル widget の
+        オブジェクト同一性が保たれることで rebuild していないことを示す
+        (id() ではなく参照 is — memory gui_id_reuse_flake_object_recreation)。
+        """
+        from tests.gui._panel_factory import make_two_axis_area
+
+        view = make_two_axis_area()
+        qtbot.addWidget(view)
+        pvm = view.active_panel_vm()
+        assert pvm is not None
+        panel_before = view.tabs.widget(0).widget(0)
+        pvm.x_range = pvm.x_range or (0.0, 1.0)
+
+        pvm.toggle_main_cursor(True)  # "cursor" notify -> area _on_vm_change("cursor")
+        panel_after_a = view.tabs.widget(0).widget(0)
+        assert panel_after_a is panel_before, (
+            "A 設置でパネルが rebuild された (area が 'cursor' 通知で _rebuild() に落ちた)"
+        )
+
+        pvm.set_cursor_b(0.6)  # "delta" -> area re-emits "cursor" -> lightweight
+        panel_after_b = view.tabs.widget(0).widget(0)
+        assert panel_after_b is panel_before, (
+            "B 設置でパネルが rebuild された (delta 由来の area 'cursor' 通知が重経路)"
+        )
 
 
 # ─── FU-15: centralized click-away deselect ───────────────────────────────────

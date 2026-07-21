@@ -5,12 +5,18 @@ GraphPanelVM.  Tab/panel structure mirrors GraphAreaVM; all mutation rules
 ("reject the last tab/panel", "max 8 panels") and X-axis sync live in the VM,
 so this widget just delegates and re-projects on notify.
 
-Panel widgets are built by ``panel_factory`` (default: a real GraphPanelView).
-Injecting the factory keeps the container decoupled and testable.
+Panel widgets are built by ``panel_factory`` (default: a real GraphPanelView,
+sharing the injected ``analysis_actions`` — spec §2.2 — with every panel and the
+Analyze menu). Injecting the factory keeps the container decoupled and testable.
 
-X-axis sync (Task 8.4): a sync toggle drives ``GraphAreaVM.set_x_sync``; the
-propagation itself is in the VM (a panel's X-range change drives its siblings),
-so zooming one GraphPanelView updates the others through the VM layer.
+X-axis sync (Task 8.4; right-click-only since 計測 IA 刷新 spec §2.3 / v3 決定4):
+each panel's blank-area context menu carries a "X軸同期(タブ内全パネル)" toggle
+(ASCII-safe parens here — the real menu label uses full-width parens, see
+``build_context_menu``) that drives ``GraphAreaVM.set_x_sync`` through an
+injected getter/setter pair (ownership of the flag stays here, in the area, so
+GraphPanelView stays area-independent). The propagation itself is in the VM
+(a panel's X-range change drives its siblings), so zooming one GraphPanelView
+updates the others through the VM layer.
 """
 
 from __future__ import annotations
@@ -33,7 +39,6 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLineEdit,
@@ -49,14 +54,11 @@ from PySide6.QtWidgets import (
 from valisync.gui.theme import qss
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+from valisync.gui.views.analysis_actions import _INTERP_LABELS, AnalysisActions
 from valisync.gui.views.cursor_readout import CursorReadout
-from valisync.gui.views.graph_panel_view import _INTERP_LABELS, GraphPanelView
+from valisync.gui.views.graph_panel_view import GraphPanelView
 
 PanelFactory = Callable[[GraphPanelVM], QWidget]
-
-
-def _default_panel_factory(panel_vm: GraphPanelVM) -> QWidget:
-    return GraphPanelView(panel_vm)
 
 
 class _TabRenameEditor(QLineEdit):
@@ -94,10 +96,52 @@ class GraphAreaView(QWidget):
         vm: GraphAreaVM,
         panel_factory: PanelFactory | None = None,
         parent: QWidget | None = None,
+        analysis_actions: AnalysisActions | None = None,
     ) -> None:
         super().__init__(parent)
         self.vm = vm
-        self._panel_factory: PanelFactory = panel_factory or _default_panel_factory
+        # spec §2.2: MainWindow が生成した解析系 QAction の共有セット (Analyze メニ
+        # ューと同一インスタンス)。既定パネルファクトリへ注入する — panel_factory を
+        # 明示注入するテスト/代替経路 (フェイクビュー等) はこの注入をバイパスする。
+        self._analysis_actions = analysis_actions
+        if panel_factory is None:
+            # self._build_default_panel の束縛メソッドをそのまま self の属性に
+            # 保持すると self -> 属性 -> 束縛メソッド -> self という参照循環になり、
+            # readout_pane 配線 (下の _readout_clear 等) と同型の GC 順序問題を招く
+            # (再現: tests/gui/test_graph_area_view.py::TestClickAwayDeselect の
+            # reparent teardown で "already deleted")。weakref で断ち切る。
+            self_ref = weakref.ref(self)
+
+            # spec §2.3: X 軸同期の所有は area 側のまま — パネルには getter/setter
+            # ペアだけを注入する (GraphPanelView の area 非依存を維持)。self を直接
+            # close over すると、これらの closure は生成される GraphPanelView (self
+            # の Qt 子孫) の属性としてぶら下がるため、panel_factory と同じ参照循環
+            # 事故 (weakref コメント参照) を再現する — weakref 経由に統一する。
+            def _get_x_sync() -> bool:
+                view = self_ref()
+                if view is None:
+                    return False
+                tabs = view.vm.tabs()
+                if not tabs:
+                    return False
+                return tabs[view.vm.active_tab_index].x_sync_enabled
+
+            def _set_x_sync(enabled: bool) -> None:
+                view = self_ref()
+                if view is not None:
+                    view.vm.set_x_sync(view.vm.active_tab_index, enabled)
+
+            def panel_factory(panel_vm: GraphPanelVM) -> QWidget:
+                view = self_ref()
+                aa = view._analysis_actions if view is not None else None
+                return GraphPanelView(
+                    panel_vm,
+                    analysis_actions=aa,
+                    x_sync_getter=_get_x_sync,
+                    x_sync_setter=_set_x_sync,
+                )
+
+        self._panel_factory: PanelFactory = panel_factory
         # Guards against re-entrancy when we programmatically set the current
         # tab during a rebuild (which would otherwise echo back into the VM).
         self._syncing = False
@@ -116,20 +160,16 @@ class GraphAreaView(QWidget):
         # "active_panel" の軽量経路が rebuild なしで枠を再適用するために使う。
         self._panel_views: list[tuple[int, int, GraphPanelView]] = []
 
-        # X-sync toggle for the active tab (R7.3).
-        self.sync_checkbox = QCheckBox("Sync X")
-        self.sync_checkbox.toggled.connect(self._on_sync_toggled)
-
         self.tabs = QTabWidget(self)
         self.tabs.currentChanged.connect(self._on_current_changed)
 
-        # SH-02: 新規タブのアフォーダンス (コーナー "+" と Ctrl+T)。
+        # SH-02: 新規タブのアフォーダンス ("+"・後段で読み値トグルと横並びの corner
+        # コンテナへ入れる — spec §2.3。Ctrl+T は独立。
         new_tab_btn = QToolButton(self.tabs)
         new_tab_btn.setObjectName("new_tab_button")
         new_tab_btn.setText("+")
         new_tab_btn.setToolTip("新規タブ (Ctrl+T)")
         new_tab_btn.clicked.connect(lambda: self.add_tab())
-        self.tabs.setCornerWidget(new_tab_btn, Qt.Corner.TopRightCorner)
 
         self._new_tab_shortcut = QShortcut(QKeySequence("Ctrl+T"), self)
         self._new_tab_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -147,6 +187,9 @@ class GraphAreaView(QWidget):
         # (QSplitter の右側) がアクティブパネルの状態を pull する (_sync_readout)。
         self.readout_pane = CursorReadout()
         self._readout_visible = True
+        # 信号ゼロ時の自動収納 (spec §2.6) — トグル状態 (_readout_visible) とは
+        # 独立した第3状態。実際の可視性は両者の AND (_apply_readout_visibility)。
+        self._readout_stowed = False
         self.readout_pane.row_activated.connect(self._on_readout_row_activated)
         # weakref 経由で配線: readout_pane は self の Qt 子で、そこへ self の
         # bound method を平の属性として直接ぶら下げると Python レベルの参照サイクル
@@ -192,15 +235,22 @@ class GraphAreaView(QWidget):
         self.readout_toggle_button.setToolTip("読み値ペインの表示切替")
         self.readout_toggle_button.toggled.connect(self.set_readout_visible)
 
-        top_row = QHBoxLayout()
-        top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.addWidget(self.sync_checkbox)
-        top_row.addWidget(self.readout_toggle_button)
-        top_row.addStretch(1)
+        # spec §2.3: corner コンテナ化。専用のタブ行 (旧 top_row) は撤去し、"+" と
+        # 読み値トグルをタブバー右肩の corner widget に横並びで収める
+        # (test-lock 追随: cornerWidget().objectName() 単一ボタン assert は
+        # findChild(QToolButton, "new_tab_button") へ — 個々のボタンの objectName
+        # は変えない)。
+        corner = QWidget(self.tabs)
+        corner.setObjectName("tab_corner_container")
+        corner_layout = QHBoxLayout(corner)
+        corner_layout.setContentsMargins(0, 0, 0, 0)
+        corner_layout.setSpacing(4)
+        corner_layout.addWidget(new_tab_btn)
+        corner_layout.addWidget(self.readout_toggle_button)
+        self.tabs.setCornerWidget(corner, Qt.Corner.TopRightCorner)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addLayout(top_row)
         layout.addWidget(self._readout_split)
 
         unsubscribe = self.vm.subscribe(self._on_vm_change)
@@ -227,12 +277,23 @@ class GraphAreaView(QWidget):
     def _on_vm_change(self, change: str) -> None:
         if change == "active":
             self._sync_current()
-            self._update_sync_checkbox()
         elif change == "active_panel":
             self._sync_active_frames()  # 軽量: rebuild しない (クリック中の破棄禁止)
             self._sync_readout()
+        elif change == "cursor":
+            # spec §2.1/§2.4: カーソル/Δ の area 通知 (_on_panel_change が発火) は
+            # readout/ステータス即値の pull 専用の軽量経路。ここで else の _rebuild()
+            # へ落とすとカーソル移動・線ドラッグのたびに全パネル (ドラッグ中の
+            # InfiniteLine を含む) を破棄再構築し、実ドラッグが破棄済みアイテムへ
+            # 誤配送されてハングする (①ゲートで実機検出 — B 線ドラッグの
+            # test_real_drag_b_cursor_stats_live_recalc)。カーソル線自体は各パネル
+            # View が自 VM 購読の軽量経路で更新するので、ここは readout の pull だけ。
+            self._sync_readout()
         elif change == "sync":
-            self._update_sync_checkbox()
+            # spec §2.3: sync 状態を映す常設ウィジェットはもう無い (右クリック時に
+            # getter で都度読む) — 反映不要。ここで _rebuild() へ落とすと sync
+            # トグルのたびタブ全体を無駄に再構築してしまうため、明示的な no-op。
+            pass
         else:  # "tabs" | "panels"
             self._rebuild()
 
@@ -275,7 +336,6 @@ class GraphAreaView(QWidget):
             self.tabs.setCurrentIndex(self.vm.active_tab_index)
         finally:
             self._syncing = False
-        self._update_sync_checkbox()
         self._sync_active_frames()
         self._sync_readout()
 
@@ -380,27 +440,40 @@ class GraphAreaView(QWidget):
         self.vm.set_active_tab(index)
         self._sync_readout()
 
-    # ─── Readout pane (readout-pane Task 4) ────────────────────────────────────
+    # ─── Readout pane (readout-pane Task 4 -> 計測 IA Task 8) ──────────────────
 
     def _sync_readout(self) -> None:
-        """アクティブタブのアクティブパネル VM を単一ペインへ反映。"""
+        """アクティブタブのアクティブパネル VM を単一ペインへ反映する。
+
+        3方向に分岐する (spec §2.6): 信号ゼロ (アクティブパネル不在/信号なし) は
+        ペインを自動収納 (readout_stowed)。カーソル未設置+信号ありは凡例モード
+        (set_legend)。カーソル設置は計測モード (set_global/set_delta・既存)。
+        spec-B 案b の「プロットをクリックしてカーソルを設置」プレースホルダは
+        凡例モードへ supersede 済み — このメソッドはもう呼ばない。
+        """
         tab = self.tabs.currentIndex()
         if tab < 0:
-            self.readout_pane.show_placeholder("表示中の信号がありません")
+            self._stow_readout()
             return
         panels = self.vm.panels(tab)
         active = self.vm.active_panel_index(tab)
         if not panels or active < 0 or active >= len(panels):
-            self.readout_pane.show_placeholder("表示中の信号がありません")
+            self._stow_readout()
             return
         pvm = panels[active]
         if pvm.cursor_t is None:
-            self.readout_pane.show_placeholder("プロットをクリックしてカーソルを設置")
+            legend = pvm.legend_readings()
+            if not legend:
+                self._stow_readout()
+                return
+            self._unstow_readout()
+            self.readout_pane.set_legend(legend)
             return
         readings = pvm.cursor_readings()
         if not readings:
-            self.readout_pane.show_placeholder("表示中の信号がありません")
+            self._stow_readout()
             return
+        self._unstow_readout()
         if pvm.delta_enabled and pvm.cursor_t_b is not None:
             self.readout_pane.sync_visible_stats(pvm.visible_stat_cols)
             self.readout_pane.set_delta(
@@ -418,6 +491,23 @@ class GraphAreaView(QWidget):
                 precision=pvm.value_precision,
             )
 
+    def _stow_readout(self) -> None:
+        """信号ゼロ — ペインを自動収納する (トグルの ON/OFF 状態は変更しない)。
+
+        ユーザーの表示意思 (_readout_visible) を保持したまま画面から消し、
+        信号が現れれば _sync_readout が自動的に元へ戻す (spec §2.6)。
+        """
+        self._readout_stowed = True
+        self._apply_readout_visibility()
+
+    def _unstow_readout(self) -> None:
+        self._readout_stowed = False
+        self._apply_readout_visibility()
+
+    def _apply_readout_visibility(self) -> None:
+        """実際の可視性 = トグル ON かつ収納中でない (両者の AND・spec §2.6)。"""
+        self.readout_pane.setVisible(self._readout_visible and not self._readout_stowed)
+
     def _on_readout_row_activated(self, entry_id: int) -> None:
         """Pane row click -> highlight that entry_id's curve on the active panel."""
         tab = self.tabs.currentIndex()
@@ -427,16 +517,27 @@ class GraphAreaView(QWidget):
                 widget.activate_curve_by_id(entry_id)
                 break
 
-    def _active_pvm_call(self, fn: Callable[[GraphPanelVM], None]) -> None:
-        """Look up the active tab/panel's VM and apply *fn* (no-op if absent)."""
+    def active_panel_vm(self) -> GraphPanelVM | None:
+        """Resolve the active tab's active panel VM, or None if unavailable.
+
+        Shared dispatch target for the Analyze menu's AnalysisActions (spec
+        §2.2): the menu bar always targets "whatever panel is active right
+        now", unlike a blank panel menu which targets itself.
+        """
         tab = self.tabs.currentIndex()
         if tab < 0:
-            return
+            return None
         panels = self.vm.panels(tab)
         active = self.vm.active_panel_index(tab)
         if not panels or active < 0 or active >= len(panels):
-            return
-        fn(panels[active])
+            return None
+        return panels[active]
+
+    def _active_pvm_call(self, fn: Callable[[GraphPanelVM], None]) -> None:
+        """Look up the active tab/panel's VM and apply *fn* (no-op if absent)."""
+        pvm = self.active_panel_vm()
+        if pvm is not None:
+            fn(pvm)
 
     def _on_readout_clear(self) -> None:
         self._active_pvm_call(lambda pvm: pvm.toggle_main_cursor(False))
@@ -457,25 +558,15 @@ class GraphAreaView(QWidget):
 
     def set_readout_visible(self, visible: bool) -> None:
         self._readout_visible = visible
-        self.readout_pane.setVisible(visible)
+        self._apply_readout_visibility()
 
     def readout_visible(self) -> bool:
+        """トグルの ON/OFF 状態 (収納中かどうかは含まない — readout_stowed 参照)。"""
         return self._readout_visible
 
-    # ─── X-sync toggle ─────────────────────────────────────────────────────────
-
-    def _on_sync_toggled(self, checked: bool) -> None:
-        self.vm.set_x_sync(self.vm.active_tab_index, checked)
-
-    def _update_sync_checkbox(self) -> None:
-        """Reflect the active tab's sync flag without echoing back to the VM."""
-        tabs = self.vm.tabs()
-        if not tabs:
-            return
-        enabled = tabs[self.vm.active_tab_index].x_sync_enabled
-        self.sync_checkbox.blockSignals(True)
-        self.sync_checkbox.setChecked(enabled)
-        self.sync_checkbox.blockSignals(False)
+    def readout_stowed(self) -> bool:
+        """信号ゼロによる自動収納中かどうか (spec §2.6)。"""
+        return self._readout_stowed
 
     # ─── Commands (delegate to VM; rejections are swallowed as UI no-ops) ───────
 

@@ -40,9 +40,9 @@ def readout_small_label(t: tokens.ThemeTokens | None = None) -> str:
     )
 
 
-def colored_dot(color: tokens.Color) -> str:
-    """readout ヘッダのカーソルマーカー● (RichText)。"""
-    return f'<span style="color:{color.hex}">●</span>'
+def colored_label(text: str, color: tokens.Color) -> str:
+    """readout ヘッダの A/B ラベル着色 (RichText・UX-48 — ● マーカーから置換)。"""
+    return f'<span style="color:{color.hex}">{text}</span>'
 
 
 def unit_span(unit: str, t: tokens.ThemeTokens | None = None) -> str:
@@ -109,6 +109,15 @@ def readout_panel(t: tokens.ThemeTokens | None = None) -> str:
 
 def delta_value(color: tokens.Color) -> str:
     """Δ 値ラベルの符号着色 (delta_positive/delta_negative を呼び出し側が選ぶ)。"""
+    return f"color: {color.hex};"
+
+
+def status_immediate_label(color: tokens.Color) -> str:
+    """ステータスバー左の計測即値ラベル色 (呼び出し側が chrome_cursor_a/b/text を選ぶ)。
+
+    mono フォントは view 側で QFont に設定する (font-family QSS は Windows で
+    実等幅へ解決しないことがあるため) — ここは色のみ生成する。
+    """
     return f"color: {color.hex};"
 
 

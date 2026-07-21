@@ -109,6 +109,9 @@ def test_dark_values_frozen_snapshot():
         "chrome_placeholder": Color.from_hex("#7f849c"),
         "chrome_disabled_text": Color.from_hex("#6c7086"),
         "chrome_frame": Color.from_hex("#45475a"),
+        # ステータス即値 (計測 IA・spec §2.4) — DARK は cursor_a/cursor_b と同値
+        "chrome_cursor_a": Color.from_hex("#f9e2af"),
+        "chrome_cursor_b": Color.from_hex("#74c7ec"),
         "surface_readout_panel": Color.from_hex("#1e1e2e"),
         "delta_negative": Color.from_hex("#f38ba8"),
         "delta_positive": Color.from_hex("#a6e3a1"),
@@ -227,6 +230,9 @@ def test_light_values_frozen_snapshot():
         "chrome_placeholder": Color.from_hex("#8c8fa1"),
         "chrome_disabled_text": Color.from_hex("#9ca0b0"),
         "chrome_frame": Color.from_hex("#bcc0cc"),
+        # ステータス即値 (計測 IA・spec §2.4) — LIGHT は明面 AA 濃色 (実測選定)
+        "chrome_cursor_a": Color.from_hex("#8a6100"),
+        "chrome_cursor_b": Color.from_hex("#106a8f"),
         "surface_readout_panel": Color.from_hex("#eff1f5"),
         "delta_negative": Color.from_hex("#d20f39"),
         "delta_positive": Color.from_hex("#40a02b"),

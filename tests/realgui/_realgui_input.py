@@ -78,6 +78,28 @@ def key(vk: int, *, down: bool = True, up: bool = True) -> None:
         _user32.keybd_event(vk, 0, KEYUP, 0)
 
 
+def click_with_modifier(x: int, y: int, modifier_vk: int) -> None:
+    """実 OS: 修飾キー (VK) を押下したまま物理 (x, y) を左クリックし最後に離す。
+
+    Windows は WM_LBUTTONDOWN 生成時の非同期キー状態から MK_SHIFT 等の修飾フラグを
+    立てるため、``keybd_event`` で修飾キーを先に押下してから ``mouse_event`` を
+    発行すれば Qt の ``event.modifiers()`` に反映される (Shift+クリックの実経路 —
+    合成 QMouseEvent の modifiers 直渡しでは検証できない部分)。修飾はキーを離すまで
+    保持されるので、押下は release まで維持してから戻す。押下/離下の間に短い
+    wall-clock を挟み OS がキー状態を登録する猶予を与える (呼び出し側で
+    processEvents を pump する)。
+    """
+    _user32.keybd_event(modifier_vk, 0, KEYDOWN, 0)
+    time.sleep(0.03)
+    try:
+        at(x, y, LDOWN)
+        time.sleep(0.03)
+        at(x, y, LUP)
+        time.sleep(0.03)
+    finally:
+        _user32.keybd_event(modifier_vk, 0, KEYUP, 0)
+
+
 def press_grip_and_confirm(view, axis_idx: int, edge: str, gx: int, gy: int) -> None:
     """LDOWN at a Y-axis grip, then jiggle a small IN-BAND move until pyqtgraph
     has started the drag AND classified it as this grip.

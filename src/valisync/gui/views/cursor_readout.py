@@ -59,25 +59,32 @@ def _fmt_dy(v: float | None, precision: int = _DEFAULT_PRECISION) -> str:
 
 
 def _fmt_time(t: float) -> str:
-    return f"{t:.4g} s"  # 時刻は固定精度 (精度切替の対象外・spec 増分3)
+    # 固定小数3桁 (UX-14/48・spec §2.5)。時刻は精度切替の対象外。サブ ms の Δt が
+    # 0.000 に丸まるのは意図的な許容 (スナップ運用外のエッジ・spec §2.5 に明記)。
+    return f"{t:.3f} s"
 
 
-def _fmt_range(
-    lo: float | None, hi: float | None, precision: int = _DEFAULT_PRECISION
-) -> str:
-    """信号の値域セル (min-max)。値域不明 (None) は空欄 (コンセプト 2a)。"""
-    if lo is None or hi is None:
+def _fmt_bound(v: float | None, precision: int = _DEFAULT_PRECISION) -> str:
+    """信号の値域境界1個 (min/max 独立列・UX-25/33)。値域不明 (None) は空欄。"""
+    if v is None:
         return ""
-    return f"{lo:.{precision}g}–{hi:.{precision}g}"  # noqa: RUF001 EN DASH
+    return f"{v:.{precision}g}"
 
 
 class CursorReadout(QWidget):
-    """常設ペインのカーソル読み取り表 (readout-pane 増分B Task 3)。
+    """常設ペインのカーソル読み取り表 (readout-pane 増分B Task 3 -> 計測 IA Task 8)。
 
-    Global mode: rows [colour swatch | name | A値 | min-max].
-    Delta mode: rows [colour swatch | name | A値 | Dy | <selected stats>].
-    A time header label sits above the table in both set_global / set_delta modes.
-    信号ゼロ/カーソル未設置時は show_placeholder() でテーブルを空にし文言を出す。
+    3モードを持つ (どれを描くかは呼び出し側 GraphAreaView がカーソル状態から選ぶ —
+    spec §2.6):
+    Legend mode (カーソル未設置・信号あり): rows [colour swatch | name | unit] のみ
+      (列ヘッダなし・値セルなし)。spec-B 案b の「プロットをクリックしてカーソルを
+      設置」プレースホルダを計測 IA spec §2.6 で supersede する行き先。
+    Global mode (A のみ設置): rows [colour swatch | name | A値 | min(全区間) |
+      max(全区間)] — min/max は独立2列 (UX-25/33)。
+    Delta mode (A+B 設置): rows [colour swatch | name | A値 | Dy | <selected stats>]。
+    A time header label sits above the table in both global / delta modes
+    (legend mode は非表示)。ペイン自体の表示/非表示 (信号ゼロ収納含む) は
+    GraphAreaView の責務 — このウィジェットは常に自身の内容だけを描く。
     """
 
     row_activated = Signal(int)  # 行クリック → entry_id (曲線ハイライト用)
@@ -130,6 +137,9 @@ class CursorReadout(QWidget):
         # setText で値だけ更新する(毎移動の全 deleteLater/再生成を回避・RN-06)。
         self._value_labels: list[list[QLabel]] = []
         self._swatch_labels: list[QLabel] = []
+        # 凡例モード (値セルなし) の行クリック hit-test は値セルが無いので名前
+        # ラベルの geometry にフォールバックする (_row_at)。
+        self._name_labels: list[QLabel] = []
         self._row_colors: list[str] = []
         self._layout_sig: (
             tuple[tuple[str, ...], tuple[tuple[str, str, int], ...]] | None
@@ -182,6 +192,30 @@ class CursorReadout(QWidget):
             dy_styles=[None for _ in readings],
         )
 
+    # ── 計測 IA Task 8 API (spec §2.6) ──────────────────────────────────────────
+
+    def set_legend(self, readings: list[CursorReading]) -> None:
+        """凡例モード (カーソル未設置・信号あり): スウォッチ+名前+[unit] のみ。
+
+        列ヘッダなし・値セルなし — spec-B 案b の「プロットをクリックしてカーソルを
+        設置」プレースホルダを計測 IA spec §2.6 で supersede する行き先 (信号が
+        ある限り凡例で代替し、信号ゼロのときだけ GraphAreaView がペインを収納する)。
+        行クリック→曲線ハイライト (activate_row/row_activated) は計測モードと同じ
+        entry_id 経路を使う。
+        """
+        self._placeholder.hide()
+        self._placeholder_text = ""
+        self._last_delta = None
+        self._header.hide()
+        self._header_text = ""
+        self._col_headers = []
+        self._rebuild(
+            col_headers=[],
+            rows=[(r.name, r.unit, r.color, []) for r in readings],
+            entry_ids=[r.entry_id for r in readings],
+            dy_styles=[None for _ in readings],
+        )
+
     # ── R16/R17 API ────────────────────────────────────────────────────────────
 
     def set_global(
@@ -191,19 +225,22 @@ class CursorReadout(QWidget):
         interp_label: str = "",
         precision: int = _DEFAULT_PRECISION,
     ) -> None:
-        """Global mode: header = (dot) t_a [ - interp], columns = [swatch|name|A値|min-max]."""
+        """Global mode: header = 'A <t_a> (interp)', columns =
+        [swatch|name|A値|min(全区間)|max(全区間)] (UX-25/33: min/max は独立2列)。
+        """
         self._placeholder.hide()
         self._placeholder_text = ""
         self._last_delta = None
         self._precision = precision
         ta_str = _fmt_time(t_a)
-        self._header_text = f"● {ta_str}"
+        self._header_text = f"A {ta_str}"
         if interp_label:
-            self._header_text += f"  ─ {interp_label}"
-        self._col_headers = ["A値", "min–max"]  # noqa: RUF001 EN DASH
-        header_html = f"{qss.colored_dot(tokens.active().colors.cursor_a)} {ta_str}"
+            self._header_text += f"（{interp_label}）"  # noqa: RUF001
+        self._col_headers = ["A値", "min（全区間）", "max（全区間）"]  # noqa: RUF001
+        c = tokens.active().colors
+        header_html = f"{qss.colored_label('A', c.cursor_a)} {ta_str}"
         if interp_label:
-            header_html += f"  ─ {interp_label}"
+            header_html += f"（{interp_label}）"  # noqa: RUF001
         self._header.setText(header_html)
         self._header.show()
         self._rebuild(
@@ -217,7 +254,8 @@ class CursorReadout(QWidget):
                         _fmt_labeled(
                             r.value if r.in_range else None, r.label, precision
                         ),
-                        _fmt_range(r.range_lo, r.range_hi, precision),
+                        _fmt_bound(r.range_lo, precision),
+                        _fmt_bound(r.range_hi, precision),
                     ],
                 )
                 for r in readings
@@ -234,28 +272,29 @@ class CursorReadout(QWidget):
         interp_label: str = "",
         precision: int = _DEFAULT_PRECISION,
     ) -> None:
-        """Delta mode: header = (dot) t_a (dot) t_b · Dt [ - interp], columns = A値/Dy/<stats>."""
+        """Delta mode: header = 'A <t_a> - B <t_b> (interp)', columns = A値/Dy/<stats>.
+
+        Δt はヘッダに出さない — ステータスバー左の即値 (spec §2.4) と重複するため
+        readout ヘッダからは意図的に除外 (spec §2.5)。
+        """
         self._placeholder.hide()
         self._placeholder_text = ""
         self._last_delta = (t_a, t_b, readings, interp_label, precision)
         self._precision = precision
-        dt = t_b - t_a
         ta_str = _fmt_time(t_a)
         tb_str = _fmt_time(t_b)
-        dt_str = _fmt_time(dt)
-        self._header_text = f"● {ta_str}  ● {tb_str} · Δt {dt_str}"
+        self._header_text = f"A {ta_str} ・ B {tb_str}"
         if interp_label:
-            self._header_text += f"  ─ {interp_label}"
+            self._header_text += f"（{interp_label}）"  # noqa: RUF001
         stat_cols = [c for c in _STAT_COLS if c in self._visible_stats]
         self._col_headers = ["A値", "Δy", *stat_cols]
         c = tokens.active().colors
         header_html = (
-            f"{qss.colored_dot(c.cursor_a)} {ta_str}"
-            f"  {qss.colored_dot(c.cursor_b)} {tb_str}"
-            f" · <b>Δt {dt_str}</b>"
+            f"{qss.colored_label('A', c.cursor_a)} {ta_str}"
+            f" ・ {qss.colored_label('B', c.cursor_b)} {tb_str}"
         )
         if interp_label:
-            header_html += f"  ─ {interp_label}"
+            header_html += f"（{interp_label}）"  # noqa: RUF001
         self._header.setText(header_html)
         self._header.show()
         rows = []
@@ -318,10 +357,15 @@ class CursorReadout(QWidget):
         """表示中の列・現在精度・単位を反映した TSV を返す (PC-10)。
 
         1 行目はヘッダ (信号列+データ列見出し。set_readings 経由は列見出しが
-        空なので単一の 値 列)。以降は各行 表示名(単位込み) + 各セル。_row_cells は
-        _rebuild 時点の表示整形済みデータ (精度・単位が既に反映済み)。
+        空なので単一の 値 列)。凡例モード (set_legend・列見出し空かつ値セルなし)
+        は値列自体が無いので「信号」のみ (計測 IA spec §2.6)。以降は各行 表示名
+        (単位込み) + 各セル。_row_cells は _rebuild 時点の表示整形済みデータ
+        (精度・単位が既に反映済み)。
         """
-        data_headers = self._col_headers if self._col_headers else ["値"]
+        has_value_col = bool(self._col_headers) or any(
+            cells for _name, cells in self._row_cells
+        )
+        data_headers = self._col_headers or (["値"] if has_value_col else [])
         lines = ["\t".join(["信号", *data_headers])]
         for disp_name, cells in self._row_cells:
             lines.append("\t".join([disp_name, *cells]))
@@ -356,11 +400,19 @@ class CursorReadout(QWidget):
             self.row_activated.emit(self._row_entry_ids[row])
 
     def _row_at(self, pos: QPoint) -> int | None:
-        """クリック位置 (self 座標系) から行 index を求める (先頭値セルの geometry)。"""
+        """クリック位置 (self 座標系) から行 index を求める。
+
+        値セルがある行 (計測モード) は先頭値セルの geometry。凡例モード (値セル
+        なし・set_legend) は名前ラベルの geometry にフォールバックする —
+        行クリック→曲線ハイライトは両モードで機能する必要がある (spec §2.6)。
+        """
         for i, vlabels in enumerate(self._value_labels):
-            if not vlabels:
+            if vlabels:
+                rect = vlabels[0].geometry()
+            elif i < len(self._name_labels):
+                rect = self._name_labels[i].geometry()
+            else:
                 continue
-            rect = vlabels[0].geometry()
             if rect.top() <= pos.y() <= rect.bottom():
                 return i
         return None
@@ -479,6 +531,7 @@ class CursorReadout(QWidget):
         self._row_cells = []
         self._value_labels = []
         self._swatch_labels = []
+        self._name_labels = []
         self._row_colors = []
         self._row_entry_ids = []
         self._dy_cell_styles = []
@@ -509,6 +562,7 @@ class CursorReadout(QWidget):
             else:
                 name_lbl.setText(name)
             self._grid.addWidget(name_lbl, r0 + i, 1)
+            self._name_labels.append(name_lbl)
             vlabels: list[QLabel] = []
             for c, text in enumerate(cells):
                 v = QLabel(text)

@@ -30,9 +30,9 @@ def test_readout_small_label_uses_secondary_and_small_px():
     assert f"font-size:{DARK.typography.small_px}px" in s
 
 
-def test_colored_dot_and_unit_span():
-    assert qss.colored_dot(DARK.colors.cursor_a) == (
-        f'<span style="color:{DARK.colors.cursor_a.hex}">●</span>'
+def test_colored_label_and_unit_span():
+    assert qss.colored_label("A", DARK.colors.cursor_a) == (
+        f'<span style="color:{DARK.colors.cursor_a.hex}">A</span>'
     )
     assert DARK.colors.text_secondary.hex in qss.unit_span("km/h", DARK)
     assert "[km/h]" in qss.unit_span("km/h", DARK)
@@ -189,6 +189,19 @@ def test_delta_value_uses_given_delta_token_not_close_hover():
     assert DARK.colors.close_hover.hex not in s
     # delta_positive は新規値: 生成関数が受け取った色をそのまま出す
     assert DARK.colors.delta_positive.hex in qss.delta_value(DARK.colors.delta_positive)
+
+
+def test_status_immediate_label_emits_given_color():
+    """ステータス即値ラベル色は呼び出し側が渡した Color を出す (mono は view 側)。"""
+    from valisync.gui.theme.tokens import Color
+
+    s = qss.status_immediate_label(Color(1, 2, 3))
+    assert Color(1, 2, 3).hex in s
+    # DARK では chrome_cursor_a と cursor_a が同値の別役割 — 呼び出し側 (main_window)
+    # がどちらを渡すかの誤配線ガードは test_main_window の値分岐テストが担う。
+    assert DARK.colors.chrome_cursor_a.hex in qss.status_immediate_label(
+        DARK.colors.chrome_cursor_a
+    )
 
 
 def test_line_edit_frame_contains_base_rule_focus_and_carveout():
