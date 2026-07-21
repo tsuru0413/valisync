@@ -19,6 +19,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtWidgets import (
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMenu,
@@ -33,6 +34,14 @@ from valisync.gui.adapters.signal_tree_model import SignalTreeModel
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
 
 _FILTER_DEBOUNCE_MS = 200  # prod 264k のフィルタ scan ~170ms を入力停止後 1 回に集約
+
+# UX-29: Unit 列幅はサンプリングで決める(下記 _resample_unit_column_width)。
+# ResizeToContents は絶対に使わない — prod 264k〜330k 行で sizeHintForColumn の
+# O(n) 走査が reset ごとに走り FU-22 級フリーズを再導入しうる(spec §1.5-13)。
+_UNIT_SAMPLE_SIZE = 50  # 先頭 N 行のみサンプリング(打ち切り = 常に O(N))
+_UNIT_COLUMN_MAX_WIDTH = 120  # px 上限(spec 記載の「上限付き」)
+_UNIT_COLUMN_PADDING = 12  # 文字幅ちょうどだと詰まって見えるための余白
+_UNIT_COLUMN_MIN_WIDTH = 40  # 空/短い Unit しかない場合のフォールバック下限
 
 # Empty-state placeholder text (FB-05/08/09); no_match takes a format arg.
 _EMPTY_MESSAGES = {
@@ -80,6 +89,16 @@ class ChannelBrowserView(QWidget):
         self.tree.setDragEnabled(True)
         self.tree.setUniformRowHeights(True)
 
+        # UX-29: Name fills remaining space; Unit is user-resizable, sized
+        # below from a bounded content sample (never ResizeToContents — see
+        # module docstring constants). QTreeView defaults stretchLastSection
+        # to True, which would silently force-stretch Unit (the last column)
+        # regardless of the Interactive mode set on it -- must disable first.
+        header = self.tree.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+
         # CustomContextMenu so a real right-click on the child tree emits
         # customContextMenuRequested. Overriding contextMenuEvent on this
         # container does not fire reliably from the child item view, so the
@@ -120,12 +139,19 @@ class ChannelBrowserView(QWidget):
         # fires only on double-click, so Enter never triggers it.
         self.tree.doubleClicked.connect(self._emit_preview)
 
+        # UX-29: re-sample the Unit column width whenever the model resets
+        # (new file, filter change, or a header-click re-sort all go through
+        # begin/endResetModel -- see SignalTreeModel), since which rows are
+        # "first" can change with any of those.
+        self.model.modelReset.connect(self._resample_unit_column_width)
+
         # The VM outlives this widget; drop the subscription when the C++ object
         # is destroyed so a later notify never calls into a deleted view.
         unsubscribe = self._vm.subscribe(self._on_vm_change)
         self.destroyed.connect(lambda *_: unsubscribe())
 
         self._refresh_state()
+        self._resample_unit_column_width()  # initial width before any reset fires
 
     # ─── VM reactions ──────────────────────────────────────────────────────────
 
@@ -160,6 +186,64 @@ class ChannelBrowserView(QWidget):
     ) -> None:
         keys = self.selected_signal_keys()
         self._vm.set_selection(keys)
+
+    # ─── Unit column width (UX-29) ─────────────────────────────────────────────
+
+    def _resample_unit_column_width(self) -> None:
+        """Recompute the Unit column width from a bounded sample (UX-29).
+
+        Deliberately not ResizeToContents: at prod scale (264k-330k rows)
+        that walks every row's sizeHint on every reset, reintroducing an
+        FU-22-class freeze (spec §1.5-13). ``_sample_unit_values`` below caps
+        the walk at ``_UNIT_SAMPLE_SIZE`` regardless of model size, so this
+        method costs O(N), never O(rows).
+        """
+        metrics = self.tree.fontMetrics()
+        samples = self._sample_unit_values(_UNIT_SAMPLE_SIZE)
+        content_width = max(
+            (metrics.horizontalAdvance(text) for text in samples), default=0
+        )
+        width = min(content_width + _UNIT_COLUMN_PADDING, _UNIT_COLUMN_MAX_WIDTH)
+        width = max(width, _UNIT_COLUMN_MIN_WIDTH)
+        self.tree.setColumnWidth(1, width)
+
+    def _sample_unit_values(self, limit: int) -> list[str]:
+        """Flatten-walk the tree in display order, collecting up to *limit*
+        Unit-column strings.
+
+        Group (array/LD-14) rows show "" in the Unit column -- unit
+        aggregation across a group's members is a later increment -- so the
+        real content lives on their leaf children. Where it is free to do so,
+        the walk descends into groups rather than sampling only top-level
+        rows (a tree front-loaded with array bases would otherwise sample
+        nothing but blanks) -- but it never *forces* that descent.
+        SignalTreeModel.rowCount() materializes a group's children on first
+        touch, and doing that from a reset-driven sampler would defeat the
+        lazy tree (FU-22 B: children build only on user expansion). So this
+        only descends into groups whose children are already materialized
+        (has_materialized_children) -- e.g. a group the user previously
+        expanded, or one an earlier sampling pass already visited -- and
+        otherwise treats the group as a single blank-Unit row.
+        """
+        values: list[str] = []
+        self._collect_unit_values(QModelIndex(), values, limit)
+        return values
+
+    def _collect_unit_values(
+        self, parent: QModelIndex, values: list[str], limit: int
+    ) -> None:
+        for row in range(self.model.rowCount(parent)):
+            if len(values) >= limit:
+                return
+            unit_index = self.model.index(row, 1, parent)
+            values.append(
+                self.model.data(unit_index, Qt.ItemDataRole.DisplayRole) or ""
+            )
+            if len(values) >= limit:
+                return
+            child_parent = self.model.index(row, 0, parent)
+            if self.model.has_materialized_children(child_parent):
+                self._collect_unit_values(child_parent, values, limit)
 
     # ─── Queries ───────────────────────────────────────────────────────────────
 

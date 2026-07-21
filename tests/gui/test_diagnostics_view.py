@@ -1,4 +1,5 @@
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QHeaderView
 
 from valisync.core.models.load_result import Diagnostic
 from valisync.gui.viewmodels.diagnostics_vm import DiagnosticsViewModel
@@ -95,6 +96,22 @@ def test_order_column_shows_seq_for_each_row(qtbot):
     # per spec §4.4's "レベルアイコン / 時刻 / ソース / メッセージ / 対象".
     assert view._table.item(0, 1).text() == "0"
     assert view._table.item(1, 1).text() == "1"
+
+
+def test_message_column_stretches_other_columns_resize_to_contents(qtbot):
+    """UX-07 応急 (spec §1.5-14): メッセージ列は残り幅いっぱいに広がり、他列は
+    内容幅で詰まる。診断件数は有界のため ResizeToContents はここでは安全
+    (ChannelBrowser の Unit 列とは前提が異なる -- prod 264k 行走査ではない)。"""
+    _, view = _mk(qtbot)
+    header = view._table.horizontalHeader()
+    message_col = 3  # "メッセージ" -- see _HEADERS in diagnostics_view.py
+    for col in range(view._table.columnCount()):
+        expected = (
+            QHeaderView.ResizeMode.Stretch
+            if col == message_col
+            else QHeaderView.ResizeMode.ResizeToContents
+        )
+        assert header.sectionResizeMode(col) == expected
 
 
 # ---------------------------------------------------------------------------

@@ -203,6 +203,19 @@ class SignalTreeModel(QAbstractItemModel):
             return None
         return index.internalPointer().key
 
+    def has_materialized_children(self, index: _Index) -> bool:
+        """True if *index* is the invalid root, a leaf (no children ever), or a
+        group whose children are already built. Never triggers materialization
+        itself (unlike rowCount()/index()) -- callers use this to decide
+        whether descending into a subtree is free (e.g. UX-29's bounded Unit
+        column sampling, which must not force-build array children on every
+        reset; that would defeat the lazy tree this model exists for, see
+        module docstring / FU-22 B)."""
+        if not index.isValid():
+            return True  # root: self._top is always built eagerly
+        node: _Node = index.internalPointer()
+        return node.key is not None or node.children is not None
+
     # --- drag (leaf only in increment 1; parent aggregate = increment 4) --------
     def flags(self, index: _Index) -> Qt.ItemFlag:
         if not index.isValid():
