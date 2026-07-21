@@ -129,6 +129,12 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   決定メモ③（Diagnostics ドロワー化）＋ユーザー要望「File/Channel も折りたたみ可能に」
   で3ドック共通へ拡張。設計は
   [collapsible-docks spec](superpowers/specs/2026-07-20-collapsible-docks-design.md)。PR #131。
+- 2026-07-21: 軸アイデンティティ契約 Stage A（PR #135・トークン変更なし・構造 UI＋表示規則）。
+  軸ラベル=代表（最古）波形の name/unit の対（ユーザー決定: 混在時も代表を表示・マーカー不採用）／
+  per-axis `y_is_auto` 可視和集合フィット／オフスケールバッジ新設（色は既存 `accent_active`・
+  警告系 amber の意味論は増分0 のトークン整理で再訪）。**凍結ベースライン 02-05/09 を意図的更新**
+  （VehSpd 初可視化=UX-03 根治の実証画像）し dark/light 再撮影＋Ground Truth 38 ファイル再同期済み。
+  設計は [stage-a spec](superpowers/specs/2026-07-21-axis-identity-stage-a-design.md)。
 - 2026-07-20: 折りたたみを辺対応化（増分C 手直し・トークン変更なし）。畳む方向をドックの
   接する辺で動的決定（左右=幅を詰めて全高の縦レール＋縦書きタブ・下=高さを詰めて全幅の
   横帯＋左寄せチップ）。畳んだドックは hide し、中央 widget を包む `CentralWithRails` の

@@ -31,7 +31,7 @@
 
 ## 🔴 Critical（詳細）
 
-### UX-01 — Y軸ラベルの単位が「最後に追加した信号の単位」で上書きされ、名前と単位が別信号の捏造ペアになる（VehSpdInternal (Nm) / YawRate (Nm)）
+### UX-01 ✅解消（PR #135・軸アイデンティティ契約 Stage A） — Y軸ラベルの単位が「最後に追加した信号の単位」で上書きされ、名前と単位が別信号の捏造ペアになる（VehSpdInternal (Nm) / YawRate (Nm)）
 
 - **検出レンズ**: visual, ia, interaction, onboarding, a11y, domain, micro
 - **増分**: 新規（最小修正=unit first-wins 化＋全経路再計算は独立バグ修正。単位混在の重ねを許すか・混在時ラベル方針のみ増分E 比較データモデル設計と併せて確定）
@@ -44,7 +44,7 @@
 
 **証拠**: src/valisync/gui/viewmodels/graph_panel_vm.py:261-271 (unit last-wins vs name first-wins)・:285-297 (overwrite_axis は対でクリア=意図の傍証)・:718-740 (move_entry_to_new_axis 新軸 name/unit 未設定)、src/valisync/gui/viewmodels/y_axis_vm.py:19-29 (既定 ""), src/valisync/gui/views/graph_panel_view.py:1195-1196 (setLabel 描画), src/valisync/gui/views/main_window.py:490-498 (既定追加経路→axis 0 join)。スクショ: crops/r04_axislabel.png・crops/r05_axislabel.png・shots_real/r04_cursor_readout.png (読み値 [km/h] と軸 (Nm) の同画面矛盾)
 
-### UX-02 — 「新しい軸へ移動」した曲線が 0–1 デフォルトレンジ・無ラベルの新軸に落ちて画面から消える
+### UX-02 ✅解消（PR #135・軸アイデンティティ契約 Stage A） — 「新しい軸へ移動」した曲線が 0–1 デフォルトレンジ・無ラベルの新軸に落ちて画面から消える
 
 - **検出レンズ**: visual, ia, interaction, onboarding, domain
 - **増分**: 新規
@@ -57,7 +57,7 @@
 
 **証拠**: src/valisync/gui/viewmodels/graph_panel_vm.py:718-740 (move_entry_to_new_axis: y_range=None の新軸・_auto_fit_ranges 非呼出・name/unit 非伝搬) vs 246-275 (add_signal_to_axis: unit/name 伝搬 261-271＋_auto_fit_ranges 273)。src/valisync/gui/views/graph_panel_view.py:973-978 (y_range None は setYRange スキップ)・1159 (vb.disableAutoRange())・2169-2170 (メニュー「新しい軸へ移動」→vm.move_entry_to_new_axis 配線)。src/valisync/gui/viewmodels/y_axis_vm.py:13-29 (既定 y_range=None/name=""/unit="")。docs/superpowers/specs/2026-07-09-gui-plot-analysis-controls-design.md:74 (DP17「D&D 新軸と同一 VM 経路」)。tests/gui/test_graph_panel_multi_axis.py:1349-1390 (no-fit を lock するテスト無し)。実見: shots_real/r03_multiaxis.png・r04_cursor_readout.png (0.2–0.8 無ラベル軸×2＋readout に min–max 実値)。
 
-### UX-03 — 同一Y軸に後から追加した信号がオートフィット対象外で完全に不可視になる（可視チェックONのまま描画されない）
+### UX-03 ✅解消（PR #135・軸アイデンティティ契約 Stage A） — 同一Y軸に後から追加した信号がオートフィット対象外で完全に不可視になる（可視チェックONのまま描画されない）
 
 - **検出レンズ**: ia, interaction, onboarding, micro
 - **増分**: 新規
