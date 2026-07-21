@@ -222,8 +222,8 @@ def test_line_edit_frame_uses_chrome_frame_not_border_chip():
 
 
 def test_line_edit_frame_uses_chrome_highlight_not_close_hover():
-    """chrome_highlight は close_hover と同値の別トークン (DARK #89b4fa)。
-    値を分岐させたテーマで line_edit_frame:focus がどちらを参照するか直接実証する。"""
+    """line_edit_frame:focus が close_hover でなく chrome_highlight を参照する回帰ガード。
+    (両者は別値だが、fork テーマで参照先を直接実証し将来の同値化にも備える。)"""
     import dataclasses
 
     from valisync.gui.theme.tokens import Color

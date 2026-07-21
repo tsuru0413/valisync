@@ -616,7 +616,8 @@ class MainWindow(QMainWindow):
         """初期ドック比率 File:Channel≈1:4 (UX-21 応急・spec §1.5-12)。
 
         pre-show は dock extent 未確定で no-op になるため初回 show 後に呼ぶ
-        (main_window.py の _apply_saved_collapse と同じ罠の回避)。
+        (_apply_saved_collapse が hide 主体の別手法で回避しているのと同じ
+        pre-show 罠 — こちらは resizeDocks が extent を要するため遅延で回避)。
         """
         self.resizeDocks(
             [self.file_dock, self.channel_dock], [1, 4], Qt.Orientation.Vertical

@@ -37,7 +37,7 @@
 
 | # | 変更 | 対象と方式 | 課題 |
 |---|---|---|---|
-| 10 | クリック当たり判定の**高さ**を 24px 以上へ保証（`setMinimumHeight`/余白 — **fixedSize(24,24) は使わない**: text ボタンの幅 44→24 縮小で「視覚不変」と矛盾しヒット幅がむしろ縮む — レビュー捕捉） | `CollapsibleDockTitleBar` の**フロート/✕（text ボタン 44×19 実測）**＋GraphPanel の**パネル +/×** — 縦方向のみ不足。**chevron は現状 24×23 で既充足（検証のみ・変更なし）**。**`DockCollapseRail` は対象外**（chevron は QLabel でタブ全面が既にヒット領域＝UX-38 充足済みと記録 — QToolButton は存在しない） | UX-38 |
+| 10 | クリック当たり判定の**高さ**を 24px 以上へ保証（`setMinimumHeight`/余白 — **fixedSize(24,24) は使わない**: text ボタンの幅 44→24 縮小で「視覚不変」と矛盾しヒット幅がむしろ縮む — レビュー捕捉） | `CollapsibleDockTitleBar` の**フロート/✕（text ボタン 44×19 実測）**＋GraphPanel の**パネル +/×** — 縦方向のみ不足。**chevron は現状 26×24 で既充足（検証のみ・変更なし — realgui 実測）**。**`DockCollapseRail` は対象外**（chevron は QLabel でタブ全面が既にヒット領域＝UX-38 充足済みと記録 — QToolButton は存在しない） | UX-38 |
 
 - **スコープ調整（記録）**: タブ✕（Qt native close button）は `setTabButton` カスタム化と一体の増分D へ移管
   （UX-34 の常時赤✕排除と同時・二度作り替え回避）。
