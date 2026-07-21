@@ -51,6 +51,21 @@ def test_chevron_emits_collapse_requested(qtbot):
     assert seen == [True]
 
 
+def test_float_and_close_buttons_min_height_24(qtbot: QtBot):
+    # UX-38: float/close の text ボタン (実測 44x19) は縦方向が不足していたため、
+    # setMinimumHeight で当たり判定の高さを 24px 以上へ保証する [幅は縮めない]。
+    from valisync.gui.views.collapsible_dock_title_bar import CollapsibleDockTitleBar
+
+    win, dock, _content = _dock_in_window(qtbot)
+    bar = CollapsibleDockTitleBar(dock, win, "D")
+    dock.setTitleBarWidget(bar)
+    win.show()
+    for btn in (bar._float_button, bar._close_button):
+        assert btn.minimumHeight() >= 24, (
+            f"{btn.text()!r} minimumHeight {btn.minimumHeight()} < 24 (UX-38)"
+        )
+
+
 def test_chevron_disabled_while_floating(qtbot):
     from valisync.gui.views.collapsible_dock_title_bar import CollapsibleDockTitleBar
 
