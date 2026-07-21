@@ -1992,7 +1992,21 @@ class GraphPanelView(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             self.activate_requested.emit()  # PC-07: どのゾーンでも押下=活性化
             zone = self._zone_at(event.position())
-            if zone in (ZONE_X_INNER, ZONE_X_OUTER):
+            if zone == ZONE_PLOT and bool(
+                event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+            ):
+                # UX-13: Shift+クリックは計測ジェスチャとして曲線ヒット(DP16 候補)・
+                # カーソル線 10px ヒット帯より優先(spec §2.2 優先規則) — B を A 線近傍や
+                # 曲線上に置く典型操作が press 候補/線ドラッグに奪われないため、他の
+                # ZONE_PLOT 分岐より前に確定させる。X/Y 軸ゾーンは対象外(zone 条件で除外)。
+                t = self._data_value(event.position(), "x")
+                if t is not None:
+                    if self.vm.cursor_t is None:
+                        self.vm.set_cursor(t)  # A 未設置 -> A を設置 (B は置かない)
+                    else:
+                        self.vm.set_cursor_b(t)  # A 設置済み -> B 設置 (暗黙 delta)
+                event.accept()
+            elif zone in (ZONE_X_INNER, ZONE_X_OUTER):
                 self._deactivate_curve()  # X zone is a different target -> deactivate
                 self._drag_zone = zone
                 self._drag_start = event.position()

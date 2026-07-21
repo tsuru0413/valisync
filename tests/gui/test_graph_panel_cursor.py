@@ -16,7 +16,7 @@ from unittest.mock import Mock
 
 import numpy as np
 import pytest
-from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QContextMenuEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
@@ -765,3 +765,108 @@ def test_interp_menu_action_sets_vm(qtbot: QtBot) -> None:
 # moved to GraphAreaView's single pane — the equivalent assertions now live in
 # tests/gui/test_readout_pane_binding.py::test_readout_shows_active_panel_interp_label
 # and ::test_readout_clear_callback_clears_active_panel_cursor.
+
+
+# --- 計測 IA Task 4: Shift+クリックで B を直接設置 (UX-13, spec §2.2) ---
+#
+# Real sendEvent path (like tests/gui/test_graph_panel_offset_drag.py): press-only
+# gestures are reproducible via sendEvent (unlike move-driven drags, which need a
+# real OS grab — see memory gui_realgui_move_not_reaching_parent_qwidget), so this
+# is an honest Layer B for the press-time branch under test.
+
+
+def _shift_press_event(view: GraphPanelView, pos: QPointF) -> QMouseEvent:
+    glob = view.mapToGlobal(pos.toPoint())
+    return QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        pos,
+        QPointF(glob),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.ShiftModifier,
+    )
+
+
+def _press_event_no_modifier(view: GraphPanelView, pos: QPointF) -> QMouseEvent:
+    glob = view.mapToGlobal(pos.toPoint())
+    return QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        pos,
+        QPointF(glob),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+
+def test_shift_click_places_b_when_a_already_set(qtbot: QtBot) -> None:
+    """(a) A 設置済み + 空白 Shift+press -> B がクリック時刻に設置され delta True。"""
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.set_cursor(0.1)
+    pos = view._plot_rect_in_widget().center()
+    expected_t = view._data_value(pos, "x")
+    assert expected_t is not None
+    QApplication.sendEvent(view, _shift_press_event(view, pos))
+    assert view.vm.cursor_t == pytest.approx(0.1)  # A は動かない
+    assert view.vm.cursor_t_b == pytest.approx(expected_t)
+    assert view.vm.delta_enabled is True
+
+
+def test_shift_click_places_a_when_unset(qtbot: QtBot) -> None:
+    """(b) A 未設置 + Shift+press -> A がクリック時刻に設置され B は None のまま。"""
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    assert view.vm.cursor_t is None
+    pos = view._plot_rect_in_widget().center()
+    expected_t = view._data_value(pos, "x")
+    assert expected_t is not None
+    QApplication.sendEvent(view, _shift_press_event(view, pos))
+    assert view.vm.cursor_t == pytest.approx(expected_t)
+    assert view.vm.cursor_t_b is None
+
+
+def test_shift_click_on_curve_places_b_not_press_candidate(qtbot: QtBot) -> None:
+    """(c) 曲線上座標でも Shift+press で B 設置 (DP16 press 候補に奪われない)。"""
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.set_cursor(0.1)
+    vb0 = view._view_boxes[0]
+    # t=0.5 -> i=50 -> value=50.0 は生成データの実サンプル点 (曲線上の厳密なヒット)。
+    scene_pt = vb0.mapViewToScene(QPointF(0.5, 50.0))
+    pos = QPointF(view.plot_widget.mapFromScene(scene_pt))
+    assert view._curve_at(pos) is not None  # 前提: 曲線ヒットする座標である
+    expected_t = view._data_value(pos, "x")
+    QApplication.sendEvent(view, _shift_press_event(view, pos))
+    assert view._curve_press_candidate is None  # DP16 候補は保持されない
+    assert view.vm.cursor_t_b == pytest.approx(expected_t)
+
+
+def test_shift_click_near_a_line_places_b_not_drag(qtbot: QtBot) -> None:
+    """(d) A 線 10px 内の Shift+press でも B 設置 (線ドラッグに奪われない)。"""
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    view.vm.set_cursor(0.5)
+    vb0 = view._view_boxes[0]
+    line_scene_x = vb0.mapViewToScene(QPointF(0.5, 0.0)).x()
+    center_y = view._plot_rect_in_widget().center().y()
+    widget_pt = view.plot_widget.mapFromScene(QPointF(line_scene_x + 3.0, center_y))
+    pos = QPointF(widget_pt)
+    assert view._cursor_line_at(pos) == "A"  # 前提: A 線のヒット帯内である
+    expected_t = view._data_value(pos, "x")
+    QApplication.sendEvent(view, _shift_press_event(view, pos))
+    assert view.vm.cursor_t == pytest.approx(0.5)  # A はドラッグされず不変
+    assert view.vm.cursor_t_b == pytest.approx(expected_t)
+
+
+def test_nonshift_click_on_curve_still_holds_press_candidate(qtbot: QtBot) -> None:
+    """(e) 非 Shift press は既存挙動 (DP16 press 候補) が不変。"""
+    view = _shown_cursor_panel(qtbot)
+    view.vm.x_range = (0.0, 1.0)
+    vb0 = view._view_boxes[0]
+    scene_pt = vb0.mapViewToScene(QPointF(0.5, 50.0))
+    pos = QPointF(view.plot_widget.mapFromScene(scene_pt))
+    assert view._curve_at(pos) is not None
+    QApplication.sendEvent(view, _press_event_no_modifier(view, pos))
+    assert view._curve_press_candidate is not None
+    assert view.vm.cursor_t is None  # Shift 分岐は発火していない
