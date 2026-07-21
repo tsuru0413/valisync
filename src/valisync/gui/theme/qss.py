@@ -112,6 +112,15 @@ def delta_value(color: tokens.Color) -> str:
     return f"color: {color.hex};"
 
 
+def status_immediate_label(color: tokens.Color) -> str:
+    """ステータスバー左の計測即値ラベル色 (呼び出し側が chrome_cursor_a/b/text を選ぶ)。
+
+    mono フォントは view 側で QFont に設定する (font-family QSS は Windows で
+    実等幅へ解決しないことがあるため) — ここは色のみ生成する。
+    """
+    return f"color: {color.hex};"
+
+
 def line_edit_frame(t: tokens.ThemeTokens | None = None) -> str:
     """QLineEdit の常時枠 (UX-49) — Fusion 導出色は未フォーカス枠を描かず
     プレースホルダだけの行と区別できないため app QSS で明示する。

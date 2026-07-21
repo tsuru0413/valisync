@@ -18,12 +18,22 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
-from PySide6.QtCore import QSettings, Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QKeySequence, QShowEvent
+from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QCloseEvent,
+    QFont,
+    QKeySequence,
+    QShowEvent,
+    QStatusTipEvent,
+)
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QStackedWidget,
@@ -34,7 +44,8 @@ from valisync.core.loaders.csv_format_detector import CsvFormatDetector
 from valisync.core.models.format_def import FormatDefinition
 from valisync.core.session import LoadOutcome
 from valisync.gui.theme import apply as theme_apply
-from valisync.gui.theme import icons
+from valisync.gui.theme import icons, tokens
+from valisync.gui.theme import qss as theme_qss
 from valisync.gui.theme.tokens import ThemeMode
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
@@ -330,8 +341,10 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.channel_dock.toggleViewAction())
         toolbar.addAction(self.diagnostics_dock.toggleViewAction())
 
-        # Status bar surfaces load outcomes (FB-06); shown even before any load.
-        self.statusBar().showMessage("準備完了")
+        # ── Status bar: 左=計測即値 (A/B/Δt) / 右=メッセージ (spec §2.4・v3 決定2) ─
+        self._build_status_bar()
+        # FB-06: shown even before any load.
+        self.set_status_message("準備完了")
 
         # ── Cross-view wiring ────────────────────────────────────────────────
         self.channel_browser_view.add_to_panel_requested.connect(
@@ -346,6 +359,13 @@ class MainWindow(QMainWindow):
         )
         self.graph_area_view.file_dropped.connect(self._load_file)
         self._app_unsubscribe = self.app_vm.subscribe(self._on_app_change)
+        # spec §2.4: area レベル _notify("cursor") (Task 2 発火源) と タブ/パネル/
+        # アクティブ変更を 1 本で購読し、左即値をアクティブタブの CursorState へ
+        # 追随させる (パネル個別購読の張り替えを避ける pull 型)。
+        self._graph_area_unsubscribe = self.graph_area_vm.subscribe(
+            self._on_graph_area_change
+        )
+        self._update_immediate_values()  # 初期表示 (未設置=空文字)
 
         self._rebuild_recent_menu()
         # SH-11: 永続状態で上書きされる前の既定配置を捕捉 (Reset Layout 用)。
@@ -414,7 +434,7 @@ class MainWindow(QMainWindow):
             msg += f" ・ ⚠ {n_alert} 件の診断（Diagnostics を参照）"  # noqa: RUF001
         elif n_info:
             msg += f" ・ ℹ {n_info} 件の情報（Diagnostics を参照）"  # noqa: RUF001
-        self.statusBar().showMessage(msg)
+        self.set_status_message(msg)
         # SH-01: Recent には再開可能な絶対パスを保存する。表示用の source は
         # basename(source_name) だが、それを保存すると Path.exists() の剪定で
         # 消えるため、実際に開いたパス(source_path)を使う。
@@ -436,7 +456,7 @@ class MainWindow(QMainWindow):
             self.diagnostics_vm.add(
                 source, [Diagnostic(level="error", message="; ".join(messages))]
             )
-        self.statusBar().showMessage(f"⛔ 読み込み失敗: {source}")
+        self.set_status_message(f"⛔ 読み込み失敗: {source}")
         self.diagnostics_dock.show()
         self.diagnostics_dock.raise_()
         QMessageBox.critical(
@@ -447,7 +467,7 @@ class MainWindow(QMainWindow):
 
     def _on_load_cancelled(self, path: Path) -> None:
         # ユーザー起点の正常系: status のみ(モーダル/診断は出さない・spec §6)
-        self.statusBar().showMessage(f"キャンセルしました: {path.name}")
+        self.set_status_message(f"キャンセルしました: {path.name}")
 
     def _on_diagnostic_activated(self, target: str) -> None:
         # Best-effort jump: select the signal's file in the channel browser.
@@ -584,7 +604,7 @@ class MainWindow(QMainWindow):
             ),
             busy=self.busy_overlay,
             label=req.output_path.name,
-            on_success=lambda: self.statusBar().showMessage(
+            on_success=lambda: self.set_status_message(
                 f"エクスポートしました: {req.output_path.name}"
             ),
             on_error=self._on_export_error,
@@ -592,7 +612,7 @@ class MainWindow(QMainWindow):
 
     def _on_export_error(self, err: Exception) -> None:
         # FB-01 同様: 失敗を握りつぶさない (ステータス+モーダル)。
-        self.statusBar().showMessage(f"⛔ エクスポート失敗: {err}")
+        self.set_status_message(f"⛔ エクスポート失敗: {err}")
         QMessageBox.critical(
             self, "エクスポートエラー", f"CSV を書き出せませんでした。\n\n{err}"
         )
@@ -629,6 +649,90 @@ class MainWindow(QMainWindow):
 
     def _show_about(self) -> None:
         QMessageBox.about(self, "About ValiSync", self._about_text())
+
+    # ─── Status bar (spec §2.4) ─────────────────────────────────────────────────
+
+    def _build_status_bar(self) -> None:
+        """左=計測即値 (A/B/Δt mono) / 右=メッセージ の 2 領域を構成する。
+
+        左は addWidget (通常領域)・右は addPermanentWidget (常設領域) — Qt 内部の
+        showMessage は使わない (それは常設含む左右を一時的に覆い隠すため・§2.4)。
+        """
+        bar = self.statusBar()
+        # mono フォントは QFont で設定 (font-family QSS は等幅へ解決しないことがある)。
+        mono = QFont()
+        mono.setStyleHint(QFont.StyleHint.Monospace)
+        mono.setFamily("monospace")
+        c = tokens.active().colors
+        self._status_cursor_a = QLabel("")
+        self._status_cursor_b = QLabel("")
+        self._status_cursor_delta = QLabel("")
+        for label, color in (
+            (self._status_cursor_a, c.chrome_cursor_a),
+            (self._status_cursor_b, c.chrome_cursor_b),
+            (self._status_cursor_delta, c.chrome_text),
+        ):
+            label.setFont(mono)
+            label.setStyleSheet(theme_qss.status_immediate_label(color))
+            bar.addWidget(label)
+        # 右: メッセージラベル (showMessage の置換先)。
+        self._status_message_label = QLabel("")
+        bar.addPermanentWidget(self._status_message_label)
+        # 単発自動クリア用タイマー (再呼び出しで破棄・set_status_message で使う)。
+        self._status_timer: QTimer | None = None
+
+    def set_status_message(self, text: str, timeout_ms: int = 0) -> None:
+        """右ラベルへメッセージを表示する (showMessage の置換・spec §2.4)。
+
+        timeout_ms > 0 で単発 QTimer 自動クリア。再呼び出しは前タイマーを破棄する
+        ので、連続表示で古いクリアが新メッセージを消す事故を防ぐ。
+        """
+        self._status_message_label.setText(text)
+        if self._status_timer is not None:
+            self._status_timer.stop()
+            self._status_timer = None
+        if timeout_ms > 0:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(lambda: self._status_message_label.setText(""))
+            timer.start(timeout_ms)
+            self._status_timer = timer
+
+    def status_message(self) -> str:
+        """右メッセージラベルの現在テキスト (set_status_message と対称・テスト用)。"""
+        return self._status_message_label.text()
+
+    def event(self, event: QEvent) -> bool:
+        """QStatusTipEvent を横取りして右ラベルへ流す (spec §2.4 blocker)。
+
+        Qt はメニュー/ツールバー hover のたび QStatusTipEvent を既定処理で内部
+        showMessage へ流し、左の計測即値領域を覆い隠す。ここで消費し (既定処理へ
+        通さず True を返す) set_status_message へルーティングすることで左即値を
+        守る。空 tip は hover 解除時に Qt が送るので、そのままクリア動作となる。
+        """
+        if event.type() == QEvent.Type.StatusTip:
+            self.set_status_message(cast(QStatusTipEvent, event).tip())
+            return True
+        return super().event(event)
+
+    def _on_graph_area_change(self, change: str) -> None:
+        """アクティブタブの CursorState 変化・切替で左即値を更新する (spec §2.4)。"""
+        if change in ("cursor", "active", "tabs", "panels"):
+            self._update_immediate_values()
+
+    def _update_immediate_values(self) -> None:
+        """アクティブタブのアクティブパネル VM から A/B/Δt を pull して setText。
+
+        未設置のフィールドは空文字。Δt は A・B の双方が設置済みのときのみ表示する。
+        """
+        panel = self.graph_area_vm.active_panel()  # VM 不変条件により常に有効
+        a = panel.cursor_t
+        b = panel.cursor_t_b
+        self._status_cursor_a.setText(f"A {a:.3f} s" if a is not None else "")
+        self._status_cursor_b.setText(f"B {b:.3f} s" if b is not None else "")
+        self._status_cursor_delta.setText(
+            f"Δt {b - a:.3f} s" if a is not None and b is not None else ""
+        )
 
     # ─── State persistence ────────────────────────────────────────────────────
 
@@ -822,6 +926,7 @@ class MainWindow(QMainWindow):
             ThemeMode.DARK: "ダーク",
             ThemeMode.AUTO: "オート",
         }
-        self.statusBar().showMessage(
-            f"テーマを「{labels[mode]}」に変更しました。再起動で反映されます", 8000
+        self.set_status_message(
+            f"テーマを「{labels[mode]}」に変更しました。再起動で反映されます",
+            timeout_ms=8000,
         )

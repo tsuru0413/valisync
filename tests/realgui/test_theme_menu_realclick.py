@@ -80,7 +80,7 @@ def test_theme_radio_real_click_saves_without_repaint(
     for _ in range(3):
         QApplication.processEvents()
     assert active() is before_active, "再起動反映のはずが active が即変化した"
-    assert "再起動" in window.statusBar().currentMessage()
+    assert "再起動" in window.status_message()  # 右ラベルへ移設 (spec §2.4)
     with __import__("contextlib").suppress(Exception):
         QApplication.primaryScreen().grabWindow(0).save(
             str(tmp_path / "theme_menu.png")

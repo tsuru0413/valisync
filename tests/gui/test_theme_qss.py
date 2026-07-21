@@ -191,6 +191,19 @@ def test_delta_value_uses_given_delta_token_not_close_hover():
     assert DARK.colors.delta_positive.hex in qss.delta_value(DARK.colors.delta_positive)
 
 
+def test_status_immediate_label_emits_given_color():
+    """ステータス即値ラベル色は呼び出し側が渡した Color を出す (mono は view 側)。"""
+    from valisync.gui.theme.tokens import Color
+
+    s = qss.status_immediate_label(Color(1, 2, 3))
+    assert Color(1, 2, 3).hex in s
+    # DARK では chrome_cursor_a と cursor_a が同値の別役割 — 呼び出し側 (main_window)
+    # がどちらを渡すかの誤配線ガードは test_main_window の値分岐テストが担う。
+    assert DARK.colors.chrome_cursor_a.hex in qss.status_immediate_label(
+        DARK.colors.chrome_cursor_a
+    )
+
+
 def test_line_edit_frame_contains_base_rule_focus_and_carveout():
     """QLineEdit 常時枠 (UX-49)。base / :focus / qt_spinbox_lineedit carve-out の3規則。"""
     s = qss.line_edit_frame(DARK)
