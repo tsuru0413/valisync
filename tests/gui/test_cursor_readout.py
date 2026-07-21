@@ -130,7 +130,12 @@ def test_global_header_shows_time(qtbot: QtBot):
     assert w.row_texts()[0][0] == "csv::vCar"
 
 
-def test_delta_header_shows_ta_tb_dt(qtbot: QtBot):
+def test_delta_header_shows_ta_and_tb_labeled(qtbot: QtBot):
+    """UX-48: ヘッダは 'A <t_a> ・ B <t_b>' のラベル付き書式。
+
+    Δt はステータスバー左の即値 (spec §2.4) と重複するためヘッダから意図的に
+    除外 (spec §2.5) -- ここで非表示を lock する (旧仕様への先祖返り防止)。
+    """
     w = CursorReadout()
     qtbot.addWidget(w)
     w.set_delta(
@@ -143,7 +148,24 @@ def test_delta_header_shows_ta_tb_dt(qtbot: QtBot):
         ],
     )
     h = w.header_text()
-    assert "0.5" in h and "0.75" in h and "0.25" in h  # t_a, t_b, Dt
+    assert h == "A 0.500 s ・ B 0.750 s"
+
+
+def test_time_header_uses_fixed_3dp_and_subms_delta_rounds_to_zero(qtbot: QtBot):
+    """時刻ヘッダは固定小数3桁 (.3f)。ヘッダに Δt ラベルは無いが、A/B いずれも同じ
+    _fmt_time を通るため、サブ ms 差 (0.5ms 未満) の A/B は表示上 同一の丸め値
+    になる -- 「Δt が 0.000 s に丸まる」の観測可能な現れ。意図的な許容であり
+    バグではない (スナップ運用外のエッジ・spec §2.5)。"""
+    w = CursorReadout()
+    qtbot.addWidget(w)
+    w.set_global(100.0345678, [CursorReading("csv::vCar", "#1f77b4", 1.0, True)])
+    assert w.header_text() == "A 100.035 s"
+    w.set_delta(
+        1.0,
+        1.0002,  # サブ ms 差分 (0.2ms)
+        [DeltaReading("csv::vCar", "#1f77b4", 1.0, 0.0, _stats(1, 1, 1, 0, 1), True)],
+    )
+    assert w.header_text() == "A 1.000 s ・ B 1.000 s"
 
 
 def test_delta_columns_present(qtbot: QtBot):

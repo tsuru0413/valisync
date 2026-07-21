@@ -30,9 +30,9 @@ def test_readout_small_label_uses_secondary_and_small_px():
     assert f"font-size:{DARK.typography.small_px}px" in s
 
 
-def test_colored_dot_and_unit_span():
-    assert qss.colored_dot(DARK.colors.cursor_a) == (
-        f'<span style="color:{DARK.colors.cursor_a.hex}">●</span>'
+def test_colored_label_and_unit_span():
+    assert qss.colored_label("A", DARK.colors.cursor_a) == (
+        f'<span style="color:{DARK.colors.cursor_a.hex}">A</span>'
     )
     assert DARK.colors.text_secondary.hex in qss.unit_span("km/h", DARK)
     assert "[km/h]" in qss.unit_span("km/h", DARK)

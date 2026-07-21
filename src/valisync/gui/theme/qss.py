@@ -40,9 +40,9 @@ def readout_small_label(t: tokens.ThemeTokens | None = None) -> str:
     )
 
 
-def colored_dot(color: tokens.Color) -> str:
-    """readout ヘッダのカーソルマーカー● (RichText)。"""
-    return f'<span style="color:{color.hex}">●</span>'
+def colored_label(text: str, color: tokens.Color) -> str:
+    """readout ヘッダの A/B ラベル着色 (RichText・UX-48 — ● マーカーから置換)。"""
+    return f'<span style="color:{color.hex}">{text}</span>'
 
 
 def unit_span(unit: str, t: tokens.ThemeTokens | None = None) -> str:

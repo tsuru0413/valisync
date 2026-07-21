@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QContextMenuEvent, QMouseEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog, QLineEdit
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from valisync.core.interpolation import InterpolationMethod
@@ -676,6 +676,27 @@ def test_cursor_time_dialog_moves_a(qtbot: QtBot) -> None:
     )
     act.trigger()
     assert view.vm.cursor_t == pytest.approx(0.42)
+
+
+def test_default_time_dialog_prefills_fixed_3dp(qtbot: QtBot, monkeypatch) -> None:
+    """時刻ダイアログの初期値は固定小数3桁 (UX-14/48・spec §2.5 — 旧 .6g から統一)。
+
+    dlg.exec() はモーダルなのでブロックせず値だけ読めるよう exec() を差し替え、
+    ダイアログを開いた QLineEdit の初期テキストを直接検証する。
+    """
+    view = _shown_cursor_panel(qtbot)
+    captured: list[str] = []
+
+    def _fake_exec(self: QDialog) -> QDialog.DialogCode:
+        edit = self.findChild(QLineEdit)
+        assert edit is not None
+        captured.append(edit.text())
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(QDialog, "exec", _fake_exec)
+    result = view._default_time_dialog("A", 100.0345678)
+    assert captured == ["100.035"]
+    assert result is None  # Rejected → None
 
 
 def test_clear_a_clears_everything(qtbot: QtBot) -> None:

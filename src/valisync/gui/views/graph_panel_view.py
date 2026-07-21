@@ -2505,7 +2505,8 @@ class GraphPanelView(QWidget):
         dlg.setWindowTitle("カーソル時刻を指定")
         lay = QVBoxLayout(dlg)
         lay.addWidget(QLabel(f"{which} カーソルの時刻 (秒):"))
-        edit = QLineEdit(f"{current:.6g}")
+        # 固定小数3桁 (UX-14/48・spec §2.5 — 他の時刻表示面と統一)。
+        edit = QLineEdit(f"{current:.3f}")
         lay.addWidget(edit)
         box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel

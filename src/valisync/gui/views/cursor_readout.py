@@ -59,7 +59,9 @@ def _fmt_dy(v: float | None, precision: int = _DEFAULT_PRECISION) -> str:
 
 
 def _fmt_time(t: float) -> str:
-    return f"{t:.4g} s"  # 時刻は固定精度 (精度切替の対象外・spec 増分3)
+    # 固定小数3桁 (UX-14/48・spec §2.5)。時刻は精度切替の対象外。サブ ms の Δt が
+    # 0.000 に丸まるのは意図的な許容 (スナップ運用外のエッジ・spec §2.5 に明記)。
+    return f"{t:.3f} s"
 
 
 def _fmt_range(
@@ -191,19 +193,20 @@ class CursorReadout(QWidget):
         interp_label: str = "",
         precision: int = _DEFAULT_PRECISION,
     ) -> None:
-        """Global mode: header = (dot) t_a [ - interp], columns = [swatch|name|A値|min-max]."""
+        """Global mode: header = 'A <t_a> (interp)', columns = [swatch|name|A値|min-max]."""
         self._placeholder.hide()
         self._placeholder_text = ""
         self._last_delta = None
         self._precision = precision
         ta_str = _fmt_time(t_a)
-        self._header_text = f"● {ta_str}"
+        self._header_text = f"A {ta_str}"
         if interp_label:
-            self._header_text += f"  ─ {interp_label}"
+            self._header_text += f"（{interp_label}）"  # noqa: RUF001
         self._col_headers = ["A値", "min–max"]  # noqa: RUF001 EN DASH
-        header_html = f"{qss.colored_dot(tokens.active().colors.cursor_a)} {ta_str}"
+        c = tokens.active().colors
+        header_html = f"{qss.colored_label('A', c.cursor_a)} {ta_str}"
         if interp_label:
-            header_html += f"  ─ {interp_label}"
+            header_html += f"（{interp_label}）"  # noqa: RUF001
         self._header.setText(header_html)
         self._header.show()
         self._rebuild(
@@ -234,28 +237,29 @@ class CursorReadout(QWidget):
         interp_label: str = "",
         precision: int = _DEFAULT_PRECISION,
     ) -> None:
-        """Delta mode: header = (dot) t_a (dot) t_b · Dt [ - interp], columns = A値/Dy/<stats>."""
+        """Delta mode: header = 'A <t_a> - B <t_b> (interp)', columns = A値/Dy/<stats>.
+
+        Δt はヘッダに出さない — ステータスバー左の即値 (spec §2.4) と重複するため
+        readout ヘッダからは意図的に除外 (spec §2.5)。
+        """
         self._placeholder.hide()
         self._placeholder_text = ""
         self._last_delta = (t_a, t_b, readings, interp_label, precision)
         self._precision = precision
-        dt = t_b - t_a
         ta_str = _fmt_time(t_a)
         tb_str = _fmt_time(t_b)
-        dt_str = _fmt_time(dt)
-        self._header_text = f"● {ta_str}  ● {tb_str} · Δt {dt_str}"
+        self._header_text = f"A {ta_str} ・ B {tb_str}"
         if interp_label:
-            self._header_text += f"  ─ {interp_label}"
+            self._header_text += f"（{interp_label}）"  # noqa: RUF001
         stat_cols = [c for c in _STAT_COLS if c in self._visible_stats]
         self._col_headers = ["A値", "Δy", *stat_cols]
         c = tokens.active().colors
         header_html = (
-            f"{qss.colored_dot(c.cursor_a)} {ta_str}"
-            f"  {qss.colored_dot(c.cursor_b)} {tb_str}"
-            f" · <b>Δt {dt_str}</b>"
+            f"{qss.colored_label('A', c.cursor_a)} {ta_str}"
+            f" ・ {qss.colored_label('B', c.cursor_b)} {tb_str}"
         )
         if interp_label:
-            header_html += f"  ─ {interp_label}"
+            header_html += f"（{interp_label}）"  # noqa: RUF001
         self._header.setText(header_html)
         self._header.show()
         rows = []
