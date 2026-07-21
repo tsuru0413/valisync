@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from PySide6.QtCore import QSettings
 from PySide6.QtGui import QKeySequence
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
@@ -39,9 +40,9 @@ def test_exit_has_ctrl_q_shortcut(qtbot: QtBot, tmp_path: Path) -> None:
 def test_menu_titles_have_mnemonics(qtbot: QtBot, tmp_path: Path) -> None:
     mw = _mw(qtbot, tmp_path)
     titles = [a.text() for a in mw.menuBar().actions()]
-    assert "&File" in titles
-    assert "&View" in titles
-    assert "&Help" in titles
+    assert "ファイル(&F)" in titles
+    assert "表示(&V)" in titles
+    assert "ヘルプ(&H)" in titles
 
 
 def test_toolbar_has_dock_toggles(qtbot: QtBot, tmp_path: Path) -> None:
@@ -79,7 +80,7 @@ def test_reset_layout_restores_default_dock_area(qtbot: QtBot, tmp_path: Path) -
 
 def test_reset_layout_action_in_view_menu(qtbot: QtBot, tmp_path: Path) -> None:
     mw = _mw(qtbot, tmp_path)
-    assert mw.action_reset_layout.text() == "Reset Layout"
+    assert mw.action_reset_layout.text() == "レイアウトをリセット(&R)"
 
 
 def test_data_explorer_action_has_icon_and_tooltip(
@@ -95,3 +96,20 @@ def test_about_text_includes_version(qtbot: QtBot, tmp_path: Path) -> None:
     text = mw._about_text()
     assert text.startswith("ValiSync v")
     assert "—" in text  # "ValiSync v{ver} — ..."
+
+
+def test_about_text_shows_version_unknown_when_lookup_fails(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G-37: v{ver} の合成事故 ("v不明" 等) を分岐で回避する。"""
+    import importlib.metadata
+
+    def _raise(name: str) -> str:
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", _raise)  # type: ignore[attr-defined]
+    mw = _mw(qtbot, tmp_path)
+    text = mw._about_text()
+    assert "バージョン不明" in text
+    assert "v不明" not in text
+    assert not text.startswith("ValiSync v")

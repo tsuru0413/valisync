@@ -10,6 +10,26 @@ def test_mn_composes_mnemonic():
     assert strings.mn("補間方式", "I") == "補間方式(&I)"
 
 
+def test_busy_templates_format_with_expected_placeholders():
+    """G-41: BusyOverlay 実文言テンプレートが期待プレースホルダで format 可能 (spec §6)。"""
+    assert strings.BUSY_LOADING_TMPL.format(label="a.mf4") == "a.mf4 を読み込み中…"
+    assert strings.BUSY_LOADING_MULTI_TMPL.format(n=2) == "2 ファイルを読み込み中…"
+    assert (
+        strings.BUSY_EXPORTING_TMPL.format(label="out.csv")
+        == "out.csv をエクスポート中…"
+    )
+
+
+def test_status_diag_templates_embed_ref_diagnostics():
+    """判断点#13: 診断誘導メッセージが REF_DIAGNOSTICS を単一定数から合成する。"""
+    alert = strings.STATUS_DIAG_ALERT_TMPL.format(n=1)
+    info = strings.STATUS_DIAG_INFO_TMPL.format(n=2)
+    assert alert == " ・ ⚠ 警告/エラー 1 件（「診断」ドックを参照）"
+    assert info == " ・ ℹ 情報 2 件（「診断」ドックを参照）"
+    assert strings.REF_DIAGNOSTICS in alert
+    assert strings.REF_DIAGNOSTICS in info
+
+
 def test_strip_mnemonic_ja_and_legacy_forms():
     assert strings.strip_mnemonic("ファイル(&F)") == "ファイル"
     assert strings.strip_mnemonic("開く(&O)…") == "開く…"

@@ -15,6 +15,7 @@ import pytest
 from pytestqt.qtbot import QtBot
 
 from tests.realgui._realgui_input import LDOWN, LUP, at, skip_unless_real_display
+from valisync.gui.strings import strip_mnemonic
 
 pytestmark = pytest.mark.realgui
 
@@ -59,13 +60,15 @@ def test_theme_radio_real_click_saves_without_repaint(
 
     # View メニューを実クリックで開く
     menubar = window.menuBar()
-    view_action = next(a for a in menubar.actions() if "View" in a.text())
+    view_action = next(
+        a for a in menubar.actions() if strip_mnemonic(a.text()) == "表示"
+    )
     _click(*_phys_center(menubar, menubar.actionGeometry(view_action)))
     qtbot.waitUntil(lambda: QApplication.activePopupWidget() is not None, timeout=3000)
     view_menu = QApplication.activePopupWidget()
 
     # テーマ submenu を実クリックで開く
-    theme_action = next(a for a in view_menu.actions() if a.text() == "テーマ")
+    theme_action = next(a for a in view_menu.actions() if a.text() == "テーマ(&T)")
     _click(*_phys_center(view_menu, view_menu.actionGeometry(theme_action)))
     theme_menu = theme_action.menu()
     qtbot.waitUntil(lambda: theme_menu.isVisible(), timeout=3000)

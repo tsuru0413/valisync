@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from valisync.core.session import LoadCancelled, LoadOutcome
+from valisync.gui import strings as S
 
 if TYPE_CHECKING:
     from valisync.gui.viewmodels.load_task import LoadTask
@@ -157,9 +158,9 @@ class LoadController(QObject):
             busy.hide()
             return
         if len(labels) == 1:
-            busy.set_message(f"読み込み中: {labels[0] or 'ファイル'}")
+            busy.set_message(S.BUSY_LOADING_TMPL.format(label=labels[0] or "ファイル"))
         else:
-            busy.set_message(f"{len(labels)} ファイルを読み込み中")
+            busy.set_message(S.BUSY_LOADING_MULTI_TMPL.format(n=len(labels)))
         busy.show()
 
     def _finish(

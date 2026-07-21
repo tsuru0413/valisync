@@ -17,6 +17,7 @@ import pytest
 from pytestqt.qtbot import QtBot
 
 from tests.realgui._realgui_input import LDOWN, LUP, at, skip_unless_real_display
+from valisync.gui.strings import strip_mnemonic
 
 pytestmark = pytest.mark.realgui
 
@@ -136,10 +137,10 @@ def test_reset_layout_recovers_hidden_dock_real_os(
         cap["hidden"] = not mw.file_dock.isVisible()
 
     def open_view_menu() -> None:
-        # menubar の "&View" を実クリックしてメニューを開く。
+        # menubar の "表示(&V)" を実クリックしてメニューを開く。
         menubar = mw.menuBar()
         view_action = next(
-            a for a in menubar.actions() if a.text().replace("&", "") == "View"
+            a for a in menubar.actions() if strip_mnemonic(a.text()) == "表示"
         )
         vr = menubar.actionGeometry(view_action)
         dpr = mw.devicePixelRatioF()
@@ -151,7 +152,8 @@ def test_reset_layout_recovers_hidden_dock_real_os(
         if isinstance(popup, QMenu):
             cap["menu_opened"] = True
             reset = next(
-                (a for a in popup.actions() if a.text() == "Reset Layout"), None
+                (a for a in popup.actions() if a.text() == "レイアウトをリセット(&R)"),
+                None,
             )
             if reset is not None:
                 r = popup.actionGeometry(reset)

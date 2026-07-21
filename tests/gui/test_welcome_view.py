@@ -25,6 +25,33 @@ def test_cta_emits_open_requested_none(qtbot: QtBot, tmp_path: Path) -> None:
     assert got == [None]
 
 
+def test_set_open_action_composes_label_and_shortcut(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """E-3: ラベル部を固定し、ショートカット部を action から動的合成する (二重スペース根治)。"""
+    from PySide6.QtGui import QAction, QKeySequence
+
+    view = WelcomeView(_recent(tmp_path))
+    qtbot.addWidget(view)
+    action = QAction()
+    action.setShortcut(QKeySequence("Ctrl+O"))
+    view.set_open_action(action)
+    assert view.cta.text() == "計測ファイルを開く (Ctrl+O)"
+
+
+def test_cta_tracks_shortcut_changes(qtbot: QtBot, tmp_path: Path) -> None:
+    """action.changed でショートカット部のみ追随する (action.text() は使わない)。"""
+    from PySide6.QtGui import QAction, QKeySequence
+
+    view = WelcomeView(_recent(tmp_path))
+    qtbot.addWidget(view)
+    action = QAction()
+    action.setShortcut(QKeySequence("Ctrl+O"))
+    view.set_open_action(action)
+    action.setShortcut(QKeySequence("Ctrl+Shift+O"))
+    assert view.cta.text() == "計測ファイルを開く (Ctrl+Shift+O)"
+
+
 def test_recent_row_click_emits_its_path(qtbot: QtBot, tmp_path: Path) -> None:
     # Seed 2 rows so a late-binding closure bug (every row emits the last path)
     # is caught: existing() is newest-first, so row 0 must emit the NEWEST path,

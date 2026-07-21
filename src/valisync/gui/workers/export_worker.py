@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
+from valisync.gui import strings as S
+
 if TYPE_CHECKING:
     from valisync.gui.views.busy_overlay import BusyOverlay
 
@@ -68,7 +70,7 @@ class ExportController(QObject):
         label: str | None = None,
     ) -> None:
         if busy is not None:
-            busy.set_message(f"エクスポート中: {label or 'CSV'}")
+            busy.set_message(S.BUSY_EXPORTING_TMPL.format(label=label or "CSV"))
             busy.show()
         worker = ExportWorker(export_callable)
         self._active.add(worker)
