@@ -280,6 +280,15 @@ class GraphAreaView(QWidget):
         elif change == "active_panel":
             self._sync_active_frames()  # 軽量: rebuild しない (クリック中の破棄禁止)
             self._sync_readout()
+        elif change == "cursor":
+            # spec §2.1/§2.4: カーソル/Δ の area 通知 (_on_panel_change が発火) は
+            # readout/ステータス即値の pull 専用の軽量経路。ここで else の _rebuild()
+            # へ落とすとカーソル移動・線ドラッグのたびに全パネル (ドラッグ中の
+            # InfiniteLine を含む) を破棄再構築し、実ドラッグが破棄済みアイテムへ
+            # 誤配送されてハングする (①ゲートで実機検出 — B 線ドラッグの
+            # test_real_drag_b_cursor_stats_live_recalc)。カーソル線自体は各パネル
+            # View が自 VM 購読の軽量経路で更新するので、ここは readout の pull だけ。
+            self._sync_readout()
         elif change == "sync":
             # spec §2.3: sync 状態を映す常設ウィジェットはもう無い (右クリック時に
             # getter で都度読む) — 反映不要。ここで _rebuild() へ落とすと sync

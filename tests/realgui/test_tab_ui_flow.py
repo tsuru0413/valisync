@@ -98,10 +98,15 @@ def _phys_center(w, local_center) -> tuple[int, int]:  # type: ignore[no-untyped
 
 def test_corner_button_click_adds_tab(qtbot: QtBot, tmp_path) -> None:  # type: ignore[no-untyped-def]
     skip_unless_real_display()
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QToolButton
 
     view = _make_shown_area(qtbot)
-    btn = view.tabs.cornerWidget()
+    # spec §2.3: corner は「+」と読み値トグルの横並びコンテナに変わった。コンテナ中心を
+    # 掴むとボタン境界/読み値トグルに落ちて実挙動を破壊するので、new_tab_button 自体の
+    # 矩形中心を掴む (test-lock 追随 — cornerWidget().objectName() 単一ボタン前提は撤廃)。
+    corner = view.tabs.cornerWidget()
+    btn = corner.findChild(QToolButton, "new_tab_button")
+    assert btn is not None, "corner コンテナ内に new_tab_button が無い"
     qtbot.waitUntil(lambda: btn.isVisible() and btn.width() > 0, timeout=3000)
     x, y = _phys_center(btn, btn.rect().center())
     _real_click(x, y)

@@ -287,7 +287,11 @@ def test_real_drag_b_cursor_stats_live_recalc(qtbot: QtBot, tmp_path) -> None:
     for _ in range(5):
         QApplication.processEvents()
     assert view.cursor_line_visible() and view.delta_line_visible()
-    assert area.readout_visible()
+    # Task 8 (計測 IA §2.6): readout_visible() は表示トグル状態のみを表し、実可視性は
+    # 「トグル ON かつ非収納」。信号が存在するので収納されず、計測モードで実際に見える
+    # ことを両観測 API で確認する (readout_stowed 分離への追随・弱体化なし)。
+    assert area.readout_visible() and not area.readout_stowed()
+    assert area.readout_pane.isVisible()
 
     # Initial readout at B=75% — used to prove stats CHANGED after drag
     texts_before = area.readout_pane.row_texts()
