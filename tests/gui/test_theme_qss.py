@@ -54,6 +54,46 @@ def test_error_styles_use_error_token():
     assert DARK.colors.error.hex in qss.error_label(DARK)
 
 
+def test_error_label_and_border_use_error_not_shared_triple():
+    """error は delta_negative/close_hover と同値の三つ組 (DARK #f38ba8・spec §3)。
+
+    値を分岐させたテーマで error_label/rename_error_border が error を参照し、
+    同値の delta_negative/close_hover 側へ誤配線していないことを直接実証する。
+    """
+    import dataclasses
+
+    from valisync.gui.theme.tokens import Color
+
+    alt = dataclasses.replace(
+        DARK, colors=dataclasses.replace(DARK.colors, error=Color(1, 2, 3))
+    )
+    for style in (qss.error_label(alt), qss.rename_error_border(alt)):
+        assert Color(1, 2, 3).hex in style
+        # delta_negative/close_hover は未分岐のまま元値 (#f38ba8) — 三つ組のどちら
+        # へ誤配線しても同じ値なので、この一箇所の不在確認が両方向を防ぐ。
+        assert DARK.colors.delta_negative.hex not in style
+        assert DARK.colors.close_hover.hex not in style
+
+
+def test_readout_close_button_uses_close_hover_not_error():
+    """close_hover は error と同値の三つ組の一員 (spec §3・error==close_hover)。
+
+    error だけを分岐させたテーマで readout_close_button の hover 色が
+    close_hover (未分岐の元値) のままであり、error 側へ誤配線していないことを
+    直接実証する。
+    """
+    import dataclasses
+
+    from valisync.gui.theme.tokens import Color
+
+    alt = dataclasses.replace(
+        DARK, colors=dataclasses.replace(DARK.colors, error=Color(1, 2, 3))
+    )
+    s = qss.readout_close_button(alt)
+    assert DARK.colors.close_hover.hex in s
+    assert Color(1, 2, 3).hex not in s
+
+
 def test_default_arg_reads_active_at_call_time():
     """t=None は呼び出し時に active() を読む (default 束縛禁止の検証)。"""
     import dataclasses

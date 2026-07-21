@@ -807,21 +807,29 @@ def test_inspect_plotted_signals_structure(tmp_path: Path) -> None:
 # ─── palette cycling ──────────────────────────────────────────────────────────
 
 
-def test_palette_cycles_beyond_ten_signals(tmp_path: Path) -> None:
-    """11th signal cycles back to the first palette color."""
-    # Need 11 distinct signals: 1 CSV with 11 signal columns
-    session, _ = _loaded_session(tmp_path, n_rows=5, n_signals=11)
+def test_palette_cycles_beyond_palette_length(tmp_path: Path) -> None:
+    """9th signal cycles back to the first palette color.
+
+    Intentional supersede (spec §2-3, 増分0 Task 1): ``signal_palette`` shrank
+    from 10-color tab10 to 8-color Okabe-Ito, so the cycle point moved from
+    index 10 (11th signal) to index 8 (9th signal). This test replaces the
+    old ``test_palette_cycles_beyond_ten_signals`` rather than merely
+    updating its numbers — the 10-color assumption baked into the old name
+    and fixture size no longer holds.
+    """
+    # Need 9 distinct signals: 1 CSV with 9 signal columns
+    session, _ = _loaded_session(tmp_path, n_rows=5, n_signals=9)
     vm = GraphPanelVM(session)
     sigs = session.signals()
-    assert len(sigs) >= 11
+    assert len(sigs) >= 9
 
-    for sig in sigs[:11]:
+    for sig in sigs[:9]:
         vm.add_signal(sig.name)
 
     snap = vm.inspect()
     colors = [p["color"] for p in snap["plotted_signals"]]
-    # Color of 11th signal (index 10) should equal color of 1st (index 0)
-    assert colors[10] == colors[0]
+    # Color of 9th signal (index 8) should equal color of 1st (index 0)
+    assert colors[8] == colors[0]
 
 
 # ─── reset with no fittable signals clears the range (review finding ⑦) ─────────

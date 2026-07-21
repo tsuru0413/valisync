@@ -601,3 +601,35 @@ def test_delta_dy_sign_colors_value_diverged(qtbot: QtBot):
         assert DARK.colors.close_hover.hex not in joined  # close_hover 誤配線でない
     finally:
         set_active(DARK)
+
+
+def test_delta_negative_cell_uses_delta_negative_not_error(qtbot: QtBot):
+    """delta_negative は error と同値の三つ組の一員 (spec §3・error==delta_negative)。
+
+    error だけを分岐させたテーマで Δ負値セルの着色が delta_negative (未分岐の
+    元値) のままであり、error 側へ誤配線していないことを直接実証する。
+    """
+    import dataclasses
+
+    from valisync.core.statistics.range_stats import StatisticsResult
+    from valisync.gui.theme.tokens import DARK, Color, set_active
+
+    alt = dataclasses.replace(
+        DARK, colors=dataclasses.replace(DARK.colors, error=Color(1, 2, 3))
+    )
+    set_active(alt)
+    try:
+        w = CursorReadout()
+        qtbot.addWidget(w)
+        stats = StatisticsResult(mean=0, max=0, min=0, std=0, count=5)
+        w.set_delta(
+            1.0,
+            2.0,
+            [DeltaReading("dn", "#222", 1.0, -3.0, stats, True, entry_id=1)],
+        )
+        styles = w.dy_cell_styles()
+        joined = " ".join(s for _i, s in styles)
+        assert DARK.colors.delta_negative.hex in joined  # 未分岐の元値のまま
+        assert Color(1, 2, 3).hex not in joined  # error 誤配線でない
+    finally:
+        set_active(DARK)
