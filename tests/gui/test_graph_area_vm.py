@@ -717,3 +717,24 @@ def test_cross_panel_insert_axis_recalcs_and_fits(
     dst_vm.insert_axis(axis, entries, column=dst_vm.column_count - 1, position=None)
     assert dst_vm.axes[-1].name == key_big.split("::")[-1]
     assert dst_vm.axes[-1].y_range is not None
+
+
+def test_extract_axis_preserves_manual_range_of_sole_axis(
+    area_vm_two_panels_two_scales: tuple[GraphAreaVM, GraphPanelVM, GraphPanelVM, str],
+) -> None:
+    # レビュー捕捉の回帰ガード: 抽出対象が源パネルの唯一の軸のとき、
+    # _compact_axes の「全削除」placeholder 分岐 (keep = self._axes[0]) が
+    # 抽出中の軸オブジェクトそのものを別名でミューテートし (y_range=None・
+    # y_is_auto=True へリセット)、手動レンジが消える (spec §3.7 手動温存の破れ)。
+    # 挿入先でも手動値のまま (フィットされない) ことまで確認する。
+    _area, src_vm, dst_vm, key_big = area_vm_two_panels_two_scales
+    src_vm.add_signal(key_big)
+    src_vm.set_axis_range(0, 1000.0, 2000.0)  # 手動化 (y_is_auto=False)
+    extracted = src_vm.extract_axis(0)
+    assert extracted is not None
+    axis, entries = extracted
+    assert axis.y_is_auto is False  # 現行は True (別名ミューテートで自動化) で fail
+    assert axis.y_range == (1000.0, 2000.0)  # 現行は None で fail
+    dst_vm.insert_axis(axis, entries, column=dst_vm.column_count - 1, position=None)
+    assert dst_vm.axes[-1].y_is_auto is False
+    assert dst_vm.axes[-1].y_range == (1000.0, 2000.0)  # 挿入先でもフィットされず温存

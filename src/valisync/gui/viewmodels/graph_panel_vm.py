@@ -357,17 +357,19 @@ class GraphPanelVM(Observable):
         axis = self._axes[axis_index]
         entries = [e for e in self._plotted if e.axis_index == axis_index]
         self._plotted = [e for e in self._plotted if e.axis_index != axis_index]
-        self._compact_axes()  # prune the now-signal-less moved axis, remap survivors
-        # Break the alias: if _compact_axes kept the extracted axis as the empty-
-        # panel placeholder, swap it for a fresh one so source and target own
-        # distinct YAxisVM objects (else the target's relayout mutates the source
-        # placeholder, and a later remove_signal on the empty source corrupts the
-        # moved axis in the target).
-        if self._axes and self._axes[0] is axis:
-            placeholder = YAxisVM()
-            placeholder.top_ratio, placeholder.height_ratio = 0.0, 1.0
-            placeholder.column = self._column_count - 1
-            self._axes = [placeholder]
+        # swap-before-mutate: 抽出軸を _compact_axes 呼び出し「前」に _axes から
+        # 外し、フレッシュな placeholder に差し替える。抽出対象が源パネルの
+        # 唯一の軸だった場合、_compact_axes の「全削除」分岐は self._axes[0] を
+        # 再利用して y_range=None・y_is_auto=True へリセットする — 抽出軸を
+        # そこに残したままだと、返り値として渡す axis オブジェクトそのものが
+        # 別名 (keep) 経由でミューテートされ、手動レンジが消える
+        # (spec §3.7 手動温存の回帰・レビュー捕捉)。先に外しておけば
+        # _compact_axes が触るのは placeholder だけで、axis は無傷のまま返せる。
+        placeholder = YAxisVM()
+        placeholder.top_ratio, placeholder.height_ratio = 0.0, 1.0
+        placeholder.column = self._column_count - 1
+        self._axes[axis_index] = placeholder
+        self._compact_axes()  # prune the now-signal-less placeholder, remap survivors
         self._invalidate_cache()
         self._notify("axes")
         return axis, entries
@@ -588,8 +590,8 @@ class GraphPanelVM(Observable):
             if entry.signal_key == signal_key:
                 entry.visible = not entry.visible
                 break
-        # Membership is unchanged (recalc_axis_labels not needed) but the
-        # visible set feeding auto axes is — refit (spec §3.7).
+        # 所属は不変 (recalc_axis_labels 不要) だが auto 軸が追う可視集合は
+        # 変わる — refit する (spec §3.7)。
         self._auto_fit_ranges()
         self._invalidate_cache()
         self._notify("signals")
@@ -648,8 +650,8 @@ class GraphPanelVM(Observable):
         any_visible = any(e.visible for e in on_axis)
         for e in on_axis:
             e.visible = not any_visible
-        # Membership is unchanged (recalc_axis_labels not needed) but the
-        # visible set feeding auto axes is — refit (spec §3.7).
+        # 所属は不変 (recalc_axis_labels 不要) だが auto 軸が追う可視集合は
+        # 変わる — refit する (spec §3.7)。
         self._auto_fit_ranges()
         self._invalidate_cache()
         self._notify("signals")
