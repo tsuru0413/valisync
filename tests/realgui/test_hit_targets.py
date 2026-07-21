@@ -1,4 +1,4 @@
-# ruff: noqa: RUF001, RUF002, RUF003
+# ruff: noqa: RUF002, RUF003
 """Layer C: UX-38 当たり判定（高さ 24px 保証）が実 OS クリックで効くこと。
 
 `setMinimumHeight(24)` で縦方向へ拡張した常用ボタン（CollapsibleDockTitleBar の

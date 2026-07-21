@@ -215,7 +215,7 @@ class TestAnalyzeMenu:
         menu = _analyze_menu(window)
         texts = [a.text() for a in menu.actions()]
         assert "カーソル A" in texts
-        assert "カーソル B（Δ）" in texts  # noqa: RUF001
+        assert "カーソル B（Δ）" in texts
         assert "カーソルを消す" in texts
         assert any(
             a.text() == "補間方式" and a.menu() is not None for a in menu.actions()
@@ -480,7 +480,7 @@ def test_on_loaded_status_bar_shows_info_not_alert_for_info_only(qtbot, tmp_path
     )
     window._on_loaded(outcome)
     msg = window.status_message()  # spec §2.4: 右ラベルへ移設 (showMessage 廃止)
-    assert "ℹ 2 件の情報" in msg  # noqa: RUF001
+    assert "ℹ 2 件の情報" in msg
     assert "⚠" not in msg
 
 

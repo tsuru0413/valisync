@@ -173,7 +173,7 @@ def test_context_menu_has_cursor_toggles(qtbot: QtBot, tmp_path: Path) -> None:
     menu = view.build_context_menu()
     labels = [a.text() for a in menu.actions()]
     assert "カーソル A" in labels
-    assert "カーソル B（Δ）" in labels  # noqa: RUF001
+    assert "カーソル B（Δ）" in labels
 
 
 def test_sub_toggle_disabled_until_main_on(qtbot: QtBot, tmp_path: Path) -> None:
@@ -182,16 +182,12 @@ def test_sub_toggle_disabled_until_main_on(qtbot: QtBot, tmp_path: Path) -> None
     view = GraphPanelView(vm)
     qtbot.addWidget(view)
     sub = next(
-        a
-        for a in view.build_context_menu().actions()
-        if a.text() == "カーソル B（Δ）"  # noqa: RUF001
+        a for a in view.build_context_menu().actions() if a.text() == "カーソル B（Δ）"
     )
     assert sub.isEnabled() is False  # main OFF → sub disabled
     vm.toggle_main_cursor(True)
     sub2 = next(
-        a
-        for a in view.build_context_menu().actions()
-        if a.text() == "カーソル B（Δ）"  # noqa: RUF001
+        a for a in view.build_context_menu().actions() if a.text() == "カーソル B（Δ）"
     )
     assert sub2.isEnabled() is True
 
@@ -338,9 +334,7 @@ def test_sub_toggle_action_drives_vm(qtbot: QtBot, tmp_path: Path) -> None:
     qtbot.addWidget(view)
     vm.toggle_main_cursor(True)  # main on → sub enabled
     sub = next(
-        a
-        for a in view.build_context_menu().actions()
-        if a.text() == "カーソル B（Δ）"  # noqa: RUF001
+        a for a in view.build_context_menu().actions() if a.text() == "カーソル B（Δ）"
     )
     sub.trigger()  # user click → triggered(True) → vm.toggle_delta(True)
     assert vm.delta_enabled is True
@@ -663,7 +657,7 @@ def test_build_cursor_menu_items(qtbot: QtBot) -> None:
     menu_b = view.build_cursor_menu("B")
     assert [a.text() for a in menu_b.actions()] == [
         "時刻を指定…",
-        "カーソル B（Δ）を消す",  # noqa: RUF001
+        "カーソル B（Δ）を消す",
     ]
 
 
@@ -719,7 +713,7 @@ def test_clear_b_only_disables_delta(qtbot: QtBot) -> None:
     next(
         a
         for a in view.build_cursor_menu("B").actions()
-        if a.text() == "カーソル B（Δ）を消す"  # noqa: RUF001
+        if a.text() == "カーソル B（Δ）を消す"
     ).trigger()
     assert view.vm.cursor_t == pytest.approx(0.1)  # A survives
     assert view.vm.delta_enabled is False

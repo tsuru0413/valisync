@@ -62,7 +62,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["B011", "SIM117", "SIM108"]
+"tests/**" = ["B011", "SIM117", "SIM108", "RUF001"]
 
 [tool.ruff.lint.flake8-bugbear]
 # QModelIndex() is the idiomatic invalid-index default in Qt model overrides;

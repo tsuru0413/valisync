@@ -120,7 +120,7 @@ def test_tooltip_text_four_lines(tmp_path: Path) -> None:
     assert lines[0] == str(path.resolve())
     assert lines[1].startswith("サイズ: ")
     assert lines[2].startswith("時間範囲: ")
-    assert "（" in lines[2] and lines[2].endswith("s）")  # noqa: RUF001
+    assert "（" in lines[2] and lines[2].endswith("s）")
     assert lines[3].startswith("チャンネル: ") and "形式: CSV" in lines[3]
 
 

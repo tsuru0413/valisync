@@ -418,8 +418,8 @@ def test_table_tsv_global(qtbot: QtBot):
     assert lines[0].split("\t") == [
         "信号",
         "A値",
-        "min（全区間）",  # noqa: RUF001
-        "max（全区間）",  # noqa: RUF001
+        "min（全区間）",
+        "max（全区間）",
     ]
     assert lines[1].split("\t") == ["spd [km/h]", "1.5", "", ""]
     assert lines[2].split("\t") == ["rpm", "800", "", ""]
@@ -561,8 +561,8 @@ def test_set_global_renders_minmax_column(qtbot: QtBot):
     )
     assert w.column_headers() == [
         "A値",
-        "min（全区間）",  # noqa: RUF001
-        "max（全区間）",  # noqa: RUF001
+        "min（全区間）",
+        "max（全区間）",
     ]
     # row_texts()[i] = (name, joined cells) - A値と min/max 両方を含む
     _name, cells = w.row_texts()[0]

@@ -238,7 +238,7 @@ class TestGraphPanelMenu:
     def test_blank_menu_includes_shared_analysis_actions(self, qtbot: QtBot) -> None:
         texts = _texts(self._panel(qtbot).build_context_menu())  # type: ignore[attr-defined]
         assert "カーソル A" in texts
-        assert "カーソル B（Δ）" in texts  # noqa: RUF001
+        assert "カーソル B（Δ）" in texts
         assert "カーソルを消す" in texts
         assert any(
             a.text() == "補間方式" and a.menu() is not None
