@@ -32,6 +32,7 @@ from valisync.core.statistics.range_stats import StatisticsResult  # noqa: F401
 from valisync.gui.theme.tokens import active
 from valisync.gui.viewmodels.graph_panel_vm import (
     CursorReading,  # noqa: F401
+    CursorState,
     DeltaReading,  # noqa: F401
     GraphPanelVM,
     RenderCurve,
@@ -1170,6 +1171,88 @@ def test_delta_readings_dy_none_when_out_of_range(tmp_path):
     r = vm.delta_readings()[0]
     assert r.dy is None
     assert r.value_a == pytest.approx(20.0)  # A still in range
+
+
+# ─── CursorState 共有化 + set_cursor_b 対称化 (計測IA Task 1, spec §2.1) ─────
+
+
+def _make_session() -> Session:
+    """1信号を登録済みの Session を返す。
+
+    ファイル実体は不要 — SignalGroup.source_path はメタデータのみで実在を
+    要求しない (_register_signal と同型の最小パターン)。本節のテストは
+    カーソル状態の配線のみを検証し信号値自体は使わない。
+    """
+    session = Session()
+    sig = Signal(
+        name="s1",
+        timestamps=np.array([0.0, 1.0, 2.0], dtype=np.float64),
+        values=np.array([10.0, 20.0, 30.0], dtype=np.float64),
+        file_format="CSV",
+        bus_type="",
+        source_file="",
+    )
+    session._groups.add(
+        SignalGroup(
+            signals=(sig,),
+            source_path=Path("dummy.csv").absolute(),
+            file_format="CSV",
+            loaded_at=datetime.now(),
+        )
+    )
+    return session
+
+
+@pytest.fixture
+def basic_vm() -> GraphPanelVM:
+    """未共有 (自前 CursorState) の単独 GraphPanelVM。"""
+    return GraphPanelVM(_make_session())
+
+
+@pytest.fixture
+def vm_pair_sharing_state() -> tuple[GraphPanelVM, GraphPanelVM, CursorState]:
+    """同一 CursorState を注入した2 GraphPanelVM (タブ内共有を模す)。"""
+    session = _make_session()
+    state = CursorState()
+    vm1 = GraphPanelVM(session, cursor_state=state)
+    vm2 = GraphPanelVM(session, cursor_state=state)
+    return vm1, vm2, state
+
+
+def test_cursor_state_shared_object(
+    vm_pair_sharing_state: tuple[GraphPanelVM, GraphPanelVM, CursorState],
+) -> None:
+    vm1, vm2, _state = vm_pair_sharing_state  # 同一 CursorState を注入した 2 VM
+    vm1.set_cursor(3.0)
+    assert vm2.cursor_t == 3.0  # 配布でなく共有 (spec §2.1)
+
+
+def test_injected_state_survives_construction() -> None:
+    # blocker 反映: __init__ の既定値代入が共有状態を巻き戻さない
+    state = CursorState(
+        cursor_t=7.5,
+        cursor_t_b=9.0,
+        delta_enabled=True,
+        interp_method=InterpolationMethod.NEAREST,
+    )
+    vm = GraphPanelVM(_make_session(), cursor_state=state)
+    assert (vm.cursor_t, vm.cursor_t_b, vm.delta_enabled, vm.interp_method) == (
+        7.5,
+        9.0,
+        True,
+        InterpolationMethod.NEAREST,
+    )
+
+
+def test_set_cursor_b_noop_without_a(basic_vm: GraphPanelVM) -> None:
+    basic_vm.set_cursor_b(5.0)
+    assert basic_vm.cursor_t_b is None and basic_vm.delta_enabled is False
+
+
+def test_set_cursor_b_implies_delta(basic_vm: GraphPanelVM) -> None:
+    basic_vm.set_cursor(3.0)
+    basic_vm.set_cursor_b(5.0)
+    assert basic_vm.delta_enabled is True  # half-set 廃止 (UX-13/46)
 
 
 # ─── entry_id / value-range on readings (readout-pane 増分B Task 2) ─────────
