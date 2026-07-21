@@ -24,10 +24,10 @@
 |---|---|---|---|---|---|
 | busy_overlay.py:25 | label | ja | 読み込み中… | 読み込み中… | オーバーレイの既定文言。実運用では LoadController が set_message で「{ファイル名} を読み込み中…」等（別クラスタ workers/）に上書きするため、既定値が見えるのは上書き前の一瞬/テストのみ |
 | busy_overlay.py:33 | button | ja | キャンセル | キャンセル | 既に日本語。ハイブリッドキャンセル（FB-04/05 系）の入口 |
-| main_window.py:140 | title | en | File Browser | ファイル | QDockWidget windowTitle。View メニュー/ツールバーの toggleViewAction 文言もここから派生。L227（折りたたみタイトルバー）・L853（レールタブ）の複製と要同期 — 単一定数化推奨 ／ 【spec 確定反映】G-05 ★#1 確定（3面＋参照文を単一定数で同期） |
-| main_window.py:157 | title | en | Channel Browser | 信号 | QDockWidget windowTitle。toggleViewAction 文言も派生。L228・L854 の複製と要同期 ／ 【spec 確定反映】G-06 ★#2 確定 |
-| main_window.py:227 | header | en | File Browser | ファイル | CollapsibleDockTitleBar のタイトル。L140 の dock windowTitle と重複定義 — 訳語は必ず一致させる ／ 【spec 確定反映】G-05 確定（L140 と同一定数） |
-| main_window.py:228 | header | en | Channel Browser | 信号 | CollapsibleDockTitleBar のタイトル。L157 と重複定義 ／ 【spec 確定反映】G-06 確定（L157 と同一定数） |
+| main_window.py:140 | title | en | File Browser | ファイルブラウザ | QDockWidget windowTitle。View メニュー/ツールバーの toggleViewAction 文言もここから派生。L227（折りたたみタイトルバー）・L853（レールタブ）の複製と要同期 — 単一定数化推奨 ／ 【spec 確定反映】G-05 ★#1 ユーザー確定（3面＋参照文を単一定数で同期） |
+| main_window.py:157 | title | en | Channel Browser | チャンネルブラウザ | QDockWidget windowTitle。toggleViewAction 文言も派生。L228・L854 の複製と要同期 ／ 【spec 確定反映】G-06 ★#2 ユーザー確定（UX-11 のドック名改名は supersede・G-02 の面名 carve-out） |
+| main_window.py:227 | header | en | File Browser | ファイルブラウザ | CollapsibleDockTitleBar のタイトル。L140 の dock windowTitle と重複定義 — 訳語は必ず一致させる ／ 【spec 確定反映】G-05 確定（L140 と同一定数） |
+| main_window.py:228 | header | en | Channel Browser | チャンネルブラウザ | CollapsibleDockTitleBar のタイトル。L157 と重複定義 ／ 【spec 確定反映】G-06 確定（L157 と同一定数） |
 | main_window.py:229 | header | en | Diagnostics | 診断 | CollapsibleDockTitleBar のタイトル。DiagnosticsView 自身の windowTitle（diagnostics_view.py・別クラスタ）と要整合。L855 とも重複。L434/436 のステータス文言「Diagnostics を参照」もこの訳語に追随 ／ 【spec 確定反映】G-07 確定 |
 | main_window.py:262 | menu | en | &File | ファイル | ニーモニクス提案: 「ファイル(&F)」 |
 | main_window.py:265 | menu | en | Recent Files | 最近使ったファイル | ニーモニクス提案: 「最近使ったファイル(&R)」。Windows 標準表現に合わせた |
@@ -250,7 +250,7 @@
 
 | file:line | surface | lang | 現文言 | 提案 | note |
 |---|---|---|---|---|---|
-| channel_browser_view.py:48 | placeholder | mixed | File Browser でファイルを選択すると\n信号一覧を表示します | 「ファイル」ドックでファイルを選択すると、信号一覧を表示します | 「File Browser」は main_window.py:140 の QDockWidget タイトルの引用。ドック訳語（例:「ファイルブラウザ」）確定後に必ず一致させる（別クラスタと調整要） ／ 【spec 確定反映】G-05/R-13 確定（面参照はカギ括弧引用＋種別語） |
+| channel_browser_view.py:48 | placeholder | mixed | File Browser でファイルを選択すると\n信号一覧を表示します | ファイルブラウザでファイルを選択すると\n信号一覧を表示します | 「File Browser」は main_window.py:140 の QDockWidget タイトルの引用。ドック訳語（例:「ファイルブラウザ」）確定後に必ず一致させる（別クラスタと調整要） ／ 【spec 確定反映】G-05/R-13 確定（ブラウザ名は固有面名としてそのまま参照） |
 | channel_browser_view.py:49 | placeholder | ja | 「{query}」に一致する信号はありません | 「{query}」に一致する信号はありません | 動的テンプレート（.format(query=...)）。placeholder_label は PlainText 設定済でクエリの HTML 解釈なし — 既に適正 |
 | channel_browser_view.py:50 | placeholder | mixed | このファイルに信号がありません\n（Diagnostics に詳細） | このファイルに信号がありません（詳細は「診断」ドックへ） | 「Diagnostics」は diagnostics_view.py:47 のドックタイトル引用。ドック訳語（「診断」案）と要整合 ／ 【spec 確定反映】G-07/R-13 確定（参照文3件目 — 参照句定数を共有） |
 | channel_browser_view.py:68 | placeholder | en | Filter signals… | 信号名でフィルタ… | QLineEdit.setPlaceholderText。末尾の三点リーダは維持 ／ 【spec 確定反映】G-16 確定（export_csv_dialog.py:78 と完全同一文言） |
@@ -269,7 +269,7 @@
 | data_explorer_view.py:228 | context_menu | en | Load File | ファイルを開く | 【spec 確定反映】★#9/G-12 確定「ファイルを開く」（File>開く… と同一操作同一文言）。コンテキストメニューはニーモニクス非付与（★#14） |
 | data_explorer_view.py:231 | context_menu | en | Remove from Data Sources | データソースから削除 | ニーモニクス案「データソースから削除(&D)」。未登録パスでは disabled |
 | diagnostics_view.py:32 | other | en | ⛔ / ⚠ / ℹ（_LEVEL_ICON: error/warning/info） | ⛔ / ⚠ / ℹ | レベル列の絵文字グリフ（言語非依存）。CLAUDE.md のとおり Lucide 等アイコン化は運用反復で個別判断 — 増分Dでは据え置き可 |
-| diagnostics_view.py:36 | header | ja | レベル | レベル | 既に適正 |
+| diagnostics_view.py:36 | header | ja | レベル | データソース | 既に適正 ／ 【spec 確定反映】G-04 ★#7 ユーザー確定（診断の発生元ファイルを指す列） |
 | diagnostics_view.py:36 | header | en | # | # | 受信順序番号（seq）列の簡潔ヘッダ。記号のままで可（spec §4.3/§4.4 の「時刻」を順序番号で充足する設計判断済） |
 | diagnostics_view.py:36 | header | ja | ソース | ソース | ファイル由来を指す。DataExplorer の「データソース」（フォルダ）とは別概念 — 用語衝突に留意（必要なら「ファイル」へ） |
 | diagnostics_view.py:36 | header | ja | メッセージ | メッセージ | 既に適正 |
