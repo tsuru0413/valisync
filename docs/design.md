@@ -147,6 +147,7 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   `QSettings(org, app)` の NativeFormat に効かず実設定が漏れる）を conftest 同型の
   `_ORG`/`_APP` 差し替え＋clear で実効化（凍結比較の決定性を回復）。設計は
   [edge-aware-dock-collapse spec](superpowers/specs/2026-07-20-edge-aware-dock-collapse-design.md)。PR #133。
+  PR #139。
 - 2026-07-21: 増分0「知覚の床」— UIUX 敵対的レビューカタログの課題バンドル（UX-12・
   UX-18・UX-21 応急・UX-27・UX-29・UX-35・UX-38・UX-39・UX-42・UX-49・UX-07 応急）
   を一斉是正。**トークン値8件変更**: `error` #c0392b→**#f38ba8**（on #1e1e2e 3.02→
