@@ -175,6 +175,9 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   二重枠にならず carve-out 合格・08は完全一致・07は完全一致〔対象 QLineEdit 無し〕・
   06/07 の高さが605→600pxへ縮むのは Fusion 既定のsunken枠より薄い1px枠へ置換した
   結果で想定内）。パネル+/× glyph の ~2px 下シフトは当たり判定24px化の副作用として
-  spec §4 に追記。**凍結ベースライン（`screenshots_catalog_dark/light` 一式・Ground
-  Truth）は全域更新が必要 — DesignSync 再同期はマージ後に実施**。設計は
+  spec §4 に追記。**ローカルのベースライン（`screenshots_catalog_dark/light` 両テーマ）
+  とエクスポート一式（`design_export/{dark,light}`）は更新済み** — in-place 再撮影後
+  `compare_screenshots.py` で増分0撮影との完全一致（exit 0・9/9 states 両テーマ）を
+  実証し、決定的撮影の再現性を確認。**claude.ai/design への再同期のみマージ後に実施**
+  （controller）。設計は
   [inc0 spec](superpowers/specs/2026-07-21-perception-floor-inc0-design.md)。
