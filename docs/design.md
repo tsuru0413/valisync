@@ -146,3 +146,35 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   `QSettings(org, app)` の NativeFormat に効かず実設定が漏れる）を conftest 同型の
   `_ORG`/`_APP` 差し替え＋clear で実効化（凍結比較の決定性を回復）。設計は
   [edge-aware-dock-collapse spec](superpowers/specs/2026-07-20-edge-aware-dock-collapse-design.md)。PR #133。
+- 2026-07-21: 増分0「知覚の床」— UIUX 敵対的レビューカタログの課題バンドル（UX-12・
+  UX-18・UX-21 応急・UX-27・UX-29・UX-35・UX-38・UX-39・UX-42・UX-49・UX-07 応急）
+  を一斉是正。**トークン値8件変更**: `error` #c0392b→**#f38ba8**（on #1e1e2e 3.02→
+  7.08:1・DARK のみ、LIGHT は現値 #c0392b 維持）／`text_secondary` #7f849c→
+  **#9399b2**（4.44→5.81:1・DARK のみ）／`typography.small_px` 9→**10**（DARK の
+  み定義・LIGHT は参照共有で自動追従）／`grid_alpha` 60→**150**（fg150 on black
+  1.34→2.95:1・DARK のみ）／`signal_palette` tab10 10色→**Okabe-Ito 基調 8色・
+  黒調整** `#56B4E9 #E69F00 #00C08B #F0E442 #FF6E4A #D98BC0 #9A8CFF #C8C8C8`
+  （黒背景最小 3.55→7.57:1・CVD 最小 ΔE protan 4.8→13.2／deutan 7.3→16.9）／
+  `drop_highlight` #1f77b4→**#94e2d5**（teal・パレット外色相へ分離）／`cursor_b`
+  #89b4fa→**#74c7ec**（`chrome_highlight` から ΔE23.4 分離）／`axis_move_indicator`/
+  `axis_move_fill` (255,165,0)→**#f59e0b**（`accent_active` と意図的に同値化）。
+  **パレット8色 Okabe-Ito 黒調整を最終確定**（暫定ではない — 実測根拠・敵対的レビュー
+  24件反映・許容判断2点はユーザー承認済み: `#E69F00` vs `accent_active` ΔE7.2は
+  曲線/クローム装飾の文脈分離、`#56B4E9` vs `preview_curve` ΔE6.6は別窓限定で許容）。
+  **この8色パレットの色相基準を増分E「ファイル=色相ファミリー」の色割当設計の前提と
+  する制約として記録する**（増分E 設計時に本エントリを参照すること）。非トークン
+  変更: QLineEdit に常時1px枠＋focus枠（QSpinBox/QDoubleSpinBox 内部の
+  `qt_spinbox_lineedit` は carve-out で対象外・二重枠回避）／常用ボタンの当たり判定
+  を高さ24px以上へ（パネル+/×・ドックタイトルバーのフロート/✕、`fixedSize` でなく
+  `minimumHeight`）／export アイコンを `save.svg`→Lucide `download.svg` に差し替え
+  （`save.svg` は増分F 用に温存）／初期ドック比率 File:Channel≈1:4（show 後適用・
+  Reset Layout も同一比率）・ChannelBrowser Name列 `Stretch`・Unit列は prod 安全な
+  先頭50行サンプリング幅方式（`ResizeToContents` の O(n) reset 走査を回避）・
+  Diagnostics メッセージ列 `Stretch`。凍結カタログ dark/light 9状態を撮影し spec §4
+  の per-state 期待差分表と全状態突合（想定外の差分なし・06/07のスピンボックスは
+  二重枠にならず carve-out 合格・08は完全一致・07は完全一致〔対象 QLineEdit 無し〕・
+  06/07 の高さが605→600pxへ縮むのは Fusion 既定のsunken枠より薄い1px枠へ置換した
+  結果で想定内）。パネル+/× glyph の ~2px 下シフトは当たり判定24px化の副作用として
+  spec §4 に追記。**凍結ベースライン（`screenshots_catalog_dark/light` 一式・Ground
+  Truth）は全域更新が必要 — DesignSync 再同期はマージ後に実施**。設計は
+  [inc0 spec](superpowers/specs/2026-07-21-perception-floor-inc0-design.md)。

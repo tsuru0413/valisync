@@ -103,6 +103,7 @@
 | 06/07 ダイアログ | error 文言 #f38ba8・QLineEdit 枠。**スピンボックスは二重枠にならないこと（carve-out の合格条件）** |
 | 08_signal_preview | ほぼ不変（preview_curve #4FC3F7 据え置き）— 微差のみ許容 |
 | 09_collapsed | 01 と同系＋レール表示（タブ寸法不変） |
+| 02-05 系（共通） | UX-38 由来: パネル +/× glyph ~2px 下シフト（当たり判定 24px 化に伴うボタン高さ変更の副作用） |
 
 手順: dark/light 撮影 → 上表と突合（表外の差分＝回帰調査）→ ベースライン更新＋Ground Truth 再同期
 （DesignSync・docs/design.md 手順4-5）＋決定履歴へ記録（値一覧・パレット確定の増分E 制約）。
