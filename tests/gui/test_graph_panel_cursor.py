@@ -172,8 +172,8 @@ def test_context_menu_has_cursor_toggles(qtbot: QtBot, tmp_path: Path) -> None:
     qtbot.addWidget(view)
     menu = view.build_context_menu()
     labels = [a.text() for a in menu.actions()]
-    assert "メインカーソル" in labels
-    assert "サブカーソル（Δ）" in labels  # noqa: RUF001
+    assert "カーソル A" in labels
+    assert "カーソル B（Δ）" in labels  # noqa: RUF001
 
 
 def test_sub_toggle_disabled_until_main_on(qtbot: QtBot, tmp_path: Path) -> None:
@@ -184,14 +184,14 @@ def test_sub_toggle_disabled_until_main_on(qtbot: QtBot, tmp_path: Path) -> None
     sub = next(
         a
         for a in view.build_context_menu().actions()
-        if a.text() == "サブカーソル（Δ）"  # noqa: RUF001
+        if a.text() == "カーソル B（Δ）"  # noqa: RUF001
     )
     assert sub.isEnabled() is False  # main OFF → sub disabled
     vm.toggle_main_cursor(True)
     sub2 = next(
         a
         for a in view.build_context_menu().actions()
-        if a.text() == "サブカーソル（Δ）"  # noqa: RUF001
+        if a.text() == "カーソル B（Δ）"  # noqa: RUF001
     )
     assert sub2.isEnabled() is True
 
@@ -232,7 +232,7 @@ def test_context_menu_real_path_builds_menu(
 
     assert "menu" in captured, "build_context_menu must be called via contextMenuEvent"
     labels = [a.text() for a in captured["menu"].actions()]
-    assert "メインカーソル" in labels
+    assert "カーソル A" in labels
 
 
 def test_toggling_main_then_delta_shows_both_lines(
@@ -314,16 +314,20 @@ def test_plot_click_no_longer_places_cursor(qtbot: QtBot, tmp_path: Path) -> Non
     assert vm.cursor_t is None
 
 
-# Layer B wiring tests: guard that toggled(bool) actually reaches vm methods
+# Layer B wiring tests: guard that a real trigger (not a programmatic setChecked
+# sync) reaches vm methods. The shared AnalysisActions QAction is wired via
+# `triggered` only (spec §2.2 blocker) precisely so that setChecked (fired by
+# aboutToShow / menu-build sync) never mutates the VM -- .trigger() is the
+# stand-in for "the user actually clicked this".
 def test_main_toggle_action_drives_vm(qtbot: QtBot, tmp_path: Path) -> None:
     vm = _vm_with_signal(tmp_path)
     vm.x_range = (0.0, 1.0)
     view = GraphPanelView(vm)
     qtbot.addWidget(view)
     main = next(
-        a for a in view.build_context_menu().actions() if a.text() == "メインカーソル"
+        a for a in view.build_context_menu().actions() if a.text() == "カーソル A"
     )
-    main.setChecked(True)  # fires toggled(True) → vm.toggle_main_cursor(True)
+    main.trigger()  # user click → triggered(True) → vm.toggle_main_cursor(True)
     assert vm.cursor_t == pytest.approx(0.5)
 
 
@@ -336,11 +340,27 @@ def test_sub_toggle_action_drives_vm(qtbot: QtBot, tmp_path: Path) -> None:
     sub = next(
         a
         for a in view.build_context_menu().actions()
-        if a.text() == "サブカーソル（Δ）"  # noqa: RUF001
+        if a.text() == "カーソル B（Δ）"  # noqa: RUF001
     )
-    sub.setChecked(True)  # fires toggled(True) → vm.toggle_delta(True)
+    sub.trigger()  # user click → triggered(True) → vm.toggle_delta(True)
     assert vm.delta_enabled is True
     assert vm.cursor_t_b == pytest.approx(0.75)
+
+
+def test_setchecked_sync_alone_does_not_drive_vm(qtbot: QtBot, tmp_path: Path) -> None:
+    """誤発火ガード (spec §2.2 blocker): aboutToShow/build 時の setChecked 同期
+    だけではハンドラが起動しない -- 純粋な setChecked(bool) は toggled は発火させ
+    ても triggered は発火させない (Qt 仕様) ため、メニューを開いただけでカーソルが
+    動く事故が構造的に起きない。"""
+    vm = _vm_with_signal(tmp_path)
+    vm.x_range = (0.0, 1.0)
+    view = GraphPanelView(vm)
+    qtbot.addWidget(view)
+    menu = view.build_context_menu()  # sync_analysis_actions が checked を同期済み
+    main = next(a for a in menu.actions() if a.text() == "カーソル A")
+    main.setChecked(True)
+    main.setChecked(False)
+    assert vm.cursor_t is None  # setChecked だけでは vm は一切変異しない
 
 
 # --- Task 5 (LD-07): カーソル readout の value_labels 併記 ---
@@ -625,7 +645,10 @@ def test_build_cursor_menu_items(qtbot: QtBot) -> None:
     texts = [a.text() for a in menu.actions()]
     assert texts == ["時刻を指定…", "カーソルを消す"]
     menu_b = view.build_cursor_menu("B")
-    assert [a.text() for a in menu_b.actions()] == ["時刻を指定…", "サブカーソルを消す"]
+    assert [a.text() for a in menu_b.actions()] == [
+        "時刻を指定…",
+        "カーソル B（Δ）を消す",  # noqa: RUF001
+    ]
 
 
 def test_cursor_time_dialog_moves_a(qtbot: QtBot) -> None:
@@ -659,7 +682,7 @@ def test_clear_b_only_disables_delta(qtbot: QtBot) -> None:
     next(
         a
         for a in view.build_cursor_menu("B").actions()
-        if a.text() == "サブカーソルを消す"
+        if a.text() == "カーソル B（Δ）を消す"  # noqa: RUF001
     ).trigger()
     assert view.vm.cursor_t == pytest.approx(0.1)  # A survives
     assert view.vm.delta_enabled is False

@@ -5,8 +5,9 @@ GraphPanelVM.  Tab/panel structure mirrors GraphAreaVM; all mutation rules
 ("reject the last tab/panel", "max 8 panels") and X-axis sync live in the VM,
 so this widget just delegates and re-projects on notify.
 
-Panel widgets are built by ``panel_factory`` (default: a real GraphPanelView).
-Injecting the factory keeps the container decoupled and testable.
+Panel widgets are built by ``panel_factory`` (default: a real GraphPanelView,
+sharing the injected ``analysis_actions`` — spec §2.2 — with every panel and the
+Analyze menu). Injecting the factory keeps the container decoupled and testable.
 
 X-axis sync (Task 8.4): a sync toggle drives ``GraphAreaVM.set_x_sync``; the
 propagation itself is in the VM (a panel's X-range change drives its siblings),
@@ -49,14 +50,11 @@ from PySide6.QtWidgets import (
 from valisync.gui.theme import qss
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+from valisync.gui.views.analysis_actions import _INTERP_LABELS, AnalysisActions
 from valisync.gui.views.cursor_readout import CursorReadout
-from valisync.gui.views.graph_panel_view import _INTERP_LABELS, GraphPanelView
+from valisync.gui.views.graph_panel_view import GraphPanelView
 
 PanelFactory = Callable[[GraphPanelVM], QWidget]
-
-
-def _default_panel_factory(panel_vm: GraphPanelVM) -> QWidget:
-    return GraphPanelView(panel_vm)
 
 
 class _TabRenameEditor(QLineEdit):
@@ -94,10 +92,28 @@ class GraphAreaView(QWidget):
         vm: GraphAreaVM,
         panel_factory: PanelFactory | None = None,
         parent: QWidget | None = None,
+        analysis_actions: AnalysisActions | None = None,
     ) -> None:
         super().__init__(parent)
         self.vm = vm
-        self._panel_factory: PanelFactory = panel_factory or _default_panel_factory
+        # spec §2.2: MainWindow が生成した解析系 QAction の共有セット (Analyze メニ
+        # ューと同一インスタンス)。既定パネルファクトリへ注入する — panel_factory を
+        # 明示注入するテスト/代替経路 (フェイクビュー等) はこの注入をバイパスする。
+        self._analysis_actions = analysis_actions
+        if panel_factory is None:
+            # self._build_default_panel の束縛メソッドをそのまま self の属性に
+            # 保持すると self -> 属性 -> 束縛メソッド -> self という参照循環になり、
+            # readout_pane 配線 (下の _readout_clear 等) と同型の GC 順序問題を招く
+            # (再現: tests/gui/test_graph_area_view.py::TestClickAwayDeselect の
+            # reparent teardown で "already deleted")。weakref で断ち切る。
+            self_ref = weakref.ref(self)
+
+            def panel_factory(panel_vm: GraphPanelVM) -> QWidget:
+                view = self_ref()
+                aa = view._analysis_actions if view is not None else None
+                return GraphPanelView(panel_vm, analysis_actions=aa)
+
+        self._panel_factory: PanelFactory = panel_factory
         # Guards against re-entrancy when we programmatically set the current
         # tab during a rebuild (which would otherwise echo back into the VM).
         self._syncing = False
@@ -427,16 +443,27 @@ class GraphAreaView(QWidget):
                 widget.activate_curve_by_id(entry_id)
                 break
 
-    def _active_pvm_call(self, fn: Callable[[GraphPanelVM], None]) -> None:
-        """Look up the active tab/panel's VM and apply *fn* (no-op if absent)."""
+    def active_panel_vm(self) -> GraphPanelVM | None:
+        """Resolve the active tab's active panel VM, or None if unavailable.
+
+        Shared dispatch target for the Analyze menu's AnalysisActions (spec
+        §2.2): the menu bar always targets "whatever panel is active right
+        now", unlike a blank panel menu which targets itself.
+        """
         tab = self.tabs.currentIndex()
         if tab < 0:
-            return
+            return None
         panels = self.vm.panels(tab)
         active = self.vm.active_panel_index(tab)
         if not panels or active < 0 or active >= len(panels):
-            return
-        fn(panels[active])
+            return None
+        return panels[active]
+
+    def _active_pvm_call(self, fn: Callable[[GraphPanelVM], None]) -> None:
+        """Look up the active tab/panel's VM and apply *fn* (no-op if absent)."""
+        pvm = self.active_panel_vm()
+        if pvm is not None:
+            fn(pvm)
 
     def _on_readout_clear(self) -> None:
         self._active_pvm_call(lambda pvm: pvm.toggle_main_cursor(False))

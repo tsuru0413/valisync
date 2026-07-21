@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import contextlib
 import math
+import weakref
 from collections.abc import Callable
 from typing import Any
 
@@ -57,7 +58,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from valisync.core.interpolation import InterpolationMethod
 from valisync.gui.adapters.qt_signal_models import (
     AXIS_INDEX_MIME,
     SIGNAL_KEYS_MIME,
@@ -68,6 +68,11 @@ from valisync.gui.adapters.qt_signal_models import (
 from valisync.gui.theme import qss, tokens
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM, RenderCurve
 from valisync.gui.viewmodels.y_axis_vm import YAxisVM
+from valisync.gui.views.analysis_actions import (
+    AnalysisActions,
+    build_analysis_actions,
+    sync_analysis_actions,
+)
 from valisync.gui.views.cursor_shapes import CursorKind, cursor
 from valisync.gui.views.offscale_badge import (
     BADGE_PX as _OFFSCALE_BADGE_PX,
@@ -76,14 +81,6 @@ from valisync.gui.views.offscale_badge import (
     OffscaleBadge,
     offscale_directions,
 )
-
-# Interp method → menu/readout label (PC-09). Single source of truth so the
-# context-menu radio group and the CursorReadout header never drift apart.
-_INTERP_LABELS: dict[InterpolationMethod, str] = {
-    InterpolationMethod.LINEAR: "線形",
-    InterpolationMethod.ZERO_ORDER_HOLD: "前値保持",
-    InterpolationMethod.NEAREST: "最近傍",
-}
 
 # ─── Axis interaction zones (R9.1 / R10.1) ────────────────────────────────────
 
@@ -715,9 +712,31 @@ class GraphPanelView(QWidget):
         | None = None,
         reset_dialog_fn: Callable[[str], str | None] | None = None,
         time_dialog_fn: Callable[[str, float], float | None] | None = None,
+        analysis_actions: AnalysisActions | None = None,
     ) -> None:
         super().__init__(parent)
         self.vm = vm
+        # spec §2.2: Analyze メニューと空白右クリックメニューが共有する解析系
+        # QAction 群。GraphAreaView 経由 (MainWindow が生成した1セット) で注入され
+        # るのが本来の配線で、未注入 (bare ハーネス/単独構成) 時は同一ファクトリで
+        # このパネル自身を対象にローカル生成する (既存の headless/realgui テストが
+        # GraphPanelView(vm) 単体で組み立てる形を壊さないための互換路)。
+        # dispatch は weakref 経由: self の Qt 子である QAction の triggered スロット
+        # (dispatch を closure over) が self を平の参照で握ると、readout_pane の
+        # 配線 (このファイル冒頭 GraphAreaView 側コメント参照) と同型の参照循環に
+        # なり、self の Python wrapper が単純な参照カウントで解放されず、無関係な
+        # 兄弟の破棄カスケードで C++ 側だけ先に死んだ状態を作り得る (実回帰: 親への
+        # reparent を伴うテストの teardown で "already deleted" — tests/gui/
+        # test_graph_area_view.py::TestClickAwayDeselect で実証)。
+        if analysis_actions is None:
+            self_ref = weakref.ref(self)
+
+            def _dispatch_self() -> GraphPanelVM | None:
+                view = self_ref()
+                return view.vm if view is not None else None
+
+            analysis_actions = build_analysis_actions(self, _dispatch_self)
+        self._analysis_actions = analysis_actions
         self._apply_dialog_fn = apply_dialog_fn
         self._color_dialog_fn = color_dialog_fn or self._default_color_dialog
         self._range_dialog_fn = range_dialog_fn
@@ -2437,7 +2456,7 @@ class GraphPanelView(QWidget):
         menu.addAction("時刻を指定…").triggered.connect(
             lambda *_: self._prompt_cursor_time(which)
         )
-        label = "カーソルを消す" if which == "A" else "サブカーソルを消す"
+        label = "カーソルを消す" if which == "A" else "カーソル B（Δ）を消す"  # noqa: RUF001
         menu.addAction(label).triggered.connect(lambda *_: self._clear_cursor(which))
         return menu
 
@@ -2521,35 +2540,20 @@ class GraphPanelView(QWidget):
         # setChecked BEFORE toggled.connect so the initial state-set does not fire the handler
         grid_act.toggled.connect(lambda checked: self.vm.toggle_grid(checked))
         menu.addSeparator()
-        main_act = menu.addAction("メインカーソル")
-        main_act.setCheckable(True)
-        main_act.setChecked(self.vm.cursor_t is not None)
-        # setChecked BEFORE toggled.connect so the initial state-set does not fire the handler
-        main_act.toggled.connect(lambda checked: self.vm.toggle_main_cursor(checked))
-        sub_act = menu.addAction("サブカーソル（Δ）")  # noqa: RUF001
-        sub_act.setCheckable(True)
-        sub_act.setChecked(self.vm.delta_enabled)
-        sub_act.setEnabled(self.vm.cursor_t is not None)  # greyed out until main ON
-        # setChecked BEFORE toggled.connect so the initial state-set does not fire the handler
-        sub_act.toggled.connect(lambda checked: self.vm.toggle_delta(checked))
-        if not sub_act.isEnabled():
-            sub_act.setToolTip("メインカーソルを有効化すると使えます")
+        # 解析系 QAction (カーソル A/B/消去/補間方式) は AnalysisActions ファクトリの
+        # 共有インスタンス (spec §2.2) — Analyze メニューと文言/チェック状態が乖離し
+        # ないよう、生成済みの同一 QAction を addAction するだけ。build 時点で「この
+        # パネルが右クリックされた対象」として自パネルの状態へ同期する。
+        sync_analysis_actions(self._analysis_actions, self.vm)
+        menu.addAction(self._analysis_actions.cursor_a)
+        cursor_b_act = self._analysis_actions.cursor_b
+        menu.addAction(cursor_b_act)
+        if not cursor_b_act.isEnabled():
             menu.setToolTipsVisible(True)
-        from PySide6.QtGui import QActionGroup
-
+        menu.addAction(self._analysis_actions.clear_cursors)
         interp = menu.addMenu("補間方式")
-        interp_group = QActionGroup(interp)
-        interp_group.setExclusive(True)
-        for label, method in (
-            ("線形", InterpolationMethod.LINEAR),
-            ("前値保持", InterpolationMethod.ZERO_ORDER_HOLD),
-            ("最近傍", InterpolationMethod.NEAREST),
-        ):
-            act = interp.addAction(label)
-            act.setCheckable(True)
-            act.setActionGroup(interp_group)
-            act.setChecked(method == self.vm.interp_method)  # BEFORE triggered.connect
-            act.triggered.connect(lambda *_, m=method: self.vm.set_interp_method(m))
+        for act in self._analysis_actions.interp_actions.values():
+            interp.addAction(act)
         return menu
 
     def build_axis_menu(self, axis_index: int) -> QMenu:

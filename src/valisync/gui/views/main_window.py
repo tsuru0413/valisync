@@ -16,6 +16,7 @@ collaborators and connects their signals.
 from __future__ import annotations
 
 import threading
+import weakref
 from collections.abc import Callable
 from pathlib import Path
 
@@ -41,7 +42,12 @@ from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
 from valisync.gui.viewmodels.diagnostics_vm import DiagnosticsViewModel
 from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
+from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 from valisync.gui.viewmodels.signal_preview_vm import SignalPreviewVM
+from valisync.gui.views.analysis_actions import (
+    build_analysis_actions,
+    sync_analysis_actions,
+)
 from valisync.gui.views.busy_overlay import BusyOverlay
 from valisync.gui.views.central_with_rails import CentralWithRails
 from valisync.gui.views.channel_browser_view import ChannelBrowserView
@@ -95,10 +101,27 @@ class MainWindow(QMainWindow):
         self.graph_area_vm = GraphAreaVM(app_vm)
         self.diagnostics_vm = DiagnosticsViewModel()
 
+        # spec §2.2: Analyze メニューと各パネルの空白右クリックメニューが共有する
+        # 解析系 QAction 群。dispatch は weakref 経由 -- self の Qt 子である QAction
+        # の triggered スロットが self (MainWindow) を平の参照 (束縛メソッド) で握る
+        # と、GraphAreaView の readout_pane 配線と同型の参照循環になり、無関係な
+        # 兄弟の破棄カスケードで self の C++ 側だけ先に死にうる (GraphPanelView 側
+        # の bare フォールバックで実際に踏んだ回帰と同型 -- tests/gui/
+        # test_graph_area_view.py::TestClickAwayDeselect で実証済み)。
+        self_ref = weakref.ref(self)
+
+        def _dispatch_active_panel() -> GraphPanelVM | None:
+            window = self_ref()
+            return window._active_panel_vm() if window is not None else None
+
+        self._analysis_actions = build_analysis_actions(self, _dispatch_active_panel)
+
         # ── Views ────────────────────────────────────────────────────────────
         self.file_browser_view = FileBrowserView(self.file_browser_vm)
         self.channel_browser_view = ChannelBrowserView(self.channel_browser_vm)
-        self.graph_area_view = GraphAreaView(self.graph_area_vm)
+        self.graph_area_view = GraphAreaView(
+            self.graph_area_vm, analysis_actions=self._analysis_actions
+        )
         self.busy_overlay = BusyOverlay(self)
         self._load_controller = LoadController(parent=self)
         self._export_controller = ExportController(parent=self)
@@ -275,7 +298,23 @@ class MainWindow(QMainWindow):
         self.action_reset_layout = view_menu.addAction("Reset Layout")
         self.action_reset_layout.triggered.connect(self._reset_layout)
 
-        self.menuBar().addMenu("&Analyze")  # 増分2 で中身
+        # Analyze メニュー (spec §2.2): 各パネルの空白右クリックメニューと同一の
+        # AnalysisActions インスタンスを掲載する (checked/文言の乖離を構造防止)。
+        analyze_menu = self.menuBar().addMenu("&Analyze")
+        analyze_menu.addAction(self._analysis_actions.cursor_a)
+        analyze_menu.addAction(self._analysis_actions.cursor_b)
+        analyze_menu.addSeparator()
+        analyze_menu.addAction(self._analysis_actions.clear_cursors)
+        interp_menu = analyze_menu.addMenu("補間方式")
+        for act in self._analysis_actions.interp_actions.values():
+            interp_menu.addAction(act)
+        analyze_menu.addSeparator()
+        analyze_menu.addAction(self._analysis_actions.step_hint)
+        analyze_menu.setToolTipsVisible(True)
+        # aboutToShow の setChecked 同期は toggled は発火させても triggered は発火
+        # させない (Qt 仕様) ため、ここで無条件に同期してもハンドラは起動しない。
+        analyze_menu.aboutToShow.connect(self._sync_analysis_actions)
+
         help_menu = self.menuBar().addMenu("&Help")
         about = help_menu.addAction("&About ValiSync")
         about.triggered.connect(self._show_about)
@@ -500,6 +539,21 @@ class MainWindow(QMainWindow):
         target = panels[vm.active_panel_index()]
         for key in keys:
             target.add_signal(key)
+
+    def _active_panel_vm(self) -> GraphPanelVM | None:
+        """Analyze メニューの AnalysisActions dispatch (spec §2.2: メニューバー経由
+        は常にアクティブパネルへ配送)。GraphAreaView 側の解決を素通しする。"""
+        return self.graph_area_view.active_panel_vm()
+
+    def _sync_analysis_actions(self) -> None:
+        """Analyze メニュー表示直前に checked/enabled をアクティブパネルへ同期する。
+
+        setChecked は toggled は発火させても triggered は発火させないため (Qt の
+        仕様)、ここで無条件に呼んでも共有 QAction の VM 変異ハンドラ (triggered
+        配線) は起動しない — 「メニューを開いただけでカーソルが動く」事故の構造的
+        防止 (spec §2.2 blocker)。
+        """
+        sync_analysis_actions(self._analysis_actions, self._active_panel_vm())
 
     # ─── Actions ────────────────────────────────────────────────────────────────
 

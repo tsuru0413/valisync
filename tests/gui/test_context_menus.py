@@ -231,6 +231,29 @@ class TestGraphPanelMenu:
         assert panel._view_boxes, "panel should build at least one ViewBox"  # type: ignore[attr-defined]
         assert all(not vb.menuEnabled() for vb in panel._view_boxes)  # type: ignore[attr-defined]
 
+    # ─── AnalysisActions sharing (計測 IA 刷新 spec §2.2) ──────────────────────
+
+    def test_blank_menu_includes_shared_analysis_actions(self, qtbot: QtBot) -> None:
+        texts = _texts(self._panel(qtbot).build_context_menu())  # type: ignore[attr-defined]
+        assert "カーソル A" in texts
+        assert "カーソル B（Δ）" in texts  # noqa: RUF001
+        assert "カーソルを消す" in texts
+        assert any(
+            a.text() == "補間方式" and a.menu() is not None
+            for a in self._panel(qtbot).build_context_menu().actions()  # type: ignore[attr-defined]
+        )
+
+    def test_repeated_build_context_menu_reuses_same_cursor_action(
+        self, qtbot: QtBot
+    ) -> None:
+        """自パネルのローカル AnalysisActions は build のたび作り直さない — 同一
+        QAction を addAction するだけなので、右クリックのたび checked 状態が新規
+        object の既定値に巻き戻ることがない。"""
+        panel = self._panel(qtbot)
+        first = _action(panel.build_context_menu(), "カーソル A")  # type: ignore[attr-defined]
+        second = _action(panel.build_context_menu(), "カーソル A")  # type: ignore[attr-defined]
+        assert first is second
+
 
 # ─── Graph_Area wires panel add/remove requests (R14.3) ─────────────────────────
 

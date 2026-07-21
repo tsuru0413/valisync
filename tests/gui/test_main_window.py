@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDockWidget
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
@@ -187,6 +188,90 @@ class TestDataExplorerAction:
         """open_data_explorer is a no-op placeholder; must not raise."""
         window = _make_window(qtbot)
         window.action_data_explorer.trigger()  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------------------
+# Analyze menu (計測 IA 刷新 spec §2.2) -- AnalysisActions 共有・配線規約
+# ---------------------------------------------------------------------------
+
+
+def _analyze_menu(window: object):
+    # submenu の生存は .menu() を呼んだ QAction ラッパの寿命に紐づく (shiboken) —
+    # ラッパを保持しないと genexpr の一時変数が捨てられた時点で GC され、戻り値の
+    # QMenu が "already deleted" になる (memory gui_pyside_qaction_submenu_shiboken_lifetime)。
+    act = next(
+        a
+        for a in window.menuBar().actions()  # type: ignore[attr-defined]
+        if a.text() == "&Analyze"
+    )
+    menu = act.menu()
+    menu._keepalive = act  # type: ignore[attr-defined]
+    return menu
+
+
+class TestAnalyzeMenu:
+    def test_menu_has_four_items_and_disabled_info_row(self, qtbot: QtBot) -> None:
+        window = _make_window(qtbot)
+        menu = _analyze_menu(window)
+        texts = [a.text() for a in menu.actions()]
+        assert "カーソル A" in texts
+        assert "カーソル B（Δ）" in texts  # noqa: RUF001
+        assert "カーソルを消す" in texts
+        assert any(
+            a.text() == "補間方式" and a.menu() is not None for a in menu.actions()
+        )
+        step = next(a for a in menu.actions() if a.text() == "← / → サンプルステップ")
+        assert not step.isEnabled()
+
+    def test_blank_menu_shares_same_qaction_as_analyze_menu(self, qtbot: QtBot) -> None:
+        """空白右クリックメニューと Analyze メニューは同一 QAction を掲載する
+        (checked/文言の乖離を構造防止 -- spec §2.2)。"""
+        window = _make_window(qtbot)
+        analyze_cursor_a = next(
+            a for a in _analyze_menu(window).actions() if a.text() == "カーソル A"
+        )
+        panel_view = window.graph_area_view.tabs.widget(0).widget(0)  # type: ignore[union-attr]
+        blank_cursor_a = next(
+            a
+            for a in panel_view.build_context_menu().actions()  # type: ignore[attr-defined]
+            if a.text() == "カーソル A"
+        )
+        assert analyze_cursor_a is blank_cursor_a
+
+    def test_about_to_show_sync_does_not_fire_vm_handlers(
+        self, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """誤発火ガード (spec §2.2 blocker): Analyze の aboutToShow による
+        setChecked 同期だけでは toggle_main_cursor/toggle_delta が呼ばれない。"""
+        window = _make_window(qtbot)
+        pvm = window.graph_area_view.active_panel_vm()  # type: ignore[attr-defined]
+        assert pvm is not None
+        calls: list[str] = []
+        monkeypatch.setattr(
+            pvm,
+            "toggle_main_cursor",
+            lambda *a, **k: calls.append("main"),
+        )
+        monkeypatch.setattr(
+            pvm,
+            "toggle_delta",
+            lambda *a, **k: calls.append("delta"),
+        )
+        _analyze_menu(window).aboutToShow.emit()
+        assert calls == []
+
+    def test_triggering_cursor_a_from_analyze_dispatches_to_active_panel(
+        self, qtbot: QtBot
+    ) -> None:
+        window = _make_window(qtbot)
+        pvm = window.graph_area_view.active_panel_vm()  # type: ignore[attr-defined]
+        assert pvm is not None
+        pvm.x_range = (0.0, 1.0)
+        cursor_a = next(
+            a for a in _analyze_menu(window).actions() if a.text() == "カーソル A"
+        )
+        cursor_a.trigger()
+        assert pvm.cursor_t == pytest.approx(0.5)
 
 
 # ---------------------------------------------------------------------------
