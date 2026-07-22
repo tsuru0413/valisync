@@ -1,9 +1,15 @@
 """実メニュー walk によるニーモニクス検査 (spec §2.4 — タプル自己申告方式は不採用)。"""
 
 import re
+from pathlib import Path
 
+from valisync.core.models import Delimiter, FormatDefinition
+from valisync.core.session import Session
 from valisync.gui.app import build_main_window
 from valisync.gui.strings import strip_mnemonic
+from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+from valisync.gui.views.cursor_readout import CursorReadout
+from valisync.gui.views.graph_panel_view import GraphPanelView
 
 _MN = re.compile(r"&(?!&)(.)")
 
@@ -55,3 +61,85 @@ def test_menubar_mnemonics_match_g46_and_unique(qtbot):
         # メニュー内で一意
         keys = [k for k in assigned.values()]
         assert len(keys) == len(set(keys))
+
+
+# ─── グラフ系コンテキストメニュー: ニーモニクス非付与 walk (spec §2.4) ─────────
+#
+# コンテキストメニュー9面 (共有 QAction 含む) はニーモニクス対象外 — G-28 の3面
+# 共有定数がニーモニクス込みで同一である制約と realgui 掴み点破壊面の最小化から
+# 付与しない (§2.4)。ここではグラフ系ビルダー全数を実際に構築し、全 action/
+# サブメニュー title に "&" が無い (付与しない規約そのもの) ことを検査する —
+# ビルダー新設時に本テストへの登録が漏れると「載せ忘れの見逃し」になるため、
+# 「グラフ系メニューを追加したら必ずここへ足す」運用を実装プランに明記している。
+
+
+def _assert_no_mnemonics(menu: object, path: str = "") -> None:
+    """menu (再帰的にサブメニュー含む) の全 action title に & が無いことを検査する。
+
+    "&&" は Qt 仕様上リテラル "&" 1 文字を表すため除外する。
+    """
+    for act in menu.actions():  # type: ignore[attr-defined]
+        if act.isSeparator():
+            continue
+        text = act.text()
+        assert "&" not in text or "&&" in text, f"{path}: unexpected '&' in {text!r}"
+        sub = act.menu()
+        if sub is not None:
+            _assert_no_mnemonics(sub, path=f"{path}/{text}")
+
+
+def _panel_with_curve(qtbot, tmp_path: Path) -> GraphPanelView:
+    """1 信号を表示済みの最小 GraphPanelView (build_curve_menu/build_axis_menu の
+    entry_id/axis_index を持たせるための共通土台 — tests/gui/test_context_menus.py
+    の構築手順を流用)。"""
+    csv_path = tmp_path / "d.csv"
+    csv_path.write_text("t,a\n0.0,1.0\n1.0,2.0\n", encoding="utf-8")
+    fmt = FormatDefinition(
+        name="f",
+        delimiter=Delimiter.COMMA,
+        timestamp_column=0,
+        timestamp_unit="sec",
+        signal_start_column=1,
+        signal_end_column=1,
+        has_header=True,
+    )
+    session = Session()
+    session.load(csv_path, fmt)
+    vm = GraphPanelVM(session)
+    view = GraphPanelView(vm)
+    qtbot.addWidget(view)
+    sig_key = next(s.name for s in session.signals())
+    vm.add_signal(sig_key)
+    view.refresh()
+    return view
+
+
+def test_graph_context_menus_have_no_mnemonics(qtbot, tmp_path: Path) -> None:
+    """グラフ系ビルダー全数 - build_context_menu (X軸同期注入あり/なし両分岐)・
+    build_curve_menu・build_axis_menu・build_x_axis_menu・build_cursor_menu・
+    build_readout_menu (build_column_menu 含む再帰) - を構築し、ニーモニクス非付与
+    規約 (§2.4) を実メニューで検査する。"""
+    view = _panel_with_curve(qtbot, tmp_path)
+
+    # build_context_menu: X 軸同期 getter/setter 未注入 (bare ハーネス/単独構成)。
+    _assert_no_mnemonics(view.build_context_menu())
+
+    # build_context_menu: X 軸同期 getter/setter 注入あり (GraphAreaView 経由の
+    # 本番配線相当 - X軸同期(タブ内全パネル)項目が追加される分岐)。
+    view_synced = GraphPanelView(
+        view.vm, x_sync_getter=lambda: True, x_sync_setter=lambda _v: None
+    )
+    qtbot.addWidget(view_synced)
+    _assert_no_mnemonics(view_synced.build_context_menu())
+
+    eid = view.curve_keys()[0]  # type: ignore[attr-defined]
+    _assert_no_mnemonics(view.build_curve_menu(eid))
+    _assert_no_mnemonics(view.build_axis_menu(0))
+    _assert_no_mnemonics(view.build_x_axis_menu())
+    _assert_no_mnemonics(view.build_cursor_menu("A"))
+    _assert_no_mnemonics(view.build_cursor_menu("B"))
+
+    readout = CursorReadout()
+    qtbot.addWidget(readout)
+    _assert_no_mnemonics(readout.build_readout_menu())
+    _assert_no_mnemonics(readout.build_column_menu())

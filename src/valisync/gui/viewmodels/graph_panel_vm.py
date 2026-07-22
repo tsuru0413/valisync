@@ -597,8 +597,10 @@ class GraphPanelVM(Observable):
         """Return the combined (signal + file) time offset applied to *signal_key*.
 
         Public getter over the private offset dicts set_offsets stores. Drives the
-        curve menu's "オフセットをリセット…" enabled state and the "オフセット: +Xs"
-        info row. Group key is the prefix before '::' (same convention as _signal_map).
+        curve menu's "オフセットをリセット…" enabled state and the
+        "オフセット: +X.XXX s" info row (R-06 single format shared across the offset
+        UI — strings.OFFSET_INFO_TMPL). Group key is the prefix before '::' (same
+        convention as _signal_map).
         """
         group_key = signal_key.split("::", 1)[0]
         return self._file_offsets.get(group_key, 0.0) + self._signal_offsets.get(

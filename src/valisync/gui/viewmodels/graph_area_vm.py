@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from valisync.gui import strings as S
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.graph_panel_vm import CursorState, GraphPanelVM
 from valisync.gui.viewmodels.observable import Observable
@@ -53,7 +54,11 @@ class GraphAreaVM(Observable):
         first_cursor_state = CursorState()
         first_panel = GraphPanelVM(self._session, cursor_state=first_cursor_state)
         self._tabs: list[_Tab] = [
-            _Tab(name="Tab 1", panels=[first_panel], cursor_state=first_cursor_state)
+            _Tab(
+                name=S.TAB_DEFAULT_TMPL.format(n=1),
+                panels=[first_panel],
+                cursor_state=first_cursor_state,
+            )
         ]
         self.active_tab_index: int = 0
         self._subscribe_panel(first_panel)
@@ -156,7 +161,7 @@ class GraphAreaVM(Observable):
         Auto-generates "Tab N" when *name* is None.
         """
         if name is None:
-            name = f"Tab {len(self._tabs) + 1}"
+            name = S.TAB_DEFAULT_TMPL.format(n=len(self._tabs) + 1)
         # New tab gets its OWN fresh CursorState (spec §2.1) — tabs are
         # independent measurement contexts, never sharing across tabs.
         cursor_state = CursorState()

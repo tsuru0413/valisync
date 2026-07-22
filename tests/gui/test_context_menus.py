@@ -196,21 +196,21 @@ class TestGraphPanelMenu:
 
     def test_menu_items_present(self, qtbot: QtBot) -> None:
         texts = _texts(self._panel(qtbot).build_context_menu())  # type: ignore[attr-defined]
-        assert "Add Panel" in texts
-        assert "Remove Panel" in texts
-        assert "Reset All Axes" in texts
+        assert "パネルを追加" in texts
+        assert "パネルを削除" in texts
+        assert "すべての軸をオートフィット" in texts
 
     def test_remove_disabled_when_not_removable(self, qtbot: QtBot) -> None:
         panel = self._panel(qtbot)
         panel.set_removable(False)  # type: ignore[attr-defined]
-        assert not _action(panel.build_context_menu(), "Remove Panel").isEnabled()  # type: ignore[attr-defined]
+        assert not _action(panel.build_context_menu(), "パネルを削除").isEnabled()  # type: ignore[attr-defined]
 
     def test_reset_all_axes_resets_ranges(self, qtbot: QtBot) -> None:
         panel = self._panel(qtbot)
         panel.vm.set_x_range(1.0, 2.0)  # type: ignore[attr-defined]
         panel.vm.set_y_range(3.0, 4.0)  # type: ignore[attr-defined]
 
-        _action(panel.build_context_menu(), "Reset All Axes").trigger()  # type: ignore[attr-defined]
+        _action(panel.build_context_menu(), "すべての軸をオートフィット").trigger()  # type: ignore[attr-defined]
 
         # No signals plotted → reset clears to None (review finding ⑦).
         assert panel.vm.x_range is None  # type: ignore[attr-defined]
@@ -220,7 +220,7 @@ class TestGraphPanelMenu:
         panel = self._panel(qtbot)
         fired: list[int] = []
         panel.add_panel_requested.connect(lambda: fired.append(1))  # type: ignore[attr-defined]
-        _action(panel.build_context_menu(), "Add Panel").trigger()  # type: ignore[attr-defined]
+        _action(panel.build_context_menu(), "パネルを追加").trigger()  # type: ignore[attr-defined]
         assert fired == [1]
 
     def test_viewbox_default_menu_disabled(self, qtbot: QtBot) -> None:
@@ -286,7 +286,7 @@ class TestGraphAreaPanelWiring:
     def test_sole_panel_marked_not_removable(self, qtbot: QtBot) -> None:
         view, _ = self._area(qtbot)
         menu = self._panel(view, 0).build_context_menu()  # type: ignore[attr-defined]
-        assert not _action(menu, "Remove Panel").isEnabled()
+        assert not _action(menu, "パネルを削除").isEnabled()
 
 
 # ─── AnalysisActions dispatch targets the right-clicked panel (spec §2.2) ───────

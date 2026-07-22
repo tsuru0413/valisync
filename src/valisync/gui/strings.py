@@ -100,3 +100,36 @@ EXPANSION_OVER_LIMIT_TMPL: Final = (
 # ── ダイアログ: 信号プレビュー (signal_preview_window・R-05 em ダッシュ) ─────
 PREVIEW_UNAVAILABLE: Final = "この信号はプレビューできません"
 PREVIEW_TITLE_TMPL: Final = "信号プレビュー — {key}"
+
+# ── タブ既定名 (graph_area_vm・G-40・UX-40) ───────────────────────────────────
+TAB_DEFAULT_TMPL: Final = "タブ {n}"
+
+# ── グラフパネル: 空白右クリックメニュー (graph_panel_view・G-15/G-18/G-20/★#6) ─
+ACTION_ADD_PANEL: Final = "パネルを追加"
+ACTION_REMOVE_PANEL: Final = "パネルを削除"
+ACTION_RESET_ALL_AXES: Final = "すべての軸をオートフィット"
+
+# ── 軸メニュー: ズーム対称対 (graph_panel_view・G-21 — build_axis_menu と
+# build_x_axis_menu の2面共有・UX-51 注記削除) ────────────────────────────────
+ACTION_ZOOM_OUT: Final = "ズームアウト"
+
+# ── オフセット表示 (graph_panel_view・R-06 単一テンプレート・E-4 — ドラッグ
+# tooltip/適用確認/入力ダイアログ/情報行の4画面が同じ数値書式を共有する) ───────
+_OFFSET_VALUE: Final = "{delta_t:+.3f} s"
+OFFSET_PREVIEW_TMPL: Final = f"Δt = {_OFFSET_VALUE}"
+OFFSET_APPLY_CONFIRM_TMPL: Final = (
+    f"Δt = {_OFFSET_VALUE} を適用します。対象を選択してください。"
+)
+OFFSET_CURRENT_TMPL: Final = f"現在のオフセット: {_OFFSET_VALUE}"
+OFFSET_INFO_TMPL: Final = f"オフセット: {_OFFSET_VALUE}"
+
+# ── ダイアログ入力ラベル (graph_panel_view・R-02 全角括弧 — 括り内容が日本語) ──
+LABEL_OFFSET_ADD_DELTA: Final = "追加する Δt（秒）:"
+LABEL_CURSOR_TIME_TMPL: Final = "{which} カーソルの時刻（秒）:"
+
+# ── カーソル A/B・消去系 (analysis_actions/cursor_readout/graph_panel_view の
+# 3面共有・G-28 — ニーモニクス非付与・§2.4 適用面規則) ────────────────────────
+CURSOR_A: Final = "カーソル A"
+CURSOR_B_DELTA: Final = "カーソル B（Δ）"
+CURSOR_CLEAR: Final = "カーソルを消す"
+CURSOR_B_CLEAR: Final = "カーソル B（Δ）を消す"

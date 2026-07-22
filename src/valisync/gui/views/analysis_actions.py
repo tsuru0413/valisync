@@ -32,6 +32,7 @@ from PySide6.QtCore import QObject
 from PySide6.QtGui import QAction, QActionGroup
 
 from valisync.core.interpolation import InterpolationMethod
+from valisync.gui import strings as S
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 
 # Interp method → メニューラベル。GraphAreaView の readout ヘッダ表示も同じ辞書を
@@ -78,7 +79,7 @@ def build_analysis_actions(parent: QObject) -> AnalysisActions:
         nonlocal target
         target = pvm
 
-    cursor_a = QAction("カーソル A", parent)
+    cursor_a = QAction(S.CURSOR_A, parent)
     cursor_a.setCheckable(True)
     cursor_a.setStatusTip("表示範囲の中央に設置 / 解除")
 
@@ -89,7 +90,7 @@ def build_analysis_actions(parent: QObject) -> AnalysisActions:
 
     cursor_a.triggered.connect(_toggle_a)
 
-    cursor_b = QAction("カーソル B（Δ）", parent)  # noqa: RUF001
+    cursor_b = QAction(S.CURSOR_B_DELTA, parent)
     cursor_b.setCheckable(True)
     cursor_b.setStatusTip("Shift+クリックで設置")
 
@@ -100,7 +101,7 @@ def build_analysis_actions(parent: QObject) -> AnalysisActions:
 
     cursor_b.triggered.connect(_toggle_b)
 
-    clear_cursors = QAction("カーソルを消す", parent)
+    clear_cursors = QAction(S.CURSOR_CLEAR, parent)
 
     def _clear(_checked: bool = False) -> None:
         pvm = _get_target()

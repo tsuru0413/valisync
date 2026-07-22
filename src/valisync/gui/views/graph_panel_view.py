@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from valisync.gui import strings as S
 from valisync.gui.adapters.qt_signal_models import (
     AXIS_INDEX_MIME,
     SIGNAL_KEYS_MIME,
@@ -839,7 +840,7 @@ class GraphPanelView(QWidget):
         add_panel_btn = QToolButton(self._panel_chrome)
         add_panel_btn.setObjectName("add_panel_button")
         add_panel_btn.setText("+")
-        add_panel_btn.setToolTip("パネルを追加")
+        add_panel_btn.setToolTip(S.ACTION_ADD_PANEL)
         # UX-38: 当たり判定の高さを 24px へ (fixedSize は使わない — 幅を縮めると
         # 視覚不変と矛盾しヒット幅がむしろ縮む)。
         add_panel_btn.setMinimumHeight(24)
@@ -848,7 +849,7 @@ class GraphPanelView(QWidget):
         self._remove_panel_button = QToolButton(self._panel_chrome)
         self._remove_panel_button.setObjectName("remove_panel_button")
         self._remove_panel_button.setText("×")  # noqa: RUF001
-        self._remove_panel_button.setToolTip("パネルを削除")
+        self._remove_panel_button.setToolTip(S.ACTION_REMOVE_PANEL)
         self._remove_panel_button.setMinimumHeight(24)  # UX-38: 当たり判定の高さ 24px。
         self._remove_panel_button.setEnabled(self._removable)
         self._remove_panel_button.clicked.connect(
@@ -1881,7 +1882,9 @@ class GraphPanelView(QWidget):
         self._offset_last_delta = delta_t
         orig_xs, orig_ys = self._offset_orig_xy
         self._items[key].setData(orig_xs + delta_t, orig_ys)
-        QToolTip.showText(global_pos.toPoint(), f"Δt = {delta_t:+.3g} s")
+        QToolTip.showText(
+            global_pos.toPoint(), S.OFFSET_PREVIEW_TMPL.format(delta_t=delta_t)
+        )
 
     def _end_offset_drag(self) -> None:
         """On release: stop tracking and defer the apply dialog (avoid exec in handler)."""
@@ -1958,9 +1961,7 @@ class GraphPanelView(QWidget):
         dlg = QDialog(self)
         dlg.setWindowTitle("時間オフセットの適用")
         lay = QVBoxLayout(dlg)
-        lay.addWidget(
-            QLabel(f"Δt = {delta_t:+.3g} s を適用します。対象を選択してください。")
-        )
+        lay.addWidget(QLabel(S.OFFSET_APPLY_CONFIRM_TMPL.format(delta_t=delta_t)))
         sig_radio = QRadioButton("この信号のみ")
         grp_radio = QRadioButton("同じファイルグループ全体")
         sig_radio.setChecked(True)  # default → Enter applies signal scope
@@ -2347,7 +2348,7 @@ class GraphPanelView(QWidget):
         reset_act.setEnabled(current_offset != 0.0)
         reset_act.triggered.connect(lambda *_: self._prompt_offset_reset(entry_id))
         if current_offset != 0.0:
-            info = menu.addAction(f"オフセット: {current_offset:+.3f}s")
+            info = menu.addAction(S.OFFSET_INFO_TMPL.format(delta_t=current_offset))
             info.setEnabled(False)
         return menu
 
@@ -2382,8 +2383,8 @@ class GraphPanelView(QWidget):
         dlg = QDialog(self)
         dlg.setWindowTitle("時間オフセット")
         lay = QVBoxLayout(dlg)
-        lay.addWidget(QLabel(f"現在のオフセット: {current:+.3f} s"))
-        lay.addWidget(QLabel("追加する Δt (秒):"))
+        lay.addWidget(QLabel(S.OFFSET_CURRENT_TMPL.format(delta_t=current)))
+        lay.addWidget(QLabel(S.LABEL_OFFSET_ADD_DELTA))
         dt_edit = QLineEdit("0")
         lay.addWidget(dt_edit)
         sig_radio = QRadioButton("この信号のみ")
@@ -2464,7 +2465,7 @@ class GraphPanelView(QWidget):
         menu.addAction("時刻を指定…").triggered.connect(
             lambda *_: self._prompt_cursor_time(which)
         )
-        label = "カーソルを消す" if which == "A" else "カーソル B（Δ）を消す"  # noqa: RUF001
+        label = S.CURSOR_CLEAR if which == "A" else S.CURSOR_B_CLEAR
         menu.addAction(label).triggered.connect(lambda *_: self._clear_cursor(which))
         return menu
 
@@ -2504,7 +2505,7 @@ class GraphPanelView(QWidget):
         dlg = QDialog(self)
         dlg.setWindowTitle("カーソル時刻を指定")
         lay = QVBoxLayout(dlg)
-        lay.addWidget(QLabel(f"{which} カーソルの時刻 (秒):"))
+        lay.addWidget(QLabel(S.LABEL_CURSOR_TIME_TMPL.format(which=which)))
         # 固定小数3桁 (UX-14/48・spec §2.5 — 他の時刻表示面と統一)。
         edit = QLineEdit(f"{current:.3f}")
         lay.addWidget(edit)
@@ -2535,13 +2536,13 @@ class GraphPanelView(QWidget):
         """Build the blank-area panel menu (add/remove panel, reset axes, grid,
         X-axis sync, interp)."""
         menu = QMenu(self)
-        menu.addAction("Add Panel").triggered.connect(
+        menu.addAction(S.ACTION_ADD_PANEL).triggered.connect(
             lambda *_: self.add_panel_requested.emit()
         )
-        remove = menu.addAction("Remove Panel")
+        remove = menu.addAction(S.ACTION_REMOVE_PANEL)
         remove.setEnabled(self._removable)
         remove.triggered.connect(lambda *_: self.remove_panel_requested.emit())
-        menu.addAction("Reset All Axes").triggered.connect(
+        menu.addAction(S.ACTION_RESET_ALL_AXES).triggered.connect(
             lambda *_: self._reset_all_axes()
         )
         grid_act = menu.addAction("グリッド")
@@ -2576,7 +2577,7 @@ class GraphPanelView(QWidget):
         if not cursor_b_act.isEnabled():
             menu.setToolTipsVisible(True)
         menu.addAction(self._analysis_actions.clear_cursors)
-        interp = menu.addMenu("補間方式")
+        interp = menu.addMenu(S.INTERP_METHOD)
         for act in self._analysis_actions.interp_actions.values():
             interp.addAction(act)
         return menu
@@ -2599,7 +2600,7 @@ class GraphPanelView(QWidget):
         zin = menu.addAction("ズームイン")
         zin.setEnabled(has_range)
         zin.triggered.connect(lambda *_: self.vm.zoom_axis(axis_index, 0.9))
-        zout = menu.addAction("ズームアウト（引き）")  # noqa: RUF001
+        zout = menu.addAction(S.ACTION_ZOOM_OUT)
         zout.setEnabled(has_range)
         zout.triggered.connect(lambda *_: self.vm.zoom_axis(axis_index, 1.1))
         menu.addAction("軸を削除").triggered.connect(
@@ -2628,7 +2629,7 @@ class GraphPanelView(QWidget):
         zin = menu.addAction("ズームイン")
         zin.setEnabled(has_range)
         zin.triggered.connect(lambda *_: self.vm.zoom_x(0.9))
-        zout = menu.addAction("ズームアウト（引き）")  # noqa: RUF001
+        zout = menu.addAction(S.ACTION_ZOOM_OUT)
         zout.setEnabled(has_range)
         zout.triggered.connect(lambda *_: self.vm.zoom_x(1.1))
         return menu

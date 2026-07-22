@@ -39,6 +39,32 @@ def test_strip_mnemonic_ja_and_legacy_forms():
     assert strings.strip_mnemonic("A && B") == "A & B"
 
 
+def test_tab_default_tmpl_formats():
+    """G-40/UX-40: 新規タブ既定名テンプレートが期待プレースホルダで format 可能。"""
+    assert strings.TAB_DEFAULT_TMPL.format(n=1) == "タブ 1"
+    assert strings.TAB_DEFAULT_TMPL.format(n=2) == "タブ 2"
+
+
+def test_offset_templates_share_single_numeric_format():
+    """R-06/E-4: オフセット4画面 (ドラッグ tooltip/適用確認/入力ダイアログ/情報行)
+    が単一の {:+.3f} s 書式を共有する (散在 f-string の排除)。"""
+    assert strings.OFFSET_PREVIEW_TMPL.format(delta_t=0.5) == "Δt = +0.500 s"
+    assert (
+        strings.OFFSET_APPLY_CONFIRM_TMPL.format(delta_t=0.5)
+        == "Δt = +0.500 s を適用します。対象を選択してください。"
+    )
+    assert (
+        strings.OFFSET_CURRENT_TMPL.format(delta_t=0.5) == "現在のオフセット: +0.500 s"
+    )
+    assert strings.OFFSET_INFO_TMPL.format(delta_t=0.5) == "オフセット: +0.500 s"
+
+
+def test_cursor_time_label_tmpl_formats():
+    """R-02: 括り内容が日本語 (秒) の全角括弧。"""
+    assert strings.LABEL_CURSOR_TIME_TMPL.format(which="A") == "A カーソルの時刻（秒）:"
+    assert strings.LABEL_CURSOR_TIME_TMPL.format(which="B") == "B カーソルの時刻（秒）:"
+
+
 def test_strings_module_is_qt_free():
     """strings.py の Qt 非依存 (spec §2.1) の恒久ガード。
 
