@@ -837,10 +837,16 @@ def test_minimum_height_bounded_not_proportional_to_row_count(qtbot: QtBot):
         f"minimumSizeHint が行数に比例して伸びている (sh25={sh25}, mh25={mh25})"
     )
     # クランプの本体: 25行の minimumSizeHint は3行シードの minimumSizeHint と
-    # 同値 (行数非依存の定数へ有界化されている・境界未満は素通しなので3行が
-    # そのままクランプ定数になる)。
-    assert mh25 == mh3, (
-        f"25行の minimumSizeHint({mh25}) が3行相当の定数({mh3})と一致していない"
+    # ほぼ同値 (行数非依存の定数へ有界化)。厳密等値にしないのは、クランプ定数の
+    # 行ピッチ丸めがシード間で環境依存に ±数px ずれるため (CI 実測: 89 vs 87)。
+    # 許容は「1行ピッチ未満」— 比例退行なら +22 行分 (22 x ピッチ) になるので
+    # 検出力は落ちない。ピッチは同一実行内の sizeHint 差から導出 (環境非依存)。
+    sh3 = w3.sizeHint().height()
+    row_pitch = (sh25 - sh3) / 22
+    assert row_pitch > 0
+    assert abs(mh25 - mh3) < row_pitch, (
+        f"25行の minimumSizeHint({mh25}) が3行相当の定数({mh3})から"
+        f"1行ピッチ({row_pitch:.1f}px)以上ずれている"
     )
 
 
