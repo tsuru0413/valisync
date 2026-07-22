@@ -919,14 +919,17 @@ def test_panel_surface_pixel_follows_branched_surface_readout_panel_token(
 ):
     """凍結ピクセル比較は surface_readout_panel == chrome_window の同値で盲目
     (spec §2.6 同値盲点対策) — 値を分岐させたテーマでペイン面 (QScrollArea の
-    viewport/rows_host 越し) のピクセルがトークンに追随することを直接実証する。
+    viewport 内) のピクセルがトークンに追随することを直接実証する。
 
     setWidget() 後の setAutoFillBackground(False) x2 (viewport・rows_host) が
     無いと Qt が両者の autoFillBackground を True へ強制し、この分岐が blocked
     される (無地の既定パレット色で塗りつぶされ surface_readout_panel まで届か
-    ない) — この検証が唯一の透過機構ガード。
+    ない) — サンプル点を viewport 内へ配置することで、この透過機構を直接検査する
+    唯一のガード。
     """
     import dataclasses
+
+    from PySide6.QtCore import QPoint
 
     from valisync.gui.theme.tokens import DARK, Color, set_active
 
@@ -944,8 +947,12 @@ def test_panel_surface_pixel_follows_branched_surface_readout_panel_token(
         qtbot.waitExposed(w)
         for _ in range(3):
             qtbot.wait(1)
+        # viewport 内のサンプル点を取得 (QScrollArea の透過機構直接検査)
+        vp = w._scroll.viewport()
+        pt_in_vp = QPoint(vp.width() - 8, vp.height() - 8)
+        pt_in_w = vp.mapTo(w, pt_in_vp)
         img = w.grab().toImage()
-        inner = img.pixelColor(w.width() - 4, w.height() - 4)
+        inner = img.pixelColor(pt_in_w.x(), pt_in_w.y())
         assert inner.name() == Color(1, 2, 3).hex, (
             f"ペイン面ピクセルが分岐後の surface_readout_panel"
             f"({Color(1, 2, 3).hex}) に追随していない: {inner.name()}"
