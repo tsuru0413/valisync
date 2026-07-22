@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from valisync.gui import strings as S
 from valisync.gui.viewmodels.observable import Observable
 
 if TYPE_CHECKING:
@@ -67,6 +68,35 @@ class FileBrowserVM(Observable):
         if 0 <= index < len(keys):
             self._app_vm.unload_file(keys[index])
 
+    # ─── E-2a: reference file ───────────────────────────────────────────────
+
+    def key_at(self, row: int) -> str | None:
+        """The group key for a LOADED row (None for releasing/out-of-range rows).
+
+        Same index guard as :meth:`select_file`/:meth:`unload` — releasing rows
+        sit past ``loaded_file_keys`` (see :meth:`_refresh`), so this is
+        non-interactive for them by construction.
+        """
+        keys = self._app_vm.loaded_file_keys
+        if 0 <= row < len(keys):
+            return keys[row]
+        return None
+
+    def is_reference(self, row: int) -> bool:
+        """True when *row* is the current reference file's row."""
+        key = self.key_at(row)
+        return key is not None and key == self._app_vm.reference_file_key
+
+    def is_comparison_mode(self) -> bool:
+        """True with 2+ loaded files — the condition for the badge/'重ねる' menu item."""
+        return len(self._app_vm.loaded_file_keys) >= 2
+
+    def set_reference(self, row: int) -> None:
+        """Set *row*'s file as the reference (no-op for releasing/out-of-range rows)."""
+        key = self.key_at(row)
+        if key is not None:
+            self._app_vm.set_reference_file(key)
+
     # ─── FB-10 tooltip ───────────────────────────────────────────────────────
 
     def file_info(self, index: int) -> SourceInfo | None:
@@ -99,7 +129,7 @@ class FileBrowserVM(Observable):
 
     def _on_app_change(self, change: str) -> None:
         """Handle notifications from AppViewModel."""
-        if change in ("loaded", "unloaded", "releasing"):
+        if change in ("loaded", "unloaded", "releasing", "reference"):
             self._refresh()
 
     def _refresh(self) -> None:
@@ -108,14 +138,24 @@ class FileBrowserVM(Observable):
         Releasing rows sit AFTER loaded rows so the existing index guards in
         select_file/unload (index < len(loaded_file_keys)) make them no-op —
         i.e. non-interactive by construction (FU-16).
+
+        The reference file's row gets a badge suffix (E-2a, spec §2), but only
+        in comparison mode (2+ loaded files) — a single loaded file is always
+        implicitly "the reference" and showing the badge then would be noise
+        (and break the frozen single-file catalogue).
         """
+        comparison_mode = self.is_comparison_mode()
+        reference_key = self._app_vm.reference_file_key
         loaded: list[str] = []
         for key in self._app_vm.loaded_file_keys:
             try:
-                loaded.append(self._app_vm.session.source_name(key))
+                name = self._app_vm.session.source_name(key)
             except KeyError:
                 # Fallback to the key if the name cannot be recovered.
-                loaded.append(key)
+                name = key
+            if comparison_mode and key == reference_key:
+                name += S.FILE_REFERENCE_BADGE_SUFFIX
+            loaded.append(name)
         releasing = [name for _key, name in self._app_vm.releasing_files]
         self._loaded_count = len(loaded)
         self._files = loaded + releasing

@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 from valisync.core.loaders.csv_format_detector import CsvFormatDetector
 from valisync.core.models.format_def import FormatDefinition
 from valisync.core.session import LoadOutcome
+from valisync.gui import reference_overlay
 from valisync.gui import strings as S
 from valisync.gui.strings import mn
 from valisync.gui.theme import apply as theme_apply
@@ -413,6 +414,9 @@ class MainWindow(QMainWindow):
         self.channel_browser_view.add_to_panel_requested.connect(
             self._add_to_active_panel
         )
+        self.file_browser_view.overlay_reference_requested.connect(
+            self._overlay_reference_signals
+        )
         # FU-13: single-instance, non-modal preview window opened by double-click.
         self.signal_preview_window = SignalPreviewWindow(
             SignalPreviewVM(self.app_vm), parent=self
@@ -618,6 +622,32 @@ class MainWindow(QMainWindow):
         target = panels[vm.active_panel_index()]
         for key in keys:
             target.add_signal(key)
+
+    def _overlay_reference_signals(self, target_key: str) -> None:
+        """基準ファイルの同名信号をアクティブパネルの同軸へ重ねる (E-2b)。
+
+        Thin dispatcher (spec §3's "重ねハンドラ"): resolve the active panel /
+        reference key here (Qt-owned state), delegate the actual matching
+        algorithm to the pure ``reference_overlay`` module, then render the
+        result as a status message.
+        """
+        reference_key = self.app_vm.reference_file_key
+        if reference_key is None:
+            return  # 防御的 no-op (メニューはロード済みファイルがある時のみ出る)
+        panels = self.graph_area_vm.panels(self.graph_area_vm.active_tab_index)
+        if not panels:
+            return  # 防御的 no-op (VM 不変条件により通常到達不能)
+        panel = panels[self.graph_area_vm.active_panel_index()]
+        result = reference_overlay.overlay_reference_signals(
+            panel, self.app_vm.session, reference_key, target_key
+        )
+        target_name = reference_overlay.file_display_name(
+            self.app_vm.session, self.app_vm.loaded_file_keys, target_key
+        )
+        self.set_status_message(
+            reference_overlay.format_overlay_summary(result, target_name),
+            timeout_ms=8000,
+        )
 
     def _active_panel_vm(self) -> GraphPanelVM | None:
         """Analyze メニューの AnalysisActions dispatch (spec §2.2: メニューバー経由

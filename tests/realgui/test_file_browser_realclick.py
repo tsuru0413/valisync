@@ -97,4 +97,11 @@ def test_remove_file_menu_appears_on_real_os_right_click(
         "no context menu appeared on a real OS right-click; "
         f"got {captured.get('type')!r}. screenshot: {tmp_path / 'realclick.png'}"
     )
-    assert captured.get("actions") == [S.ACTION_REMOVE_FILE]
+    # E-2a/b: reference_file_key is None here (app_vm._loaded_keys was set
+    # directly, bypassing register_loaded's auto-reference), so neither loaded
+    # row is "the reference" — both new items appear alongside Remove File.
+    assert captured.get("actions") == [
+        S.ACTION_REMOVE_FILE,
+        S.ACTION_SET_REFERENCE,
+        S.ACTION_OVERLAY_REFERENCE,
+    ]

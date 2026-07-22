@@ -415,9 +415,8 @@ class MdfLoader:
                 raise LoadCancelled(f"load cancelled: {resolved_path.name}")
             idx = name_seen.get(base_name, 0)
             name_seen[base_name] = idx + 1
-            signal_name = (
-                f"{base_name}[{idx}]" if name_total[base_name] > 1 else base_name
-            )
+            deduplicated = name_total[base_name] > 1
+            signal_name = f"{base_name}[{idx}]" if deduplicated else base_name
 
             if master is None and not master_bad:
                 ts64 = asig.timestamps.astype(np.float64, copy=False)
@@ -500,6 +499,16 @@ class MdfLoader:
                 assert (
                     master is not None
                 )  # unreachable: master_bad already continue'd above
+                out_metadata = _extract_metadata(asig, raw_conversion)
+                if deduplicated:
+                    # E-2b: this name involved a LD-08 [idx] disambiguation —
+                    # the ONLY basis cross-file same-name matching uses to
+                    # exclude a signal from automatic overlay (spec §3 step 5).
+                    # Array-expansion names (LD-14, e.g. "Mat[0]") look the
+                    # same textually but are NOT flagged: deduplicated is keyed
+                    # off name_total[base_name] (occurrences of the ORIGINAL
+                    # channel name), not the "[i]" suffix pattern itself.
+                    out_metadata["name_deduplicated"] = True
                 signals.append(
                     Signal(
                         name=out_name,
@@ -510,6 +519,6 @@ class MdfLoader:
                         ),  # LD-02: 版に応じ MDF3/MDF4
                         bus_type=_detect_bus_type(getattr(asig, "source", None)),
                         source_file=str(resolved_path),
-                        metadata=_extract_metadata(asig, raw_conversion),
+                        metadata=out_metadata,
                     )
                 )

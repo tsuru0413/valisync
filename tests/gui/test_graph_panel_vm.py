@@ -248,6 +248,34 @@ def test_add_signal_visible_by_default(tmp_path: Path) -> None:
     assert snapshot["plotted_signals"][0]["visible"] is True
 
 
+# ─── plotted_entries (E-2b) ──────────────────────────────────────────────────
+
+
+def test_plotted_entries_returns_entry_id_signal_key_axis_index_tuples(
+    tmp_path: Path,
+) -> None:
+    """plotted_entries() is the axis-aware, non-deduped public read (spec §3) —
+    unlike plotted_signal_keys() (deduped, no axis) or entries_on_axis()
+    (scoped to one axis)."""
+    session, _ = _loaded_session(tmp_path, n_signals=2)
+    key1 = session.signals()[0].name
+    key2 = session.signals()[1].name
+    vm = GraphPanelVM(session)
+    vm.add_signal_to_axis(key1, 0)
+    vm.create_new_axis(key2)  # axis 1
+
+    entries = vm.plotted_entries()
+
+    assert {(sk, ax) for _eid, sk, ax in entries} == {(key1, 0), (key2, 1)}
+    entry_ids = [eid for eid, _sk, _ax in entries]
+    assert entry_ids == sorted(set(entry_ids))  # monotonic ids, no duplicates
+
+
+def test_plotted_entries_empty_when_nothing_plotted() -> None:
+    vm = GraphPanelVM(Session())
+    assert vm.plotted_entries() == []
+
+
 # ─── remove_signal ───────────────────────────────────────────────────────────
 
 

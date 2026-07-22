@@ -296,6 +296,18 @@ class GraphPanelVM(Observable):
         """
         return list(dict.fromkeys(e.signal_key for e in self._plotted))
 
+    def plotted_entries(self) -> list[tuple[int, str, int]]:
+        """Return (entry_id, signal_key, axis_index) for every plotted entry.
+
+        Unlike :meth:`plotted_signal_keys` (deduped, no axis) or
+        :meth:`entries_on_axis` (scoped to one axis), this is the full,
+        axis-aware, non-deduped list — needed by cross-file features (E-2b
+        same-name overlay) that must know exactly where each entry sits.
+        Direct ``_plotted`` access from outside this VM is not allowed
+        (spec §3) — this is the public read for that purpose.
+        """
+        return [(e.entry_id, e.signal_key, e.axis_index) for e in self._plotted]
+
     def overwrite_axis(self, signal_key: str, axis_index: int) -> None:
         """Replace all signals on *axis_index* with *signal_key*.
 

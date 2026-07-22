@@ -33,6 +33,10 @@ class AppViewModel(Observable):
         self._active_tab: int = 0
         self._data_sources: list[str] = []
         self._active_file_key: str | None = None
+        # Reference file (E-2a) — defaults to the first loaded file, migrates to
+        # the surviving load-order head on unload. Transient (never persisted,
+        # same as the offsets below — F-1 handles .vsession).
+        self._reference_file_key: str | None = None
         # Time-offset state (R14) — transient, never persisted (Phase 3).
         # signal_offsets: keyed by namespaced signal name (e.g. "csv_1::speed").
         # file_offsets: keyed by group key (e.g. "csv_1"). Both are additive
@@ -126,6 +130,22 @@ class AppViewModel(Observable):
         self._active_file_key = key
         self._notify("active_file")
 
+    @property
+    def reference_file_key(self) -> str | None:
+        """The group key of the comparison "reference" file (E-2a), or None."""
+        return self._reference_file_key
+
+    def set_reference_file(self, key: str | None) -> None:
+        """Set the reference file and notify subscribers ('reference').
+
+        No-op (no notify) when *key* is already the current reference —
+        mirrors :meth:`set_active_file`'s same-key guard.
+        """
+        if key == self._reference_file_key:
+            return
+        self._reference_file_key = key
+        self._notify("reference")
+
     def set_teardown(self, service: object) -> None:
         """Inject the GUI-thread teardown service (duck-typed ``enqueue(key, group)``)."""
         self._teardown = service
@@ -155,6 +175,14 @@ class AppViewModel(Observable):
             return
         if key in self._loaded_keys:
             self._loaded_keys.remove(key)
+        if self._reference_file_key == key:
+            # Migrate to the surviving load-order head (spec §2) — completed
+            # (and notified) before "unloaded" so FileBrowserVM's badge refresh
+            # sees the new reference regardless of which tag it reacts to.
+            self._reference_file_key = (
+                self._loaded_keys[0] if self._loaded_keys else None
+            )
+            self._notify("reference")
         if self._active_file_key == key:
             self._active_file_key = None
             self._notify("active_file")
@@ -202,7 +230,13 @@ class AppViewModel(Observable):
         return outcome.key
 
     def register_loaded(self, key: str) -> None:
-        """Record an already-loaded group key and notify (GUI-thread side)."""
+        """Record an already-loaded group key and notify (GUI-thread side).
+
+        The first ever load becomes the reference (E-2a, spec §2) — folded
+        into the same "loaded" notify since FileBrowserVM refreshes on it.
+        """
+        if self._reference_file_key is None:
+            self._reference_file_key = key
         self._loaded_keys.append(key)
         self._notify("loaded")
 
@@ -238,6 +272,7 @@ class AppViewModel(Observable):
             "active_tab": self._active_tab,
             "data_sources": list(self._data_sources),
             "active_file": self._active_file_key,
+            "reference_file": self._reference_file_key,
             "signal_offsets": dict(self._signal_offsets),
             "file_offsets": dict(self._file_offsets),
         }

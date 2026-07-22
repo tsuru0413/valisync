@@ -201,6 +201,18 @@ def test_csv_duplicate_headers_disambiguated_like_mdf4(tmp_path: Path) -> None:
     assert any("重複ヘッダ" in d.message for d in result.diagnostics)
 
 
+def test_csv_duplicate_headers_flag_name_deduplicated(tmp_path: Path) -> None:
+    """E-2b: [idx] 付与された両列に metadata["name_deduplicated"]=True (spec §3 step 5)."""
+    path = _write_csv(tmp_path, "t,spd,spd,rpm\n0.0,1,2,9\n1.0,3,4,9\n")
+    result = CsvLoader().load(path, _fmt(signal_start_column=1, signal_end_column=3))
+    assert result.signal_group is not None
+    by_name = {s.name: s for s in result.signal_group.signals}
+    assert by_name["spd[0]"].metadata.get("name_deduplicated") is True
+    assert by_name["spd[1]"].metadata.get("name_deduplicated") is True
+    # A non-duplicated header carries no flag at all.
+    assert "name_deduplicated" not in by_name["rpm"].metadata
+
+
 def test_csv_header_only_succeeds_with_warning(tmp_path: Path) -> None:
     result = _load_csv_text(tmp_path, "t,a,b\n")
     assert result.signal_group is not None
@@ -305,6 +317,28 @@ def test_mdf4_duplicate_names_disambiguated(tmp_path: Path) -> None:
     assert result.signal_group is not None
     names = {s.name for s in result.signal_group.signals}
     assert names == {"sig[0]", "sig[1]"}
+
+
+def test_mdf4_duplicate_names_flag_name_deduplicated(tmp_path: Path) -> None:
+    """E-2b: both disambiguated names carry metadata["name_deduplicated"]=True
+    (spec §3 step 5 — the only basis for excluding a signal from cross-file
+    same-name auto-overlay). A non-duplicated channel carries no such flag."""
+    ts = [0.0, 1.0]
+    path = write_mdf4(
+        tmp_path / "dup.mf4",
+        [
+            {"name": "sig", "timestamps": ts, "values": [1.0, 2.0], "bus_type": CAN},
+            {"name": "sig", "timestamps": ts, "values": [3.0, 4.0], "bus_type": CAN},
+            {"name": "clean", "timestamps": ts, "values": [5.0, 6.0], "bus_type": CAN},
+        ],
+    )
+    result = MdfLoader().load(path)
+
+    assert result.signal_group is not None
+    by_name = {s.name: s for s in result.signal_group.signals}
+    assert by_name["sig[0]"].metadata.get("name_deduplicated") is True
+    assert by_name["sig[1]"].metadata.get("name_deduplicated") is True
+    assert "name_deduplicated" not in by_name["clean"].metadata
 
 
 def test_mdf4_multiple_channel_groups_all_loaded(tmp_path: Path) -> None:
@@ -590,6 +624,22 @@ def test_2d_channel_explodes_into_columns(tmp_path: Path) -> None:
     assert not any(
         "スキップ" in d.message and "Mat" in d.message for d in result.diagnostics
     )
+
+
+def test_2d_channel_expansion_names_are_not_flagged_deduplicated(
+    tmp_path: Path,
+) -> None:
+    """E-2b: LD-14 array-expansion names ("Mat[0]" etc.) look textually like a
+    LD-08 dedup suffix but must NOT carry metadata["name_deduplicated"] — they
+    are deterministic/cross-file comparable, unlike the per-file [idx]
+    disambiguation (spec §3 step 5's judgment mechanism: the flag, not the
+    "[i]" string shape, is the only exclusion basis)."""
+    result = MdfLoader().load(write_mdf4_2d(tmp_path))
+    by_name = {s.name: s for s in result.signal_group.signals}
+    assert "name_deduplicated" not in by_name["Mat[0]"].metadata
+    assert "name_deduplicated" not in by_name["Mat[1]"].metadata
+    assert "name_deduplicated" not in by_name["Mat[2]"].metadata
+    assert "name_deduplicated" not in by_name["Clean"].metadata
 
 
 def test_structured_channel_fields_visible(tmp_path: Path) -> None:

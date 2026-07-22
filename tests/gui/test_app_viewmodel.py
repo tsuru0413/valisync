@@ -177,6 +177,44 @@ def test_set_active_file_genuine_change_still_notifies() -> None:
     assert notifications.count("active_file") == 3
 
 
+def test_reference_file_key_defaults_to_first_load(tmp_path: Path) -> None:
+    """E-2a: the first ever load becomes the reference (spec §2)."""
+    vm = AppViewModel()
+    assert vm.reference_file_key is None
+
+    key1 = vm.request_load(_write_csv(tmp_path / "a.csv"), _csv_format())
+    assert vm.reference_file_key == key1
+
+    key2 = vm.request_load(_write_csv(tmp_path / "b.csv"), _csv_format())
+    assert vm.reference_file_key == key1  # unchanged by the second load
+    assert key2 != key1
+
+
+def test_set_reference_file_notifies_and_same_key_is_noop() -> None:
+    vm = AppViewModel()
+    vm.register_loaded("k1")
+    vm.register_loaded("k2")
+    assert vm.reference_file_key == "k1"
+
+    notifications: list[str] = []
+    vm.subscribe(notifications.append)
+    vm.set_reference_file("k2")
+
+    assert vm.reference_file_key == "k2"
+    assert "reference" in notifications
+
+    notifications.clear()
+    vm.set_reference_file("k2")  # same key -> guarded no-op
+    assert notifications == []
+    assert vm.reference_file_key == "k2"
+
+
+def test_inspect_reflects_reference_file() -> None:
+    vm = AppViewModel()
+    vm.register_loaded("k1")
+    assert vm.inspect()["reference_file"] == "k1"
+
+
 def test_loaded_file_keys_exposes_list(tmp_path: Path) -> None:
     """loaded_file_keys property returns the list of group keys."""
     vm = AppViewModel()
@@ -203,6 +241,47 @@ def test_unload_file_removes_group_clears_active_and_notifies(tmp_path: Path) ->
     assert vm.signals() == []
     assert "unloaded" in notifications
     assert "active_file" in notifications
+
+
+def test_unload_reference_migrates_to_surviving_load_order_head(tmp_path: Path) -> None:
+    """E-2a: unloading the reference migrates it to the surviving load-order
+    head, completed (and notified) BEFORE 'unloaded' fires (spec §2)."""
+    vm = AppViewModel()
+    key1 = vm.request_load(_write_csv(tmp_path / "a.csv"), _csv_format())
+    key2 = vm.request_load(_write_csv(tmp_path / "b.csv"), _csv_format())
+    vm.request_load(_write_csv(tmp_path / "c.csv"), _csv_format())  # 3rd survivor
+    assert vm.reference_file_key == key1
+
+    order: list[str] = []
+    vm.subscribe(order.append)
+    vm.unload_file(key1)
+
+    assert vm.reference_file_key == key2  # surviving load-order head
+    assert order.index("reference") < order.index("unloaded")
+
+
+def test_unload_reference_with_no_survivors_clears_it(tmp_path: Path) -> None:
+    vm = AppViewModel()
+    key = vm.request_load(_write_csv(tmp_path / "a.csv"), _csv_format())
+    assert vm.reference_file_key == key
+
+    vm.unload_file(key)
+
+    assert vm.reference_file_key is None
+
+
+def test_unload_non_reference_file_leaves_reference_unchanged(tmp_path: Path) -> None:
+    vm = AppViewModel()
+    key1 = vm.request_load(_write_csv(tmp_path / "a.csv"), _csv_format())
+    key2 = vm.request_load(_write_csv(tmp_path / "b.csv"), _csv_format())
+    assert vm.reference_file_key == key1
+
+    notifications: list[str] = []
+    vm.subscribe(notifications.append)
+    vm.unload_file(key2)
+
+    assert vm.reference_file_key == key1
+    assert "reference" not in notifications  # unaffected reference: no notify
 
 
 class _FakeTeardown:
