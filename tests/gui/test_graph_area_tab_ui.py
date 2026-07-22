@@ -25,6 +25,32 @@ def _make_area(qtbot: QtBot):  # type: ignore[no-untyped-def]
     return view
 
 
+def _close_button_position(bar):  # type: ignore[no-untyped-def]
+    """style-hint 解決位置 (D-3 §2.5: 実測 RightSide)。"""
+    from PySide6.QtWidgets import QTabBar
+
+    return QTabBar.ButtonPosition(
+        bar.style().styleHint(
+            bar.style().StyleHint.SH_TabBar_CloseButtonPosition, None, bar
+        )
+    )
+
+
+def _has_pixel_near(image, expected_rgb, tol=40):  # type: ignore[no-untyped-def]
+    """test_diagnostics_view.py/test_theme_icons.py と同型のピクセル走査ヘルパ
+    (このファイルは自己完結の慣行に合わせローカル複製)。"""
+    for y in range(image.height()):
+        for x in range(image.width()):
+            px = image.pixelColor(x, y)
+            if px.alpha() > 200 and (
+                abs(px.red() - expected_rgb[0]) < tol
+                and abs(px.green() - expected_rgb[1]) < tol
+                and abs(px.blue() - expected_rgb[2]) < tol
+            ):
+                return True
+    return False
+
+
 def test_corner_new_tab_button_adds_tab(qtbot: QtBot) -> None:
     # 計測 IA 刷新 spec §2.3: corner widget は「+」単体ではなく読み値トグルとの
     # 横並びコンテナ。cornerWidget() 自体の objectName ではなく子ボタンを探す。
@@ -63,16 +89,13 @@ def test_close_button_removes_tab(qtbot: QtBot) -> None:
 
 
 def test_last_tab_close_button_suppressed(qtbot: QtBot) -> None:
-    from PySide6.QtWidgets import QTabBar
-
+    """D-3 §2.5: setTabsClosable(False)+自前ボタンなので、単一タブは
+    そもそも close ボタンを設置しない (旧 setTabButton(0,pos,None) による
+    事後抑制ではない — 前提を自前ボタンへ書換)。"""
     view = _make_area(qtbot)
     assert view.tabs.count() == 1
     bar = view.tabs.tabBar()
-    pos = QTabBar.ButtonPosition(
-        bar.style().styleHint(
-            bar.style().StyleHint.SH_TabBar_CloseButtonPosition, None, bar
-        )
-    )
+    pos = _close_button_position(bar)
     assert bar.tabButton(0, pos) is None  # 最後の1枚は閉じるボタンなし
     # そして close 要求が来ても最後の1枚は残る (防御)
     view.tabs.tabCloseRequested.emit(0)
@@ -80,17 +103,131 @@ def test_last_tab_close_button_suppressed(qtbot: QtBot) -> None:
 
 
 def test_close_button_reappears_above_one_tab(qtbot: QtBot) -> None:
-    from PySide6.QtWidgets import QTabBar
-
+    """D-3 §2.5: 2 タブ以上は全タブへ自前 QToolButton (tab_close_button) が
+    設置される (Qt 既定ボタンではない — 前提を自前ボタンへ書換)。"""
     view = _make_area(qtbot)
     view.add_tab()  # 2 タブ = close ボタンあり
     bar = view.tabs.tabBar()
-    pos = QTabBar.ButtonPosition(
-        bar.style().styleHint(
-            bar.style().StyleHint.SH_TabBar_CloseButtonPosition, None, bar
-        )
+    pos = _close_button_position(bar)
+    btn = bar.tabButton(0, pos)
+    assert isinstance(btn, QToolButton)
+    assert btn.objectName() == "tab_close_button"
+
+
+def test_tab_close_button_active_mode_consumes_close_hover_not_error(
+    qtbot: QtBot,
+) -> None:
+    """タブ✕の hover (QIcon.Mode.Active) は close_hover トークンを消費する
+    (D-3 §2.5・`_make_tab_close_button` の `active_color=c.close_hover`)。
+
+    DARK では close_hover と error が同値 (#f38ba8) の三つ組であるため、値ベース
+    の assert は `active_color=c.error` への誤配線を検出できない (LIGHT では
+    close_hover=#d20f39 と error=#c0392b が分岐し実害になる — test_theme_qss.py
+    の既存パターンと同型の盲点)。close_hover だけを識別可能な値へ分岐させた
+    テーマを注入し、ボタンの Active ピクセルが分岐値へ追随し、error の元値
+    (未分岐のまま #f38ba8) でないことを直接実証する。
+    """
+    import dataclasses
+
+    from PySide6.QtGui import QIcon
+
+    from valisync.gui.theme.tokens import DARK, Color, set_active
+
+    alt = dataclasses.replace(
+        DARK, colors=dataclasses.replace(DARK.colors, close_hover=Color(1, 2, 3))
     )
-    assert bar.tabButton(0, pos) is not None
+    set_active(alt)
+    try:
+        view = _make_area(qtbot)
+        view.add_tab()  # 2 タブ = 自前✕ボタン設置
+        bar = view.tabs.tabBar()
+        pos = _close_button_position(bar)
+        btn = bar.tabButton(0, pos)
+        assert isinstance(btn, QToolButton)
+        img = btn.icon().pixmap(16, 16, QIcon.Mode.Active).toImage()
+        assert _has_pixel_near(img, (1, 2, 3))
+        assert not _has_pixel_near(
+            img, (DARK.colors.error.r, DARK.colors.error.g, DARK.colors.error.b)
+        )
+    finally:
+        set_active(DARK)
+
+
+def test_tab_close_button_click_resolves_current_index_after_earlier_removal(
+    qtbot: QtBot,
+) -> None:
+    """D-3 §2.5: 自前✕ボタンはクリック時に tabBar 上の恒等走査で index を解決
+    する (生成時の事前 capture は禁止) — 先頭タブが閉じてインデックスがずれた
+    後、2番目の位置に来たボタンをクリックすると、そのボタンが指す(ずれた後の)
+    タブ自身が正しく閉じることを検証する。
+
+    Identity is tracked via tab NAME (VM state), not the QSplitter page widget
+    -- ``_rebuild`` always discards and recreates every page's widget on every
+    VM notify (see ``old_pages``), so widget identity does not survive a
+    rebuild even for an unaffected tab; the tab's name does.
+    """
+    view = _make_area(qtbot)
+    view.add_tab()
+    view.add_tab()
+    assert view.tabs.count() == 3
+    name_1 = view.tabs.tabText(1)
+    name_2 = view.tabs.tabText(2)
+
+    bar = view.tabs.tabBar()
+    pos = _close_button_position(bar)
+
+    # 先頭タブを直接閉じる (別経路からの先行 close を模す) — 残り2枚が前へ詰まる。
+    view.tabs.tabCloseRequested.emit(0)
+    assert view.tabs.count() == 2
+    assert view.tabs.tabText(0) == name_1
+    assert view.tabs.tabText(1) == name_2
+
+    # index=1 の✕ボタンをクリック — このボタンは (詰まった後の) name_2 の
+    # タブに設置されたものであり、事前 capture された古い index ではなく
+    # クリック時点の実位置を正しく解決しなければならない。
+    btn = bar.tabButton(1, pos)
+    assert isinstance(btn, QToolButton)
+    btn.click()
+
+    assert view.tabs.count() == 1
+    assert view.tabs.tabText(0) == name_1  # name_2 のタブが閉じ、name_1 が残る
+
+
+def test_tab_close_buttons_count_stable_after_many_rebuilds(qtbot: QtBot) -> None:
+    """D-3 §2.5: 既定ボタンを setTabButton で事後に None 差し替えて抑制すると、
+    置換前の widget が「setTabButton は置換しても削除しない」実測仕様により
+    タブバーへ隠れ蓄積する実バグだった (旧 setTabsClosable(True) 経路)。多数回
+    の add/remove 後もタブバーに寄生する孤児ボタンが残らないことを直接検証する
+    (rebuild N 回後のボタン数不変ガード)。"""
+    view = _make_area(qtbot)
+    bar = view.tabs.tabBar()
+    pos = _close_button_position(bar)
+
+    for _ in range(15):
+        view.add_tab()
+    while view.tabs.count() > 4:
+        view.remove_tab(0)
+    for _ in range(10):
+        view.add_tab()
+        view.remove_tab(0)
+
+    count = view.tabs.count()
+    assert count > 1
+    attached = [bar.tabButton(i, pos) for i in range(count)]
+    assert all(isinstance(b, QToolButton) for b in attached)
+    assert len(attached) == len({id(b) for b in attached})  # no duplicate identities
+
+    # No orphaned custom close buttons remain parented anywhere under the tab
+    # bar beyond the currently-attached set (the accumulating-leak regression:
+    # setTabButton replacing/nulling a button on a live tab does not itself
+    # delete the previous widget, so explicit disposal in _rebuild is load-
+    # bearing here).
+    orphans = [
+        child
+        for child in bar.findChildren(QToolButton)
+        if child.objectName() == "tab_close_button" and child not in attached
+    ]
+    assert orphans == []
 
 
 def test_double_click_opens_rename_editor(qtbot: QtBot) -> None:

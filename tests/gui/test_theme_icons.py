@@ -53,6 +53,17 @@ def test_registry_paths_resolve():
         "chevron_right",
         "chevron_left",
         "chevron_up",
+        "diag_error",
+        "diag_warning",
+        "diag_info",
+        "close",
+        "float_dock",
+        "dock_panel_left",
+        "dock_panel_left_partial",
+        "dock_panel_right",
+        "dock_panel_right_partial",
+        "dock_panel_bottom",
+        "dock_panel_bottom_partial",
     }
     for name, rel in ICONS.items():
         assert (ICONS_DIR / rel).is_file(), f"{name} -> {rel}"
@@ -114,6 +125,77 @@ def test_icon_pixels_use_theme_tokens(qtbot):
     )
     # 同値でないテーマ前提の分離確認 (DARK: text #cdd6f4 / disabled #6c7086 は十分離れている)
     assert not _has_pixel_near(disabled, ct, tol=20)
+
+
+def test_icon_color_override_paints_normal_mode(qapp):
+    """color 指定時は Normal をその色で上書き (spec §2.2)。"""
+    from PySide6.QtGui import QIcon
+
+    from valisync.gui.theme.icons import icon
+    from valisync.gui.theme.tokens import Color
+
+    red = Color(255, 0, 0)
+    ico = icon("close", color=red)
+    assert not ico.isNull()
+    normal = ico.pixmap(24, 24, QIcon.Mode.Normal).toImage()
+    assert _has_pixel_near(normal, (255, 0, 0))
+
+
+def test_icon_active_and_selected_modes_paint_requested_colors(qapp):
+    """active_color/selected_color 指定時は QIcon.Mode.Active/Selected へ着色
+    (診断アイコンの選択セル可視性・タブ✕の hover 赤 — spec §2.2)。"""
+    from PySide6.QtGui import QIcon
+
+    from valisync.gui.theme.icons import icon
+    from valisync.gui.theme.tokens import Color
+
+    red = Color(255, 0, 0)
+    green = Color(0, 255, 0)
+    blue = Color(0, 0, 255)
+    ico = icon("close", color=red, active_color=green, selected_color=blue)
+    assert not ico.isNull()
+    normal = ico.pixmap(24, 24, QIcon.Mode.Normal).toImage()
+    active = ico.pixmap(24, 24, QIcon.Mode.Active).toImage()
+    selected = ico.pixmap(24, 24, QIcon.Mode.Selected).toImage()
+    assert _has_pixel_near(normal, (255, 0, 0))
+    assert _has_pixel_near(active, (0, 255, 0))
+    assert _has_pixel_near(selected, (0, 0, 255))
+    # Active/Selected 未指定時と混同していないことの確認 (Normal に紛れていない)
+    assert not _has_pixel_near(normal, (0, 255, 0), tol=20)
+    assert not _has_pixel_near(normal, (0, 0, 255), tol=20)
+
+
+def test_icon_active_selected_absent_when_not_requested(qapp):
+    """active_color/selected_color 未指定時は既存呼出と同一 (現行互換)。"""
+    from PySide6.QtGui import QIcon
+
+    from valisync.gui.theme.icons import icon
+    from valisync.gui.theme.tokens import active
+
+    c = active().colors
+    ico = icon("close")
+    normal = ico.pixmap(24, 24, QIcon.Mode.Normal).toImage()
+    assert _has_pixel_near(normal, (c.chrome_text.r, c.chrome_text.g, c.chrome_text.b))
+
+
+def test_new_semantic_icons_registered_and_render(qapp):
+    from valisync.gui.theme import icons
+
+    for name in (
+        "diag_error",
+        "diag_warning",
+        "diag_info",
+        "close",
+        "float_dock",
+        "dock_panel_left",
+        "dock_panel_left_partial",
+        "dock_panel_right",
+        "dock_panel_right_partial",
+        "dock_panel_bottom",
+        "dock_panel_bottom_partial",
+    ):
+        ico = icons.icon(name)
+        assert not ico.isNull(), name
 
 
 def test_chevron_icons_registered_and_render(qapp):

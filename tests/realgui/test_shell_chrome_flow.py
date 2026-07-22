@@ -67,7 +67,9 @@ def _toolbar_toggle_button(mw):  # type: ignore[no-untyped-def]
     from PySide6.QtWidgets import QToolBar, QToolButton
 
     toolbar = mw.findChild(QToolBar, "main_toolbar")
-    btn = toolbar.widgetForAction(mw.file_dock.toggleViewAction())
+    # D-3/UX-45: toggleViewAction は掲載されなくなった (三態カスタム QAction へ
+    # 置換 — docs/superpowers/specs/2026-07-22-d3-tristate-icons-design.md §2.3)。
+    btn = toolbar.widgetForAction(mw._dock_actions["file_dock"])
     assert isinstance(btn, QToolButton)
     return btn
 

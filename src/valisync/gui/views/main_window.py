@@ -18,7 +18,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
+from typing import ClassVar, cast
 
 from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
 from PySide6.QtGui import (
@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QStackedWidget,
     QToolBar,
+    QToolButton,
 )
 
 from valisync.core.loaders.csv_format_detector import CsvFormatDetector
@@ -82,6 +83,37 @@ from valisync.gui.workers.teardown_service import TeardownService
 _ORG = "ValiSync"
 _APP = "ValiSync"
 
+# spec §2.3: 辺 (Qt.DockWidgetArea) → dock_panel_* アイコン意味名の接尾辞。
+# 上/なしは対象外 (allowedAreas で禁止済み)。フォールバック "left" は理論上の
+# 防御 — dockWidgetArea() はフロート中/非表示中も実領域を返し NoDockWidgetArea
+# を返さないことをレビューで実測済みのため、通常到達しない。
+_DOCK_EDGE_SUFFIX: dict[Qt.DockWidgetArea, str] = {
+    Qt.DockWidgetArea.LeftDockWidgetArea: "left",
+    Qt.DockWidgetArea.RightDockWidgetArea: "right",
+    Qt.DockWidgetArea.BottomDockWidgetArea: "bottom",
+}
+
+
+def _dock_toggle_state(
+    is_hidden: bool, collapsed: bool, edge: Qt.DockWidgetArea
+) -> tuple[bool, str]:
+    """(可視/畳み/辺) → (checked, icon 意味名) の全域写像 (spec §2.3 の状態表)。
+
+    Qt ウィジェットに触れない純ロジック — `_sync_dock_action` から呼ばれる。
+    畳み (collapsed) は is_hidden の値に関係なく最優先 (レールタブが可視の
+    代理表現) で checked=True・partial アイコン。畳みでなく可視 (not
+    is_hidden) なら checked=True・通常アイコン。どちらでもなければ非表示
+    (checked=False・アイコンは通常形のまま — unchecked の見た目で非表示を
+    表現する)。並行状態を作らない設計 (spec §2.3) の直接反映として、この
+    3 分岐が唯一の真実。
+    """
+    base = f"dock_panel_{_DOCK_EDGE_SUFFIX.get(edge, 'left')}"
+    if collapsed:
+        return True, f"{base}_partial"
+    if not is_hidden:
+        return True, base
+    return False, base
+
 
 class MainWindow(QMainWindow):
     """Application shell: dockable Channel_Browser + Graph_Area, wired together.
@@ -93,6 +125,14 @@ class MainWindow(QMainWindow):
         Channel_Browser and Graph_Area ViewModels so loaded data is visible
         everywhere.
     """
+
+    # spec §2.3: View メニュー/ツールバー 2 面が共有するカスタム QAction の文言
+    # (非ニーモニクス — G-46 決定どおり dock トグルは付与対象外)。
+    _DOCK_TITLES: ClassVar[dict[str, str]] = {
+        "file_dock": S.DOCK_FILE_BROWSER,
+        "channel_dock": S.DOCK_CHANNEL_BROWSER,
+        "diagnostics_dock": S.DOCK_DIAGNOSTICS,
+    }
 
     def __init__(self, app_vm: AppViewModel) -> None:
         super().__init__()
@@ -234,15 +274,23 @@ class MainWindow(QMainWindow):
             dock.setTitleBarWidget(bar)
             bar.collapse_requested.connect(lambda d=dock: self._collapse_dock(d))
             self._collapsible_bars[dock.objectName()] = bar
-            # 集約状態機械 (_expand_dock) を経由しない外部 show() (View メニュー/
-            # ツールバーの toggleViewAction・_on_load_error の直接 show() 等) が
-            # 畳み状態を孤立させないよう、可視化を単一箇所で自己修復する
-            # (レビュー Important 1)。_restore_state() より前に接続すること —
-            # このループ時点では _collapsed_docks は空なので起動時の
-            # restoreState 由来の可視化変化は no-op。
+            # 集約状態機械 (_expand_dock) を経由しない外部 show() (D-3 の三態
+            # カスタム QAction は collapsed 分岐で自ら _expand_dock を呼ぶため
+            # 対象外だが、_on_load_error の直接 show() や QDockWidget 組込み
+            # toggleViewAction() 等、経由しない経路は依然存在する) が畳み状態を
+            # 孤立させないよう、可視化を単一箇所で自己修復する (レビュー
+            # Important 1)。_restore_state() より前に接続すること — このループ
+            # 時点では _collapsed_docks は空なので起動時の restoreState 由来の
+            # 可視化変化は no-op。
             dock.visibilityChanged.connect(
                 lambda visible, d=dock: self._on_dock_visibility_changed(d, visible)
             )
+
+        # D-3/UX-45: ドックごとに 1 個のカスタム checkable QAction (三態トグル)
+        # を View メニュー/ツールバー 2 面共有で構築する。_restore_state() より
+        # 前に呼ぶこと (直上の visibilityChanged 接続と同じ制約 — restoreState は
+        # visibilityChanged をフラッピング発火し最終状態で収束させる必要がある)。
+        self._build_dock_actions()
 
         self._update_central()
 
@@ -277,10 +325,12 @@ class MainWindow(QMainWindow):
         self.action_exit.triggered.connect(self.close)
 
         # ── View menu (dock toggles, R1.4) ───────────────────────────────────
+        # D-3/UX-45: toggleViewAction ではなく _build_dock_actions が構築した
+        # 三態カスタム QAction を掲載する (ツールバーと共有 — 2 面参照一致)。
         view_menu = self.menuBar().addMenu(S.MENU_VIEW)
-        view_menu.addAction(self.file_dock.toggleViewAction())
-        view_menu.addAction(self.channel_dock.toggleViewAction())
-        view_menu.addAction(self.diagnostics_dock.toggleViewAction())
+        view_menu.addAction(self._dock_actions["file_dock"])
+        view_menu.addAction(self._dock_actions["channel_dock"])
+        view_menu.addAction(self._dock_actions["diagnostics_dock"])
         view_menu.addSeparator()
 
         # 増分4: テーマ三態 (再起動反映 — 選択は QSettings 保存のみ・spec §11)。
@@ -342,9 +392,17 @@ class MainWindow(QMainWindow):
         self.action_data_explorer.triggered.connect(self.open_data_explorer)
         toolbar.addAction(self.action_data_explorer)
         toolbar.addSeparator()
-        toolbar.addAction(self.file_dock.toggleViewAction())
-        toolbar.addAction(self.channel_dock.toggleViewAction())
-        toolbar.addAction(self.diagnostics_dock.toggleViewAction())
+        # D-3/UX-45: 三態カスタム QAction (View メニューと共有・同一 QAction
+        # インスタンス)。File/Channel は同一辺 (右) で三態アイコンが同一になり
+        # テキスト無しでは区別できない (実測済みの退行) ため、この 3 ボタンだけ
+        # ToolButtonTextBesideIcon にする (他のツールバーボタンは既定の icon-only
+        # のまま — spec §2.3)。
+        for dock_name in ("file_dock", "channel_dock", "diagnostics_dock"):
+            dock_action = self._dock_actions[dock_name]
+            toolbar.addAction(dock_action)
+            dock_button = toolbar.widgetForAction(dock_action)
+            assert isinstance(dock_button, QToolButton)
+            dock_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
 
         # ── Status bar: 左=計測即値 (A/B/Δt) / 右=メッセージ (spec §2.4・v3 決定2) ─
         self._build_status_bar()
@@ -379,6 +437,11 @@ class MainWindow(QMainWindow):
         # restoreState resets dock corner config to Qt defaults, so re-apply FU-10
         # after the startup restore (and after Reset Layout -- see _reset_layout).
         self._apply_dock_corners()
+        # D-3/UX-45: restoreState はフラッピング (一時的な visibilityChanged の
+        # 連打) を経て最終状態に収束するため、visibilityChanged 経由の sync だけ
+        # に頼らず、構築完了時点で全ドックへ無条件に再同期する (spec §2.3)。
+        for _dock in self._collapsible_bars_docks():
+            self._sync_dock_action(_dock)
         # UX-21 応急: 初期ドック比率 File:Channel≈1:4 (spec §1.5-12)。ここではまだ
         # 未表示 (pre-show) — dock extent が未確定で resizeDocks が no-op になる
         # 罠を踏むため、実際の適用は showEvent 後まで遅延する。
@@ -864,6 +927,9 @@ class MainWindow(QMainWindow):
         rail.add_tab(dock, title, self._dock_rail_order.get(name, 0))
         self._collapsed_docks.add(name)
         self._save_dock_collapsed()
+        # D-3/UX-45: _collapsed_docks 変異後 (関数末尾) に呼ぶ — 変異前だと三態
+        # トグル QAction が stale な (畳み前の) 状態を読んでしまう (spec §2.3)。
+        self._sync_dock_action(dock)
 
     def _expand_dock(self, dock: QDockWidget) -> None:
         from valisync.gui.views.dock_collapse_rail import RailKind, rail_kind_for_area
@@ -888,21 +954,103 @@ class MainWindow(QMainWindow):
             self.resizeDocks([dock], [extent], orient)
         self._collapsed_docks.discard(name)
         self._save_dock_collapsed()
+        # D-3/UX-45: _collapsed_docks 変異後 (関数末尾) に呼ぶ — 理由は
+        # _collapse_dock 末尾と同型 (spec §2.3)。
+        self._sync_dock_action(dock)
 
     def _on_dock_visibility_changed(self, dock: QDockWidget, visible: bool) -> None:
         """畳み状態機械を経由しない外部 show() を自己修復する (レビュー Important 1)。
 
-        View メニュー/ツールバーの toggleViewAction、_on_load_error の
-        diagnostics_dock.show() など、_expand_dock を呼ばない経路で畳み済み
-        ドックが可視化された場合、レールタブ除去・_collapsed_docks 除籍・
-        永続化を _expand_dock に委譲して行う。hide 方向 (visible=False) は
-        素通り — 畳み対象でないドックを閉じる操作は通常の hide のままでよく、
-        ここで「畳む」処理はしない (collapse は chevron からのみ)。
+        _on_load_error の diagnostics_dock.show() や QDockWidget 組込みの
+        toggleViewAction() など、_expand_dock を呼ばない経路で畳み済みドックが
+        可視化された場合、レールタブ除去・_collapsed_docks 除籍・永続化を
+        _expand_dock に委譲して行う。hide 方向 (visible=False) は素通り —
+        畳み対象でないドックを閉じる操作は通常の hide のままでよく、ここで
+        「畳む」処理はしない (collapse は chevron からのみ)。
         """
         if self._suppress_dock_reconcile:
             return  # _collapse_dock/_expand_dock 自身の hide()/show() 由来 (再入防止)
         if visible and dock.objectName() in self._collapsed_docks:
             self._expand_dock(dock)
+
+    # ─── ドックトグルの三態化 (D-3 Task2/UX-45) ─────────────────────────────────
+
+    def _build_dock_actions(self) -> None:
+        """View メニュー/ツールバー 2 面が共有するカスタム checkable QAction を
+        ドックごとに 1 個構築する (toggleViewAction の置換・spec §2.3)。
+
+        呼び出し側 (`__init__`) は `_restore_state()` より前に呼ぶこと —
+        restoreState は visibilityChanged をフラッピング発火し最終状態で収束
+        させる必要があるため (このメソッド内の visibilityChanged 接続と同じ
+        制約)。handler は **triggered のみ**へ接続する (toggled 禁止 —
+        toggled はプログラム的 setChecked (`_sync_dock_action`) でも発火し、
+        handler とのあいだで無限振動する)。
+        """
+        self._dock_actions: dict[str, QAction] = {}
+        self._dock_action_icon_names: dict[str, str] = {}
+        for dock in self._collapsible_bars_docks():
+            name = dock.objectName()
+            action = QAction(self._DOCK_TITLES[name], self)
+            action.setCheckable(True)
+            action.triggered.connect(
+                lambda _checked=False, d=dock: self._on_dock_action_triggered(d)
+            )
+            self._dock_actions[name] = action
+            # トリガ: visibilityChanged/dockLocationChanged はいずれも引数を無視し
+            # 「再プローブの合図」としてのみ使う (spec §2.3) — シグナル引数
+            # (visible/area) は判定に使わない (tabify 背面/フロートで嘘値になる)。
+            dock.visibilityChanged.connect(
+                lambda _visible, d=dock: self._sync_dock_action(d)
+            )
+            dock.dockLocationChanged.connect(
+                lambda _area, d=dock: self._sync_dock_action(d)
+            )
+            self._sync_dock_action(dock)
+
+    def _sync_dock_action(self, dock: QDockWidget) -> None:
+        """可視/畳み/辺を再プローブし、対応 QAction の checked/icon を導出更新する
+        (spec §2.3)。並行状態を作らない — 呼ぶたびに Qt から実状態を読み直す
+        (`isHidden()` ポーリング・`dockWidgetArea()` 再プローブ)。handler は
+        triggered 接続のみ (toggled 禁止) なので、ここでの setChecked は
+        プログラム的変更として静かに反映され、handler との無限振動を起こさない。
+        """
+        name = dock.objectName()
+        action = self._dock_actions[name]
+        edge = self.dockWidgetArea(dock)
+        checked, icon_name = _dock_toggle_state(
+            dock.isHidden(), name in self._collapsed_docks, edge
+        )
+        action.setChecked(checked)
+        action.setIcon(icons.icon(icon_name))
+        self._dock_action_icon_names[name] = icon_name
+
+    def _on_dock_action_triggered(self, dock: QDockWidget) -> None:
+        """三態トグル QAction のクリック挙動 (spec §2.3)。
+
+        checkable QAction はクリックで checked が Qt により自動反転済みだが、
+        ここではその値を信用せず、クリック前の実状態 (再プローブ) から遷移を
+        決める: 非表示 → `show()` + `raise_()` (plain show() は tabify 背面を
+        前面化しない — 実測。既存 `_on_load_error` と同型)、展開 → `hide()`、
+        レール → `_expand_dock()`。最後に `_sync_dock_action` で確定状態へ
+        上書きする。
+        """
+        name = dock.objectName()
+        if name in self._collapsed_docks:
+            self._expand_dock(dock)  # 末尾で _sync_dock_action 済み
+        elif dock.isHidden():
+            dock.show()
+            dock.raise_()
+        else:
+            dock.hide()
+        self._sync_dock_action(dock)
+
+    def dock_action_icon_name(self, name: str) -> str:
+        """objectName から現在のドックトグル QAction に設定済みのアイコン意味名を
+        返す (introspection — QIcon はキャッシュキー恒等比較が信頼できないため
+        保持名で検証する。CollapsibleDockTitleBar.chevron_icon_name と同型の
+        B4 パターン・テスト用)。
+        """
+        return self._dock_action_icon_names[name]
 
     def _apply_dock_corners(self) -> None:
         """FU-10: give the bottom-right corner to the Right area so the File/Channel
@@ -924,6 +1072,11 @@ class MainWindow(QMainWindow):
         # applied (it's saved at the top of __init__), so without this the
         # startup ratio and Reset Layout would silently diverge.
         self._apply_default_dock_ratio()
+        # D-3/UX-45: restoreState 由来のフラッピングだけに頼らず、構築完了時と
+        # 同様に無条件で再同期する (spec §2.3 — Reset Layout 後は 3 action とも
+        # 展開/checked へ復帰することが受け入れ基準)。
+        for dock in self._collapsible_bars_docks():
+            self._sync_dock_action(dock)
 
     def _on_theme_selected(self, mode: ThemeMode) -> None:
         """テーマ radio 選択 — 保存のみ。set_active/apply_theme は呼ばない (再起動反映)。"""

@@ -17,6 +17,17 @@
 | lucide/chevron-right.svg | Lucide v1.24.0 | ISC |
 | lucide/chevron-left.svg | Lucide v1.24.0 | ISC |
 | lucide/chevron-up.svg | Lucide v1.24.0 | ISC |
+| lucide/circle-x.svg | Lucide v1.24.0 | ISC |
+| lucide/triangle-alert.svg | Lucide v1.24.0 | ISC |
+| lucide/info.svg | Lucide v1.24.0 | ISC |
+| lucide/x.svg | Lucide v1.24.0 | ISC |
+| lucide/copy.svg | Lucide v1.24.0 | ISC |
+| lucide/panel-left.svg | Lucide v1.24.0 | ISC |
+| lucide/panel-left-close.svg | Lucide v1.24.0 | ISC |
+| lucide/panel-right.svg | Lucide v1.24.0 | ISC |
+| lucide/panel-right-close.svg | Lucide v1.24.0 | ISC |
+| lucide/panel-bottom.svg | Lucide v1.24.0 | ISC |
+| lucide/panel-bottom-close.svg | Lucide v1.24.0 | ISC |
 
 Tabler Icons (MIT) から補完追加する場合は `tabler/` サブディレクトリに置き、
 本表と下記ライセンス全文に MIT を追記すること。

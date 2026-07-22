@@ -192,4 +192,10 @@ def test_real_click_clear_opens_dialog_and_confirm_empties(
     assert view.row_count() == 0
     assert vm.entries() == []
     assert view._stack.currentWidget() is view._placeholder
-    assert view._counts_label.text() == "⛔ 0 / ⚠ 0 / ℹ 0"
+    # D-3: counts are now an icon+number HBox per level (view._count_value_labels),
+    # not a single emoji-glyph label.
+    assert {lvl: lbl.text() for lvl, lbl in view._count_value_labels.items()} == {
+        "error": "0",
+        "warning": "0",
+        "info": "0",
+    }

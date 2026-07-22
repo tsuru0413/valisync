@@ -84,9 +84,15 @@ def test_placeholder_returns_when_cleared_back_to_empty(qtbot):
     assert view._stack.currentWidget() is view._placeholder
 
 
+def _counts(view):
+    """(level -> displayed number) — D-3: counts are now an icon+number HBox
+    per level (``view._count_value_labels``), not a single emoji-glyph label."""
+    return {level: label.text() for level, label in view._count_value_labels.items()}
+
+
 def test_counts_chip_tracks_vm_counts_on_add_and_clear(qtbot):
     vm, view = _mk_no_confirm(qtbot)
-    assert view._counts_label.text() == "⛔ 0 / ⚠ 0 / ℹ 0"
+    assert _counts(view) == {"error": "0", "warning": "0", "info": "0"}
 
     vm.add(
         "a",
@@ -96,10 +102,10 @@ def test_counts_chip_tracks_vm_counts_on_add_and_clear(qtbot):
             Diagnostic(level="info", message="i"),
         ],
     )
-    assert view._counts_label.text() == "⛔ 1 / ⚠ 1 / ℹ 1"
+    assert _counts(view) == {"error": "1", "warning": "1", "info": "1"}
 
     view.clear_diagnostics()
-    assert view._counts_label.text() == "⛔ 0 / ⚠ 0 / ℹ 0"
+    assert _counts(view) == {"error": "0", "warning": "0", "info": "0"}
 
 
 def test_order_column_shows_seq_for_each_row(qtbot):
@@ -112,6 +118,85 @@ def test_order_column_shows_seq_for_each_row(qtbot):
     # Display is 1-based (E-2/UX-55); the underlying seq index is unchanged.
     assert view._table.item(0, 1).text() == "1"
     assert view._table.item(1, 1).text() == "2"
+
+
+# ---------------------------------------------------------------------------
+# D-3 §2.4: level column is a Lucide icon (setIcon), not an emoji glyph
+# (text stays empty for known levels; unknown level keeps the "?" fallback).
+# ---------------------------------------------------------------------------
+
+
+def _has_pixel_near(image, expected_rgb, tol=40):
+    for y in range(image.height()):
+        for x in range(image.width()):
+            px = image.pixelColor(x, y)
+            if px.alpha() > 200 and (
+                abs(px.red() - expected_rgb[0]) < tol
+                and abs(px.green() - expected_rgb[1]) < tol
+                and abs(px.blue() - expected_rgb[2]) < tol
+            ):
+                return True
+    return False
+
+
+def test_known_levels_show_icon_with_empty_text(qtbot):
+    vm, view = _mk(qtbot)
+    vm.add(
+        "a",
+        [
+            Diagnostic(level="error", message="e"),
+            Diagnostic(level="warning", message="w"),
+            Diagnostic(level="info", message="i"),
+        ],
+    )
+    for row in range(3):
+        item = view._table.item(row, 0)
+        assert item.text() == ""
+        assert not item.icon().isNull()
+
+
+def test_unknown_level_falls_back_to_question_mark_without_icon(qtbot):
+    """DiagnosticEntry.level is an unconstrained str (unlike Diagnostic, which
+    validates in __post_init__) — a direct VM-internal construction can still
+    reach an unknown level, so the "?" fallback (no icon) must be preserved."""
+    from valisync.gui.viewmodels.diagnostics_vm import DiagnosticEntry
+
+    vm, view = _mk(qtbot)
+    vm._entries.append(
+        DiagnosticEntry(
+            level="unknown", message="m", source="a", signal_name=None, seq=0
+        )
+    )
+    vm._notify("diagnostics")
+    item = view._table.item(0, 0)
+    assert item.text() == "?"
+    assert item.icon().isNull()
+
+
+def test_level_icon_uses_selected_mode_color_on_selected_row(qtbot):
+    """Selected セル上でも診断アイコンが視認できる (Normal 色が選択ハイライトへ
+    埋没する実測退行の根治 — selected_color=chrome_highlight_text 併載)。"""
+    from PySide6.QtGui import QIcon
+
+    from valisync.gui.theme.tokens import active
+
+    vm, view = _mk(qtbot)
+    vm.add("a", [Diagnostic(level="error", message="e")])
+    item = view._table.item(0, 0)
+    c = active().colors
+
+    normal_img = item.icon().pixmap(16, 16, QIcon.Mode.Normal).toImage()
+    selected_img = item.icon().pixmap(16, 16, QIcon.Mode.Selected).toImage()
+    highlight_rgb = (
+        c.chrome_highlight_text.r,
+        c.chrome_highlight_text.g,
+        c.chrome_highlight_text.b,
+    )
+    assert _has_pixel_near(normal_img, (c.error.r, c.error.g, c.error.b))
+    assert _has_pixel_near(selected_img, highlight_rgb)
+    # Normal must not already be painted in the Selected color (would make the
+    # two modes indistinguishable and hide a mis-wired selected_color).
+    assert not _has_pixel_near(normal_img, highlight_rgb, tol=20)
 
 
 def test_message_column_stretches_other_columns_resize_to_contents(qtbot):

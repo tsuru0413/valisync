@@ -128,7 +128,9 @@ def test_docks_stay_onscreen_with_long_recent_after_real_diagnostics_toggle(
     assert mw.diagnostics_dock.isVisible()  # トグル対象の初期状態
 
     toolbar = mw.findChild(QToolBar, "main_toolbar")
-    btn = toolbar.widgetForAction(mw.diagnostics_dock.toggleViewAction())
+    # D-3/UX-45: toggleViewAction は掲載されなくなった (三態カスタム QAction へ
+    # 置換 — docs/superpowers/specs/2026-07-22-d3-tristate-icons-design.md §2.3)。
+    btn = toolbar.widgetForAction(mw._dock_actions["diagnostics_dock"])
     assert isinstance(btn, QToolButton)
     qtbot.waitUntil(lambda: btn.isVisible() and btn.width() > 0, timeout=3000)
 
