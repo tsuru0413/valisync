@@ -37,9 +37,18 @@ from PySide6.QtWidgets import (
 )
 
 from valisync.gui import strings as S
+from valisync.gui.theme import icons, tokens
 from valisync.gui.viewmodels.diagnostics_vm import DiagnosticsViewModel
 
-_LEVEL_ICON = {"error": "⛔", "warning": "⚠", "info": "ℹ"}  # noqa: RUF001
+# D-3 §2.4: レベル列は絵文字グリフでなく Lucide アイコン (診断3種の意味色) を
+# setIcon で描く (テキストは空)。unknown level は現行どおり "?" テキスト存置
+# (アイコンなし) — DiagnosticEntry.level は Diagnostic の post_init 検証を経ない
+# 直構築 (テスト等) を通せば理論上到達しうるため、防御として残す。
+_LEVEL_ICON_NAME = {
+    "error": "diag_error",
+    "warning": "diag_warning",
+    "info": "diag_info",
+}
 # spec §4.4 column order: レベルアイコン / 時刻 / ソース / メッセージ / 対象.
 # "時刻" is satisfied by DiagnosticEntry.seq (spec §4.3: wall-clock time OR
 # receipt-order sequence number is acceptable) — header kept terse ("#").
@@ -90,8 +99,26 @@ class DiagnosticsView(QDockWidget):
         for b in (self._btn_all, self._btn_err, self._btn_warn, self._btn_clear):
             bar.addWidget(b)
         bar.addStretch(1)
-        self._counts_label = QLabel()
-        bar.addWidget(self._counts_label)
+        # D-3 §2.4: カウンタは単一テキストラベル (絵文字グリフ) ではなく、レベル
+        # ごとのアイコン (16px pixmap) + 数値ラベルの3ペア HBox。更新は _rebuild
+        # が数値ラベルへ setText するだけ (アイコンは着色済みで静的)。
+        c = tokens.active().colors
+        counts_row = QHBoxLayout()
+        counts_row.setSpacing(4)
+        self._count_value_labels: dict[str, QLabel] = {}
+        for level, icon_name, color in (
+            ("error", "diag_error", c.error),
+            ("warning", "diag_warning", c.warning),
+            ("info", "diag_info", c.info),
+        ):
+            icon_label = QLabel()
+            icon_label.setPixmap(icons.icon(icon_name, color=color).pixmap(16, 16))
+            value_label = QLabel("0")
+            self._count_value_labels[level] = value_label
+            counts_row.addWidget(icon_label)
+            counts_row.addWidget(value_label)
+            counts_row.addSpacing(6)
+        bar.addLayout(counts_row)
         outer.addLayout(bar)
 
         self._table = QTableWidget(0, len(_HEADERS), container)
@@ -181,21 +208,39 @@ class DiagnosticsView(QDockWidget):
     def _rebuild(self) -> None:
         entries = self._vm.entries(self._filter)
         self._table.setRowCount(len(entries))
+        c = tokens.active().colors
+        level_colors = {"error": c.error, "warning": c.warning, "info": c.info}
         for r, e in enumerate(entries):
+            # D-3 §2.4: レベル列は Lucide アイコン (テキスト空)。selected_color
+            # 併載で選択セル上でも視認できる (Normal 色は選択ハイライトへ埋没する
+            # 実測退行の根治)。unknown level は現行どおり "?" テキスト存置。
+            level_item = QTableWidgetItem()
+            icon_name = _LEVEL_ICON_NAME.get(e.level)
+            if icon_name is not None:
+                level_item.setIcon(
+                    icons.icon(
+                        icon_name,
+                        color=level_colors[e.level],
+                        selected_color=c.chrome_highlight_text,
+                    )
+                )
+            else:
+                level_item.setText("?")
+            self._table.setItem(r, 0, level_item)
+
             cells = (
-                _LEVEL_ICON.get(e.level, "?"),
                 str(e.seq + 1),  # E-2/UX-55: display is 1-based; index unchanged
                 e.source,
                 e.message,
                 e.signal_name or "—",
             )
-            for c, text in enumerate(cells):
+            for offset, text in enumerate(cells, start=1):
                 item = QTableWidgetItem(text)
-                if c == _MESSAGE_COLUMN:
+                if offset == _MESSAGE_COLUMN:
                     # B3: Stretch can still clip a long message — hover shows
                     # the full text regardless of column width.
                     item.setToolTip(e.message)
-                self._table.setItem(r, c, item)
+                self._table.setItem(r, offset, item)
 
         if entries:
             self._stack.setCurrentWidget(self._table)
@@ -219,9 +264,9 @@ class DiagnosticsView(QDockWidget):
             self._stack.setCurrentWidget(self._placeholder)
 
         errors, warnings, infos = self._vm.counts()
-        # plain ASCII slash keeps ruff's ambiguous-unicode check (RUF001/003)
-        # clean; the fullwidth variant reads identically here.
-        self._counts_label.setText(f"⛔ {errors} / ⚠ {warnings} / ℹ {infos}")  # noqa: RUF001
+        self._count_value_labels["error"].setText(str(errors))
+        self._count_value_labels["warning"].setText(str(warnings))
+        self._count_value_labels["info"].setText(str(infos))
 
     def _on_double_click(self, row: int, _col: int) -> None:
         entries = self._vm.entries(self._filter)

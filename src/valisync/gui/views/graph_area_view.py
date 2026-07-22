@@ -25,7 +25,7 @@ import contextlib
 import weakref
 from collections.abc import Callable
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, Signal
 from PySide6.QtGui import (
     QDragEnterEvent,
     QDragLeaveEvent,
@@ -51,7 +51,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from valisync.gui.theme import qss
+from valisync.gui.theme import icons, qss, tokens
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 from valisync.gui.views.analysis_actions import _INTERP_LABELS, AnalysisActions
@@ -175,8 +175,12 @@ class GraphAreaView(QWidget):
         self._new_tab_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self._new_tab_shortcut.activated.connect(lambda: self.add_tab())
 
-        # SH-04: タブを閉じる。最後の1枚の抑制は _rebuild で per-tab に行う。
-        self.tabs.setTabsClosable(True)
+        # SH-04/D-3 §2.5: タブを閉じる。既定ボタンではなく完全自前 QToolButton
+        # (setTabsClosable(False)) — 既定ボタンを setTabButton で事後に None
+        # 差し替えて抑制すると、置換前の widget が「setTabButton は置換しても
+        # 削除しない」という実測仕様により隠れ蓄積する実バグだったため、既定
+        # ボタン生成自体を止める。実際の設置/最後の1枚の抑制は _rebuild が担う。
+        self.tabs.setTabsClosable(False)
         self.tabs.tabCloseRequested.connect(self.remove_tab)
 
         # SH-13: ダブルクリックでタブ改名。
@@ -303,13 +307,20 @@ class GraphAreaView(QWidget):
         try:
             # QTabWidget.clear() detaches pages without destroying them, leaking
             # a QSplitter (and its panel widgets) on every rebuild.  Dispose the
-            # old pages explicitly.
+            # old pages explicitly. The same detach-without-destroy applies to
+            # the per-tab close buttons attached via setTabButton (D-3 §2.5) —
+            # capture before clear() (indices are still valid) and dispose the
+            # same way after, mirroring old_pages.
             old_pages = [self.tabs.widget(i) for i in range(self.tabs.count())]
+            old_close_buttons = self._collect_tab_close_buttons()
             self.tabs.clear()
             for page in old_pages:
                 if page is not None:
                     page.setParent(None)
                     page.deleteLater()
+            for btn in old_close_buttons:
+                btn.setParent(None)
+                btn.deleteLater()
             self._panel_views.clear()
             for tab_index, tab in enumerate(self.vm.tabs()):
                 splitter = QSplitter(Qt.Orientation.Vertical)
@@ -323,21 +334,75 @@ class GraphAreaView(QWidget):
                         self._panel_views.append((tab_index, panel_index, widget))
                     splitter.addWidget(widget)
                 self.tabs.addTab(splitter, tab.name)
-            # SH-04: 最後の1枚は閉じさせない (remove_tab も ValueError を握るが、
-            # ボタン自体を消して操作不能を明示)。close ボタン位置はスタイル依存。
-            if self.tabs.count() == 1:
+            # SH-04/D-3 §2.5: 最後の1枚は close ボタン自体を設置しない (自前
+            # ボタンなので旧 setTabButton(0,pos,None) による事後抑制は不要 —
+            # そもそも作らない)。それ以外は全タブへ自前✕を設置する。
+            if self.tabs.count() > 1:
                 bar = self.tabs.tabBar()
-                pos = QTabBar.ButtonPosition(
-                    bar.style().styleHint(
-                        QStyle.StyleHint.SH_TabBar_CloseButtonPosition, None, bar
-                    )
-                )
-                bar.setTabButton(0, pos, None)
+                pos = self._tab_close_button_position(bar)
+                for i in range(self.tabs.count()):
+                    bar.setTabButton(i, pos, self._make_tab_close_button())
             self.tabs.setCurrentIndex(self.vm.active_tab_index)
         finally:
             self._syncing = False
         self._sync_active_frames()
         self._sync_readout()
+
+    @staticmethod
+    def _tab_close_button_position(bar: QTabBar) -> QTabBar.ButtonPosition:
+        """style-hint 解決位置 (実測 RightSide・D-3 §2.5)。"""
+        return QTabBar.ButtonPosition(
+            bar.style().styleHint(
+                QStyle.StyleHint.SH_TabBar_CloseButtonPosition, None, bar
+            )
+        )
+
+    def _collect_tab_close_buttons(self) -> list[QToolButton]:
+        """現在タブバーに設置済みの自前✕ボタン一覧 (_rebuild の破棄用捕捉)。"""
+        bar = self.tabs.tabBar()
+        pos = self._tab_close_button_position(bar)
+        buttons: list[QToolButton] = []
+        for i in range(bar.count()):
+            btn = bar.tabButton(i, pos)
+            if isinstance(btn, QToolButton):
+                buttons.append(btn)
+        return buttons
+
+    def _make_tab_close_button(self) -> QToolButton:
+        """タブ✕ (D-3 §2.5): ニュートラル既定・hover のみ close_hover の赤。
+
+        QSS はピクスマップ色を変えられない (実測) ので、hover 赤は
+        QIcon.Mode.Active で実現する — autoRaise QToolButton の hover は Active
+        モードで描画される。hover 色は close_hover トークンを消費する (readout
+        ✕ hover と同一役割 — error 直消費は LIGHT で別の赤になり増分0 の役割
+        写像に違反する)。
+        """
+        btn = QToolButton()
+        btn.setObjectName("tab_close_button")
+        btn.setAutoRaise(True)
+        btn.setIconSize(QSize(16, 16))
+        btn.setMinimumHeight(24)  # UX-38 残余: 24px 相当の当たり判定。
+        btn.setToolTip("タブを閉じる")
+        c = tokens.active().colors
+        btn.setIcon(
+            icons.icon("close", color=c.chrome_text, active_color=c.close_hover)
+        )
+        btn.clicked.connect(lambda: self._on_tab_close_button_clicked(btn))
+        return btn
+
+    def _on_tab_close_button_clicked(self, btn: QToolButton) -> None:
+        """クリック時に tabBar 上の恒等走査で index を解決する (D-3 §2.5)。
+
+        既定ボタンと違い自前ボタンは ``tabCloseRequested`` を自動発火しない
+        (実測) — かつ、先行する別タブの close でインデックスがずれるため、
+        生成時に index を事前 capture してはならない (恒等走査で毎回解決)。
+        """
+        bar = self.tabs.tabBar()
+        pos = self._tab_close_button_position(bar)
+        for i in range(bar.count()):
+            if bar.tabButton(i, pos) is btn:
+                self.tabs.tabCloseRequested.emit(i)
+                return
 
     def _sync_active_frames(self) -> None:
         """Re-apply the active-panel frame from VM state (rebuild 後と "active_panel")。

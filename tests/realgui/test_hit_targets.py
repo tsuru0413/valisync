@@ -259,6 +259,43 @@ def test_add_panel_button_extended_hit_adds_panel(qtbot: QtBot, tmp_path: Path) 
     )
 
 
+def test_tab_close_button_extended_hit_removes_tab(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """タブ✕ (D-3 §2.5・UX-38 残余の解消) の拡張ヒット点実クリックで、そのタブ
+    が閉じる。setTabsClosable(False)+自前 QToolButton (既定ボタンではない) の
+    実クリック経路そのものを実機で検証する — 2 タブ以上でのみボタンが設置され
+    る (単一タブは非表示規則)。
+    """
+    from PySide6.QtWidgets import QStyle, QTabBar, QToolButton
+
+    skip_unless_real_display()
+
+    mw = _shown_mw_with_signal(qtbot)
+    gav = mw.graph_area_view
+    gav.add_tab()  # 2 タブ = 自前✕ボタンが設置される
+    qtbot.waitUntil(lambda: gav.tabs.count() == 2, timeout=3000)
+
+    bar = gav.tabs.tabBar()
+    pos = QTabBar.ButtonPosition(
+        bar.style().styleHint(QStyle.StyleHint.SH_TabBar_CloseButtonPosition, None, bar)
+    )
+    btn = bar.tabButton(0, pos)
+    assert isinstance(btn, QToolButton), "自前✕ボタンが設置されていない"
+    _wait_visible(qtbot, btn)
+
+    px, py, new_h, old_h, ly = _extended_hit_point_phys(btn)
+    print(
+        f"[hit-target tab_close] new_h={new_h} old_h={old_h} local_y={ly} "
+        f"phys=({px},{py})"
+    )
+    _real_click(px, py)
+    qtbot.waitUntil(lambda: gav.tabs.count() == 1, timeout=3000)
+
+    shot = _grab(tmp_path, "hit_tab_close.png")
+    assert gav.tabs.count() == 1, f"拡張ヒット点クリックでタブが閉じない。shot={shot}"
+
+
 def test_remove_panel_button_extended_hit_removes_panel(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
