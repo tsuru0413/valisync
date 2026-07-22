@@ -46,24 +46,27 @@ def test_menu_titles_have_mnemonics(qtbot: QtBot, tmp_path: Path) -> None:
 
 
 def test_toolbar_has_dock_toggles(qtbot: QtBot, tmp_path: Path) -> None:
+    """D-3/UX-45: toggleViewAction ではなく三態カスタム QAction (_dock_actions)
+    がツールバーに掲載される (docs/superpowers/specs/2026-07-22-d3-tristate-
+    icons-design.md §2.3 — toggleViewAction はどの面にも掲載しない)。"""
     from PySide6.QtWidgets import QToolBar
 
     mw = _mw(qtbot, tmp_path)
     toolbar = mw.findChild(QToolBar, "main_toolbar")
     assert toolbar is not None
     toolbar_actions = toolbar.actions()
-    assert mw.file_dock.toggleViewAction() in toolbar_actions
-    assert mw.channel_dock.toggleViewAction() in toolbar_actions
-    assert mw.diagnostics_dock.toggleViewAction() in toolbar_actions
+    assert mw._dock_actions["file_dock"] in toolbar_actions
+    assert mw._dock_actions["channel_dock"] in toolbar_actions
+    assert mw._dock_actions["diagnostics_dock"] in toolbar_actions
 
 
 def test_toolbar_toggle_hides_dock(qtbot: QtBot, tmp_path: Path) -> None:
     mw = _mw(qtbot, tmp_path)
     mw.show()
     qtbot.waitExposed(mw)
-    toggle = mw.file_dock.toggleViewAction()
+    toggle = mw._dock_actions["file_dock"]  # ツールバーボタンと同一 action
     assert mw.file_dock.isVisible()
-    toggle.trigger()  # ツールバーボタンと同一 action
+    toggle.trigger()
     assert not mw.file_dock.isVisible()
 
 
