@@ -36,6 +36,21 @@ def _close_button_position(bar):  # type: ignore[no-untyped-def]
     )
 
 
+def _has_pixel_near(image, expected_rgb, tol=40):  # type: ignore[no-untyped-def]
+    """test_diagnostics_view.py/test_theme_icons.py と同型のピクセル走査ヘルパ
+    (このファイルは自己完結の慣行に合わせローカル複製)。"""
+    for y in range(image.height()):
+        for x in range(image.width()):
+            px = image.pixelColor(x, y)
+            if px.alpha() > 200 and (
+                abs(px.red() - expected_rgb[0]) < tol
+                and abs(px.green() - expected_rgb[1]) < tol
+                and abs(px.blue() - expected_rgb[2]) < tol
+            ):
+                return True
+    return False
+
+
 def test_corner_new_tab_button_adds_tab(qtbot: QtBot) -> None:
     # 計測 IA 刷新 spec §2.3: corner widget は「+」単体ではなく読み値トグルとの
     # 横並びコンテナ。cornerWidget() 自体の objectName ではなく子ボタンを探す。
@@ -97,6 +112,45 @@ def test_close_button_reappears_above_one_tab(qtbot: QtBot) -> None:
     btn = bar.tabButton(0, pos)
     assert isinstance(btn, QToolButton)
     assert btn.objectName() == "tab_close_button"
+
+
+def test_tab_close_button_active_mode_consumes_close_hover_not_error(
+    qtbot: QtBot,
+) -> None:
+    """タブ✕の hover (QIcon.Mode.Active) は close_hover トークンを消費する
+    (D-3 §2.5・`_make_tab_close_button` の `active_color=c.close_hover`)。
+
+    DARK では close_hover と error が同値 (#f38ba8) の三つ組であるため、値ベース
+    の assert は `active_color=c.error` への誤配線を検出できない (LIGHT では
+    close_hover=#d20f39 と error=#c0392b が分岐し実害になる — test_theme_qss.py
+    の既存パターンと同型の盲点)。close_hover だけを識別可能な値へ分岐させた
+    テーマを注入し、ボタンの Active ピクセルが分岐値へ追随し、error の元値
+    (未分岐のまま #f38ba8) でないことを直接実証する。
+    """
+    import dataclasses
+
+    from PySide6.QtGui import QIcon
+
+    from valisync.gui.theme.tokens import DARK, Color, set_active
+
+    alt = dataclasses.replace(
+        DARK, colors=dataclasses.replace(DARK.colors, close_hover=Color(1, 2, 3))
+    )
+    set_active(alt)
+    try:
+        view = _make_area(qtbot)
+        view.add_tab()  # 2 タブ = 自前✕ボタン設置
+        bar = view.tabs.tabBar()
+        pos = _close_button_position(bar)
+        btn = bar.tabButton(0, pos)
+        assert isinstance(btn, QToolButton)
+        img = btn.icon().pixmap(16, 16, QIcon.Mode.Active).toImage()
+        assert _has_pixel_near(img, (1, 2, 3))
+        assert not _has_pixel_near(
+            img, (DARK.colors.error.r, DARK.colors.error.g, DARK.colors.error.b)
+        )
+    finally:
+        set_active(DARK)
 
 
 def test_tab_close_button_click_resolves_current_index_after_earlier_removal(
