@@ -61,9 +61,11 @@
 - `QScrollArea`（`widgetResizable=True`・水平 `ScrollBarAlwaysOff`・垂直 `ScrollBarAsNeeded`・`NoFrame`）で rows_host を包み、outer VBox は「時刻ヘッダ（scroll 外・固定）＋ scroll」となる。
 - **列見出し行は行と共にスクロールする（意図的簡易形）** — カタログ UXG-17 修正方向の「列見出し固定」からの逸脱として解消マークに注記する。固定化は 2 グリッド分割＋列幅同期＋差分更新機構（`_layout_sig`/`_full_rebuild`/`_update_in_place`）の再設計を要し「現状のまま」方針に反する。
 
-**幅の契約保存（レビュー Critical/Important 群の根治）**: QScrollArea は sizeHint/minimumSizeHint の**幅も**内容非依存へ落とし（実測 418→120px 等）、(a) splitter でペインを内容幅未満に潰せるようになり水平 AlwaysOff で列が無言クリップ、(b) 凍結ベースライン 03_cursor/04_grid の divider 位置（readout ヒント駆動 — 実測 w=579）が変わる。これを防ぐため:
-- **`CursorReadout.sizeHint()`/`minimumSizeHint()` を override し、幅は「時刻ヘッダと rows_host の内容ヒント幅の max＋垂直スクロールバー予約幅」・高さのみ scroll による有界値**とする（QScrollArea 自身のヒントはキャッシュ汚染があるため使わない — rows_host のヒントを直接参照）。
-- 帰結: 「ペインは内容幅未満に縮まない」現行契約・splitter 初期配分・凍結 03/04 の divider 位置を**全て保存**し、縦だけが有界化（UXG-17 の本体）。水平クリップは構造的に不能のまま（UXG-18 の横スクロール導入はスコープ外を維持）。
+**幅の契約保存（レビュー Critical/Important 群の根治・クローズ検証で式を確定）**: QScrollArea は sizeHint/minimumSizeHint の**幅も**内容非依存へ落とし（実測 418→120px 等）、(a) splitter でペインを内容幅未満に潰せるようになり水平 AlwaysOff で列が無言クリップ、(b) 凍結ベースライン 03_cursor/04_grid の divider 位置（readout ヒント駆動 — 実測 w=579）が変わる。これを防ぐため:
+- **`CursorReadout.sizeHint()`/`minimumSizeHint()` を override**（QScrollArea 自身のヒントはキャッシュ汚染があるため使わない — rows_host/ヘッダのヒントを直接参照）:
+  - **幅**: outer レイアウトのマージン込みで「時刻ヘッダと rows_host の内容ヒント幅の max」から合成し、**非オーバーフロー時は現行実装（レイアウト由来）のヒント幅と同値**になること（受け入れ条件: 凍結 03/04 の divider ピクセル一致が機械検証する）。**垂直スクロールバー予約幅（PM_ScrollBarExtent）は縦オーバーフロー時のみ加算**（無条件加算は全状態の divider を +extent 動かし凍結と矛盾・無予約はオーバーフロー時に右端列が extent 分クリップ — 実測で両立不能と確定した設計判断）。
+  - **高さ**: `sizeHint` 高さは従来どおり内容ベース（rows_host＋ヘッダから合成）。**`minimumSizeHint` 高さのみ有界化 — 「outer マージン＋時刻ヘッダ高＋行 3 行分」の定数式**（ウィンドウ最小高へ伝搬する値 — UXG-17 の本体）。
+- 帰結: 「ペインは内容幅未満に縮まない」現行契約・splitter 初期配分・**非オーバーフロー時（凍結カタログ全状態）の divider 位置を保存**し、縦だけが有界化。**縦オーバーフロー時のみペインが extent 分（約 14px）広がる**のは意図的な新挙動（凍結対象外の状態・§3/§7 の例外として明記）で、水平クリップは常に 0（UXG-18 の横スクロール導入はスコープ外を維持）。
 
 **行クリックの座標整合（レビュー Critical の根治）**: `_row_at` は press 座標（self 空間）をラベル geometry（親空間）と比較する — rows_host 移設で座標系が割れ、**無スクロールでも 1 行ズレの誤行活性化**になる（実測）。`mousePressEvent` で **`pos = self._rows_host.mapFrom(self, pos)` へ写像してから `_row_at` に渡す**（mapFrom はスクロールオフセット込みで整合）。
 
@@ -74,7 +76,7 @@
 ## 3. 変更しないもの
 
 - 診断の列構成・ドック構造・既定レイアウト・Clear の配置・フィルタボタンの並び・アイコングリフ（⛔⚠ℹ — D-3 領域）。
-- 読み値ペインの列・書式・モード・**幅挙動**（内容幅駆動・内容幅未満に縮まない — §2.6 で明示保存）。UXG-18（幅キャップ＋横スクロール）はスコープ外のまま。
+- 読み値ペインの列・書式・モード・**幅挙動**（内容幅駆動・内容幅未満に縮まない — §2.6 で明示保存。**例外: 縦オーバーフロー時のみスクロールバー分〔約 14px〕広がる意図的新挙動**）。UXG-18（幅キャップ＋横スクロール）はスコープ外のまま。
 - D-2 で提案し不採用となった一切。
 
 ## 4. テスト戦略（/gui-test-plan 分析）
@@ -112,12 +114,13 @@
 
 単一ブランチ `feature/diag-readout-consistency`・PR 1 本・凍結/①ゲートは末尾 1 回（ただし増分3 は DoD にローカル realgui scoped run）。
 
-1. **診断ビュー**: B1（VM counts 3-tuple＋既存 5 assert）＋B2（checkable 排他・set_filter 同期・0 件文言・supersede コメント更新）＋B3（tooltip）＋B5（Clear 確認・DI・既存 4 サイト stub 追随）＋strings 追加。
+1. **診断ビュー**: B1（VM counts 3-tuple＋既存 5 assert）＋B2（checkable 排他・set_filter 同期・0 件文言・supersede コメント更新）＋B3（tooltip）＋B5（Clear 確認・DI・既存 4 サイト stub 追随・**新設 realgui〔実ダイアログ実クリック＋watchdog〕の作成とローカル scoped 実行**）＋strings 追加。
 2. **シェブロン辺解決**: B4（写像 None 契約・chevron_icon_name・dockLocationChanged 追随）＋Layer B。
-3. **読み値スクロール**: B6（rows_host＋QScrollArea・sizeHint override・mapFrom 写像・透過 2 点セット・placeholder 同居）＋Layer A（実イベント/幅契約/値分岐透過）＋realgui 3 本追随＋ローカル scoped realgui 実行。
+3. **読み値スクロール**: B6（rows_host＋QScrollArea・sizeHint override〔条件付き予約・minimumSizeHint 高さ=ヘッダ＋3 行分〕・mapFrom 写像・透過 2 点セット・placeholder 同居）＋Layer A（実イベント/幅契約〔非オーバーフロー時ヒント同値含む〕/値分岐透過）＋realgui 3 本追随＋**新設 realgui〔ウィンドウ縦縮小で診断ドック非圧潰＋スクロールバー出現 — UXG-17 受け入れの本体〕**＋ローカル scoped realgui 実行。
 4. **凍結・①ゲート・docs**: realgui フル・前後比較（§4 の想定差分照合）→昇格→DesignSync・design.md 決定履歴（D-2 不採用・feedback-errors spec §7 supersede・本 6 修正・UXG-17 列見出し逸脱）・カタログ解消マーク（UX-07/31/44・UXG-12/17 解消／**UX-06・UXG-27 は解消＋残項目の意図的不採用を注記**〔Clear 配置分離・Clear 後のステータス参照更新 — 「現状のまま」方針〕／UX-53 部分）。
 
 ## 7. 受け入れ基準
 
-- 誘導文とカウンタの照合が可能（ℹ）・フィルタ状態が常時可視かつ checked と実フィルタが常に一致・絞り込み 0 件と診断ゼロが区別可能・メッセージ全文が hover で読める・シェブロンが畳む方向を指す・Clear は確認付き・読み値 20 行超でもウィンドウ縦縮小可能かつ診断ドック非圧潰・**読み値の行クリックがスクロール前後とも正しい曲線をハイライト**・ペイン幅挙動は完全不変。
+- 誘導文とカウンタの照合が可能（ℹ）・フィルタ状態が常時可視かつ checked と実フィルタが常に一致・絞り込み 0 件と診断ゼロが区別可能・メッセージ全文が hover で読める・シェブロンが畳む方向を指す・Clear は確認付き・読み値 20 行超でもウィンドウ縦縮小可能かつ診断ドック非圧潰・**読み値の行クリックがスクロール前後とも正しい曲線をハイライト**。
+- ペイン幅挙動は非オーバーフロー時完全不変（凍結 03/04 divider 一致で機械検証）・縦オーバーフロー時の extent 分拡幅のみ意図的例外。
 - 品質ゲート全通過＋realgui フル pass＋凍結（想定差分照合＋viewport crop 一致＋値分岐透過テスト green）＋DesignSync 再同期。
