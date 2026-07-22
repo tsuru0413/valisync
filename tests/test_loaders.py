@@ -474,8 +474,7 @@ def test_value2text_channel_survives_as_raw(tmp_path: Path) -> None:
     turn = next(s for s in result.signal_group.signals if s.name == "TurnSig")
     assert np.array_equal(turn.values, [0.0, 1.0, 2.0, 1.0])
     assert not any(
-        "non-numeric" in d.message and "TurnSig" in d.message
-        for d in result.diagnostics
+        "非数値型" in d.message and "TurnSig" in d.message for d in result.diagnostics
     )
 
 
@@ -589,7 +588,7 @@ def test_2d_channel_explodes_into_columns(tmp_path: Path) -> None:
     infos = [d for d in result.diagnostics if d.level == "info" and "Mat" in d.message]
     assert len(infos) == 1 and "3 本に展開" in infos[0].message
     assert not any(
-        "skipped" in d.message and "Mat" in d.message for d in result.diagnostics
+        "スキップ" in d.message and "Mat" in d.message for d in result.diagnostics
     )
 
 
@@ -755,5 +754,19 @@ def test_loader_skips_non_numeric_channel_with_warning(tmp_path: Path) -> None:
     result = MdfLoader().load(path)
     assert result.signal_group.signals == ()
     assert any(
-        d.level == "warning" and "non-numeric" in d.message for d in result.diagnostics
+        d.level == "warning" and "非数値型" in d.message for d in result.diagnostics
     )
+
+
+# ─── core 診断・例外文言の同一性 (文言OS G-34・Task 6) ───────────────────────
+
+
+def test_file_not_found_message_identical_across_loaders() -> None:
+    """G-34: 2 ローダーの同一原文は同一訳を恒久強制 (writer のコピー先揺れ防止)。"""
+    import inspect
+
+    from valisync.core.loaders import csv_loader, mdf_loader
+
+    needle = "ファイルが見つからないか、アクセスできません:"
+    assert needle in inspect.getsource(csv_loader)
+    assert needle in inspect.getsource(mdf_loader)

@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from valisync.gui import strings as S
 from valisync.gui.viewmodels.observable import Observable
 
 if TYPE_CHECKING:
@@ -186,8 +187,10 @@ class ChannelBrowserVM(Observable):
             return "ファイル未選択"
         name, total = info
         if total == 0:
-            return f"{name} — 0 ch"
-        return f"{name} — {total} ch 中 {self.shown_count()} 件表示"
+            return S.CHANNEL_HEADER_EMPTY_TMPL.format(name=name)
+        return S.CHANNEL_HEADER_COUNT_TMPL.format(
+            name=name, total=total, shown=self.shown_count()
+        )
 
     def empty_state(self) -> str:
         """Why the list is empty: none_selected / no_channels / no_match / has_rows."""

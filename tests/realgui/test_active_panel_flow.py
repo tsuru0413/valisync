@@ -41,6 +41,7 @@ from tests.realgui._realgui_input import (
     to_phys,
 )
 from tests.realgui._realgui_input import key as key_input
+from valisync.gui import strings as S
 
 pytestmark = pytest.mark.realgui
 
@@ -261,7 +262,7 @@ def test_click_activates_panel_and_add_routes_there(
     row_phys = _phys_center(vp, local)
     _real_click(*row_phys)  # 行を選択 -> "Add to Active Panel" が有効化
     clicked = _real_menu_add_first_action(row_phys)
-    assert clicked == "Add to Active Panel", (
+    assert clicked == S.ACTION_ADD_TO_ACTIVE_PANEL, (
         f"実右クリックメニューの先頭項目を実クリックできなかった (got {clicked!r})。"
     )
 

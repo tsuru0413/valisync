@@ -35,23 +35,27 @@ class FormatDefinition:
     def __post_init__(self) -> None:
         if not (1 <= len(self.name) <= 64):
             raise ValueError(
-                f"name must be 1-64 characters, got {len(self.name)}: {self.name!r}"
+                "名前は 1–64 文字で指定してください"  # noqa: RUF001
+                f"（現在 {len(self.name)} 文字: {self.name!r}）"  # noqa: RUF001
             )
         if not (0 <= self.timestamp_column <= 255):
             raise ValueError(
-                f"timestamp_column must be 0-255, got {self.timestamp_column}"
+                "時間列は 0–255 の範囲で指定してください"  # noqa: RUF001
+                f"（現在 {self.timestamp_column}）"  # noqa: RUF001
             )
         if self.timestamp_unit not in ("sec", "msec"):
             raise ValueError(
-                f"timestamp_unit must be 'sec' or 'msec', got {self.timestamp_unit!r}"
+                "時間単位は sec または msec を指定してください"
+                f"（現在 {self.timestamp_unit!r}）"  # noqa: RUF001
             )
         if not (0 <= self.signal_start_column <= self.signal_end_column <= 255):
             raise ValueError(
-                f"signal columns must satisfy 0 <= signal_start_column ({self.signal_start_column})"
-                f" <= signal_end_column ({self.signal_end_column}) <= 255"
+                f"信号列は開始 ({self.signal_start_column}) ≤ 終了"
+                f" ({self.signal_end_column}) かつ 0–255 の範囲で指定してください"  # noqa: RUF001
             )
         if self.signal_start_column <= self.timestamp_column <= self.signal_end_column:
             raise ValueError(
-                f"timestamp_column ({self.timestamp_column}) must not overlap"
-                f" signal columns [{self.signal_start_column}, {self.signal_end_column}]"
+                f"時間列 ({self.timestamp_column}) を信号列の範囲"
+                f" {self.signal_start_column}–{self.signal_end_column}"  # noqa: RUF001
+                " に重ねることはできません"
             )

@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from valisync.gui import strings as S
 from valisync.gui.theme import qss, tokens
 from valisync.gui.viewmodels.graph_panel_vm import CursorReading, DeltaReading
 
@@ -472,7 +473,7 @@ class CursorReadout(QWidget):
             act.triggered.connect(lambda *_, val=p: self._emit_precision(val))
 
         menu.addAction("表をコピー", self._copy_table)
-        menu.addAction("カーソルを消す", self._clear_cursors)
+        menu.addAction(S.CURSOR_CLEAR, self._clear_cursors)
         return menu
 
     def _emit_precision(self, p: int) -> None:

@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from valisync.gui import strings as S
 from valisync.gui.theme import tokens
 
 if TYPE_CHECKING:
@@ -37,7 +38,7 @@ class SignalPreviewWindow(QWidget):
         self.preview_plot.setMouseEnabled(False, False)
         self.preview_plot.setMenuEnabled(False)
         self.preview_plot.hideButtons()
-        self._no_preview = QLabel("プレビューできません")
+        self._no_preview = QLabel(S.PREVIEW_UNAVAILABLE)
         self._no_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._preview_stack = QStackedWidget()
         self._preview_stack.addWidget(self.preview_plot)  # index 0
@@ -58,7 +59,7 @@ class SignalPreviewWindow(QWidget):
     def show_signal(self, key: str) -> None:
         self._vm.set_signal(key)
         self._render()
-        self.setWindowTitle(f"信号プレビュー - {key}")
+        self.setWindowTitle(S.PREVIEW_TITLE_TMPL.format(key=key))
         self.show()
         self.raise_()
         self.activateWindow()

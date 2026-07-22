@@ -3,8 +3,8 @@
 Strict TDD: tests written before implementation.
 
 Coverage:
-- Initial state: one tab named "Tab 1" with one empty GraphPanelVM, active_tab_index=0
-- add_tab: creates tab, auto-names "Tab N" if None, makes it active, returns index
+- Initial state: one tab named "タブ 1" with one empty GraphPanelVM, active_tab_index=0
+- add_tab: creates tab, auto-names "タブ N" if None, makes it active, returns index
 - remove_tab: rejects when only one tab remains (ValueError, R5.6)
 - remove_tab: adjusts active index sensibly
 - rename_tab: rejects empty string and >32 chars (ValueError, R5.4)
@@ -77,7 +77,7 @@ def test_initial_state_has_one_tab(tmp_path: Path) -> None:
 def test_initial_tab_named_tab1(tmp_path: Path) -> None:
     session = _make_session()
     vm = GraphAreaVM(AppViewModel(session))
-    assert vm.tabs()[0].name == "Tab 1"
+    assert vm.tabs()[0].name == "タブ 1"
 
 
 def test_initial_active_tab_index_is_zero() -> None:
@@ -115,7 +115,7 @@ def test_add_tab_auto_names_tab2() -> None:
     session = _make_session()
     vm = GraphAreaVM(AppViewModel(session))
     vm.add_tab()
-    assert vm.tabs()[1].name == "Tab 2"
+    assert vm.tabs()[1].name == "タブ 2"
 
 
 def test_add_tab_auto_names_sequential() -> None:
@@ -123,7 +123,7 @@ def test_add_tab_auto_names_sequential() -> None:
     vm = GraphAreaVM(AppViewModel(session))
     vm.add_tab()
     vm.add_tab()
-    assert vm.tabs()[2].name == "Tab 3"
+    assert vm.tabs()[2].name == "タブ 3"
 
 
 def test_add_tab_with_explicit_name() -> None:
@@ -498,7 +498,7 @@ def test_inspect_initial_state() -> None:
     assert info["active_tab_index"] == 0
     assert len(info["tabs"]) == 1
     tab_info = info["tabs"][0]
-    assert tab_info["name"] == "Tab 1"
+    assert tab_info["name"] == "タブ 1"
     assert tab_info["panel_count"] == 1
     assert tab_info["x_sync_enabled"] is True
 

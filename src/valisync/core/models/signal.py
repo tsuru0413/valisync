@@ -33,7 +33,7 @@ class Signal:
             )
         if len(self.timestamps) > 0 and not np.all(np.isfinite(self.timestamps)):
             idx = int(np.argmax(~np.isfinite(self.timestamps)))
-            raise ValueError(f"timestamps contains non-finite value at index {idx}")
+            raise ValueError(f"時刻列の {idx} 番目に非有限値が含まれています")
         object.__setattr__(
             self,
             "timestamps",

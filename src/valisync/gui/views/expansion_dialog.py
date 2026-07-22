@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from valisync.core.loaders.mdf_loader import EXPANSION_COLUMN_LIMIT, ExpansionRequest
+from valisync.gui import strings as S
 
 # FU-01: 画面内クランプ時にタイトルバー/タスクバーぶん残す余白 (px)。
 # WM はモーダルの過大な高さをクランプしない (実測: 全高1940px > 画面816px で
@@ -56,11 +57,7 @@ class ExpansionDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addWidget(
-            QLabel(
-                "以下の信号は展開すると列数が上限"
-                f"（{EXPANSION_COLUMN_LIMIT}）を超えます。\n"  # noqa: RUF001
-                "展開するものを選択してください（未選択はスキップ）。"  # noqa: RUF001
-            )
+            QLabel(S.EXPANSION_OVER_LIMIT_TMPL.format(limit=EXPANSION_COLUMN_LIMIT))
         )
 
         self._checks: list[QCheckBox] = []

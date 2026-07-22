@@ -101,8 +101,8 @@ class TestBusyOverlay:
 
         overlay = BusyOverlay()
         qtbot.addWidget(overlay)
-        overlay.set_message("読み込み中: a.mf4")
-        assert overlay.message() == "読み込み中: a.mf4"
+        overlay.set_message("a.mf4 を読み込み中…")
+        assert overlay.message() == "a.mf4 を読み込み中…"
 
     def test_cancel_button_click_emits_cancel_requested(self, qtbot: QtBot) -> None:
         from PySide6.QtCore import Qt

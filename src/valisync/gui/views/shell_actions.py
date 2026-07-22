@@ -11,6 +11,8 @@ from __future__ import annotations
 from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtWidgets import QWidget
 
+from valisync.gui import strings as S
+from valisync.gui.strings import mn
 from valisync.gui.theme import icons
 
 
@@ -21,21 +23,24 @@ class ShellActions:
 
         self._add(
             "open",
-            "開く…",
+            S.ACTION_OPEN,
             icons.icon("open"),
             "Ctrl+O",
-            "計測ファイルを開く",
+            S.WELCOME_OPEN_LABEL,
         )
         self._add(
             "open_folder",
-            "フォルダを開く…",
+            # File メニューにのみ掲載される QAction (mn() 合成形)。ツールバー側は
+            # main_window.py の action_data_explorer が同じ素形 (S.ACTION_DATA_EXPLORER)
+            # を非付与のまま使う (G-39 — 同一ハンドラの別文言を解消)。
+            mn(S.ACTION_DATA_EXPLORER, "D"),
             icons.icon("open_folder"),
             "Ctrl+Shift+O",
-            "データソースフォルダを登録する",
+            S.STATUS_OPEN_DATA_EXPLORER,
         )
         exp = self._add(
             "export",
-            "エクスポート…",
+            S.ACTION_EXPORT,
             icons.icon("export"),
             "Ctrl+E",
             "表示中の信号を CSV に書き出す",

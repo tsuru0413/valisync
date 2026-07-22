@@ -85,4 +85,7 @@ def test_file_menu_appears_on_real_os_right_click(qtbot: QtBot, tmp_path: Path) 
         "no context menu on a real OS right-click; "
         f"got {captured.get('type')!r}. screenshot: {tmp_path / 'de.png'}"
     )
-    assert captured.get("actions") == ["Load File", "Remove from Data Sources"]
+    assert captured.get("actions") == [
+        "ファイルを開く",
+        "データソースから削除",
+    ]

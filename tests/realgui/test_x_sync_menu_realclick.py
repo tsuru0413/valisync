@@ -1,4 +1,4 @@
-# ruff: noqa: RUF001, RUF002
+# ruff: noqa: RUF002
 """Layer C: 「X軸同期（タブ内全パネル）」を右クリックメニューから実 OS で ON にする (spec §2.3)。
 
 計測 IA 刷新 v3 決定4 でタブ行の Sync X チェックボックスは撤去され、X 軸同期は

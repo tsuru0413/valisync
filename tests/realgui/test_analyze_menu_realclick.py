@@ -23,6 +23,7 @@ import pytest
 from pytestqt.qtbot import QtBot
 
 from tests.realgui._realgui_input import LDOWN, LUP, at, skip_unless_real_display
+from valisync.gui.strings import strip_mnemonic
 
 pytestmark = pytest.mark.realgui
 
@@ -112,9 +113,11 @@ def test_analyze_cursor_a_real_click_clears_cursor(qtbot: QtBot, tmp_path) -> No
     assert panel.cursor_line_visible(), "A カーソル線が事前に表示されていない"
     assert pvm.cursor_t is not None
 
-    # メニューバーの Analyze を実クリックして開く。
+    # メニューバーの Analyze (解析) を実クリックして開く。
     menubar = window.menuBar()
-    analyze_action = next(a for a in menubar.actions() if "Analyze" in a.text())
+    analyze_action = next(
+        a for a in menubar.actions() if strip_mnemonic(a.text()) == "解析"
+    )
     _click(*_phys_center(menubar, menubar.actionGeometry(analyze_action)))
     qtbot.waitUntil(lambda: QApplication.activePopupWidget() is not None, timeout=3000)
     menu = QApplication.activePopupWidget()

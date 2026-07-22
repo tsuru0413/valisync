@@ -48,7 +48,7 @@ def test_select_saves_but_does_not_change_active(qtbot: QtBot):
         assert "再起動" in window.status_message()  # 右ラベルへ移設 (spec §2.4)
         # 排他: ライトを選ぶとオートが unchecked
         assert acts["ライト"].isChecked()
-        assert not acts["オート (OS に合わせる)"].isChecked()
+        assert not acts["オート（OS に合わせる）"].isChecked()
     finally:
         set_active(DARK)
         apply_mod.apply_theme()

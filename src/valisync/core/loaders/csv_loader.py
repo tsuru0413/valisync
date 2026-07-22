@@ -37,7 +37,7 @@ class CsvLoader:
                 diagnostics=(
                     Diagnostic(
                         level="error",
-                        message=f"File not found or not accessible: {file_path}",
+                        message=f"ファイルが見つからないか、アクセスできません: {file_path}",
                     ),
                 ),
             )
@@ -50,7 +50,8 @@ class CsvLoader:
                 signal_group=None,
                 diagnostics=(
                     Diagnostic(
-                        level="error", message=f"Cannot read '{file_path.name}': {exc}"
+                        level="error",
+                        message=f"'{file_path.name}' の読み込みに失敗しました: {exc}",
                     ),
                 ),
             )
@@ -69,7 +70,7 @@ class CsvLoader:
                     diagnostics=(
                         Diagnostic(
                             level="error",
-                            message="Expected header row but file is empty",
+                            message="ヘッダ行が必要ですが、ファイルが空です",
                         ),
                     ),
                 )
@@ -82,8 +83,8 @@ class CsvLoader:
                         Diagnostic(
                             level="error",
                             message=(
-                                f"Header has {len(header)} columns,"
-                                f" expected at least {min_cols}"
+                                f"ヘッダの列数が {len(header)} 列です"
+                                f"（{min_cols} 列以上が必要）"  # noqa: RUF001
                             ),
                             line_number=row_idx,
                         ),
@@ -154,7 +155,8 @@ class CsvLoader:
                         Diagnostic(
                             level="error",
                             message=(
-                                f"Row has {len(row)} columns, expected at least {min_cols}"
+                                f"行の列数が {len(row)} 列です"
+                                f"（{min_cols} 列以上が必要）"  # noqa: RUF001
                             ),
                             line_number=line_number,
                         ),
@@ -171,7 +173,7 @@ class CsvLoader:
                         *diagnostics,
                         Diagnostic(
                             level="error",
-                            message=f"Non-numeric timestamp {ts_str!r}",
+                            message=f"非数値のタイムスタンプ {ts_str!r}",
                             line_number=line_number,
                             column_number=format_def.timestamp_column,
                         ),
@@ -209,7 +211,7 @@ class CsvLoader:
                             *diagnostics,
                             Diagnostic(
                                 level="error",
-                                message=f"Non-numeric value {val_str!r} in signal column",
+                                message=f"信号列に非数値の値 {val_str!r}",
                                 line_number=line_number,
                                 column_number=col,
                             ),
@@ -257,7 +259,7 @@ class CsvLoader:
                     Diagnostic(
                         level="warning",
                         message=(
-                            f"'{name}': 非有限値 {nonfinite_counts[sig_idx]} 個"
+                            f"信号 '{name}': 非有限値 {nonfinite_counts[sig_idx]} 個"
                             "（'nan'/'inf' 文字列由来）"  # noqa: RUF001
                         ),
                         signal_name=name,

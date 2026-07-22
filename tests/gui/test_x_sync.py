@@ -26,7 +26,7 @@ from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 from valisync.gui.views.graph_panel_view import ZONE_X_INNER, GraphPanelView
 
-_SYNC_LABEL = "X軸同期（タブ内全パネル）"  # noqa: RUF001
+_SYNC_LABEL = "X軸同期（タブ内全パネル）"
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
 

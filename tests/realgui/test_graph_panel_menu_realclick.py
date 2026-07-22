@@ -1,7 +1,7 @@
 """Layer C: real-OS-input test for the GraphPanel context menu.
 
 Opt-in — run with ``--realgui`` on Windows + a real display. A genuine
-right-click on the plot must raise the panel's OWN menu ("Add Panel" …) via the
+right-click on the plot must raise the panel's OWN menu ("パネルを追加" …) via the
 container's ``contextMenuEvent`` — the OS → Qt path a synthesized event cannot
 exercise. Goes RED if that override stops firing on the real right-click.
 
@@ -80,7 +80,7 @@ def test_panel_menu_wins_over_pyqtgraph_on_real_right_click(
         f"got {captured.get('type')!r}. screenshot: {tmp_path / 'gp.png'}"
     )
     actions = captured.get("actions") or []
-    assert "Add Panel" in actions, (
+    assert "パネルを追加" in actions, (
         "real right-click did not raise the panel's own menu (pyqtgraph default "
         f"won?); actions={actions!r}. screenshot: {tmp_path / 'gp.png'}"
     )

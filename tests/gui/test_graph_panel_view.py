@@ -960,8 +960,8 @@ class TestCurveMenuAxisMoveAndOffset:
         assert reset_act.isEnabled() is True
         info = next(a for a in menu.actions() if a.text().startswith("オフセット: "))
         assert info.isEnabled() is False
-        # 固定小数で表示 (spec §182 の "+0.250s" 形式・sci-notation を避ける)
-        assert info.text() == "オフセット: +0.500s"
+        # 固定小数で表示 (R-06: 数値と単位の間に半角スペース・sci-notation を避ける)
+        assert info.text() == "オフセット: +0.500 s"
 
     def test_curve_menu_offset_input_emits_apply(self, qtbot: QtBot) -> None:
         from valisync.gui.views.graph_panel_view import GraphPanelView
@@ -1291,10 +1291,10 @@ class TestAxisZoomMenu:
         panel.vm.zoom_axis = Mock()  # spy
         menu = panel.build_axis_menu(0)
         acts = {a.text(): a for a in menu.actions()}
-        assert "ズームイン" in acts and "ズームアウト（引き）" in acts  # noqa: RUF001
+        assert "ズームイン" in acts and "ズームアウト" in acts
         assert acts["ズームイン"].isEnabled()
         acts["ズームイン"].trigger()
-        acts["ズームアウト（引き）"].trigger()  # noqa: RUF001
+        acts["ズームアウト"].trigger()
         assert panel.vm.zoom_axis.call_args_list == [call(0, 0.9), call(0, 1.1)]
 
     def test_y_axis_zoom_disabled_when_range_none(self, qtbot: QtBot) -> None:
@@ -1303,7 +1303,7 @@ class TestAxisZoomMenu:
         menu = panel.build_axis_menu(0)
         acts = {a.text(): a for a in menu.actions()}
         assert not acts["ズームイン"].isEnabled()
-        assert not acts["ズームアウト（引き）"].isEnabled()  # noqa: RUF001
+        assert not acts["ズームアウト"].isEnabled()
 
     def test_x_axis_menu_has_four_actions(self, qtbot: QtBot) -> None:
         from unittest.mock import Mock, call
@@ -1318,12 +1318,12 @@ class TestAxisZoomMenu:
             "X軸をオートフィット",
             "範囲を指定…",
             "ズームイン",
-            "ズームアウト（引き）",  # noqa: RUF001
+            "ズームアウト",
         ]
         acts = {a.text(): a for a in menu.actions()}
         acts["X軸をオートフィット"].trigger()
         acts["ズームイン"].trigger()
-        acts["ズームアウト（引き）"].trigger()  # noqa: RUF001
+        acts["ズームアウト"].trigger()
         assert panel.vm.reset_x.called
         assert panel.vm.zoom_x.call_args_list == [call(0.9), call(1.1)]
 
@@ -1333,7 +1333,7 @@ class TestAxisZoomMenu:
         menu = panel.build_x_axis_menu()
         acts = {a.text(): a for a in menu.actions()}
         assert not acts["ズームイン"].isEnabled()
-        assert not acts["ズームアウト（引き）"].isEnabled()  # noqa: RUF001
+        assert not acts["ズームアウト"].isEnabled()
 
     def test_context_menu_routes_x_axis_on_x_zone(self, qtbot: QtBot) -> None:
         panel = _build_panel_view_with_axes(qtbot)

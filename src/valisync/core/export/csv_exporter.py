@@ -29,12 +29,12 @@ class CsvExportOptions:
         # ダイアログは固定候補コンボからしか到達しないが、公開 API としての
         # CsvExportOptions は直接構築されうるので堅牢化する。
         if not self.delimiter or not self.decimal:
-            raise ValueError("delimiter と decimal は空文字にできません")
+            raise ValueError("区切り文字と小数点記号は空にできません")
         # 区切りと小数点が同一だと CSV が曖昧になる(ダイアログでも防ぐが核でも拒否)。
         if self.delimiter == self.decimal:
-            raise ValueError("delimiter と decimal に同じ文字は使えません")
+            raise ValueError("区切り文字と小数点記号に同じ文字は使えません")
         if self.precision is not None and self.precision < 0:
-            raise ValueError("precision は 0 以上または None")
+            raise ValueError("小数点以下の桁数は 0 以上を指定してください")
 
 
 def _fmt(value: float, options: CsvExportOptions) -> str:

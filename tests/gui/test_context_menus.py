@@ -17,6 +17,7 @@ from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 from tests.mdf4_helpers import CAN, write_mdf4
 from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.session import Session
+from valisync.gui import strings as S
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
@@ -77,13 +78,13 @@ class TestChannelBrowserMenu:
         app_vm.set_active_file(key)
         view = self._view(qtbot, app_vm)
         self._select_first_row(view)
-        assert "Add to Active Panel" in _texts(view.build_context_menu())  # type: ignore[attr-defined]
+        assert S.ACTION_ADD_TO_ACTIVE_PANEL in _texts(view.build_context_menu())  # type: ignore[attr-defined]
 
     def test_add_disabled_without_selection(self, qtbot: QtBot, tmp_path: Path) -> None:
         app_vm, key = _setup_app_2sig(tmp_path)
         app_vm.set_active_file(key)
         view = self._view(qtbot, app_vm)
-        action = _action(view.build_context_menu(), "Add to Active Panel")  # type: ignore[attr-defined]
+        action = _action(view.build_context_menu(), S.ACTION_ADD_TO_ACTIVE_PANEL)  # type: ignore[attr-defined]
         assert not action.isEnabled()  # type: ignore[attr-defined]
 
     def test_add_enabled_with_selection(self, qtbot: QtBot, tmp_path: Path) -> None:
@@ -91,7 +92,7 @@ class TestChannelBrowserMenu:
         app_vm.set_active_file(key)
         view = self._view(qtbot, app_vm)
         self._select_first_row(view)
-        action = _action(view.build_context_menu(), "Add to Active Panel")  # type: ignore[attr-defined]
+        action = _action(view.build_context_menu(), S.ACTION_ADD_TO_ACTIVE_PANEL)  # type: ignore[attr-defined]
         assert action.isEnabled()  # type: ignore[attr-defined]
 
     def test_triggering_add_emits_selected_keys(
@@ -104,7 +105,7 @@ class TestChannelBrowserMenu:
         emitted: list[list[str]] = []
         view.add_to_panel_requested.connect(emitted.append)  # type: ignore[attr-defined]
 
-        _action(view.build_context_menu(), "Add to Active Panel").trigger()  # type: ignore[attr-defined]
+        _action(view.build_context_menu(), S.ACTION_ADD_TO_ACTIVE_PANEL).trigger()  # type: ignore[attr-defined]
 
         assert emitted == [[f"{key}::a"]]
 
@@ -136,18 +137,18 @@ class TestDataExplorerMenu:
     def test_menu_items_present(self, qtbot: QtBot, tmp_path: Path) -> None:
         view = self._view(qtbot, AppViewModel())
         texts = _texts(view.build_context_menu(self._mf4(tmp_path)))  # type: ignore[attr-defined]
-        assert "Load File" in texts
-        assert "Remove from Data Sources" in texts
+        assert S.ACTION_LOAD_FILE in texts
+        assert S.ACTION_REMOVE_FROM_SOURCES in texts
 
     def test_load_enabled_for_file(self, qtbot: QtBot, tmp_path: Path) -> None:
         view = self._view(qtbot, AppViewModel())
         menu = view.build_context_menu(self._mf4(tmp_path))  # type: ignore[attr-defined]
-        assert _action(menu, "Load File").isEnabled()  # type: ignore[attr-defined]
+        assert _action(menu, S.ACTION_LOAD_FILE).isEnabled()  # type: ignore[attr-defined]
 
     def test_load_disabled_for_directory(self, qtbot: QtBot, tmp_path: Path) -> None:
         view = self._view(qtbot, AppViewModel())
         menu = view.build_context_menu(tmp_path)  # type: ignore[attr-defined]  # a dir
-        assert not _action(menu, "Load File").isEnabled()  # type: ignore[attr-defined]
+        assert not _action(menu, S.ACTION_LOAD_FILE).isEnabled()  # type: ignore[attr-defined]
 
     def test_remove_source_grey_unless_registered(
         self, qtbot: QtBot, tmp_path: Path
@@ -159,16 +160,18 @@ class TestDataExplorerMenu:
 
         # Not a source yet → disabled.
         menu = view.build_context_menu(folder)  # type: ignore[attr-defined]
-        assert not _action(menu, "Remove from Data Sources").isEnabled()  # type: ignore[attr-defined]
+        assert not _action(menu, S.ACTION_REMOVE_FROM_SOURCES).isEnabled()  # type: ignore[attr-defined]
 
         view.add_source(folder)  # type: ignore[attr-defined]
         menu2 = view.build_context_menu(folder)  # type: ignore[attr-defined]
-        assert _action(menu2, "Remove from Data Sources").isEnabled()  # type: ignore[attr-defined]
+        assert _action(menu2, S.ACTION_REMOVE_FROM_SOURCES).isEnabled()  # type: ignore[attr-defined]
 
     def test_trigger_load_loads_file(self, qtbot: QtBot, tmp_path: Path) -> None:
         app_vm = AppViewModel()
         view = self._view(qtbot, app_vm)
-        _action(view.build_context_menu(self._mf4(tmp_path)), "Load File").trigger()  # type: ignore[attr-defined]
+        _action(
+            view.build_context_menu(self._mf4(tmp_path)), S.ACTION_LOAD_FILE
+        ).trigger()  # type: ignore[attr-defined]
         assert len(app_vm.inspect()["loaded_keys"]) == 1
 
     def test_trigger_remove_source(self, qtbot: QtBot, tmp_path: Path) -> None:
@@ -178,7 +181,7 @@ class TestDataExplorerMenu:
         folder.mkdir()
         view.add_source(folder)  # type: ignore[attr-defined]
 
-        _action(view.build_context_menu(folder), "Remove from Data Sources").trigger()  # type: ignore[attr-defined]
+        _action(view.build_context_menu(folder), S.ACTION_REMOVE_FROM_SOURCES).trigger()  # type: ignore[attr-defined]
 
         assert str(folder) not in view.sources()  # type: ignore[attr-defined]
 
@@ -196,21 +199,21 @@ class TestGraphPanelMenu:
 
     def test_menu_items_present(self, qtbot: QtBot) -> None:
         texts = _texts(self._panel(qtbot).build_context_menu())  # type: ignore[attr-defined]
-        assert "Add Panel" in texts
-        assert "Remove Panel" in texts
-        assert "Reset All Axes" in texts
+        assert "パネルを追加" in texts
+        assert "パネルを削除" in texts
+        assert "すべての軸をオートフィット" in texts
 
     def test_remove_disabled_when_not_removable(self, qtbot: QtBot) -> None:
         panel = self._panel(qtbot)
         panel.set_removable(False)  # type: ignore[attr-defined]
-        assert not _action(panel.build_context_menu(), "Remove Panel").isEnabled()  # type: ignore[attr-defined]
+        assert not _action(panel.build_context_menu(), "パネルを削除").isEnabled()  # type: ignore[attr-defined]
 
     def test_reset_all_axes_resets_ranges(self, qtbot: QtBot) -> None:
         panel = self._panel(qtbot)
         panel.vm.set_x_range(1.0, 2.0)  # type: ignore[attr-defined]
         panel.vm.set_y_range(3.0, 4.0)  # type: ignore[attr-defined]
 
-        _action(panel.build_context_menu(), "Reset All Axes").trigger()  # type: ignore[attr-defined]
+        _action(panel.build_context_menu(), "すべての軸をオートフィット").trigger()  # type: ignore[attr-defined]
 
         # No signals plotted → reset clears to None (review finding ⑦).
         assert panel.vm.x_range is None  # type: ignore[attr-defined]
@@ -220,7 +223,7 @@ class TestGraphPanelMenu:
         panel = self._panel(qtbot)
         fired: list[int] = []
         panel.add_panel_requested.connect(lambda: fired.append(1))  # type: ignore[attr-defined]
-        _action(panel.build_context_menu(), "Add Panel").trigger()  # type: ignore[attr-defined]
+        _action(panel.build_context_menu(), "パネルを追加").trigger()  # type: ignore[attr-defined]
         assert fired == [1]
 
     def test_viewbox_default_menu_disabled(self, qtbot: QtBot) -> None:
@@ -238,7 +241,7 @@ class TestGraphPanelMenu:
     def test_blank_menu_includes_shared_analysis_actions(self, qtbot: QtBot) -> None:
         texts = _texts(self._panel(qtbot).build_context_menu())  # type: ignore[attr-defined]
         assert "カーソル A" in texts
-        assert "カーソル B（Δ）" in texts  # noqa: RUF001
+        assert "カーソル B（Δ）" in texts
         assert "カーソルを消す" in texts
         assert any(
             a.text() == "補間方式" and a.menu() is not None
@@ -286,7 +289,7 @@ class TestGraphAreaPanelWiring:
     def test_sole_panel_marked_not_removable(self, qtbot: QtBot) -> None:
         view, _ = self._area(qtbot)
         menu = self._panel(view, 0).build_context_menu()  # type: ignore[attr-defined]
-        assert not _action(menu, "Remove Panel").isEnabled()
+        assert not _action(menu, "パネルを削除").isEnabled()
 
 
 # ─── AnalysisActions dispatch targets the right-clicked panel (spec §2.2) ───────

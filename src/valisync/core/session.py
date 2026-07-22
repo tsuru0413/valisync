@@ -49,7 +49,7 @@ class LoadError(Exception):
         self.file_path = file_path
         self.messages = messages
         self.diagnostics = tuple(diagnostics)
-        super().__init__(f"failed to load {file_path}: {'; '.join(messages)}")
+        super().__init__(f"{file_path} の読み込みに失敗しました: {'; '.join(messages)}")
 
 
 @dataclass(frozen=True)
@@ -150,14 +150,14 @@ class Session:
         file_path = Path(file_path)
         if self._csv_loader.supports(file_path):
             if format_def is None:
-                raise ValueError("CSV files require a FormatDefinition")
+                raise ValueError("CSV の読み込みにはフォーマット定義が必要です")
             result = self._csv_loader.load(file_path, format_def, cancel=cancel)
         elif self._mdf_loader.supports(file_path):
             result = self._mdf_loader.load(
                 file_path, cancel=cancel, confirm_expansion=confirm_expansion
             )
         else:
-            raise ValueError(f"no loader supports file: {file_path}")
+            raise ValueError(f"対応していないファイル形式です: {file_path}")
 
         if result.signal_group is None:
             messages = [d.message for d in result.diagnostics]

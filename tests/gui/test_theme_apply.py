@@ -396,3 +396,50 @@ def test_app_sheet_includes_line_edit_frame_rules(qapp):
     # carve-out
     assert "QLineEdit#qt_spinbox_lineedit" in sheet
     assert "border: none" in sheet
+
+
+def test_qtbase_ja_qm_exists():
+    """PySide6 wheel に qtbase_ja.qm が同梱されていること (spec §2.2 の前提)。"""
+    from pathlib import Path
+
+    from PySide6.QtCore import QLibraryInfo
+
+    tr_dir = Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath))
+    assert (tr_dir / "qtbase_ja.qm").exists()
+
+
+def test_translator_install_is_idempotent(qapp):
+    """apply_startup_theme を2回呼んでも translator は1つ (install-once・spec §2.2)。"""
+    from valisync.gui.theme import apply as theme_apply
+
+    theme_apply.apply_startup_theme()
+    first = theme_apply._qt_translator
+    theme_apply.apply_startup_theme()
+    assert theme_apply._qt_translator is first
+    assert first is not None
+
+
+def test_dialog_buttonbox_japanese_fresh_process(tmp_path):
+    """install 後に QDialogButtonBox 標準ボタンが日本語 (fresh-process — 共有 qapp の
+    残留 translator と区別するため・spec §2.2/§6)。"""
+    import subprocess
+    import sys
+
+    script = tmp_path / "probe.py"
+    script.write_text(
+        "import sys\n"
+        "from PySide6.QtWidgets import QApplication, QDialogButtonBox\n"
+        "app = QApplication(sys.argv)\n"
+        "from valisync.gui.theme import apply as theme_apply\n"
+        "theme_apply.apply_startup_theme()\n"
+        "box = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)\n"
+        "text = box.button(QDialogButtonBox.StandardButton.Cancel).text()\n"
+        "sys.exit(0 if 'キャンセル' in text else 1)\n",
+        encoding="utf-8",
+    )
+    env_result = subprocess.run(
+        [sys.executable, str(script)],
+        capture_output=True,
+        env={**__import__("os").environ, "QT_QPA_PLATFORM": "offscreen"},
+    )
+    assert env_result.returncode == 0, env_result.stderr.decode(errors="replace")

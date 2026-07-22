@@ -43,6 +43,8 @@ from PySide6.QtWidgets import (
 from valisync.core.loaders.csv_format_detector import CsvFormatDetector
 from valisync.core.models.format_def import FormatDefinition
 from valisync.core.session import LoadOutcome
+from valisync.gui import strings as S
+from valisync.gui.strings import mn
 from valisync.gui.theme import apply as theme_apply
 from valisync.gui.theme import icons, tokens
 from valisync.gui.theme import qss as theme_qss
@@ -137,7 +139,7 @@ class MainWindow(QMainWindow):
         self.data_explorer: DataExplorerView | None = None
 
         # ── File Browser dock (right top) ────────────────────────────────────
-        self.file_dock = QDockWidget("File Browser", self)
+        self.file_dock = QDockWidget(S.DOCK_FILE_BROWSER, self)
         self.file_dock.setObjectName("file_dock")  # required for saveState/restoreState
         self.file_dock.setWidget(self.file_browser_view)
         self.file_dock.setFeatures(
@@ -154,7 +156,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.file_dock)
 
         # ── Channel Browser dock (right bottom) ──────────────────────────────
-        self.channel_dock = QDockWidget("Channel Browser", self)
+        self.channel_dock = QDockWidget(S.DOCK_CHANNEL_BROWSER, self)
         self.channel_dock.setObjectName("channel_dock")
         self.channel_dock.setWidget(self.channel_browser_view)
         self.channel_dock.setFeatures(
@@ -224,9 +226,9 @@ class MainWindow(QMainWindow):
             "diagnostics_dock": 0,
         }
         for dock, title in (
-            (self.file_dock, "File Browser"),
-            (self.channel_dock, "Channel Browser"),
-            (self.diagnostics_dock, "Diagnostics"),
+            (self.file_dock, S.DOCK_FILE_BROWSER),
+            (self.channel_dock, S.DOCK_CHANNEL_BROWSER),
+            (self.diagnostics_dock, S.DOCK_DIAGNOSTICS),
         ):
             bar = CollapsibleDockTitleBar(dock, self, title)
             dock.setTitleBarWidget(bar)
@@ -257,36 +259,39 @@ class MainWindow(QMainWindow):
             self.open_data_explorer
         )
         self.shell_actions.action("export").triggered.connect(self.export_csv)
+        # E-3: Welcome CTA は ShellActions より先に構築されるため後注入
+        # (ラベル部固定・ショートカット部のみ action.changed で追随)。
+        self.welcome_view.set_open_action(self.shell_actions.action("open"))
 
         # ── メニューバー ─────────────────────────────────────────────────────
-        file_menu = self.menuBar().addMenu("&File")
+        file_menu = self.menuBar().addMenu(S.MENU_FILE)
         file_menu.addAction(self.shell_actions.action("open"))
         file_menu.addAction(self.shell_actions.action("open_folder"))
-        self.recent_menu = file_menu.addMenu("Recent Files")
+        self.recent_menu = file_menu.addMenu(S.MENU_RECENT)
         file_menu.addAction(self.shell_actions.action("export"))
         file_menu.addSeparator()
-        self.action_exit = file_menu.addAction("E&xit")
+        self.action_exit = file_menu.addAction(S.ACTION_EXIT)
         # StandardKey.Quit は Windows で Key_Exit(押せないメディアキー)に解決する
         # ため、明示 Ctrl+Q を使う(主対象 OS は Windows)。
         self.action_exit.setShortcut(QKeySequence("Ctrl+Q"))
         self.action_exit.triggered.connect(self.close)
 
         # ── View menu (dock toggles, R1.4) ───────────────────────────────────
-        view_menu = self.menuBar().addMenu("&View")
+        view_menu = self.menuBar().addMenu(S.MENU_VIEW)
         view_menu.addAction(self.file_dock.toggleViewAction())
         view_menu.addAction(self.channel_dock.toggleViewAction())
         view_menu.addAction(self.diagnostics_dock.toggleViewAction())
         view_menu.addSeparator()
 
         # 増分4: テーマ三態 (再起動反映 — 選択は QSettings 保存のみ・spec §11)。
-        theme_menu = view_menu.addMenu("テーマ")
+        theme_menu = view_menu.addMenu(S.MENU_THEME)
         self._theme_group = QActionGroup(self)
         self._theme_group.setExclusive(True)
         current_mode = theme_apply.load_theme_mode()
         for label, mode in (
-            ("ライト", ThemeMode.LIGHT),
-            ("ダーク", ThemeMode.DARK),
-            ("オート (OS に合わせる)", ThemeMode.AUTO),
+            (S.THEME_LIGHT, ThemeMode.LIGHT),
+            (S.THEME_DARK, ThemeMode.DARK),
+            (S.THEME_AUTO_MENU_LABEL, ThemeMode.AUTO),
         ):
             act = theme_menu.addAction(label)
             act.setCheckable(True)
@@ -297,17 +302,17 @@ class MainWindow(QMainWindow):
             act.triggered.connect(lambda _=False, m=mode: self._on_theme_selected(m))
 
         view_menu.addSeparator()
-        self.action_reset_layout = view_menu.addAction("Reset Layout")
+        self.action_reset_layout = view_menu.addAction(S.ACTION_RESET_LAYOUT)
         self.action_reset_layout.triggered.connect(self._reset_layout)
 
         # Analyze メニュー (spec §2.2): 各パネルの空白右クリックメニューと同一の
         # AnalysisActions インスタンスを掲載する (checked/文言の乖離を構造防止)。
-        analyze_menu = self.menuBar().addMenu("&Analyze")
+        analyze_menu = self.menuBar().addMenu(S.MENU_ANALYZE)
         analyze_menu.addAction(self._analysis_actions.cursor_a)
         analyze_menu.addAction(self._analysis_actions.cursor_b)
         analyze_menu.addSeparator()
         analyze_menu.addAction(self._analysis_actions.clear_cursors)
-        interp_menu = analyze_menu.addMenu("補間方式")
+        interp_menu = analyze_menu.addMenu(mn(S.INTERP_METHOD, "I"))
         for act in self._analysis_actions.interp_actions.values():
             interp_menu.addAction(act)
         analyze_menu.addSeparator()
@@ -317,23 +322,23 @@ class MainWindow(QMainWindow):
         # させない (Qt 仕様) ため、ここで無条件に同期してもハンドラは起動しない。
         analyze_menu.aboutToShow.connect(self._sync_analysis_actions)
 
-        help_menu = self.menuBar().addMenu("&Help")
-        about = help_menu.addAction("&About ValiSync")
+        help_menu = self.menuBar().addMenu(S.MENU_HELP)
+        about = help_menu.addAction(mn(S.ABOUT_TITLE, "A"))
         about.triggered.connect(self._show_about)
 
         # ── Toolbar (R1.5) ───────────────────────────────────────────────────
-        toolbar: QToolBar = self.addToolBar("Main")
+        toolbar: QToolBar = self.addToolBar(S.TOOLBAR_MAIN)
         toolbar.setObjectName("main_toolbar")  # required for saveState/restoreState
         toolbar.addAction(self.shell_actions.action("open"))
         toolbar.addAction(self.shell_actions.action("export"))
         toolbar.addSeparator()
         self.action_data_explorer = QAction(
             icons.icon("data_explorer"),
-            "Data Explorer",
+            S.ACTION_DATA_EXPLORER,
             self,
         )
-        self.action_data_explorer.setToolTip("データエクスプローラを開く")
-        self.action_data_explorer.setStatusTip("データエクスプローラを開く")
+        self.action_data_explorer.setToolTip(S.STATUS_OPEN_DATA_EXPLORER)
+        self.action_data_explorer.setStatusTip(S.STATUS_OPEN_DATA_EXPLORER)
         self.action_data_explorer.triggered.connect(self.open_data_explorer)
         toolbar.addAction(self.action_data_explorer)
         toolbar.addSeparator()
@@ -431,9 +436,9 @@ class MainWindow(QMainWindow):
         n_alert = sum(1 for d in outcome.diagnostics if d.level in ("error", "warning"))
         n_info = len(outcome.diagnostics) - n_alert
         if n_alert:
-            msg += f" ・ ⚠ {n_alert} 件の診断（Diagnostics を参照）"  # noqa: RUF001
+            msg += S.STATUS_DIAG_ALERT_TMPL.format(n=n_alert)
         elif n_info:
-            msg += f" ・ ℹ {n_info} 件の情報（Diagnostics を参照）"  # noqa: RUF001
+            msg += S.STATUS_DIAG_INFO_TMPL.format(n=n_info)
         self.set_status_message(msg)
         # SH-01: Recent には再開可能な絶対パスを保存する。表示用の source は
         # basename(source_name) だが、それを保存すると Path.exists() の剪定で
@@ -642,13 +647,15 @@ class MainWindow(QMainWindow):
         try:
             from importlib.metadata import version
 
-            ver = version("valisync")
+            ver_part = f"v{version('valisync')}"
         except Exception:  # PackageNotFoundError 等
-            ver = "unknown"
-        return f"ValiSync v{ver} — ADAS 信号解析デスクトップ"
+            # G-37: "v{ver}" の合成をやめ、不明時は表示分岐で文字列全体を差し替える
+            # (旧 "v不明" のような合成事故を構造的に回避)。
+            ver_part = S.ABOUT_VERSION_UNKNOWN
+        return f"ValiSync {ver_part} — ADAS 信号解析デスクトップ"
 
     def _show_about(self) -> None:
-        QMessageBox.about(self, "About ValiSync", self._about_text())
+        QMessageBox.about(self, S.ABOUT_TITLE, self._about_text())
 
     # ─── Status bar (spec §2.4) ─────────────────────────────────────────────────
 
@@ -850,9 +857,9 @@ class MainWindow(QMainWindow):
         finally:
             self._suppress_dock_reconcile = False
         title = {
-            "file_dock": "File Browser",
-            "channel_dock": "Channel Browser",
-            "diagnostics_dock": "Diagnostics",
+            "file_dock": S.DOCK_FILE_BROWSER,
+            "channel_dock": S.DOCK_CHANNEL_BROWSER,
+            "diagnostics_dock": S.DOCK_DIAGNOSTICS,
         }[name]
         rail.add_tab(dock, title, self._dock_rail_order.get(name, 0))
         self._collapsed_docks.add(name)

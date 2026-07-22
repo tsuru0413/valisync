@@ -20,6 +20,7 @@ from PySide6.QtCore import (
     Qt,
 )
 
+from valisync.gui import strings as S
 from valisync.gui.adapters.qt_signal_models import SIGNAL_KEYS_MIME, encode_signal_keys
 
 if TYPE_CHECKING:
@@ -56,7 +57,7 @@ class _Node:
 
 
 class SignalTreeModel(QAbstractItemModel):
-    HEADERS = ("Name", "Unit")
+    HEADERS = (S.SIGNAL_TREE_COL_NAME, S.SIGNAL_TREE_COL_UNIT)
 
     def __init__(self, vm: ChannelBrowserVM, parent: QObject | None = None) -> None:
         super().__init__(parent)

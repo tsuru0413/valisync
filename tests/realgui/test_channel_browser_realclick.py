@@ -102,4 +102,4 @@ def test_add_to_panel_menu_appears_on_real_os_right_click(
         "no context menu on a real OS right-click; "
         f"got {captured.get('type')!r}. screenshot: {tmp_path / 'ch.png'}"
     )
-    assert captured.get("actions") == ["Add to Active Panel"]
+    assert captured.get("actions") == ["アクティブパネルへ追加"]

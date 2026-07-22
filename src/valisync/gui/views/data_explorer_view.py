@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QTreeView,
 )
 
+from valisync.gui import strings as S
 from valisync.gui.persistence import data_sources
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 
@@ -67,7 +68,7 @@ class DataExplorerView(QMainWindow):
         )
         # Injectable so the modal QFileDialog can be bypassed in tests.
         self._dir_chooser: Callable[[], str] = dir_chooser or self._default_dir_chooser
-        self.setWindowTitle("Data Explorer")
+        self.setWindowTitle(S.ACTION_DATA_EXPLORER)
 
         # ── Filesystem tree ──────────────────────────────────────────────────
         self.fs_model = QFileSystemModel(self)
@@ -93,10 +94,10 @@ class DataExplorerView(QMainWindow):
         self.setAcceptDrops(True)  # OS file-manager drops (R12.1)
 
         # ── Toolbar ──────────────────────────────────────────────────────────
-        toolbar: QToolBar = self.addToolBar("Sources")
-        self.action_add_source = toolbar.addAction("Add Source")
+        toolbar: QToolBar = self.addToolBar(S.DATA_EXPLORER_SOURCES)
+        self.action_add_source = toolbar.addAction(S.ACTION_ADD_SOURCE)
         self.action_add_source.triggered.connect(self._on_add_source_clicked)
-        self.action_remove_source = toolbar.addAction("Remove Source")
+        self.action_remove_source = toolbar.addAction(S.ACTION_REMOVE_SOURCE)
         self.action_remove_source.triggered.connect(self._on_remove_source_clicked)
 
         # data_sources 変更でリストを再投影 (restore の add もこれで反映)。
@@ -112,7 +113,7 @@ class DataExplorerView(QMainWindow):
     # ─── Toolbar actions (R3.4) ─────────────────────────────────────────────────
 
     def _default_dir_chooser(self) -> str:
-        return QFileDialog.getExistingDirectory(self, "Select Data Source Folder")
+        return QFileDialog.getExistingDirectory(self, S.DATA_EXPLORER_SELECT_FOLDER)
 
     def _on_add_source_clicked(self, *_: object) -> None:
         folder = self._dir_chooser()
@@ -225,10 +226,10 @@ class DataExplorerView(QMainWindow):
         """Build the file context menu, greyed out per file/source state."""
         path = Path(path)
         menu = QMenu(self)
-        load = menu.addAction("Load File")
+        load = menu.addAction(S.ACTION_LOAD_FILE)
         load.setEnabled(path.is_file())
         load.triggered.connect(lambda *_: self._load_handler(path))
-        remove = menu.addAction("Remove from Data Sources")
+        remove = menu.addAction(S.ACTION_REMOVE_FROM_SOURCES)
         remove.setEnabled(str(path) in self.sources())
         remove.triggered.connect(lambda *_: self.remove_source(path))
         return menu

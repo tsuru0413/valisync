@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QApplication, QListView
 from pytestqt.qtbot import QtBot
 
 from valisync.core.models import Delimiter, FormatDefinition
+from valisync.gui import strings as S
 from valisync.gui.adapters.qt_signal_models import FileListModel
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
@@ -147,7 +148,7 @@ def test_context_menu_remove_unloads_file(qtbot: QtBot) -> None:
 
     menu = view.build_context_menu(0)
     actions = menu.actions()
-    assert [act.text() for act in actions] == ["Remove File"]
+    assert [act.text() for act in actions] == [S.ACTION_REMOVE_FILE]
     actions[0].trigger()
 
     assert vm.files == ["b.csv"]
@@ -229,7 +230,7 @@ def test_right_click_on_row_opens_remove_menu_and_unloads(
 
     assert captured["row"] == 1
     assert view.list_view.currentIndex().row() == 1
-    assert [a.text() for a in captured["menu"].actions()] == ["Remove File"]
+    assert [a.text() for a in captured["menu"].actions()] == [S.ACTION_REMOVE_FILE]
 
     captured["menu"].actions()[0].trigger()
     assert vm.files == ["a.csv"]

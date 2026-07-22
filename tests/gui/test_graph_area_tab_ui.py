@@ -98,7 +98,7 @@ def test_double_click_opens_rename_editor(qtbot: QtBot) -> None:
     view._begin_rename(0)  # tabBarDoubleClicked の接続先
     editor = view._rename_editor
     assert isinstance(editor, QLineEdit)
-    assert editor.text() == "Tab 1"
+    assert editor.text() == "タブ 1"
 
 
 def test_rename_commit_updates_vm(qtbot: QtBot) -> None:
@@ -115,7 +115,7 @@ def test_rename_cancel_keeps_name(qtbot: QtBot) -> None:
     view._begin_rename(0)
     view._rename_editor.setText("破棄される")
     view._rename_editor.cancelled.emit()
-    assert view.vm.tabs()[0].name == "Tab 1"
+    assert view.vm.tabs()[0].name == "タブ 1"
     assert view._rename_editor is None
 
 
@@ -123,7 +123,7 @@ def test_rename_invalid_length_keeps_editor_open(qtbot: QtBot) -> None:
     view = _make_area(qtbot)
     view._begin_rename(0)
     view._rename_editor.committed.emit("x" * 33)  # 32 字超
-    assert view.vm.tabs()[0].name == "Tab 1"  # 変更されない
+    assert view.vm.tabs()[0].name == "タブ 1"  # 変更されない
     assert view._rename_editor is not None  # 編集継続
 
 

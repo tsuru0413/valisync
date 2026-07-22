@@ -9,7 +9,7 @@ open_requested(path) for a recent entry; MainWindow performs the actual load.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
+from PySide6.QtGui import QAction, QDragEnterEvent, QDragMoveEvent, QDropEvent
 from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from valisync.gui import strings as S
 from valisync.gui.views.recent_files import RecentFiles
 
 # FU-04: Recent ボタンのラベル省略予算 (px)。フルパスをそのままラベルにすると
@@ -34,15 +35,18 @@ class WelcomeView(QWidget):
         self.setAcceptDrops(True)
         self._recent = recent
 
-        title = QLabel("計測ファイルを開く")
+        title = QLabel(S.WELCOME_OPEN_LABEL)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hint = QLabel("mf4 / mdf / dat / csv をドラッグ&ドロップ、または下のボタンから")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hint.setWordWrap(True)
 
-        self.cta = QPushButton("計測ファイルを開く  (Ctrl+O)")
+        # E-3: ショートカット表記部は set_open_action() の後注入まで未確定
+        # (ShellActions は WelcomeView より後に構築される)。
+        self.cta = QPushButton(S.WELCOME_OPEN_LABEL)
         self.cta.setObjectName("welcome_open_cta")
         self.cta.clicked.connect(lambda: self.open_requested.emit(None))
+        self._open_action: QAction | None = None
 
         self._recent_box = QVBoxLayout()
 
@@ -55,6 +59,27 @@ class WelcomeView(QWidget):
         layout.addStretch(2)
 
         self.refresh()
+
+    def set_open_action(self, action: QAction) -> None:
+        """CTA のショートカット表記部を実 QAction から動的合成する (E-3)。
+
+        WelcomeView は ShellActions より先に構築されるため後注入。ラベル部は
+        strings 定数 (WELCOME_OPEN_LABEL) 固定・ショートカット部のみ
+        ``action.shortcut()`` から合成し、``action.changed`` で追随する。
+        ``action.text()`` は使わない — ニーモニクス付与後は「開く(&O)…」になり
+        ラベルと食い違うため (R-04)。
+        """
+        self._open_action = action
+        action.changed.connect(self._sync_open_cta_text)
+        self._sync_open_cta_text()
+
+    def _sync_open_cta_text(self) -> None:
+        assert self._open_action is not None
+        shortcut = self._open_action.shortcut().toString()
+        text = S.WELCOME_OPEN_LABEL
+        if shortcut:
+            text = f"{text} ({shortcut})"
+        self.cta.setText(text)
 
     def _emit_recent(self, path: str) -> None:
         self.open_requested.emit(path)

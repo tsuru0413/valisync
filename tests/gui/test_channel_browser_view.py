@@ -13,6 +13,7 @@ from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt
 from pytestqt.qtbot import QtBot
 
 from valisync.core.models import Delimiter, FormatDefinition
+from valisync.gui import strings as S
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
 from valisync.gui.views.channel_browser_view import ChannelBrowserView
@@ -296,7 +297,7 @@ def test_header_label_shows_active_file_and_counts(
     app_vm.set_active_file(key)
     view = _make_view(qtbot, vm)
     assert "d.csv" in view.header_label.text()
-    assert "2 ch 中 2 件表示" in view.header_label.text()
+    assert "2 信号中 2 件を表示" in view.header_label.text()
 
 
 def test_placeholder_when_none_selected(qtbot: QtBot, tmp_path: Path) -> None:
@@ -399,7 +400,9 @@ def test_context_menu_add_still_emits(qtbot: QtBot, tmp_path: Path) -> None:
         | QItemSelectionModel.SelectionFlag.Rows,
     )
     menu = view.build_context_menu()
-    add_action = next(a for a in menu.actions() if a.text() == "Add to Active Panel")
+    add_action = next(
+        a for a in menu.actions() if a.text() == S.ACTION_ADD_TO_ACTIVE_PANEL
+    )
     with qtbot.waitSignal(view.add_to_panel_requested, timeout=1000):
         add_action.trigger()
 

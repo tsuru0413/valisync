@@ -60,6 +60,7 @@ def test_remove_file_preserves_graph_panel_proportions(
     from PySide6.QtWidgets import QApplication, QMenu
 
     from valisync.core.models import Delimiter, FormatDefinition
+    from valisync.gui import strings as S
     from valisync.gui.viewmodels.app_viewmodel import AppViewModel
     from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
     from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
@@ -227,7 +228,7 @@ def test_remove_file_preserves_graph_panel_proportions(
             if isinstance(popup, QMenu):
                 captured["actions"] = [a.text() for a in popup.actions()]
                 for a in popup.actions():
-                    if a.text() == "Remove File":
+                    if a.text() == S.ACTION_REMOVE_FILE:
                         a.trigger()
                         captured["triggered"] = True
                         break

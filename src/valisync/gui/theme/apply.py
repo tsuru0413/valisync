@@ -11,13 +11,17 @@ QSS 設定後は style().objectName() が壊れるため)。
 
 from __future__ import annotations
 
+import logging
+
 import pyqtgraph as pg
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QLibraryInfo, QSettings, Qt, QTranslator
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QWidget
 
 from valisync.gui.theme import qss, tokens
 from valisync.gui.theme import settings as theme_settings
+
+logger = logging.getLogger(__name__)
 
 
 def build_palette(t: tokens.ThemeTokens) -> QPalette:
@@ -61,12 +65,37 @@ def apply_theme(t: tokens.ThemeTokens | None = None) -> None:
         if not app.property("vs_fusion_applied"):
             app.setStyle("Fusion")
             app.setProperty("vs_fusion_applied", True)
+        _install_qt_translator()
         app.setPalette(build_palette(tt))
         # 領域境界: separator は app レベル QSS でしか描けない (palette 非対応)
         # 冪等: 同一内容なら setStyleSheet を呼ばず (Qt 副作用回避)
         new_sheet = qss.main_window_separator(tt) + "\n" + qss.line_edit_frame(tt)
         if app.styleSheet() != new_sheet:
             app.setStyleSheet(new_sheet)
+
+
+_qt_translator: QTranslator | None = None
+_qt_translator_attempted = False
+
+
+def _install_qt_translator() -> None:
+    """qtbase_ja を install-once で適用する (spec §2.2)。
+
+    QApplication 不在なら何もしない (次回呼び出しで自己回復)。ロード失敗は
+    警告のみ — 自前文言 (strings.py) は translator 非依存のため起動は継続する。
+    """
+    global _qt_translator, _qt_translator_attempted
+    app = QApplication.instance()
+    if app is None or _qt_translator is not None or _qt_translator_attempted:
+        return
+    _qt_translator_attempted = True
+    translator = QTranslator()
+    tr_dir = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
+    if translator.load("qtbase_ja", tr_dir):
+        app.installTranslator(translator)
+        _qt_translator = translator
+    else:
+        logger.warning("qtbase_ja.qm のロードに失敗 — Qt 標準文言は英語のまま継続")
 
 
 _THEME_MODE_KEY = "theme_mode"

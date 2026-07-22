@@ -94,8 +94,9 @@ def test_order_column_shows_seq_for_each_row(qtbot):
 
     # order column sits between the level icon (col 0) and source (col 2),
     # per spec §4.4's "レベルアイコン / 時刻 / ソース / メッセージ / 対象".
-    assert view._table.item(0, 1).text() == "0"
-    assert view._table.item(1, 1).text() == "1"
+    # Display is 1-based (E-2/UX-55); the underlying seq index is unchanged.
+    assert view._table.item(0, 1).text() == "1"
+    assert view._table.item(1, 1).text() == "2"
 
 
 def test_message_column_stretches_other_columns_resize_to_contents(qtbot):

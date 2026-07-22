@@ -202,7 +202,7 @@ def _analyze_menu(window: object):
     act = next(
         a
         for a in window.menuBar().actions()  # type: ignore[attr-defined]
-        if a.text() == "&Analyze"
+        if a.text() == "解析(&A)"
     )
     menu = act.menu()
     menu._keepalive = act  # type: ignore[attr-defined]
@@ -215,10 +215,10 @@ class TestAnalyzeMenu:
         menu = _analyze_menu(window)
         texts = [a.text() for a in menu.actions()]
         assert "カーソル A" in texts
-        assert "カーソル B（Δ）" in texts  # noqa: RUF001
+        assert "カーソル B（Δ）" in texts
         assert "カーソルを消す" in texts
         assert any(
-            a.text() == "補間方式" and a.menu() is not None for a in menu.actions()
+            a.text() == "補間方式(&I)" and a.menu() is not None for a in menu.actions()
         )
         step = next(a for a in menu.actions() if a.text() == "← / → サンプルステップ")
         assert not step.isEnabled()
@@ -480,7 +480,7 @@ def test_on_loaded_status_bar_shows_info_not_alert_for_info_only(qtbot, tmp_path
     )
     window._on_loaded(outcome)
     msg = window.status_message()  # spec §2.4: 右ラベルへ移設 (showMessage 廃止)
-    assert "ℹ 2 件の情報" in msg  # noqa: RUF001
+    assert "ℹ 情報 2 件" in msg
     assert "⚠" not in msg
 
 
@@ -497,7 +497,7 @@ def test_on_loaded_status_bar_shows_alert_count_excluding_info(qtbot, tmp_path):
     )
     window._on_loaded(outcome)
     msg = window.status_message()  # spec §2.4: 右ラベルへ移設 (showMessage 廃止)
-    assert "⚠ 1 件の診断" in msg
+    assert "⚠ 警告/エラー 1 件" in msg
 
 
 def test_diagnostics_dock_exists_with_object_name(qtbot):

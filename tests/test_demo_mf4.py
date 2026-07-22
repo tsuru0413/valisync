@@ -227,7 +227,7 @@ def test_2d_channels_explode_in_valisync(tmp_path):
     skips = [
         d
         for d in outcome.diagnostics
-        if "skipped" in d.message and "ObjMatrix" in d.message
+        if "スキップ" in d.message and "ObjMatrix" in d.message
     ]
     assert len(skips) == 0  # 展開されるので skip 警告は 0 件
 
