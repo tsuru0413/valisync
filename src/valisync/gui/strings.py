@@ -133,3 +133,44 @@ CURSOR_A: Final = "カーソル A"
 CURSOR_B_DELTA: Final = "カーソル B（Δ）"
 CURSOR_CLEAR: Final = "カーソルを消す"
 CURSOR_B_CLEAR: Final = "カーソル B（Δ）を消す"
+
+# ── ファイルブラウザ (file_browser_view・G-14/R-10) ───────────────────────────
+# 右クリックメニュー項目・確認ダイアログ表題は同語 (spec §2.2 の setText 上書き方式)。
+ACTION_REMOVE_FILE: Final = "ファイルを閉じる"
+CONFIRM_CLOSE_FILE_TMPL: Final = "{filename} を閉じますか？プロット中の信号も消えます。"
+CONFIRM_CLOSE_YES: Final = "閉じる"  # QMessageBox.Yes の setText (本文動詞と一致)
+CONFIRM_CLOSE_NO: Final = "キャンセル"  # QMessageBox.No の setText
+
+# ── チャンネルブラウザ (channel_browser_view・G-16/G-18/FB-05等) ─────────────
+FILTER_PLACEHOLDER: Final = "信号名でフィルタ…"  # G-16 — export_csv_dialog.py と共有
+CHANNEL_PLACEHOLDER_NONE_SELECTED: Final = (
+    f"{DOCK_FILE_BROWSER}でファイルを選択すると\n信号一覧を表示します"
+)
+CHANNEL_PLACEHOLDER_NO_CHANNELS: Final = (
+    f"このファイルに信号がありません\n（詳細は「{DOCK_DIAGNOSTICS}」ドックへ）"
+)
+ACTION_ADD_TO_ACTIVE_PANEL: Final = "アクティブパネルへ追加"  # G-18
+
+# ── データエクスプローラ (data_explorer_view・G-09/G-12) ─────────────────────
+DATA_EXPLORER_SOURCES: Final = "データソース"  # ツールバー名 (G-09)
+ACTION_ADD_SOURCE: Final = "データソースを追加"
+ACTION_REMOVE_SOURCE: Final = "データソースを削除"
+DATA_EXPLORER_SELECT_FOLDER: Final = "データソースフォルダを選択"
+ACTION_LOAD_FILE: Final = "ファイルを開く"  # G-12 — File>開く…と同一操作 (★#9)
+ACTION_REMOVE_FROM_SOURCES: Final = "データソースから削除"
+
+# ── 診断 (diagnostics_view・G-04/G-22/G-27) ───────────────────────────────────
+# 他列 (レベル/#/メッセージ/対象) は不変 — ここに含めるのは変更対象のみ。
+DIAG_COL_SOURCE: Final = "データソース"  # G-04
+DIAG_FILTER_ALL: Final = "すべて"
+DIAG_FILTER_ERRORS: Final = "エラー"
+DIAG_FILTER_WARNINGS: Final = "警告"
+DIAG_CLEAR: Final = "クリア"
+
+# ── 信号ツリー列ヘッダ (adapters/signal_tree_model・G-43) ────────────────────
+SIGNAL_TREE_COL_NAME: Final = "名前"
+SIGNAL_TREE_COL_UNIT: Final = "単位"
+
+# ── VM: チャンネルブラウザヘッダ (channel_browser_vm・G-42/R-07) ─────────────
+CHANNEL_HEADER_EMPTY_TMPL: Final = "{name} — 0 信号"
+CHANNEL_HEADER_COUNT_TMPL: Final = "{name} — {total} 信号中 {shown} 件を表示"

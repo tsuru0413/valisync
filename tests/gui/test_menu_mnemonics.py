@@ -7,8 +7,14 @@ from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.session import Session
 from valisync.gui.app import build_main_window
 from valisync.gui.strings import strip_mnemonic
+from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
+from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
+from valisync.gui.views.channel_browser_view import ChannelBrowserView
 from valisync.gui.views.cursor_readout import CursorReadout
+from valisync.gui.views.data_explorer_view import DataExplorerView
+from valisync.gui.views.file_browser_view import FileBrowserView
 from valisync.gui.views.graph_panel_view import GraphPanelView
 
 _MN = re.compile(r"&(?!&)(.)")
@@ -143,3 +149,28 @@ def test_graph_context_menus_have_no_mnemonics(qtbot, tmp_path: Path) -> None:
     qtbot.addWidget(readout)
     _assert_no_mnemonics(readout.build_readout_menu())
     _assert_no_mnemonics(readout.build_column_menu())
+
+
+# ─── ブラウザ系コンテキストメニュー: ニーモニクス非付与 walk (spec §2.4) ───────
+#
+# コンテキストメニュー9面のうち、グラフ系6面(上記)に続くブラウザ3面
+# (channel_browser_view / file_browser_view / data_explorer_view)。同じ
+# §2.4 の非付与規約 (共有 QAction・realgui 掴み点破壊面の最小化) が適用される。
+
+
+def test_browser_context_menus_have_no_mnemonics(qtbot, tmp_path: Path) -> None:
+    """ChannelBrowserView/FileBrowserView/DataExplorerView の build_context_menu
+    を実構築し、ニーモニクス非付与規約 (§2.4) を実メニューで検査する。"""
+    app_vm = AppViewModel()
+
+    channel_view = ChannelBrowserView(ChannelBrowserVM(app_vm))
+    qtbot.addWidget(channel_view)
+    _assert_no_mnemonics(channel_view.build_context_menu())
+
+    file_view = FileBrowserView(FileBrowserVM(app_vm))
+    qtbot.addWidget(file_view)
+    _assert_no_mnemonics(file_view.build_context_menu(0))
+
+    data_explorer_view = DataExplorerView(app_vm)
+    qtbot.addWidget(data_explorer_view)
+    _assert_no_mnemonics(data_explorer_view.build_context_menu(tmp_path))

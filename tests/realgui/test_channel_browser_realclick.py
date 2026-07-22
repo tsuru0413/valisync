@@ -13,6 +13,7 @@ import pytest
 from pytestqt.qtbot import QtBot
 
 from tests.realgui._realgui_input import RDOWN, RUP, at, skip_unless_real_display
+from valisync.gui import strings as S
 
 pytestmark = pytest.mark.realgui
 
@@ -102,4 +103,4 @@ def test_add_to_panel_menu_appears_on_real_os_right_click(
         "no context menu on a real OS right-click; "
         f"got {captured.get('type')!r}. screenshot: {tmp_path / 'ch.png'}"
     )
-    assert captured.get("actions") == ["Add to Active Panel"]
+    assert captured.get("actions") == [S.ACTION_ADD_TO_ACTIVE_PANEL]

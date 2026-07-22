@@ -53,7 +53,7 @@ class SignalPreviewVM:
         rows.append(("サンプル数", str(len(sig.timestamps))))
         tr = sig.time_range()  # raw min/max -- must NOT use sorted_view (FU-20)
         if tr is not None:
-            rows.append(("時間範囲", f"{tr[0]:.4g} - {tr[1]:.4g} s"))
+            rows.append(("時間範囲", f"{tr[0]:.4g}–{tr[1]:.4g} s"))  # noqa: RUF001
         # Finite-value min/max computed from the raw values array (NOT
         # finite_view(), which internally calls sorted_view() and would
         # populate the FU-20 sorted-view cache -- see

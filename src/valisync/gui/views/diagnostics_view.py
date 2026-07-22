@@ -27,13 +27,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from valisync.gui import strings as S
 from valisync.gui.viewmodels.diagnostics_vm import DiagnosticsViewModel
 
 _LEVEL_ICON = {"error": "⛔", "warning": "⚠", "info": "ℹ"}  # noqa: RUF001
 # spec §4.4 column order: レベルアイコン / 時刻 / ソース / メッセージ / 対象.
 # "時刻" is satisfied by DiagnosticEntry.seq (spec §4.3: wall-clock time OR
 # receipt-order sequence number is acceptable) — header kept terse ("#").
-_HEADERS = ("レベル", "#", "ソース", "メッセージ", "対象")
+_HEADERS = ("レベル", "#", S.DIAG_COL_SOURCE, "メッセージ", "対象")
 _MESSAGE_COLUMN = 3  # index of "メッセージ" within _HEADERS
 _PLACEHOLDER_TEXT = "診断はありません"
 
@@ -44,7 +45,7 @@ class DiagnosticsView(QDockWidget):
     entry_activated = Signal(str)
 
     def __init__(self, vm: DiagnosticsViewModel) -> None:
-        super().__init__("Diagnostics")
+        super().__init__(S.DOCK_DIAGNOSTICS)
         self.setObjectName("diagnostics_dock")  # required for saveState/restoreState
         self._vm = vm
         self._filter: str | None = None
@@ -53,10 +54,10 @@ class DiagnosticsView(QDockWidget):
         outer = QVBoxLayout(container)
 
         bar = QHBoxLayout()
-        self._btn_all = QPushButton("All")
-        self._btn_err = QPushButton("Errors")
-        self._btn_warn = QPushButton("Warnings")
-        self._btn_clear = QPushButton("Clear")
+        self._btn_all = QPushButton(S.DIAG_FILTER_ALL)
+        self._btn_err = QPushButton(S.DIAG_FILTER_ERRORS)
+        self._btn_warn = QPushButton(S.DIAG_FILTER_WARNINGS)
+        self._btn_clear = QPushButton(S.DIAG_CLEAR)
         self._btn_all.clicked.connect(lambda: self.set_filter(None))
         self._btn_err.clicked.connect(lambda: self.set_filter("error"))
         self._btn_warn.clicked.connect(lambda: self.set_filter("warning"))
@@ -125,7 +126,7 @@ class DiagnosticsView(QDockWidget):
         for r, e in enumerate(entries):
             cells = (
                 _LEVEL_ICON.get(e.level, "?"),
-                str(e.seq),
+                str(e.seq + 1),  # E-2/UX-55: display is 1-based; index unchanged
                 e.source,
                 e.message,
                 e.signal_name or "—",

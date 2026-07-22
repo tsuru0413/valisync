@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from valisync.core.models import Delimiter, FormatDefinition, Signal
+from valisync.gui import strings as S
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
 
@@ -314,7 +315,9 @@ def test_header_none_selected(tmp_path: Path) -> None:
 def test_header_counts_and_has_rows(tmp_path: Path) -> None:
     app_vm, vm, key = _loaded_vm(tmp_path)
     app_vm.set_active_file(key)
-    assert vm.header_text() == "d.csv — 2 ch 中 2 件表示"
+    assert vm.header_text() == S.CHANNEL_HEADER_COUNT_TMPL.format(
+        name="d.csv", total=2, shown=2
+    )
     assert vm.empty_state() == "has_rows"
 
 
@@ -324,7 +327,9 @@ def test_no_match_state_and_query(tmp_path: Path) -> None:
     vm.set_filter("xyz123")
     assert vm.empty_state() == "no_match"
     assert vm.filter_query() == "xyz123"
-    assert vm.header_text() == "d.csv — 2 ch 中 0 件表示"
+    assert vm.header_text() == S.CHANNEL_HEADER_COUNT_TMPL.format(
+        name="d.csv", total=2, shown=0
+    )
 
 
 def test_no_channels_state(tmp_path: Path, monkeypatch) -> None:
@@ -335,7 +340,7 @@ def test_no_channels_state(tmp_path: Path, monkeypatch) -> None:
     # session 面で直接再現する(spec §4.2)。
     monkeypatch.setattr(app_vm.session, "group_signals", lambda _key: [])
     assert vm.empty_state() == "no_channels"
-    assert vm.header_text() == "d.csv — 0 ch"
+    assert vm.header_text() == S.CHANNEL_HEADER_EMPTY_TMPL.format(name="d.csv")
 
 
 # ─── FU-11 Performance: Precompute + Memo Tests ──────────────────────────────

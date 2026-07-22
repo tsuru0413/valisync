@@ -76,7 +76,7 @@ class ExportCsvDialog(QDialog):
 
         # フィルタ
         self._filter = QLineEdit(self)
-        self._filter.setPlaceholderText("信号名でフィルタ…")
+        self._filter.setPlaceholderText(S.FILTER_PLACEHOLDER)
         self._filter.textChanged.connect(self._apply_filter)
         layout.addWidget(self._filter)
 

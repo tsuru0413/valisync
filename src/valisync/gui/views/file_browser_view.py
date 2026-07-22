@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from valisync.gui import strings as S
 from valisync.gui.adapters.qt_signal_models import FileListModel
 from valisync.gui.views.file_row_spinner import ReleasingSpinnerDelegate
 
@@ -103,19 +104,32 @@ class FileBrowserView(QWidget):
     def build_context_menu(self, row: int) -> QMenu:
         """Single-action menu ('Remove File') — confirms before unloading list *row*."""
         menu = QMenu(self)
-        menu.addAction("Remove File").triggered.connect(
+        menu.addAction(S.ACTION_REMOVE_FILE).triggered.connect(
             lambda *_: self._confirm_and_unload(row)
         )
         return menu
 
     def _default_confirm(self, filename: str) -> bool:
-        reply = QMessageBox.question(
-            self,
-            "ファイルを閉じる",
-            f"{filename} を閉じますか? プロット中の信号も消えます。",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+        # A plain QMessageBox.question(...) call returns only the pressed
+        # StandardButton, giving no handle to relabel the buttons — build the
+        # box explicitly so the standard Yes/No can be overridden to match the
+        # body's verb (spec §2.2: setText overrides survive the qtbase
+        # QTranslator's default "はい/いいえ").
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(S.ACTION_REMOVE_FILE)
+        box.setText(S.CONFIRM_CLOSE_FILE_TMPL.format(filename=filename))
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        yes_button = box.button(QMessageBox.StandardButton.Yes)
+        no_button = box.button(QMessageBox.StandardButton.No)
+        assert yes_button is not None
+        assert no_button is not None
+        yes_button.setText(S.CONFIRM_CLOSE_YES)
+        no_button.setText(S.CONFIRM_CLOSE_NO)
+        reply = box.exec()
         return reply == QMessageBox.StandardButton.Yes
 
     def _confirm_and_unload(self, row: int) -> None:

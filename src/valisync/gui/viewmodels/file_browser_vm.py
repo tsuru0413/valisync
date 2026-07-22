@@ -90,7 +90,7 @@ class FileBrowserVM(Observable):
         if info.t_min is not None and info.t_max is not None:
             duration = info.t_max - info.t_min
             lines.append(
-                f"時間範囲: {info.t_min:.3f} – {info.t_max:.3f} s（{duration:.1f} s）"  # noqa: RUF001
+                f"時間範囲: {info.t_min:.3f}–{info.t_max:.3f} s（{duration:.1f} s）"  # noqa: RUF001
             )
         else:
             lines.append("時間範囲: —")

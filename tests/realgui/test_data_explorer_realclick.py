@@ -13,6 +13,7 @@ from pytestqt.qtbot import QtBot
 
 from tests.mdf4_helpers import CAN, write_mdf4
 from tests.realgui._realgui_input import RDOWN, RUP, at, skip_unless_real_display
+from valisync.gui import strings as S
 
 pytestmark = pytest.mark.realgui
 
@@ -85,4 +86,7 @@ def test_file_menu_appears_on_real_os_right_click(qtbot: QtBot, tmp_path: Path) 
         "no context menu on a real OS right-click; "
         f"got {captured.get('type')!r}. screenshot: {tmp_path / 'de.png'}"
     )
-    assert captured.get("actions") == ["Load File", "Remove from Data Sources"]
+    assert captured.get("actions") == [
+        S.ACTION_LOAD_FILE,
+        S.ACTION_REMOVE_FROM_SOURCES,
+    ]

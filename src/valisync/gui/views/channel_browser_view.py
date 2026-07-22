@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from valisync.gui import strings as S
 from valisync.gui.adapters.qt_signal_models import encode_signal_keys
 from valisync.gui.adapters.signal_tree_model import SignalTreeModel
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
@@ -45,9 +46,9 @@ _UNIT_COLUMN_MIN_WIDTH = 40  # 空/短い Unit しかない場合のフォール
 
 # Empty-state placeholder text (FB-05/08/09); no_match takes a format arg.
 _EMPTY_MESSAGES = {
-    "none_selected": "File Browser でファイルを選択すると\n信号一覧を表示します",
+    "none_selected": S.CHANNEL_PLACEHOLDER_NONE_SELECTED,
     "no_match": "「{query}」に一致する信号はありません",
-    "no_channels": "このファイルに信号がありません\n（Diagnostics に詳細）",  # noqa: RUF001
+    "no_channels": S.CHANNEL_PLACEHOLDER_NO_CHANNELS,
 }
 
 
@@ -65,7 +66,7 @@ class ChannelBrowserView(QWidget):
         self.model = SignalTreeModel(vm)
 
         self.search_box = QLineEdit(self)
-        self.search_box.setPlaceholderText("Filter signals…")
+        self.search_box.setPlaceholderText(S.FILTER_PLACEHOLDER)
         self.search_box.setClearButtonEnabled(True)
 
         # FU-22 B increment 2: debounce the filter scan (~170ms at prod 264k)
@@ -285,7 +286,7 @@ class ChannelBrowserView(QWidget):
     def build_context_menu(self) -> QMenu:
         """Build the signal context menu, greyed out per current selection."""
         menu = QMenu(self)
-        add = menu.addAction("Add to Active Panel")
+        add = menu.addAction(S.ACTION_ADD_TO_ACTIVE_PANEL)
         add.setEnabled(bool(self.selected_signal_keys()))
         # Route through _emit_add_selected so the empty-selection guard is shared
         # with D&D (action is already disabled when empty; add is menu/D&D only).
