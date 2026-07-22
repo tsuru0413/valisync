@@ -78,3 +78,72 @@ def test_chevron_disabled_while_floating(qtbot):
     assert not bar._toggle_button.isEnabled()  # フロート中は無効
     dock.setFloating(False)
     assert bar._toggle_button.isEnabled()
+
+
+# ---------------------------------------------------------------------------
+# シェブロンの辺解決 (B4/UX-44・diag-readout-consistency Task 2)
+# ---------------------------------------------------------------------------
+
+
+def test_bottom_dock_chevron_is_down(qtbot):
+    # 下端の診断ドックは「下方向へ畳む」— chevron_down。
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    bar = win._collapsible_bars["diagnostics_dock"]
+    assert bar.chevron_icon_name() == "chevron_down"
+
+
+def test_right_dock_chevron_is_right(qtbot):
+    # 既定レイアウトの File/Channel は右ドック — chevron_right (現行同値・無回帰)。
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    bar = win._collapsible_bars["file_dock"]
+    assert bar.chevron_icon_name() == "chevron_right"
+
+
+def test_chevron_follows_dock_moved_to_left(qtbot):
+    # 実行時の辺移動 (D&D 相当) に追随する — dockLocationChanged 経由。
+    from PySide6.QtCore import Qt
+
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    bar = win._collapsible_bars["file_dock"]
+    assert bar.chevron_icon_name() == "chevron_right"
+    win.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, win.file_dock)
+    assert bar.chevron_icon_name() == "chevron_left"
+
+
+def test_chevron_name_unchanged_when_floating_starts(qtbot):
+    # フロート開始は NoDockWidgetArea で発火 (実測) — 写像は None を返し、
+    # 呼び出し側 (スロット) は早期 return して直前のシェブロンを維持する。
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    bar = win._collapsible_bars["file_dock"]
+    before = bar.chevron_icon_name()
+    win.file_dock.setFloating(True)
+    assert bar.chevron_icon_name() == before
+
+
+def test_chevron_cache_key_changes_only_on_area_transition(qtbot):
+    # icons.icon() はキャッシュ無しで毎回新規 QIcon のため cacheKey の恒等比較は
+    # 不成立 (実測)。同一ボタンに設定された QIcon インスタンスの cacheKey を
+    # 遷移の前後で比較し、変化「検出」のみに用いる (§2.4 テスト方針)。
+    from PySide6.QtCore import Qt
+
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    bar = win._collapsible_bars["file_dock"]
+    before_key = bar._toggle_button.icon().cacheKey()
+    win.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, win.file_dock)
+    after_key = bar._toggle_button.icon().cacheKey()
+    assert before_key != after_key

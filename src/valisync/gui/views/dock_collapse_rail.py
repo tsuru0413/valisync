@@ -48,6 +48,23 @@ EXPAND_ICON: dict[Qt.DockWidgetArea, str] = {
     Qt.DockWidgetArea.BottomDockWidgetArea: "chevron_up",
 }
 
+# 折りたたみシェブロンは「畳む方向」を指す — EXPAND_ICON (開く方向) の逆 (B4/UX-44)。
+COLLAPSE_ICON: dict[Qt.DockWidgetArea, str] = {
+    Qt.DockWidgetArea.LeftDockWidgetArea: "chevron_left",
+    Qt.DockWidgetArea.RightDockWidgetArea: "chevron_right",
+    Qt.DockWidgetArea.BottomDockWidgetArea: "chevron_down",
+    Qt.DockWidgetArea.TopDockWidgetArea: "chevron_up",
+}
+
+
+def collapse_chevron_for_area(area: Qt.DockWidgetArea) -> str | None:
+    """ドック領域から折りたたみシェブロンのアイコン名を引く。対応外は None。
+
+    呼び出し側 (CollapsibleDockTitleBar) は None を早期 return で扱い、直前の
+    アイコンを維持する — フロート開始時の NoDockWidgetArea が該当 (§2.4)。
+    """
+    return COLLAPSE_ICON.get(area)
+
 
 class _VerticalLabel(QLabel):
     """テキストを 90° 回転して描く縦書きラベル (縦タブ用)。"""
