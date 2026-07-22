@@ -768,45 +768,79 @@ def _global_nrow(w: CursorReadout, n: int) -> None:
 
 
 def test_hint_width_unchanged_when_not_overflowing(qtbot: QtBot):
-    """非オーバーフロー時 (3行) の sizeHint/minimumSizeHint 幅は Step 1 の現行値と
-    完全一致する — QScrollArea 化 (幅もヒントを内容非依存へ落とす Qt 仕様) の
-    影響を sizeHint/minimumSizeHint override が完全に打ち消していることの機械
-    検証 (凍結 03/04 の divider ピクセル一致の前提)。"""
+    """非オーバーフロー時 (3行) の sizeHint/minimumSizeHint 幅は「内容フル幅」を
+    保存する — QScrollArea 化 (幅もヒントを内容非依存へ落とす Qt 仕様) の影響を
+    sizeHint/minimumSizeHint override が完全に打ち消していることの機械検証
+    (凍結 03/04 の divider ピクセル一致の前提)。
+
+    絶対ピクセル値でなく関係性で検証する — 上記 Step 1 対照値 (162/282) は
+    このテスト実行環境 (pytest, offscreen) での採取値だが、CI ランナーは別の
+    フォントメトリクスを持ち別の絶対値になる (実測: CI で 162 が 99 に) ため、
+    固定ピクセル定数の assert は false-red の原因になる。
+
+    崩壊時の実測 (probe, 2026-07-22): override を外し素の QWidget 経由
+    (layout().minimumSize()) にすると、legend の幅は内容ヒント幅 150 に対し
+    80 まで潰れる — (b) の等値 assert がこの「幅がフロアへ崩壊する」regression
+    を直接検出する (下部の sabotage 実証コメント参照)。
+    """
     legend = CursorReadout()
     qtbot.addWidget(legend)
     _legend_3row(legend)
-    assert legend.sizeHint().width() == 162
-    assert legend.minimumSizeHint().width() == 162
+    # (a) 内容非依存のフロアへ崩壊していないこと: sizeHint 幅は rows_host の
+    # 内容ヒント幅以上でなければならない (崩壊時は内容幅を大きく下回る)。
+    assert legend.sizeHint().width() >= legend._rows_host.sizeHint().width()
+    # (b) 非オーバーフロー時は minimumSizeHint が sizeHint と幅で一致する
+    # (高さクランプが幅を歪めていない/フロアへ潰していないことの本体 assert)。
+    assert legend.minimumSizeHint().width() == legend.sizeHint().width()
 
     glob = CursorReadout()
     qtbot.addWidget(glob)
     _global_nrow(glob, 3)
-    assert glob.sizeHint().width() == 282
-    assert glob.minimumSizeHint().width() == 282
+    assert glob.sizeHint().width() >= glob._rows_host.sizeHint().width()
+    assert glob.minimumSizeHint().width() == glob.sizeHint().width()
+
+    # (c) 計測モード (値列+列見出しを持つ) は凡例モードより幅が広い — 幅ヒント
+    # が実際の内容 (列数) に依存していることの実証。
+    assert glob.sizeHint().width() > legend.sizeHint().width()
 
 
 def test_minimum_height_bounded_not_proportional_to_row_count(qtbot: QtBot):
     """minimumSizeHint の高さは行数によらず定数 (3行相当) — 現行 (sizeHint と
     同一・行数に完全比例、上記 Step 1 対照より 14.0px/行) との対比が本体
     (UXG-17)。sizeHint は従来どおり内容ベースで行数に比例させ続ける
-    (スクロール可能な全内容を表す必要があるため)。"""
+    (スクロール可能な全内容を表す必要があるため)。
+
+    絶対ピクセル値でなく関係性で検証する — 上記 Step 1 対照値 (81/389) は
+    このテスト実行環境 (pytest, offscreen) での採取値だが、CI ランナーは別の
+    フォントメトリクスを持ち別の絶対値になる (実測: CI で 81 が 87 に) ため、
+    固定ピクセル定数の assert は false-red の原因になる。同一テスト実行内で
+    採取した値どうしの関係 (等値・比率) は環境非依存で成立する。
+    """
     w3 = CursorReadout()
     qtbot.addWidget(w3)
     _global_nrow(w3, 3)
-    mh3 = w3.minimumSizeHint().height()
-    assert mh3 == 81  # Step 1 対照値 (3行は境界未満なので実行時クランプなし)
+    mh3 = w3.minimumSizeHint().height()  # 3行は境界未満なので実行時クランプなし
 
     w25 = CursorReadout()
     qtbot.addWidget(w25)
     _global_nrow(w25, 25)
     sh25 = w25.sizeHint().height()
     mh25 = w25.minimumSizeHint().height()
-    assert sh25 == 389  # sizeHint は変更前と同じ内容ベース (行数比例) のまま
-    assert mh25 < sh25 - 250, (
+
+    # sizeHint は変更前と同じ内容ベース (行数比例) のまま — 3行相当の高さの
+    # 何倍にも育つことで比例性を実証する (25/3 行 ≈ 8.3倍・比例なら14.0px/行 級)。
+    assert sh25 > mh3 * 3, (
+        f"sizeHint が行数に比例して伸びていない (sh25={sh25}, mh3={mh3})"
+    )
+    # minimumSizeHint はクランプにより sizeHint よりずっと小さい (半分未満)。
+    assert mh25 < sh25 * 0.5, (
         f"minimumSizeHint が行数に比例して伸びている (sh25={sh25}, mh25={mh25})"
     )
-    assert abs(mh25 - mh3) <= 10, (
-        f"25行の minimumSizeHint({mh25}) が3行相当の定数({mh3})から乖離している"
+    # クランプの本体: 25行の minimumSizeHint は3行シードの minimumSizeHint と
+    # 同値 (行数非依存の定数へ有界化されている・境界未満は素通しなので3行が
+    # そのままクランプ定数になる)。
+    assert mh25 == mh3, (
+        f"25行の minimumSizeHint({mh25}) が3行相当の定数({mh3})と一致していない"
     )
 
 
