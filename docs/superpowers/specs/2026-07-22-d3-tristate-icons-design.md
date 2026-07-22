@@ -49,9 +49,9 @@
 | レール | `objectName in _collapsed_docks` | True | `dock_panel_{edge}_partial` |
 | 非表示 | `isHidden()` かつ 非 collapse | False | `dock_panel_{edge}`（unchecked の視覚） |
 
-- **同期**: 単一の `_sync_dock_action(dock)` が上表を再プローブして checked/アイコンを設定（状態は常に導出値 — 並行状態を作らない）。トリガ: `visibilityChanged`（**引数は無視し再プローブの合図のみ**）・`_collapse_dock`/`_expand_dock`（**`_collapsed_docks` 変異後＝関数末尾**で呼ぶ — hide()/show() 先行のため変異前だと stale）・`dockLocationChanged`（辺追随・NoDockWidgetArea は直前維持 — B4 同型）。`topLevelChanged` はトリガに**含めない**（フロートは checked/アイコン不変で観測可能な効果がなく、配線 sabotage を検出できる assert が定義不能 — レビュー指摘によりトリガ一覧から削除）。
+- **同期**: 単一の `_sync_dock_action(dock)` が上表を再プローブして checked/アイコンを設定（状態は常に導出値 — 並行状態を作らない）。**辺も `main_window.dockWidgetArea(dock)` の再プローブで導出**（実測: フロート中・非表示中も実領域を返し NoDockWidgetArea を返さない — シグナル引数の「直前維持」分岐は不要・並行状態ゼロを貫徹）。トリガ: `visibilityChanged`（**引数は無視し再プローブの合図のみ**）・`_collapse_dock`/`_expand_dock`（**`_collapsed_docks` 変異後＝関数末尾**で呼ぶ — hide()/show() 先行のため変異前だと stale）・`dockLocationChanged`（引数不使用・再プローブの合図のみ）。`topLevelChanged` はトリガに**含めない**（フロートは checked/アイコン不変で観測可能な効果がなく、配線 sabotage を検出できる assert が定義不能 — レビュー指摘によりトリガ一覧から削除）。
 - **初期化順序**: action 生成＋sync 配線は **`_restore_state()` より前**（既存 L240 コメントと同じ制約 — restoreState は visibilityChanged をフラッピング発火し最終状態で収束させる必要）・構築完了時に全ドックへ無条件 `_sync_dock_action` を 1 回。
-- **クリック挙動**: checkable QAction は**クリックで checked が自動反転してから handler が走る** — handler は checked 値を無視し、**クリック前の実状態（再プローブ）から遷移を決めて最後に `_sync_dock_action` で上書き**する: 非表示→**`show()`＋`raise_()`**（plain show() は tabify 背面を前面化しない — 実測。既存 `_on_load_error` と同型）／展開→`hide()`／レール→`_expand_dock()`。
+- **クリック挙動**: handler は **`triggered` へ接続（`toggled` 禁止** — toggled はプログラム的 setChecked でも発火し、`_sync_dock_action` の setChecked と handler が無限振動する。計測 IA「triggered のみ」・[[gui_qactiongroup_exclusive_radio_menu]] と同じ確立規約）。checkable QAction は**クリックで checked が自動反転してから handler が走る** — handler は checked 値を無視し、**クリック前の実状態（再プローブ）から遷移を決めて最後に `_sync_dock_action` で上書き**する: 非表示→**`show()`＋`raise_()`**（plain show() は tabify 背面を前面化しない — 実測。既存 `_on_load_error` と同型）／展開→`hide()`／レール→`_expand_dock()`。
 - toggleViewAction はどこにも掲載しない（QDockWidget 組込み action 自体は生存 — 既存の「外部 show() 経路」テストは有効なまま）。
 
 ### 2.4 B — 診断レベルアイコンの Lucide 化
@@ -62,13 +62,15 @@
 
 ### 2.5 C — タブ✕・タイトルバーの統一
 
-- **タイトルバー**: `_float_button` → `setIcon(icons.icon("float_dock"))`・`_close_button` → `setIcon(icons.icon("close"))`。24px 最小ヒット・ツールチップ不変。
+- **タイトルバー**: `_float_button` → `setIcon(icons.icon("float_dock"))`・`_close_button` → `setIcon(icons.icon("close"))`。**iconSize は 16px 指定**（icon-only 化で minimumSizeHint が ~22px に落ち 24px 保証がフレーク圏に入るのを回避）・24px 最小ヒット・ツールチップ不変。**tests/realgui/test_hit_targets.py の既存 2 本（float/close）は幾何前提（minimumSizeHint<24 由来の拡張ヒット点導出）の追随を確認**。
 - **タブ✕（機構をレビュー実測で確定）**:
   - **`setTabsClosable(False)`＋完全自前ボタン**へ変更（setTabsClosable(True) の既定ボタンは setTabButton 置換後も削除されず _rebuild ごとにタブバーへ隠れ蓄積する実測リークのため、既定ボタン生成自体を止める）。
-  - 自前 QToolButton（autoRaise）: `icons.icon("close", color=..., active_color=c.error)` — **hover 赤は QIcon.Mode.Active で実現**（QSS はピクスマップ色を変えられない — 実測）。
-  - **クリック→`tabCloseRequested` は自動発火しない**（既定ボタンのみの内部接続 — 実測）— 自前 clicked を**クリック時 index 解決**（tabBar 上の自ボタン恒等走査・事前 capture 禁止）で `tabCloseRequested.emit` へ接続。
+  - 自前 QToolButton（autoRaise）: `icons.icon("close", color=..., active_color=c.close_hover)` — **hover 赤は QIcon.Mode.Active で実現**（QSS はピクスマップ色を変えられない — 実測）。**hover 色は `close_hover` トークンを消費**（readout ✕ hover と同一役割 — error 直消費は LIGHT で別の赤になり増分0 の役割写像に違反。既存の値分岐テスト体系〔test_theme_qss〕と同様に誤配線ガードを付ける）。
+  - **クリック→`tabCloseRequested` は自動発火しない**（既定ボタンのみの内部接続 — 実測）— 自前 clicked を**クリック時 index 解決**（tabBar 上の自ボタン恒等走査・事前 capture 禁止）で `tabCloseRequested.emit` へ接続（既存の tabCloseRequested→remove_tab 配線は不変）。
+  - **設置位置は style-hint 解決位置**（`SH_TabBar_CloseButtonPosition` — 実測 RightSide。既存 tests/gui/test_graph_area_tab_ui.py の位置 assert と整合）。
   - **24px 相当の当たり判定**（UX-38 残余の解消 — 視覚サイズは維持・test_hit_targets へタブ✕を追加）。
-  - 全タブ生成経路（_rebuild）で設置・「単一タブは close 非表示」の既存規則は自前ボタンの非設置で実現。**Layer B に rebuild N 回後のボタン数不変ガード**（蓄積リークの回帰防止）。
+  - 全タブ生成経路（_rebuild）で設置・「単一タブは close 非表示」の既存規則は自前ボタンの非設置で実現（旧抑制コード setTabButton(0,pos,None) は撤去）。**Layer B に rebuild N 回後のボタン数不変ガード**（蓄積リークの回帰防止）。
+  - **追随 grep へ `tabsClosable|tabCloseRequested|tabButton` を追加**（tests/gui/test_graph_area_tab_ui.py:56-93 は toggleViewAction/グリフ grep のどちらにも掛からない — emit 直叩き系は存置・位置/有無 assert は自前ボタン前提へ書換の振り分け）。
 - 読み値トグル・「+」等は不変。
 
 ### 2.6 変更しないもの
@@ -90,13 +92,15 @@
   - **tabify 遷移（レビュー Critical の検出網）**: `tabifyDockWidget` で背面化→**両 action とも展開/checked 維持**・背面 action クリック→hide（パリティ挙動）
   - **最小化**: showMinimized/showNormal で checked 不変
   - **pre-show restoreState**: 非表示保存状態の復元→action unchecked に収束（フラッピング耐性）
+  - **起動時 collapse 復元**: dockCollapsed 保存ありで再構築→構築直後（show 前）の action が checked＋partial アイコン（_apply_saved_collapse は show 前 — 増分C で startup-ordering バグ実績のある経路）
+  - **_reset_layout**: 実行後に 3 action が展開/checked へ復帰
   - float 往復: setFloating(True)→checked/アイコン不変→再ドックで edge 追随（dockLocationChanged 経由）
   - 辺移動: addDockWidget(Left)→アイコン edge 追随・外部 show()（_on_load_error 相当）→checked 追随・View メニューとツールバーの参照一致
   - タブ✕: 複数タブで**先頭を閉じた後の 2 番目✕クリックが正しいタブを閉じる**（クリック時 index 解決の検証）・rebuild N 回後のボタン数不変・単一タブ非表示規則
   - アイコン名検証は introspection（保持名 — B4 パターン）・cacheKey 恒等比較禁止
 - **Layer C（realgui・①ゲート）**:
   - 実機スクショ: ツールバー三態（3 状態を実際に作る）＋ **File/Channel の区別可否（TextBesideIcon）**・診断 3 アイコン＋amber 序列・**選択行上のアイコン視認**（Selected モード）・タブ✕ hover 赤（**実マウス小刻みスイープ** — [[gui_realgui_hover_needs_incremental_move]]）・タイトルバーアイコン
-  - **掴み点追随（tests/ 全域・サイト単位）**: `toggleViewAction` grep は **src/＋tests/ 全域**（初版の src/ 限定は誤り）— realgui 2 本（test_shell_chrome_flow.py:70・test_dock_onscreen_after_toggle.py:131 の `widgetForAction(toggleViewAction())` → None 化で赤）はカスタム action への移行・test_shell_chrome.py:55-67 は掲載 assert の書換＋同一 action 検証の意図更新・**test_main_window.py の toggleViewAction trigger は「外部 show() 経路」の意図的使用で存置**。グリフ `✕|❐|⛔|⚠|ℹ` も tests/ 全域（**PR #143 で入ったばかりのカウンタ文言 assert「⛔ 0 / ⚠ 0 / ℹ 0」は B で確実に壊れる** — 同時追随）
+  - **掴み点追随（tests/ 全域・サイト単位）**: `toggleViewAction` grep は **src/＋tests/ 全域**（初版の src/ 限定は誤り）— realgui 2 本（test_shell_chrome_flow.py:70・test_dock_onscreen_after_toggle.py:131 の `widgetForAction(toggleViewAction())` → None 化で赤）はカスタム action への移行・test_shell_chrome.py:55-67 は掲載 assert の書換＋同一 action 検証の意図更新・**test_main_window.py の toggleViewAction trigger は「外部 show() 経路」の意図的使用で存置**。グリフ `✕|❐|⛔|⚠|ℹ` も tests/ 全域（**PR #143 で入ったばかりのカウンタ文言 assert「⛔ 0 / ⚠ 0 / ℹ 0」は計 4 サイト（tests/gui/test_diagnostics_view.py:89/99/102＋tests/realgui/test_diagnostics_clear_realclick.py:195 — realgui 分は CI 外で①ゲートまで潜伏）で確実に壊れる** — 同時追随）。icons の set-lock テスト（tests/gui/test_theme_icons.py:47-56 の set(ICONS) 完全一致）は新意味名追加で必然更新
 - **凍結検証**: 全カタログ状態×両テーマの意図的差分（ツールバー〔アイコン＋TextBesideIcon で幅変化〕・診断レベル列/カウンタ・タブ✕・タイトルバー）。**「診断ドック外の差分ゼロ」は diff 画像の目視で確認**（機械照合ツールは viewport crop のみ — 表現を正確化）・プロット viewport crop 一致・ベースライン昇格＋決定性＋DesignSync（icons overview カードに新アイコン自動反映）。
 
 ## 4. リスクと対策
@@ -119,7 +123,7 @@
 1. **基盤**: トークン 2 種＋コントラストヘルパ＋AA/総当たり/golden 追随テスト＋SVG 11 個 vendor＋icons 拡張（color/active_color/selected_color）＋wheel テスト新設。
 2. **A 三態トグル**: カスタム QAction（TextBesideIcon）・`_sync_dock_action`（述語・順序・クリック挙動 §2.3 逐語）・2 面置換＋toggleViewAction テスト 4 ファイル振り分け＋Layer B 状態機械テスト全遷移（tabify/最小化/pre-show restore 含む）。
 3. **B+C アイコン適用**: 診断テーブル（Selected 込み）/カウンタ HBox・タイトルバー・タブ✕（tabsClosable(False)＋自前・クリック時 index 解決・24px・hover Active）＋グリフ grep 追随＋Layer B（タブ閉じ・ボタン数・ヒット）。
-4. **凍結・①ゲート・docs**: realgui フル＋実機スクショ（§3 Layer C の観点全数）・前後比較→昇格→DesignSync・design.md 決定履歴（グリフ置換 defer 解除・三態クリック挙動・tabify パリティ・3:1 基準）・カタログ（**UX-45 解消・UX-38 解消・UX-34 部分解消〔ステータスバー残余は通知再設計へ移管〕**）・CLAUDE.md。
+4. **凍結・①ゲート・docs**: realgui フル＋実機スクショ（§3 Layer C の観点全数）・前後比較→昇格→DesignSync・design.md 決定履歴（グリフ置換 defer 解除・三態クリック挙動・tabify パリティ・3:1 基準）・カタログ（**UX-45 解消・UX-38 解消・UX-34 部分解消〔ステータスバー残余は通知再設計へ移管〕・audit-findings-catalog の SH-04 注記を機構変更〔tabsClosable(False)＋自前〕へ更新**）・CLAUDE.md。
 
 ## 6. 受け入れ基準
 
