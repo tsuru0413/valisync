@@ -290,3 +290,27 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   realgui フル 92/92 pass。**claude.ai/design への再同期のみマージ後に実施**
   （controller）。設計は
   [incd-strings-os spec](superpowers/specs/2026-07-22-incd-strings-os-design.md)。
+- 2026-07-22: 診断・読み値の整合性修正（D-2 不採用の代替・トークン変更なし）。増分
+  D-2「通知センター型診断」はモックアップ提示後にユーザー不採用（「こんな豪華な診断
+  ウィンドウは不要・現状のままで ok」）。代替として現状の見た目・構造・挙動契約を
+  維持したまま実バグ/不整合6件（B1-B6）のみを是正: B1=フッターカウンタへ ℹ 追加
+  （`counts()` 3-tuple 化）／B2=フィルタ3ボタンの checkable 排他化＋絞り込み0件文言
+  のフィルタ文脈化（**supersede**: 「絞り込み0件と診断ゼロの同一表示」の by-design は
+  [feedback-errors spec §7](superpowers/specs/2026-07-02-gui-feedback-errors-design.md)
+  （『空時はプレースホルダ』）が根拠だったが、UXG 監査で UX-06「誤認装置」認定と
+  なったため本修正で覆す）／B3=メッセージセルへ全文ツールチップ／B4=展開側タイトル
+  バーのシェブロンをドックの辺から解決（下端の診断は「v」— レール側辺対応
+  〔PR #133〕との不整合を解消）／B5=Clear に確認ダイアログ（非可逆操作の誤クリック
+  防止）／B6=読み値ペインの縦スクロール化（`QScrollArea`・幅の契約は
+  `sizeHint`/`minimumSizeHint` override で保存し非オーバーフロー時はピクセル不変。
+  **UXG-17 逸脱の明記**: 列見出し行は固定化せず行と共にスクロールする意図的簡易形
+  〔固定化は2グリッド分割＋列幅同期の再設計を要し「現状のまま」方針に反するため
+  見送り〕・**縦オーバーフロー時のみスクロールバー extent 分（約14px）広がるのは
+  意図的例外**〔凍結比較対象外の状態〕）。realgui フル 94/94 pass。凍結ベースライン
+  全面更新（`screenshots_catalog_dark/light` 両テーマ9状態を再撮影 — 想定差分は診断
+  ドック内のみ〔カウンタ ℹ 追加・「すべて」ボタンの checked 枠・下端タイトルバーの
+  シェブロン >→v〕に限定されることを実証・プロット viewport は `--crop-meta` 完全
+  一致、読み値ペイン/プロット全体/divider 位置はピクセル不変〔差分画像で診断ドック
+  外に相違ゼロを目視確認〕・再撮影で決定性 exit 0 実証）。**claude.ai/design への
+  再同期とエクスポート再生成はマージ後に実施**（controller）。設計は
+  [diag-readout-consistency spec](superpowers/specs/2026-07-22-diag-readout-consistency-design.md)。
