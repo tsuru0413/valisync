@@ -314,3 +314,66 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   外に相違ゼロを目視確認〕・再撮影で決定性 exit 0 実証）。**claude.ai/design への
   再同期とエクスポート再生成はマージ後に実施**（controller）。設計は
   [diag-readout-consistency spec](superpowers/specs/2026-07-22-diag-readout-consistency-design.md)。
+- 2026-07-22: 増分D-3「三態トグル＋アイコン統一」（UX-34/45・**絵文字グリフ置換の
+  defer 解除**〔増分5 で defer した方針をここで解除・design.md 記録が解除の証跡〕）。
+  **新トークン `warning`/`info`**（DARK `#fab387`/`#7aa2f7`・LIGHT `#b0741a`/
+  `#1a5fb4`・診断 warning/info の意味色・**非テキスト WCAG 1.4.11 の 3:1 基準**を
+  `chrome_base`/`chrome_window` 双方×両テーマで機械検証する相対輝度→コントラスト比
+  ヘルパを新設）。**vendored Lucide SVG 11 個**（circle-x/triangle-alert/info/x/copy/
+  panel-{left,right,bottom}[_close] ×2）＋`icons.icon()` を `color`/`active_color`/
+  `selected_color` 引数へ拡張（Normal 上書き／QIcon.Mode.Active・Selected への追加
+  着色 — QSS はピクスマップ色を変えられないため hover 赤・選択セル可視性はこの経路
+  でのみ実現可能）。**wheel パッケージングテスト新設**（`uv build --wheel` → zipfile
+  で新規 SVG 11 個の同梱を assert・増分5 の「wheel からアイコンが黙って落ちる」
+  false-green の恒久防波堤・実測 wheel テストは本増分が初）。
+  **A: ドックトグルの三態化**（UX-45）— View メニュー/ツールバー共有の
+  `toggleViewAction()` を、ドックごと1個のカスタム checkable QAction へ置換。
+  可視述語は `not dock.isHidden()` の**都度ポーリング**（`visibilityChanged`/
+  `dockLocationChanged` のシグナル**引数は判定に使用禁止** — tabify 背面/フロートで
+  嘘値になることを実測）＋辺は `dockWidgetArea()` の都度再プローブ。展開/レール/
+  非表示の3状態（レールは checked 維持＋partial アイコンで Qt 標準 toggleViewAction
+  とパリティ）。handler は `triggered` 接続のみ（`toggled` は禁止 — プログラム的
+  setChecked と無限振動する）。File/Channel は同一辺で三態アイコンが同一になり
+  区別不能なため、ツールバーの3ボタンのみ `ToolButtonTextBesideIcon`。
+  **B: 診断レベルアイコンの Lucide 化** — レベル列 `setIcon`（テキスト空・unknown
+  は "?" 存置）＋カウンタ行をアイコン+数値の3ペア HBox 化。`selected_color` 併載で
+  選択行上でも視認可能（旧絵文字はテーマの選択ハイライトへ埋没する退行があった）。
+  **C: タブ✕・タイトルバーの統一** — タブ✕は `setTabsClosable(False)`＋完全自前
+  QToolButton（Qt 既定ボタンは setTabButton 置換後も削除されず rebuild ごとに蓄積
+  する実測リークのため既定ボタン生成自体を停止）。クリックは自動発火しないため
+  tabBar 上の恒等走査で index を都度解決して `tabCloseRequested.emit`。hover 赤は
+  `close_hover` トークンを `QIcon.Mode.Active` で消費。タイトルバー close/float は
+  Lucide 化（`float_dock`=copy グリフ・iconSize 16px 明示）。
+  **①ゲートで実機発見・対応した事項（Task 4）**:
+  (1) `tests/realgui/test_hit_targets.py` の float/close/タブ✕ 3 テストが実機で
+  RED — icon-only 16px 化で自然高さ (minimumSizeHint) が chevron と同型の 24px に
+  達し、既存の「旧 rect 外・新 rect 内」拡張ヒット式が old_h==new_h==24 の境界で
+  ボタン下端の1px外（無効行）に落ちて実クリックが不発になっていた。共有ヘルパを
+  old_h>=24 でボタン中央へフォールバックする分岐へ修正。さらに realgui 51ファイル
+  一括実行でのみ、同じ3ボタンの natural height が 23px（境界の反対側）に観測される
+  実行順依存の環境差を検出（フォント計量の丸め）— old_h の具体値を assert する
+  のは過剰特定と判断し削除、実クリックの効果のみを検証する形へ是正。単体/4バッチ
+  実行では 95/95 全 pass（バッチ実行のたび再現）。(2) 同一 realgui 一括実行のみで
+  再現する2件の**未修正・D-3 と無関係の既知フレーク**を確認: `test_hit_targets.py::
+  test_chevron_already_meets_24px_height`（D-3 が触れていない pre-existing 測定
+  assert・height 24→23 の同型変動）と `test_expansion_dialog_realinput.py::
+  test_bottom_checkbox_reachable_by_real_wheel_then_ok`（D-3 が触れていないダイアログ
+  wheel スクロールテスト）— いずれも単体/2ファイル再実行では 100% pass し、51ファイル
+  連続実行時のみ発生する環境状態ドリフト（多数の実ウィンドウ生成の累積と推測）に
+  起因すると判断、本増分のスコープ外として現状のまま記録のみ。(3) タブ✕は
+  `add_tab()` 直後の `_rebuild` が生成した新規ボタンの `mapToGlobal` が isVisible
+  判定直後は暫定位置を返すレイアウト未確定 race を実機で検出、数ターンの
+  processEvents pump で解消。**float_dock（copy グリフ）の可読性は目視で要注意
+  — 「コピー/複製」を強く想起させ「フロート化」の意図が単体では読み取りにくい
+  （ツールチップ「フロート」で補完される前提）。DONE_WITH_CONCERNS として記録し、
+  将来のアイコン反復で undock 系グリフへの差し替えを検討候補とする**。
+  実機スクショ（`design_export/evidence_d3/`）で三態の作り分け・File/Channel の
+  TextBesideIcon 区別・診断3アイコンの amber 序列＋選択行視認・タブ✕ hover 赤
+  （実マウス小刻みスイープ）・タイトルバーアイコンを確認。**凍結ベースライン
+  更新**（`screenshots_catalog_dark/light` 両テーマ9状態を再撮影 — 想定差分は
+  ツールバー〔TextBesideIcon 幅変化〕・File/Channel dock タイトルバー〔float/close
+  アイコン〕・診断レベル列/カウンタに限定〔目視で診断ドック外・プロット面の相違
+  ゼロを確認〕・`--crop-meta` でプロット viewport 完全一致・再撮影で決定性 exit 0
+  実証）。realgui フル 95/95 pass（4バッチ）。**claude.ai/design への再同期は
+  マージ後に実施**（controller）。設計は
+  [d3-tristate-icons spec](superpowers/specs/2026-07-22-d3-tristate-icons-design.md)。

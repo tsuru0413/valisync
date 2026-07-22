@@ -74,10 +74,10 @@
 
 ## Task 4: 凍結・①ゲート・docs
 
-- [ ] **Step 1**: realgui フル（4 バッチ可）＋新規実機確認: ツールバー三態（3 状態を実際に作る）・File/Channel 区別・診断 3 アイコン＋amber 序列・**選択行上の視認**・**タブ✕ hover 赤（実マウス小刻みスイープ）**・タイトルバー。証拠スクショ保存。
-- [ ] **Step 2**: 凍結前後比較（両テーマ）— 想定差分: ツールバー（アイコン＋TextBesideIcon 幅変化）・診断レベル列/カウンタ・タブ✕・タイトルバー。**診断ドック外の非想定差分ゼロは diff 目視**・プロット viewport crop 機械一致 → 昇格 → 決定性 exit 0。
-- [ ] **Step 3**: docs — design.md 決定履歴（グリフ置換 defer 解除・三態クリック挙動/triggered/tabify パリティ・3:1 基準・close_hover 消費）／カタログ: **UX-45 解消・UX-38 解消・UX-34 部分解消（ステータスバー残余は通知再設計へ移管）・audit-findings-catalog の SH-04 注記更新**／CLAUDE.md 行。
-- [ ] **Step 4**: 最終ゲート → commit → PR（DesignSync はマージ後コントローラ）。
+- [x] **Step 1**: realgui フル（4 バッチ可）＋新規実機確認: ツールバー三態（3 状態を実際に作る）・File/Channel 区別・診断 3 アイコン＋amber 序列・**選択行上の視認**・**タブ✕ hover 赤（実マウス小刻みスイープ）**・タイトルバー。証拠スクショ保存。— 4バッチ 95/95 pass。実機発見: float/close/タブ✕ の icon-only 化で自然高さが chevron 同型の 24px 境界に達し既存拡張ヒット式が境界外に落ちる実バグを `tests/realgui/test_hit_targets.py` の共有ヘルパ修正で解消（old_h の具体値 assert は環境依存〔51ファイル一括実行のみ 23px 観測〕のため削除し実クリック効果検証へ）。51ファイル一括実行のみで再現し D-3 と無関係と確認した既存2件のフレーク（chevron 測定・expansion dialog wheel）はスコープ外記録のみ。証拠は `design_export/evidence_d3/`。
+- [x] **Step 2**: 凍結前後比較（両テーマ）— 想定差分: ツールバー（アイコン＋TextBesideIcon 幅変化）・診断レベル列/カウンタ・タブ✕・タイトルバー。**診断ドック外の非想定差分ゼロは diff 目視**・プロット viewport crop 機械一致 → 昇格 → 決定性 exit 0。— 両テーマとも診断ドック外/プロット面の非想定差分ゼロを diff 目視確認・`--crop-meta` 完全一致・昇格後決定性 exit 0 実証済み。
+- [x] **Step 3**: docs — design.md 決定履歴（グリフ置換 defer 解除・三態クリック挙動/triggered/tabify パリティ・3:1 基準・close_hover 消費）／カタログ: **UX-45 解消・UX-38 解消・UX-34 部分解消（ステータスバー残余は通知再設計へ移管）・audit-findings-catalog の SH-04 注記更新**／CLAUDE.md 行。— 全て反映済み（float_dock=copy グリフの可読性は DONE_WITH_CONCERNS として design.md に記録）。
+- [x] **Step 4**: 最終ゲート → commit → PR（DesignSync はマージ後コントローラ）。
 
 ## Self-Review 済み確認事項
 
