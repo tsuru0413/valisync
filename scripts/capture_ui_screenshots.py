@@ -124,7 +124,10 @@ def main() -> int:
         `GraphPanelView.plot_widget`(QGraphicsView) の viewport を window 座標へ
         mapTo し、devicePixelRatioF で物理ピクセルへ換算する — window.grab() が
         保存する PNG は物理ピクセル寸法 (Windows 125% 等スケーリング時は論理サイズ
-        と一致しない)。パネル無し状態 (Welcome 等) は None (呼び出し側で省略)。
+        と一致しない)。パネル無し/非可視状態 (Welcome 等 — central_stack が
+        graph_area_view を裏に隠している) は None (呼び出し側で省略)。Welcome 到達
+        時点でも既定タブ/空パネルは生成済みのため、isVisible() で実際に画面上へ
+        出ているかを見る (QStackedWidget の非カレントページは hide() される)。
         """
         from PySide6.QtCore import QPoint
 
@@ -132,6 +135,8 @@ def main() -> int:
         if not panels:
             return None
         _tab, _panel_id, panel_view = panels[0]
+        if not panel_view.isVisible():
+            return None
         viewport = panel_view.plot_widget.viewport()
         top_left = viewport.mapTo(window, QPoint(0, 0))
         dpr = window.devicePixelRatioF()

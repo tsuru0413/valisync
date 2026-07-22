@@ -126,6 +126,29 @@ def test_crop_meta_skips_states_without_viewport_json(tmp_path):
     assert rc == 2
 
 
+def test_crop_meta_ignores_full_image_size_mismatch_on_non_plot_state(tmp_path):
+    """viewport メタの無い状態は全体サイズが違っても crop-meta 判定を汚さない。
+
+    実例: エクスポートダイアログはテキスト長で幅が変わる (348px→360px) が
+    プロットを含まない — plot viewport の機械一致証明とは無関係。
+    """
+    baseline, after = _make_pair(tmp_path)
+    rect = {"x": 2, "y": 2, "w": 4, "h": 4}
+
+    plot_base = _solid(20, 20, (1, 2, 3))
+    plot_after = plot_base.copy()  # crop 内完全一致
+    _save_png(baseline / "02_plotted.png", plot_base)
+    _save_png(after / "02_plotted.png", plot_after)
+    (after / "02_plotted.viewport.json").write_text(json.dumps(rect), encoding="utf-8")
+
+    # ダイアログ状態: viewport メタ無し・全体サイズが異なる (テキスト起因の自動幅拡張)
+    _save_png(baseline / "06_dialog.png", _solid(30, 20, (0, 0, 0)))
+    _save_png(after / "06_dialog.png", _solid(36, 20, (0, 0, 0)))
+
+    rc = cs.main([str(baseline), str(after), "--crop-meta"])
+    assert rc == 0
+
+
 def test_crop_meta_off_compares_full_image_as_before(tmp_path):
     """--crop-meta 無指定時は従来どおり全面比較 (回帰確認)。"""
     baseline, after = _make_pair(tmp_path)

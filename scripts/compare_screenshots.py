@@ -66,26 +66,38 @@ def main(argv: list[str] | None = None) -> int:
     size_mismatch = False
     checked = 0
     for name in names:
-        a = _load_rgba(args.baseline / name)
-        b = _load_rgba(args.after / name)
-        if a.shape != b.shape:
-            print(f"NG {name}: サイズ不一致 {a.shape} vs {b.shape}")
-            size_mismatch = True
-            continue
-
         label = ""
         out_name = name
+
         if args.crop_meta:
+            # メタ無し状態 (Welcome/ダイアログ等) は crop-meta 判定と無関係 — 全体
+            # サイズが違っても (例: エクスポートダイアログのテキスト起因の幅拡張)
+            # プロット不変の機械証明を汚さないよう、全体画像を読む前に除外する。
             stem = name[: -len(".png")]
             rect = _load_viewport_rect(args.after, args.baseline, stem)
             if rect is None:
                 print(f"SKIP {name}: viewport メタなし (プロット無し状態)")
                 continue
+            a = _load_rgba(args.baseline / name)
+            b = _load_rgba(args.after / name)
             x, y, w, h = rect["x"], rect["y"], rect["w"], rect["h"]
             a = a[y : y + h, x : x + w]
             b = b[y : y + h, x : x + w]
+            if a.shape != b.shape:
+                print(
+                    f"NG {name} (viewport crop): crop 領域サイズ不一致 {a.shape} vs {b.shape}"
+                )
+                size_mismatch = True
+                continue
             label = " (viewport crop)"
             out_name = f"{stem}.crop.png"
+        else:
+            a = _load_rgba(args.baseline / name)
+            b = _load_rgba(args.after / name)
+            if a.shape != b.shape:
+                print(f"NG {name}: サイズ不一致 {a.shape} vs {b.shape}")
+                size_mismatch = True
+                continue
 
         checked += 1
         diff = (a != b).any(axis=2)
