@@ -31,6 +31,8 @@ import pytest
 
 from valisync.core.models import Delimiter, FormatDefinition, Signal
 from valisync.core.session import Session
+from valisync.gui.color_variants import hue_variant
+from valisync.gui.theme.tokens import active
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
@@ -61,6 +63,29 @@ def _write_csv(path: Path) -> Path:
         writer.writerow(["t", "speed"])
         writer.writerow(["0.0", "10.0"])
         writer.writerow(["1.0", "20.0"])
+    return path
+
+
+def _csv_format_n(n_signals: int) -> FormatDefinition:
+    """FormatDefinition for a CSV with t + n_signals data columns (E-2c tests)."""
+    return FormatDefinition(
+        name="tN",
+        delimiter=Delimiter.COMMA,
+        timestamp_column=0,
+        timestamp_unit="sec",
+        signal_start_column=1,
+        signal_end_column=n_signals,
+        has_header=True,
+    )
+
+
+def _write_csv_n(path: Path, n_signals: int) -> Path:
+    """Write a CSV with n_signals data columns (headers s1..sN, E-2c tests)."""
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["t"] + [f"s{i}" for i in range(1, n_signals + 1)])
+        writer.writerow([0.0, *[10.0 * i for i in range(1, n_signals + 1)]])
+        writer.writerow([1.0, *[20.0 * i for i in range(1, n_signals + 1)]])
     return path
 
 
@@ -766,3 +791,103 @@ def test_extract_axis_preserves_manual_range_of_sole_axis(
     dst_vm.insert_axis(axis, entries, column=dst_vm.column_count - 1, position=None)
     assert dst_vm.axes[-1].y_is_auto is False
     assert dst_vm.axes[-1].y_range == (1000.0, 2000.0)  # 挿入先でもフィットされず温存
+
+
+# ─── E-2c: hue-resolver injection wiring (spec §4.1/§6) ──────────────────────
+#
+# These go through GraphAreaVM(app_vm) with a REAL AppViewModel and 2 real
+# loaded files -- unlike test_graph_panel_vm.py's E-2c tests (which inject a
+# hand-built resolver directly into GraphPanelVM), this is the only layer
+# that can catch a missing hue_resolver= at one of GraphAreaVM's 3 panel
+# construction sites (spec's explicit "resolver 直接注入 VM では配線漏れに
+# 盲目" warning).
+
+
+def test_initial_panel_hue_colors_wired_via_graph_area_vm(tmp_path: Path) -> None:
+    """Construction site #1 (__init__'s initial panel)."""
+    app_vm = AppViewModel()
+    key1 = app_vm.request_load(_write_csv(tmp_path / "a.csv"), _csv_format())
+    key2 = app_vm.request_load(_write_csv_n(tmp_path / "b.csv", 2), _csv_format_n(2))
+    area = GraphAreaVM(app_vm)
+    panel = area.panels(0)[0]
+
+    panel.add_signal(f"{key1}::speed")
+    panel.add_signal(f"{key2}::s1")
+    panel.add_signal(f"{key2}::s2")
+
+    entries = panel.inspect()["plotted_signals"]
+    palette = active().colors.signal_palette
+    hue1 = app_vm.file_hue_index[key1]
+    hue2 = app_vm.file_hue_index[key2]
+    assert entries[0]["color"] == hue_variant(palette[hue1].hex, 0)
+    # Both file-2 signals share ONE hue family (only the lightness step
+    # differs) -- if the resolver hadn't reached this panel, they would fall
+    # back to two UNRELATED count-mod palette entries instead.
+    assert entries[1]["color"] == hue_variant(palette[hue2].hex, 0)
+    assert entries[2]["color"] == hue_variant(palette[hue2].hex, 1)
+    assert entries[1]["color"] != entries[2]["color"]
+
+
+def test_add_tab_panel_hue_colors_wired_via_graph_area_vm(tmp_path: Path) -> None:
+    """Construction site #2 (add_tab)."""
+    app_vm = AppViewModel()
+    app_vm.request_load(_write_csv(tmp_path / "a.csv"), _csv_format())
+    key2 = app_vm.request_load(_write_csv_n(tmp_path / "b.csv", 2), _csv_format_n(2))
+    area = GraphAreaVM(app_vm)
+    tab_index = area.add_tab()
+    panel = area.panels(tab_index)[0]
+
+    panel.add_signal(f"{key2}::s1")
+    panel.add_signal(f"{key2}::s2")
+
+    entries = panel.inspect()["plotted_signals"]
+    palette = active().colors.signal_palette
+    hue2 = app_vm.file_hue_index[key2]
+    assert entries[0]["color"] == hue_variant(palette[hue2].hex, 0)
+    assert entries[1]["color"] == hue_variant(palette[hue2].hex, 1)
+
+
+def test_add_panel_hue_colors_wired_via_graph_area_vm(tmp_path: Path) -> None:
+    """Construction site #3 (add_panel) -- not required by spec §6's explicit
+    list but cheap to cover given the same factory backs all 3 sites."""
+    app_vm = AppViewModel()
+    key2 = app_vm.request_load(_write_csv_n(tmp_path / "b.csv", 2), _csv_format_n(2))
+    app_vm.request_load(_write_csv(tmp_path / "a.csv"), _csv_format())
+    area = GraphAreaVM(app_vm)
+    panel_index = area.add_panel(0)
+    panel = area.panels(0)[panel_index]
+
+    panel.add_signal(f"{key2}::s1")
+    panel.add_signal(f"{key2}::s2")
+
+    entries = panel.inspect()["plotted_signals"]
+    palette = active().colors.signal_palette
+    hue2 = app_vm.file_hue_index[key2]
+    assert entries[0]["color"] == hue_variant(palette[hue2].hex, 0)
+    assert entries[1]["color"] == hue_variant(palette[hue2].hex, 1)
+
+
+def test_second_file_load_reapplies_hue_colors_to_existing_panel(
+    tmp_path: Path,
+) -> None:
+    """End-to-end transition (spec §4.2): a 2nd file's real request_load must
+    trigger reapply_auto_colors on every existing panel via the "loaded"
+    handler -- not just refresh(). Exercises the closing-review Critical
+    scenario (3 signals added before comparison mode, then separated on
+    reapply) through the REAL AppViewModel/GraphAreaVM wiring."""
+    app_vm = AppViewModel()
+    key1 = app_vm.request_load(_write_csv_n(tmp_path / "a.csv", 3), _csv_format_n(3))
+    area = GraphAreaVM(app_vm)
+    panel = area.panels(0)[0]
+    for i in (1, 2, 3):
+        panel.add_signal(f"{key1}::s{i}")
+    fallback_colors = [e["color"] for e in panel.inspect()["plotted_signals"]]
+
+    app_vm.request_load(_write_csv(tmp_path / "b.csv"), _csv_format())  # 2nd file
+
+    entries = panel.inspect()["plotted_signals"]
+    palette = active().colors.signal_palette
+    hue1 = app_vm.file_hue_index[key1]
+    expected = [hue_variant(palette[hue1].hex, step) for step in (0, 1, 2)]
+    assert [e["color"] for e in entries] == expected
+    assert [e["color"] for e in entries] != fallback_colors

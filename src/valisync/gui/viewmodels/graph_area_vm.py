@@ -52,7 +52,7 @@ class GraphAreaVM(Observable):
         # Start with one tab containing one empty GraphPanelVM, sharing a single
         # CursorState with its tab from the outset (spec §2.1).
         first_cursor_state = CursorState()
-        first_panel = GraphPanelVM(self._session, cursor_state=first_cursor_state)
+        first_panel = self._make_panel(first_cursor_state)
         self._tabs: list[_Tab] = [
             _Tab(
                 name=S.TAB_DEFAULT_TMPL.format(n=1),
@@ -65,17 +65,42 @@ class GraphAreaVM(Observable):
         # Own panel reconciliation for app-level data events (load/unload).
         self._app_unsub = app_vm.subscribe(self._on_app_change)
 
+    # ─── Panel factory ─────────────────────────────────────────────────────────
+
+    def _make_panel(self, cursor_state: CursorState) -> GraphPanelVM:
+        """Single construction point for every GraphPanelVM (spec §4.1).
+
+        All 3 sites that create a panel (this __init__, add_tab, add_panel)
+        route through here so the AppViewModel's hue resolver reaches every
+        panel structurally — a per-call-site injection would silently regress
+        the moment a 4th construction site is added (reviewer-flagged risk).
+        """
+        return GraphPanelVM(
+            self._session,
+            cursor_state=cursor_state,
+            hue_resolver=self._app_vm.file_hue_resolver(),
+        )
+
     # ─── App-level reconciliation ─────────────────────────────────────────────
 
     def _on_app_change(self, change: str) -> None:
         """Reconcile every panel against the Session on app-level data events.
 
-        On ``"loaded"`` a signal added before its data existed must re-render;
-        on ``"unloaded"`` panels drop signals whose group is gone (R7.4). This is
-        the panel coordination previously done by ``MainWindow``.
+        On ``"loaded"`` a signal added before its data existed must re-render,
+        and every not-manually-pinned entry is recolored into its file's hue
+        family (E-2c, spec §4.2 — reapply_auto_colors is a no-op below 2 loaded
+        files, so a 1st load costs nothing extra here); on ``"unloaded"``
+        panels drop signals whose group is gone (R7.4) and are NOT recolored
+        (spec §4.2's intentional non-symmetry — existing colors stay put).
+        This is the panel coordination previously done by ``MainWindow``.
         """
         if change == "loaded":
-            self._for_each_panel(lambda p: p.refresh())
+
+            def _reconcile(p: GraphPanelVM) -> None:
+                p.refresh()
+                p.reapply_auto_colors()
+
+            self._for_each_panel(_reconcile)
         elif change == "unloaded":
             self._for_each_panel(lambda p: p.prune_missing_signals())
         elif change == "offsets":
@@ -165,7 +190,7 @@ class GraphAreaVM(Observable):
         # New tab gets its OWN fresh CursorState (spec §2.1) — tabs are
         # independent measurement contexts, never sharing across tabs.
         cursor_state = CursorState()
-        panel = GraphPanelVM(self._session, cursor_state=cursor_state)
+        panel = self._make_panel(cursor_state)
         self._tabs.append(_Tab(name=name, panels=[panel], cursor_state=cursor_state))
         self._subscribe_panel(panel)
         self.active_tab_index = len(self._tabs) - 1
@@ -224,7 +249,7 @@ class GraphAreaVM(Observable):
             raise ValueError("Tab already has 8 panels — the maximum allowed (R6.5)")
         # Share the tab's existing CursorState (spec §2.1 blocker): a new panel
         # must see whatever A/B/Δ is already live in the tab, not roll it back.
-        panel = GraphPanelVM(self._session, cursor_state=tab.cursor_state)
+        panel = self._make_panel(tab.cursor_state)
         tab.panels.append(panel)
         self._subscribe_panel(panel)
         # PC-07: 作った=使う。新規パネルを自動アクティブ化("panels" の rebuild が

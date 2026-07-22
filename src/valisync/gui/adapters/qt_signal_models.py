@@ -100,6 +100,13 @@ class FileListModel(QAbstractListModel):
             return QColor(
                 *tokens.active().colors.text_releasing.rgba
             )  # 解放中の行はグレーアウト
+        if role == Qt.ItemDataRole.DecorationRole:
+            # ファイル=色相ファミリーのチップ (E-2c・spec §4.3) — 比較モード時のみ
+            # (chip_color が同一述語で None を返す)。QListView は QColor を渡すと
+            # 自動で色見本を描く。
+            color_hex = self._vm.chip_color(index.row())
+            if color_hex is not None:
+                return QColor(color_hex)
         return None
 
     def flags(self, index: _Index) -> Qt.ItemFlag:

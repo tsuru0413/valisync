@@ -14,7 +14,7 @@ LOD pipeline (render_data):
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,6 +25,7 @@ from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
 from valisync.core.models import Signal
 from valisync.core.session import Session
 from valisync.core.statistics.range_stats import StatisticsResult
+from valisync.gui.color_variants import hue_variant
 from valisync.gui.display_names import display_names as _resolve_display_names
 from valisync.gui.theme import tokens
 from valisync.gui.viewmodels.observable import Observable
@@ -145,6 +146,13 @@ class _PlottedEntry:
     axis_index: int = 0
     # monotonic stable id, distinguishes entries sharing a signal_key
     entry_id: int = 0
+    # E-2c (spec §4.1): True until set_color pins a manual color, at which
+    # point reapply_auto_colors permanently skips this entry.
+    color_is_auto: bool = True
+    # E-2c (spec §4.1): sticky lightness-variant slot (0/1/2) within this
+    # entry's file, assigned at add-time regardless of mode so a later
+    # mode transition's reapply has the family already spread across steps.
+    variant_step: int = 0
 
 
 @dataclass
@@ -174,13 +182,23 @@ class GraphPanelVM(Observable):
         共有 CursorState(spec §2.1)。タブ内の全パネルへ同一オブジェクトを
         注入すると、カーソル移動が扇状に共有される(配布でなく共有)。
         None のときは自前の(非共有)状態を新規に持つ。
+    hue_resolver:
+        ファイル=色相ファミリーの解決クロージャ(E-2c・spec §4.1・
+        AppViewModel.file_hue_resolver() が生成)。group_key -> palette index
+        を返す(比較モード外や未割当は None)。None(既定・未注入)は「常に
+        None を返す resolver」と同義 — 単体テストや素の GraphPanelVM 構築を
+        従来の count-mod 挙動のまま保つ。
     """
 
     def __init__(
-        self, session: Session, cursor_state: CursorState | None = None
+        self,
+        session: Session,
+        cursor_state: CursorState | None = None,
+        hue_resolver: Callable[[str], int | None] | None = None,
     ) -> None:
         super().__init__()
         self._session = session
+        self._hue_resolver = hue_resolver
         self._plotted: list[_PlottedEntry] = []
         self._next_entry_id: int = 0  # monotonic id issued on each add
         self.x_range: tuple[float, float] | None = None
@@ -269,9 +287,25 @@ class GraphPanelVM(Observable):
         self.add_signal_to_axis(signal_key, 0)
 
     def add_signal_to_axis(self, signal_key: str, axis_index: int) -> None:
-        """Add *signal_key* to a specific axis."""
+        """Add *signal_key* to a specific axis.
+
+        Color assignment (E-2c, spec §4.1): variant_step is determined
+        unconditionally (sticky — recorded even when the hue resolver isn't
+        active yet, so a later mode transition's reapply already has same-file
+        entries spread across distinct steps instead of collapsing them to
+        one). The hue resolver then decides between the legacy count-mod
+        color (resolver absent/None -- 1 file or comparison mode not yet
+        active) and a hue-family color (resolver returns a palette index --
+        comparison mode).
+        """
         palette = tokens.active().colors.signal_palette
-        color = palette[len(self._plotted) % len(palette)].hex
+        group_key = signal_key.split(KEY_SEPARATOR, 1)[0]
+        variant_step = self._next_variant_step(group_key)
+        hue = self._hue_resolver(group_key) if self._hue_resolver is not None else None
+        if hue is None:
+            color = palette[len(self._plotted) % len(palette)].hex
+        else:
+            color = hue_variant(palette[hue % len(palette)].hex, variant_step)
         entry_id = self._next_entry_id
         self._next_entry_id += 1
         self._plotted.append(
@@ -280,6 +314,7 @@ class GraphPanelVM(Observable):
                 color=color,
                 axis_index=axis_index,
                 entry_id=entry_id,
+                variant_step=variant_step,
             )
         )
 
@@ -287,6 +322,27 @@ class GraphPanelVM(Observable):
         self._auto_fit_ranges()
         self._invalidate_cache()
         self._notify("signals")
+
+    def _next_variant_step(self, group_key: str) -> int:
+        """The sticky variant_step (0/1/2) for a new entry of *group_key*.
+
+        Spec §4.1: the minimum free step among this panel's existing entries
+        for the same file (color_is_auto doesn't matter — a manually-pinned
+        entry still occupies its slot so a later auto entry doesn't collide
+        with it). When all 3 steps are already in use, falls back to the
+        deterministic "total entries of this file in this panel, mod 3" so
+        the choice never depends on iteration/removal order.
+        """
+        same_file = [
+            e
+            for e in self._plotted
+            if e.signal_key.split(KEY_SEPARATOR, 1)[0] == group_key
+        ]
+        used_steps = {e.variant_step for e in same_file}
+        for step in range(3):
+            if step not in used_steps:
+                return step
+        return len(same_file) % 3
 
     def plotted_signal_keys(self) -> list[str]:
         """Return plotted signal keys in add order, without duplicates.
@@ -652,13 +708,50 @@ class GraphPanelVM(Observable):
 
         Colour is intentionally NOT part of _make_cache_key, so the cache must be
         invalidated here or render_data would return the stale-coloured curve.
+
+        Marks the entry color_is_auto=False (E-2c, spec §4.1) — a manual pick
+        is a pin: reapply_auto_colors will never touch this entry again.
         """
         for e in self._plotted:
             if e.entry_id == entry_id:
                 e.color = color
+                e.color_is_auto = False
                 break
         self._invalidate_cache()
         self._notify("signals")
+
+    def reapply_auto_colors(self) -> None:
+        """Re-resolve hue-family colors for every color_is_auto entry (spec §4.2).
+
+        Called by GraphAreaVM on every "loaded" event so a file arriving (2nd
+        or later) recolors every not-manually-pinned entry into its file's
+        hue family. This is a DEDICATED mutation path — never routes through
+        set_color, which would flip color_is_auto to False and permanently
+        exempt every auto entry from future reapplies on its very first run.
+        Re-resolves the hue only; variant_step is left untouched so an
+        unrelated file's later load never reshuffles colors on entries nobody
+        touched ("色の安定性優先", spec §4.2). Idempotent: calling this again
+        with unchanged loaded files/resolver reproduces the same colors and
+        is a no-op (no invalidate/notify) when nothing actually changed.
+        """
+        if self._hue_resolver is None:
+            return
+        palette = tokens.active().colors.signal_palette
+        changed = False
+        for e in self._plotted:
+            if not e.color_is_auto:
+                continue
+            group_key = e.signal_key.split(KEY_SEPARATOR, 1)[0]
+            hue = self._hue_resolver(group_key)
+            if hue is None:
+                continue  # <2 files (or unassigned group) — count-mod color stands
+            new_color = hue_variant(palette[hue % len(palette)].hex, e.variant_step)
+            if e.color != new_color:
+                e.color = new_color
+                changed = True
+        if changed:
+            self._invalidate_cache()
+            self._notify("signals")
 
     def remove_entry(self, entry_id: int) -> None:
         """Remove the entry with *entry_id* and reconcile axes (entry-addressed).
@@ -1432,6 +1525,8 @@ class GraphPanelVM(Observable):
                     "visible": e.visible,
                     "axis_index": e.axis_index,
                     "entry_id": e.entry_id,
+                    "color_is_auto": e.color_is_auto,
+                    "variant_step": e.variant_step,
                 }
                 for e in self._plotted
             ],

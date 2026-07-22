@@ -258,3 +258,36 @@ def test_vm_refreshes_on_reference_notification() -> None:
     app_vm.set_reference_file("k2")
 
     assert "files" in notifications
+
+
+# ─── E-2c: file-hue chip color ────────────────────────────────────────────────
+
+
+def test_chip_color_none_with_a_single_loaded_file() -> None:
+    app_vm = AppViewModel()
+    app_vm.register_loaded("k1")
+    vm = FileBrowserVM(app_vm)
+
+    assert vm.chip_color(0) is None
+
+
+def test_chip_color_matches_file_hue_index_in_comparison_mode() -> None:
+    from valisync.gui.theme.tokens import active
+
+    app_vm = AppViewModel()
+    app_vm.register_loaded("k1")
+    app_vm.register_loaded("k2")
+    vm = FileBrowserVM(app_vm)
+    palette = active().colors.signal_palette
+
+    assert vm.chip_color(0) == palette[app_vm.file_hue_index["k1"]].hex
+    assert vm.chip_color(1) == palette[app_vm.file_hue_index["k2"]].hex
+
+
+def test_chip_color_none_for_out_of_range_or_releasing_row() -> None:
+    app_vm = AppViewModel()
+    app_vm.register_loaded("k1")
+    app_vm.register_loaded("k2")
+    vm = FileBrowserVM(app_vm)
+
+    assert vm.chip_color(5) is None

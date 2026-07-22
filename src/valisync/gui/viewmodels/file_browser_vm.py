@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from valisync.gui import strings as S
+from valisync.gui.theme import tokens
 from valisync.gui.viewmodels.observable import Observable
 
 if TYPE_CHECKING:
@@ -88,8 +89,30 @@ class FileBrowserVM(Observable):
         return key is not None and key == self._app_vm.reference_file_key
 
     def is_comparison_mode(self) -> bool:
-        """True with 2+ loaded files — the condition for the badge/'重ねる' menu item."""
-        return len(self._app_vm.loaded_file_keys) >= 2
+        """True with 2+ loaded files — the condition for the badge/'重ねる' menu item.
+
+        Delegates to AppViewModel.is_comparison_mode() (spec §4.1): the single
+        predicate shared with file_hue_resolver(), so "when does comparison
+        mode start" is never checked two different ways.
+        """
+        return self._app_vm.is_comparison_mode()
+
+    def chip_color(self, row: int) -> str | None:
+        """Hex color chip for *row*'s file-hue family (E-2c, spec §4.3).
+
+        None outside comparison mode (chip hidden — same predicate as the
+        reference badge) or for an out-of-range/releasing row.
+        """
+        if not self.is_comparison_mode():
+            return None
+        key = self.key_at(row)
+        if key is None:
+            return None
+        hue = self._app_vm.file_hue_index.get(key)
+        if hue is None:
+            return None
+        palette = tokens.active().colors.signal_palette
+        return palette[hue % len(palette)].hex
 
     def set_reference(self, row: int) -> None:
         """Set *row*'s file as the reference (no-op for releasing/out-of-range rows)."""

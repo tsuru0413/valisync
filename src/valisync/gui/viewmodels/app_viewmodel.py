@@ -8,10 +8,12 @@ other core internals directly.
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Callable
 from pathlib import Path
 
 from valisync.core.models import FormatDefinition, Signal
 from valisync.core.session import Session
+from valisync.gui.theme import tokens
 from valisync.gui.viewmodels.observable import Observable
 
 
@@ -37,6 +39,14 @@ class AppViewModel(Observable):
         # the surviving load-order head on unload. Transient (never persisted,
         # same as the offsets below — F-1 handles .vsession).
         self._reference_file_key: str | None = None
+        # File -> palette-index assignment (E-2c, spec §4.1) — group_key ->
+        # signal_palette index, assigned monotonically (mod palette length) as
+        # each file loads and NEVER reused after unload (color stability over
+        # slot reuse). Comparison-mode gating lives in is_comparison_mode(),
+        # the single predicate shared by the reference badge, the file chip,
+        # and file_hue_resolver() below (no duplicate "2+ files" checks).
+        self._file_hue_index: dict[str, int] = {}
+        self._next_hue_slot: int = 0
         # Time-offset state (R14) — transient, never persisted (Phase 3).
         # signal_offsets: keyed by namespaced signal name (e.g. "csv_1::speed").
         # file_offsets: keyed by group key (e.g. "csv_1"). Both are additive
@@ -234,11 +244,52 @@ class AppViewModel(Observable):
 
         The first ever load becomes the reference (E-2a, spec §2) — folded
         into the same "loaded" notify since FileBrowserVM refreshes on it.
+
+        Also assigns *key* the next palette-hue slot (E-2c, spec §4.1),
+        unconditionally (not just once 2+ files are loaded) — this is what
+        lets a single-file session's colors instantly become correct the
+        moment a 2nd file's load flips is_comparison_mode() true.
         """
         if self._reference_file_key is None:
             self._reference_file_key = key
         self._loaded_keys.append(key)
+        palette_len = len(tokens.active().colors.signal_palette)
+        self._file_hue_index[key] = self._next_hue_slot % palette_len
+        self._next_hue_slot += 1
         self._notify("loaded")
+
+    def is_comparison_mode(self) -> bool:
+        """True with 2+ loaded files.
+
+        The single source of truth for the comparison-mode gate — shared by
+        FileBrowserVM's badge/chip predicate and :meth:`file_hue_resolver`
+        below, so the "when does comparison mode start" rule is never
+        duplicated (spec §4.1).
+        """
+        return len(self._loaded_keys) >= 2
+
+    @property
+    def file_hue_index(self) -> dict[str, int]:
+        """Copy of the group_key -> assigned palette-index map (E-2c)."""
+        return dict(self._file_hue_index)
+
+    def file_hue_resolver(self) -> Callable[[str], int | None]:
+        """Return a closure resolving a group_key to its palette-hue index.
+
+        Contract (spec §4.1, reviewer-mandated single point of judgment):
+        returns ``None`` whenever :meth:`is_comparison_mode` is false (fewer
+        than 2 files loaded) — GraphPanelVM's caller then falls back to the
+        legacy count-mod assignment. The closure reads live ``self`` state on
+        every call (not a snapshot), so one resolver instance injected at
+        panel-construction time stays correct across later loads/unloads.
+        """
+
+        def _resolve(group_key: str) -> int | None:
+            if not self.is_comparison_mode():
+                return None
+            return self._file_hue_index.get(group_key)
+
+        return _resolve
 
     # ─── Signals proxy ───────────────────────────────────────────────────────
 
@@ -273,6 +324,7 @@ class AppViewModel(Observable):
             "data_sources": list(self._data_sources),
             "active_file": self._active_file_key,
             "reference_file": self._reference_file_key,
+            "file_hue_index": dict(self._file_hue_index),
             "signal_offsets": dict(self._signal_offsets),
             "file_offsets": dict(self._file_offsets),
         }

@@ -332,3 +332,89 @@ def test_unload_without_teardown_frees_immediately_no_releasing(tmp_path) -> Non
     app_vm.unload_file(key)
     assert app_vm.releasing_files == []
     assert key not in app_vm.loaded_file_keys
+
+
+# ─── E-2c: file_hue_index / is_comparison_mode / file_hue_resolver ───────────
+
+
+def test_is_comparison_mode_requires_2_files() -> None:
+    vm = AppViewModel()
+    assert vm.is_comparison_mode() is False
+
+    vm.register_loaded("k1")
+    assert vm.is_comparison_mode() is False
+
+    vm.register_loaded("k2")
+    assert vm.is_comparison_mode() is True
+
+
+def test_file_hue_index_assigned_monotonically_on_every_load() -> None:
+    """Assigned regardless of comparison mode (spec §4.1) — the 1st file
+    already has a hue slot so the moment a 2nd file flips comparison mode on,
+    reapply has a real hue to resolve for BOTH files."""
+    vm = AppViewModel()
+    vm.register_loaded("k1")
+    assert vm.file_hue_index == {"k1": 0}
+
+    vm.register_loaded("k2")
+    assert vm.file_hue_index == {"k1": 0, "k2": 1}
+
+
+def test_file_hue_index_never_reused_after_unload(tmp_path: Path) -> None:
+    """Color stability over slot reuse (spec §4.1): unloading "k2" (slot 1)
+    then loading a 3rd file assigns slot 2, not the freed slot 1."""
+    vm = AppViewModel()
+    key1 = vm.request_load(_write_csv(tmp_path / "a.csv"), _csv_format())
+    key2 = vm.request_load(_write_csv(tmp_path / "b.csv"), _csv_format())
+    assert vm.file_hue_index[key1] == 0
+    assert vm.file_hue_index[key2] == 1
+
+    vm.unload_file(key2)
+    key3 = vm.request_load(_write_csv(tmp_path / "c.csv"), _csv_format())
+
+    assert vm.file_hue_index[key1] == 0
+    assert vm.file_hue_index[key3] == 2  # NOT the freed slot 1
+
+
+def test_file_hue_index_cycles_mod_palette_length() -> None:
+    from valisync.gui.theme.tokens import active
+
+    palette_len = len(active().colors.signal_palette)
+    vm = AppViewModel()
+    for i in range(palette_len + 1):
+        vm.register_loaded(f"k{i}")
+
+    assert vm.file_hue_index[f"k{palette_len}"] == 0  # wrapped back to slot 0
+
+
+def test_file_hue_resolver_returns_none_below_2_files() -> None:
+    vm = AppViewModel()
+    vm.register_loaded("k1")
+    resolver = vm.file_hue_resolver()
+
+    assert resolver("k1") is None
+
+
+def test_file_hue_resolver_returns_assigned_hue_in_comparison_mode() -> None:
+    vm = AppViewModel()
+    vm.register_loaded("k1")
+    vm.register_loaded("k2")
+    resolver = vm.file_hue_resolver()
+
+    assert resolver("k1") == 0
+    assert resolver("k2") == 1
+    assert resolver("unknown") is None  # unassigned group
+
+
+def test_file_hue_resolver_closure_reads_live_state() -> None:
+    """One resolver instance created before the 2nd load must still see it —
+    the closure reads AppViewModel state fresh on every call, not a snapshot
+    at creation time (spec §4.1's "同一インスタンス注入で後続ロードも正しい")."""
+    vm = AppViewModel()
+    vm.register_loaded("k1")
+    resolver = vm.file_hue_resolver()
+    assert resolver("k1") is None  # still 1 file
+
+    vm.register_loaded("k2")
+
+    assert resolver("k1") == 0  # SAME resolver instance, now sees comparison mode
