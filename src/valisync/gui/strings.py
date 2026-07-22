@@ -167,6 +167,21 @@ DIAG_FILTER_ERRORS: Final = "エラー"
 DIAG_FILTER_WARNINGS: Final = "警告"
 DIAG_CLEAR: Final = "クリア"
 
+# ── 診断: プレースホルダ (diag-readout-consistency B2・UX-06) ─────────────────
+# フィルタなし 0 件と、フィルタありの絞り込み 0 件を文言で区別する
+# (2026-07-22-diag-readout-consistency-design.md §2.2)。
+DIAG_EMPTY: Final = "診断はありません"
+DIAG_EMPTY_FILTERED_TMPL: Final = "{level}に該当する診断はありません（全 {n} 件）"
+
+# ── 診断: Clear 確認ダイアログ (diag-readout-consistency B5・UXG-27) ──────────
+# file_browser_view の _confirm_fn 属性 DI と同型 (setText で Yes/No を上書き)。
+DIAG_CLEAR_CONFIRM_TITLE: Final = "診断のクリア"
+DIAG_CLEAR_CONFIRM_BODY_TMPL: Final = (
+    "診断 {n} 件をクリアしますか？この操作は元に戻せません。"
+)
+DIAG_CLEAR_CONFIRM_YES: Final = "クリア"
+DIAG_CLEAR_CONFIRM_NO: Final = "キャンセル"
+
 # ── 信号ツリー列ヘッダ (adapters/signal_tree_model・G-43) ────────────────────
 SIGNAL_TREE_COL_NAME: Final = "名前"
 SIGNAL_TREE_COL_UNIT: Final = "単位"

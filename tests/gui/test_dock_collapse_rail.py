@@ -25,6 +25,33 @@ def test_rail_kind_for_area_unsupported_is_none():
     assert rail_kind_for_area(Qt.DockWidgetArea.NoDockWidgetArea) is None
 
 
+def test_collapse_chevron_for_area_maps_edges():
+    # 折りたたみシェブロンは「畳む方向」を指す — EXPAND_ICON (開く方向) の逆 (B4/UX-44)。
+    from valisync.gui.views.dock_collapse_rail import collapse_chevron_for_area
+
+    assert (
+        collapse_chevron_for_area(Qt.DockWidgetArea.LeftDockWidgetArea)
+        == "chevron_left"
+    )
+    assert (
+        collapse_chevron_for_area(Qt.DockWidgetArea.RightDockWidgetArea)
+        == "chevron_right"
+    )
+    assert (
+        collapse_chevron_for_area(Qt.DockWidgetArea.BottomDockWidgetArea)
+        == "chevron_down"
+    )
+    assert (
+        collapse_chevron_for_area(Qt.DockWidgetArea.TopDockWidgetArea) == "chevron_up"
+    )
+
+
+def test_collapse_chevron_for_area_unsupported_is_none():
+    from valisync.gui.views.dock_collapse_rail import collapse_chevron_for_area
+
+    assert collapse_chevron_for_area(Qt.DockWidgetArea.NoDockWidgetArea) is None
+
+
 def _make_dock(qtbot, name: str):
     from PySide6.QtWidgets import QDockWidget
 

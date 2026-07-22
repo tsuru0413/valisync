@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtCore import QPoint, QSize, Qt, Signal
 from PySide6.QtGui import (
     QActionGroup,
     QColor,
@@ -21,10 +21,13 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QMenu,
+    QScrollArea,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -90,6 +93,10 @@ class CursorReadout(QWidget):
 
     row_activated = Signal(int)  # 行クリック → entry_id (曲線ハイライト用)
 
+    # minimumSizeHint の高さ有界化 (UXG-17/B6・spec §2.6): ウィンドウ最小高が行数に
+    # 比例して伸びないよう、この行数相当を上限にクランプする。
+    _MIN_VISIBLE_ROWS = 3
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("ReadoutPane")
@@ -98,38 +105,65 @@ class CursorReadout(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         self.setStyleSheet(qss.readout_panel())
         sp = tokens.active().spacing
-        outer = QVBoxLayout(self)
+        # self.layout() は型上 QLayout | None (mypy union-attr) — sizeHint 合成で
+        # contentsMargins()/spacing() を触るため具象型の参照を保持する。
+        outer = self._outer = QVBoxLayout(self)
         outer.setContentsMargins(*sp.chip_margins)
         outer.setSpacing(sp.chip_vspace)
 
-        # Header row: time-position label.
-        header_row = QHBoxLayout()
-        header_row.setContentsMargins(0, 0, 0, 0)
-        header_row.setSpacing(sp.chip_header_hspace)
+        # Header row: time-position label. self へ属性保持 (sizeHint 合成で
+        # header_row.sizeHint() を直接参照する — 非表示時は自動的に QSize(0,0))。
+        self._header_row = QHBoxLayout()
+        self._header_row.setContentsMargins(0, 0, 0, 0)
+        self._header_row.setSpacing(sp.chip_header_hspace)
         self._header = QLabel()
         self._header.setTextFormat(Qt.TextFormat.RichText)
         self._header.hide()
-        header_row.addWidget(self._header)
-        header_row.addStretch(1)
-        outer.addLayout(header_row)
+        self._header_row.addWidget(self._header)
+        self._header_row.addStretch(1)
+        outer.addLayout(self._header_row)
 
-        # Table grid — child of outer VBox, NOT directly of self.
+        # rows_host: グリッド・プレースホルダ・末尾 stretch を束ねる内容ウィジェット
+        # (spec §2.6)。QScrollArea.setWidget() でラップし縦のみ有界化する — 幅の
+        # 契約(内容幅未満に縮まない)は sizeHint/minimumSizeHint override が
+        # rows_host のヒントを直接参照して保存する(QScrollArea 自身のヒントは
+        # キャッシュ汚染があるため使わない)。
+        self._rows_host = QWidget()
+        rows_layout = QVBoxLayout(self._rows_host)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+        rows_layout.setSpacing(sp.chip_vspace)
+
+        # Table grid — child of rows_host (旧: outer 直下)。
         self._grid = QGridLayout()
         self._grid.setContentsMargins(0, 0, 0, 0)
         self._grid.setHorizontalSpacing(sp.chip_grid_hspace)
         self._grid.setVerticalSpacing(sp.chip_grid_vspace)
-        outer.addLayout(self._grid)
+        rows_layout.addLayout(self._grid)
 
         # プレースホルダ (信号ゼロ/カーソル未設置時にテーブルの代わりに表示)。
         self._placeholder = QLabel()
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._placeholder.hide()
-        outer.addWidget(self._placeholder)
+        rows_layout.addWidget(self._placeholder)
         self._placeholder_text: str = ""
         # 常設ペインは splitter で縦に引き伸ばされる。末尾 stretch が無いと余剰縦
         # スペースが grid に配分され行が広がり、AlignRight の値セル(top 揃え)と
         # swatch/name(center 揃え)が1行内で縦に割れる。stretch で内容を上部へ詰める。
-        outer.addStretch(1)
+        rows_layout.addStretch(1)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setWidget(self._rows_host)
+        # setWidget() は渡したウィジェット(と viewport)の autoFillBackground を
+        # True へ強制する(Qt 仕様・実測)。QSS 断片では上書きできないため、
+        # setWidget() の**直後**に明示 False へ戻す — 順序を崩すと再び不透明化し
+        # ペイン背景(surface_readout_panel)が描画されなくなる(spec §2.6)。
+        self._scroll.viewport().setAutoFillBackground(False)
+        self._rows_host.setAutoFillBackground(False)
+        outer.addWidget(self._scroll)
 
         self._rows: list[tuple[str, str]] = []
         # TSV エクスポート等の構造化アクセス用 (name [unit] 反映済み, セルはリストのまま)。
@@ -623,7 +657,66 @@ class CursorReadout(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            row = self._row_at(event.position().toPoint())
+            # rows_host 座標系(スクロールオフセット込み)へ写像してから _row_at に
+            # 渡す — self 座標系のままだと rows_host 移設で座標系が割れ、無スクロ
+            # ールでも1行ズレの誤行活性化になる(spec §2.6)。mapFrom は
+            # self→viewport→rows_host の親チェーンを辿ってスクロール位置も込みで
+            # 整合させる。
+            pos = self._rows_host.mapFrom(self, event.position().toPoint())
+            row = self._row_at(pos)
             if row is not None:
                 self.activate_row(row)
         super().mousePressEvent(event)
+
+    # ── Size hints (spec §2.6: 幅は内容フル幅を保存・高さのみ有界化) ────────────
+
+    def _row_height_hint(self) -> int:
+        """1データ行の代表高さ (先頭の name ラベルから — 全行 QLabel は同一
+        フォント設定のため代表可)。行が1つも無ければ既定フォールバック。"""
+        if self._name_labels:
+            return self._name_labels[0].sizeHint().height()
+        return self.fontMetrics().height()
+
+    def _bounded_rows_size(self) -> QSize:
+        """rows_host のヒントサイズを、高さのみ最大 _MIN_VISIBLE_ROWS 行相当に
+        クランプする (幅は内容フル幅のまま — 横スクロールは提供しない契約)。
+
+        minimumSizeHint 専用: 行数が増えてもウィンドウの最小高さを押し上げない
+        (UXG-17 の本体)。行数が _MIN_VISIBLE_ROWS 以下なら実際の行数分のまま
+        (それ以上小さくすると minimumSizeHint が sizeHint を上回りかねない)。
+        """
+        full = self._rows_host.sizeHint()
+        n_rows = len(self._name_labels)
+        if n_rows <= self._MIN_VISIBLE_ROWS:
+            return full
+        row_h = self._row_height_hint()
+        vspace = self._grid.verticalSpacing()
+        # 列見出し行 (grid row0) は「行」に数えないが、存在すれば固定要素として
+        # 高さに加算する (計測モードは常に列見出しを伴う)。
+        grid_rows = self._MIN_VISIBLE_ROWS + (1 if self._col_headers else 0)
+        bounded_h = grid_rows * row_h + max(grid_rows - 1, 0) * vspace
+        return QSize(full.width(), min(full.height(), bounded_h))
+
+    def _assemble_size(self, rows_size: QSize) -> QSize:
+        """header・rows 領域・outer マージン/スペーシングから合成する共通ロジック
+        (sizeHint/minimumSizeHint 共有)。QScrollArea 自身のヒントはキャッシュ
+        汚染があるため使わず、rows_host/ヘッダのヒントを直接参照する(spec §2.6)。
+        """
+        header = self._header_row.sizeHint()  # 非表示ウィジェットは自動除外される
+        m = self._outer.contentsMargins()
+        width = max(header.width(), rows_size.width()) + m.left() + m.right()
+        if self._scroll.verticalScrollBar().isVisible():
+            # 縦オーバーフロー時のみスクロールバー分を予約する。無条件加算は
+            # 非オーバーフロー時の凍結 divider 位置と矛盾し、無予約はオーバー
+            # フロー時に右端列が extent 分クリップされる(spec §2.6 の実測判断)。
+            width += self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
+        height = header.height() + rows_size.height() + m.top() + m.bottom()
+        if header.height() > 0:
+            height += self._outer.spacing()  # ヘッダ行と scroll の間の1間隔
+        return QSize(width, height)
+
+    def sizeHint(self) -> QSize:
+        return self._assemble_size(self._rows_host.sizeHint())
+
+    def minimumSizeHint(self) -> QSize:
+        return self._assemble_size(self._bounded_rows_size())
