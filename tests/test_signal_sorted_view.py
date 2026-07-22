@@ -75,7 +75,7 @@ def test_all_identical_timestamps_collapse_to_one():
 
 
 def test_non_finite_timestamps_still_rejected():
-    with pytest.raises(ValueError, match="non-finite"):
+    with pytest.raises(ValueError, match="非有限値"):
         _sig([0.0, float("nan")], [1.0, 2.0])
 
 

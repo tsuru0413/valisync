@@ -105,7 +105,7 @@ def _explode_samples(
         diagnostics.append(
             Diagnostic(
                 level="info",
-                message=f"Signal '{base_name}': {shape_desc}を {len(pairs)} 本に展開",
+                message=f"信号 '{base_name}': {shape_desc}を {len(pairs)} 本に展開",
                 signal_name=base_name,
             )
         )
@@ -249,7 +249,7 @@ class MdfLoader:
                 diagnostics=(
                     Diagnostic(
                         level="error",
-                        message=f"File not found or not accessible: {file_path}",
+                        message=f"ファイルが見つからないか、アクセスできません: {file_path}",
                     ),
                 ),
             )
@@ -262,7 +262,7 @@ class MdfLoader:
                 diagnostics=(
                     Diagnostic(
                         level="error",
-                        message=f"Failed to parse MDF '{file_path.name}': {exc}",
+                        message=f"MDF '{file_path.name}' の解析に失敗しました: {exc}",
                     ),
                 ),
             )
@@ -292,7 +292,7 @@ class MdfLoader:
                             Diagnostic(
                                 level="warning",
                                 message=(
-                                    f"Signal '{oversized[i].name}': 展開列数 "
+                                    f"信号 '{oversized[i].name}': 展開列数 "
                                     f"{oversized[i].column_count} が上限 "
                                     f"{EXPANSION_COLUMN_LIMIT} を超えるためスキップ"
                                 ),
@@ -332,7 +332,7 @@ class MdfLoader:
                 diagnostics=(
                     Diagnostic(
                         level="error",
-                        message=f"Failed to read channels from '{file_path.name}': {exc}",
+                        message=f"'{file_path.name}' のチャンネル読み取りに失敗しました: {exc}",
                     ),
                 ),
             )
@@ -437,8 +437,8 @@ class MdfLoader:
                     Diagnostic(
                         level="error",
                         message=(
-                            f"Signal '{base_name}': 非有限タイムスタンプを含むため"
-                            " skip（時刻軸が破損）"  # noqa: RUF001
+                            f"信号 '{base_name}': 非有限タイムスタンプを含むため"
+                            "スキップ（時刻軸が破損）"  # noqa: RUF001
                         ),
                         signal_name=base_name,
                     )
@@ -474,8 +474,8 @@ class MdfLoader:
                         Diagnostic(
                             level="warning",
                             message=(
-                                f"Signal '{out_name}' has non-numeric values,"
-                                f" skipped: dtype {col.dtype}"
+                                f"信号 '{out_name}': 非数値型のためスキップ"
+                                f"（dtype {col.dtype}）"  # noqa: RUF001
                             ),
                         )
                     )
@@ -489,7 +489,7 @@ class MdfLoader:
                         Diagnostic(
                             level="warning",
                             message=(
-                                f"Signal '{out_name}': 非単調 {n_backward} 箇所・"
+                                f"信号 '{out_name}': 非単調 {n_backward} 箇所・"
                                 f"重複タイムスタンプ {n_dup} 点"
                                 "（表示/演算は整列ビューで補正）"  # noqa: RUF001
                             ),
