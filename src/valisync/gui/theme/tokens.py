@@ -79,6 +79,8 @@ class Colors:
     axis_move_fill: Color
     # ステータス/フィードバック
     error: Color
+    warning: Color  # 診断 warning の意味色 (非テキスト WCAG 1.4.11 3:1・spec §2.1)
+    info: Color  # 診断 info の意味色 (非テキスト WCAG 1.4.11 3:1・spec §2.1)
     busy_spinner: Color
     text_releasing: Color
     preview_curve: Color
@@ -168,6 +170,8 @@ DARK = ThemeTokens(
         axis_move_indicator=Color.from_hex("#f59e0b"),
         axis_move_fill=Color(245, 158, 11, 60),
         error=Color.from_hex("#f38ba8"),
+        warning=Color.from_hex("#fab387"),
+        info=Color.from_hex("#7aa2f7"),
         busy_spinner=Color(120, 160, 255),
         text_releasing=Color(128, 128, 128),
         preview_curve=Color.from_hex("#4FC3F7"),
@@ -228,6 +232,8 @@ LIGHT = ThemeTokens(
         text_secondary=Color.from_hex("#8c8fa1"),
         close_hover=Color.from_hex("#d20f39"),
         error=Color.from_hex("#c0392b"),
+        warning=Color.from_hex("#b0741a"),
+        info=Color.from_hex("#1a5fb4"),
         busy_spinner=Color(30, 102, 245),
         text_releasing=Color(128, 128, 128),
         chrome_window=Color.from_hex("#eff1f5"),

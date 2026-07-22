@@ -19,6 +19,40 @@ from valisync.gui.theme.tokens import (
 )
 
 
+def _srgb_to_linear(channel_255: int) -> float:
+    c = channel_255 / 255.0
+    return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def _relative_luminance(c: Color) -> float:
+    """WCAG 相対輝度 (sRGB 線形化込み)。"""
+    return (
+        0.2126 * _srgb_to_linear(c.r)
+        + 0.7152 * _srgb_to_linear(c.g)
+        + 0.0722 * _srgb_to_linear(c.b)
+    )
+
+
+def contrast_ratio(c1: Color, c2: Color) -> float:
+    """WCAG コントラスト比 (相対輝度ベース・tests 側ヘルパ — spec §2.1)。"""
+    l1, l2 = _relative_luminance(c1), _relative_luminance(c2)
+    lighter, darker = max(l1, l2), min(l1, l2)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _all_named_colors(colors: object) -> list[tuple[str, Color]]:
+    """dataclass 全 Color フィールドを (名前, 値) で列挙 (signal_palette は展開)。"""
+    result: list[tuple[str, Color]] = []
+    for f in dataclasses.fields(colors):  # type: ignore[arg-type]
+        v = getattr(colors, f.name)
+        if f.name == "signal_palette":
+            for i, c in enumerate(v):
+                result.append((f"signal_palette[{i}]", c))
+        else:
+            result.append((f.name, v))
+    return result
+
+
 def test_color_hex_roundtrip():
     # 任意の hex 値 (旧 matplotlib tab10 パレット由来の値から置換 — このテストは
     # Color.from_hex の丸め/構成要素検証で、パレット値と無関係な純ユーティリティ)。
@@ -84,6 +118,8 @@ def test_dark_values_frozen_snapshot():
         "text_primary": Color.from_hex("#cdd6f4"),
         "text_secondary": Color.from_hex("#9399b2"),
         "close_hover": Color.from_hex("#f38ba8"),
+        "warning": Color.from_hex("#fab387"),
+        "info": Color.from_hex("#7aa2f7"),
         "accent_active": Color.from_hex("#f59e0b"),
         "accent_active_dark": Color.from_hex("#b45309"),
         "grip_fill": Color.from_hex("#ffffff"),
@@ -204,6 +240,35 @@ def test_light_plot_pinned_tokens_match_dark():
     assert LIGHT.grid_alpha == DARK.grid_alpha
 
 
+def test_warning_info_contrast_ge_3_to_1_against_chrome_surfaces():
+    """warning/info は非テキスト UI 部品用途 (WCAG 1.4.11) — chrome_base/chrome_window
+    の双方・両テーマで ≥3:1 を要求する (spec §2.1)。"""
+    for theme_name, theme in (("DARK", DARK), ("LIGHT", LIGHT)):
+        for token_name in ("warning", "info"):
+            fg = getattr(theme.colors, token_name)
+            for surface_name in ("chrome_base", "chrome_window"):
+                bg = getattr(theme.colors, surface_name)
+                ratio = contrast_ratio(fg, bg)
+                assert ratio >= 3.0, (
+                    f"{theme_name}.{token_name} vs {surface_name}: {ratio:.2f} < 3.0"
+                )
+
+
+def test_warning_info_do_not_collide_with_existing_tokens():
+    """新 2 トークンが既存の全トークン値と同値でないことの総当たり確認
+    (同値が生じたら値分岐テストへ昇格する規約 — spec §2.1)。"""
+    for theme_name, theme in (("DARK", DARK), ("LIGHT", LIGHT)):
+        named = _all_named_colors(theme.colors)
+        for new_name in ("warning", "info"):
+            new_color = getattr(theme.colors, new_name)
+            for existing_name, existing_color in named:
+                if existing_name == new_name:
+                    continue
+                assert existing_color != new_color, (
+                    f"{theme_name}.{new_name} == {existing_name} ({new_color.hex})"
+                )
+
+
 def test_light_values_frozen_snapshot():
     """LIGHT 全テーマ化トークンの意図的 test-lock (Latte 初期値・再デザイン反復で更新)。"""
     c = LIGHT.colors
@@ -214,6 +279,8 @@ def test_light_values_frozen_snapshot():
         "text_secondary": Color.from_hex("#8c8fa1"),
         "close_hover": Color.from_hex("#d20f39"),
         "error": Color.from_hex("#c0392b"),
+        "warning": Color.from_hex("#b0741a"),
+        "info": Color.from_hex("#1a5fb4"),
         "busy_spinner": Color(30, 102, 245),
         "text_releasing": Color(128, 128, 128),
         "chrome_window": Color.from_hex("#eff1f5"),

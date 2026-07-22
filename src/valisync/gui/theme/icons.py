@@ -28,14 +28,36 @@ ICONS: dict[str, str] = {
     "chevron_right": "lucide/chevron-right.svg",
     "chevron_left": "lucide/chevron-left.svg",
     "chevron_up": "lucide/chevron-up.svg",
+    "diag_error": "lucide/circle-x.svg",
+    "diag_warning": "lucide/triangle-alert.svg",
+    "diag_info": "lucide/info.svg",
+    "close": "lucide/x.svg",
+    "float_dock": "lucide/copy.svg",
+    "dock_panel_left": "lucide/panel-left.svg",
+    "dock_panel_left_partial": "lucide/panel-left-close.svg",
+    "dock_panel_right": "lucide/panel-right.svg",
+    "dock_panel_right_partial": "lucide/panel-right-close.svg",
+    "dock_panel_bottom": "lucide/panel-bottom.svg",
+    "dock_panel_bottom_partial": "lucide/panel-bottom-close.svg",
 }
 
 # ツールバー(24)/メニュー(16)等の実寸を直接登録し QIcon の拡大ボケを避ける
 _SIZES = (16, 20, 24, 32)
 
 
-def icon(name: str) -> QIcon:
+def icon(
+    name: str,
+    color: tokens.Color | None = None,
+    active_color: tokens.Color | None = None,
+    selected_color: tokens.Color | None = None,
+) -> QIcon:
     """意味名からテーマ着色済み QIcon を生成する (未知 name は KeyError)。
+
+    color=None: 現行互換 (Normal=chrome_text/Disabled=chrome_disabled_text・
+    既存呼出は無変更)。color 指定時は Normal をその色で上書き (Disabled は
+    引き続き chrome_disabled_text)。active_color/selected_color 指定時は
+    QIcon.Mode.Active/Selected へ追加着色 (診断アイコンの選択セル可視性・
+    タブ✕の hover 赤 — QSS はピクスマップ色を変えられない・spec §2.2)。
 
     HiDPI: devicePixelRatio を乗じた物理ピクセルで描画し setDevicePixelRatio
     (QStyle.standardIcon のネイティブ HiDPI 対応からの退行防止・spec §12.2)。
@@ -49,12 +71,18 @@ def icon(name: str) -> QIcon:
     app = QGuiApplication.instance()
     dpr = app.devicePixelRatio() if isinstance(app, QGuiApplication) else 1.0
 
-    ico = QIcon()
-    for mode, color in (
-        (QIcon.Mode.Normal, c.chrome_text),
+    modes: list[tuple[QIcon.Mode, tokens.Color]] = [
+        (QIcon.Mode.Normal, color if color is not None else c.chrome_text),
         (QIcon.Mode.Disabled, c.chrome_disabled_text),
-    ):
-        data = QByteArray(svg.replace("currentColor", color.hex).encode("utf-8"))
+    ]
+    if active_color is not None:
+        modes.append((QIcon.Mode.Active, active_color))
+    if selected_color is not None:
+        modes.append((QIcon.Mode.Selected, selected_color))
+
+    ico = QIcon()
+    for mode, mode_color in modes:
+        data = QByteArray(svg.replace("currentColor", mode_color.hex).encode("utf-8"))
         renderer = QSvgRenderer(data)
         for size in _SIZES:
             phys = max(1, round(size * dpr))
