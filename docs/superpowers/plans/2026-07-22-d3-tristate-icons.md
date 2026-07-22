@@ -32,11 +32,11 @@
 **Interfaces:**
 - Produces: `tokens.Colors.warning`/`.info`（両テーマ）・`icons.icon(name, color=None, active_color=None, selected_color=None)`・意味名 `diag_error/diag_warning/diag_info/close/float_dock/dock_panel_{left,right,bottom}{,_partial}`・テストヘルパ `contrast_ratio(c1: Color, c2: Color) -> float`（WCAG 相対輝度 — tests 側ヘルパ）。
 
-- [ ] **Step 1（トークン TDD）**: コントラストヘルパ（純関数）を tests ヘルパとして新設し、`warning/info × {chrome_base, chrome_window} × 両テーマ ≥ 3.0` の常設テスト → RED → tokens 追加 → GREEN。**同値総当たりテスト**（新 2 トークン × 既存全トークン・両テーマ — 同値ゼロを assert）。DARK golden（fields 全反復 — RED→更新）＋ **LIGHT golden へ明示追記**（リスト反復のため追記漏れは無音 — spec §2.1）。
-- [ ] **Step 2（SVG vendor）**: 既存 lucide/ の pin 版と同一ソースから 11 個取得・無改変配置。currentColor 規約テスト（glob 自動被覆）green を確認。
-- [ ] **Step 3（icons 拡張 TDD）**: `icon()` の color/active_color/selected_color — 各モード（Normal/Active/Selected）の pixmap サンプルピクセルが指定色になるテスト → 実装（既存 Normal/Disabled ループへモード追加・None 時は現行互換）。ICONS へ意味名 11+（set-lock テスト tests/gui/test_theme_icons.py:47-56 を同時更新）。
-- [ ] **Step 4（wheel テスト新設）**: `uv build --wheel` → zipfile で新規 SVG 11 個＋既存 4 個の同梱を assert（増分5 の editable-install false-green の恒久防波堤。ビルド時間が問題なら `@pytest.mark.slow` 等の既存慣行に従う — なければ素で常設）。
-- [ ] **Step 5**: ゲート → commit `feat(theme): warning/info トークン (3:1 検証つき)＋Lucide 11 SVG＋icon() モード着色拡張＋wheel テスト (D-3 Task1)`
+- [x] **Step 1（トークン TDD）**: コントラストヘルパ（純関数）を tests ヘルパとして新設し、`warning/info × {chrome_base, chrome_window} × 両テーマ ≥ 3.0` の常設テスト → RED → tokens 追加 → GREEN。**同値総当たりテスト**（新 2 トークン × 既存全トークン・両テーマ — 同値ゼロを assert）。DARK golden（fields 全反復 — RED→更新）＋ **LIGHT golden へ明示追記**（リスト反復のため追記漏れは無音 — spec §2.1）。
+- [x] **Step 2（SVG vendor）**: 既存 lucide/ の pin 版と同一ソースから 11 個取得・無改変配置。currentColor 規約テスト（glob 自動被覆）green を確認。
+- [x] **Step 3（icons 拡張 TDD）**: `icon()` の color/active_color/selected_color — 各モード（Normal/Active/Selected）の pixmap サンプルピクセルが指定色になるテスト → 実装（既存 Normal/Disabled ループへモード追加・None 時は現行互換）。ICONS へ意味名 11+（set-lock テスト tests/gui/test_theme_icons.py:47-56 を同時更新）。
+- [x] **Step 4（wheel テスト新設）**: `uv build --wheel` → zipfile で新規 SVG 11 個＋既存 4 個の同梱を assert（増分5 の editable-install false-green の恒久防波堤。ビルド時間が問題なら `@pytest.mark.slow` 等の既存慣行に従う — なければ素で常設）。
+- [x] **Step 5**: ゲート → commit `feat(theme): warning/info トークン (3:1 検証つき)＋Lucide 11 SVG＋icon() モード着色拡張＋wheel テスト (D-3 Task1)`
 
 ---
 
@@ -50,11 +50,11 @@
 - Consumes: Task 1 の `dock_panel_*` 意味名。
 - Produces: `MainWindow._dock_actions: dict[str, QAction]`（objectName キー — テスト掴み点）・`_sync_dock_action(dock)`。
 
-- [ ] **Step 1（写像純ロジック TDD）**: `(is_hidden: bool, collapsed: bool, edge) → (checked, icon 名)` の全域表テスト（3 状態 × 3 辺）→ 実装（純関数 — main_window 内 or 分離）。
-- [ ] **Step 2（QAction＋sync）**: spec §2.3 逐語 — カスタム checkable QAction（text=strings.DOCK_*・2 面共有）・`_sync_dock_action`（isHidden/collapsed/dockWidgetArea 再プローブ・トリガ 3 種接続・変異後呼出・生成＋配線を `_restore_state()` より前・構築完了時に無条件 sync×3）・triggered handler（checked 無視・再プローブ遷移: 非表示→show()+raise_()／展開→hide()／レール→_expand_dock()）・ツールバー 3 ボタンのみ `ToolButtonTextBesideIcon`。toggleViewAction は 2 面から撤去。
-- [ ] **Step 3（Layer B 状態機械 — spec §3 の全遷移逐語）**: 基本 5 遷移・**tabify（背面化→両 action 展開/checked 維持・背面クリック→hide）**・**showMinimized/showNormal で不変**・**pre-show restoreState（非表示保存→unchecked 収束）**・**起動時 collapse 復元（dockCollapsed 保存→構築直後 checked＋partial）**・**_reset_layout 後 3 action 展開復帰**・float 往復（不変→再ドックで edge 追随）・辺移動（addDockWidget(Left)→アイコン追随）・外部 show()→checked 追随・2 面参照一致。アイコン検証は保持名 introspection。
-- [ ] **Step 4（toggleViewAction 振り分け — spec §3 逐語）**: tests/realgui/test_shell_chrome_flow.py:70・test_dock_onscreen_after_toggle.py:131 → `_dock_actions` 経由の widgetForAction へ移行／tests/gui/test_shell_chrome.py:55-67 → 掲載 assert をカスタム action へ書換（同一 action 検証の意図更新）／tests/gui/test_main_window.py の trigger 系 → **外部 show() 経路として存置**。
-- [ ] **Step 5**: ゲート → commit `feat(gui): ドックトグルを三態カスタム QAction 化 (isHidden ポーリング・tabify パリティ) (D-3 Task2/UX-45)`
+- [x] **Step 1（写像純ロジック TDD）**: `(is_hidden: bool, collapsed: bool, edge) → (checked, icon 名)` の全域表テスト（3 状態 × 3 辺）→ 実装（純関数 — main_window 内 or 分離）。
+- [x] **Step 2（QAction＋sync）**: spec §2.3 逐語 — カスタム checkable QAction（text=strings.DOCK_*・2 面共有）・`_sync_dock_action`（isHidden/collapsed/dockWidgetArea 再プローブ・トリガ 3 種接続・変異後呼出・生成＋配線を `_restore_state()` より前・構築完了時に無条件 sync×3）・triggered handler（checked 無視・再プローブ遷移: 非表示→show()+raise_()／展開→hide()／レール→_expand_dock()）・ツールバー 3 ボタンのみ `ToolButtonTextBesideIcon`。toggleViewAction は 2 面から撤去。
+- [x] **Step 3（Layer B 状態機械 — spec §3 の全遷移逐語）**: 基本 5 遷移・**tabify（背面化→両 action 展開/checked 維持・背面クリック→hide）**・**showMinimized/showNormal で不変**・**pre-show restoreState（非表示保存→unchecked 収束）**・**起動時 collapse 復元（dockCollapsed 保存→構築直後 checked＋partial）**・**_reset_layout 後 3 action 展開復帰**・float 往復（不変→再ドックで edge 追随）・辺移動（addDockWidget(Left)→アイコン追随）・外部 show()→checked 追随・2 面参照一致。アイコン検証は保持名 introspection。
+- [x] **Step 4（toggleViewAction 振り分け — spec §3 逐語）**: tests/realgui/test_shell_chrome_flow.py:70・test_dock_onscreen_after_toggle.py:131 → `_dock_actions` 経由の widgetForAction へ移行／tests/gui/test_shell_chrome.py:55-67 → 掲載 assert をカスタム action へ書換（同一 action 検証の意図更新）／tests/gui/test_main_window.py の trigger 系 → **外部 show() 経路として存置**。
+- [x] **Step 5**: ゲート → commit `feat(gui): ドックトグルを三態カスタム QAction 化 (isHidden ポーリング・tabify パリティ) (D-3 Task2/UX-45)`
 
 ---
 
@@ -64,11 +64,11 @@
 - Modify: `src/valisync/gui/views/diagnostics_view.py`（レベルセル setIcon・カウンタ HBox）・`collapsible_dock_title_bar.py`（✕/❐ アイコン化・iconSize 16）・`graph_area_view.py`（tabsClosable(False)＋自前✕）
 - Test: 追随（下記 grep）＋Layer B 新設
 
-- [ ] **Step 1（診断）**: レベルセル `icons.icon("diag_*", color=c.{error,warning,info}, selected_color=c.chrome_highlight_text)`・unknown level は "?" テキスト存置。カウンタを 3 ペア HBox（アイコン 16px pixmap＋数値ラベル）。**グリフ追随 4 サイト**: tests/gui/test_diagnostics_view.py:89/99/102＋tests/realgui/test_diagnostics_clear_realclick.py:195（数値部の assert へ書換 — アイコンは pixmap 化で文言から消える）。
-- [ ] **Step 2（タイトルバー）**: ✕/❐ → icon("close")/icon("float_dock")・iconSize 16px・24px ヒット維持。test_hit_targets.py 既存 2 本の幾何前提（minimumSizeHint<24 由来の導出）を確認・追随。
-- [ ] **Step 3（タブ✕）**: spec §2.5 逐語 — setTabsClosable(False)・自前 QToolButton（autoRaise・icon("close", color=..., active_color=c.close_hover)・24px ヒット・SH_TabBar_CloseButtonPosition 位置）・クリック時 index 解決→tabCloseRequested.emit・単一タブ非設置（旧 setTabButton(0,pos,None) 撤去）・_rebuild 設置。**close_hover 誤配線ガード**（error と値分岐するテーマで active pixmap が close_hover 側 — test_theme_qss の既存パターン）。
-- [ ] **Step 4（Layer B）**: 複数タブで先頭を閉じた後の 2 番目✕クリックが正しいタブを閉じる・rebuild N 回後のボタン数不変・単一タブ非表示規則・選択セル上の診断アイコンが Selected モード色。**grep 追随**: `tabsClosable|tabCloseRequested|tabButton`（tests/gui/test_graph_area_tab_ui.py:56-93 — emit 直叩き系は存置・位置/有無 assert は自前ボタン前提へ書換）＋`✕|❐`。
-- [ ] **Step 5**: ゲート → commit `feat(gui): 診断/タイトルバー/タブ✕のアイコン統一 (Selected/Active モード・close_hover・24px) (D-3 Task3/UX-34,38)`
+- [x] **Step 1（診断）**: レベルセル `icons.icon("diag_*", color=c.{error,warning,info}, selected_color=c.chrome_highlight_text)`・unknown level は "?" テキスト存置。カウンタを 3 ペア HBox（アイコン 16px pixmap＋数値ラベル）。**グリフ追随 4 サイト**: tests/gui/test_diagnostics_view.py:89/99/102＋tests/realgui/test_diagnostics_clear_realclick.py:195（数値部の assert へ書換 — アイコンは pixmap 化で文言から消える）。
+- [x] **Step 2（タイトルバー）**: ✕/❐ → icon("close")/icon("float_dock")・iconSize 16px・24px ヒット維持。test_hit_targets.py 既存 2 本の幾何前提（minimumSizeHint<24 由来の導出）を確認・追随。
+- [x] **Step 3（タブ✕）**: spec §2.5 逐語 — setTabsClosable(False)・自前 QToolButton（autoRaise・icon("close", color=..., active_color=c.close_hover)・24px ヒット・SH_TabBar_CloseButtonPosition 位置）・クリック時 index 解決→tabCloseRequested.emit・単一タブ非設置（旧 setTabButton(0,pos,None) 撤去）・_rebuild 設置。**close_hover 誤配線ガード**（error と値分岐するテーマで active pixmap が close_hover 側 — test_theme_qss の既存パターン）。
+- [x] **Step 4（Layer B）**: 複数タブで先頭を閉じた後の 2 番目✕クリックが正しいタブを閉じる・rebuild N 回後のボタン数不変・単一タブ非表示規則・選択セル上の診断アイコンが Selected モード色。**grep 追随**: `tabsClosable|tabCloseRequested|tabButton`（tests/gui/test_graph_area_tab_ui.py:56-93 — emit 直叩き系は存置・位置/有無 assert は自前ボタン前提へ書換）＋`✕|❐`。
+- [x] **Step 5**: ゲート → commit `feat(gui): 診断/タイトルバー/タブ✕のアイコン統一 (Selected/Active モード・close_hover・24px) (D-3 Task3/UX-34,38)`
 
 ---
 
