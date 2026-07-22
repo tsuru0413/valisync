@@ -47,6 +47,18 @@ def _app_vm() -> _FakeAppVM:
     return _FakeAppVM(sess, ["csv_1"])
 
 
+def _app_vm_two_files_same_bare() -> _FakeAppVM:
+    """Two files, each with a signal literally named "speed" (E-0 collision)."""
+    sess = _FakeSession(
+        groups={
+            "csv_1": [_sig("csv_1::speed"), _sig("csv_1::rpm")],
+            "csv_2": [_sig("csv_2::speed")],
+        },
+        names={"csv_1": "run1.csv", "csv_2": "run2.csv"},
+    )
+    return _FakeAppVM(sess, ["csv_1", "csv_2"])
+
+
 def _ok(dlg: ExportCsvDialog) -> bool:
     return dlg._buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
 
@@ -102,3 +114,39 @@ def test_ask_builds_request_from_widgets(qtbot: QtBot, tmp_path: Path) -> None:
     assert req.output_path == target
     assert req.options.delimiter == ";"
     assert req.options.unit_row is True
+    # E-0: header_names carries the bare display names (no collision — both
+    # are from the same file "csv_1"), same order as req.signals/_checked_keys.
+    assert req.options.header_names == ("a", "b")
+
+
+# --- E-0: 葉テキスト/フィルタは display name (UX-19) -------------------------
+
+
+def _leaf_texts(dlg: ExportCsvDialog) -> set[str]:
+    return {c.text(0) for c in dlg._iter_children()}
+
+
+def test_leaf_text_shows_bare_name_no_collision(qtbot: QtBot) -> None:
+    dlg = ExportCsvDialog(_app_vm(), initial_selected=set())
+    qtbot.addWidget(dlg)
+    assert _leaf_texts(dlg) == {"a", "b"}  # not "csv_1::a"/"csv_1::b"
+    assert set(dlg._checked_keys()) <= {"csv_1::a", "csv_1::b"}  # UserRole 不変
+
+
+def test_leaf_text_qualified_on_collision(qtbot: QtBot) -> None:
+    """Two files each have "speed" -> both qualified with (group_key); the
+    non-colliding "rpm" stays bare."""
+    dlg = ExportCsvDialog(_app_vm_two_files_same_bare(), initial_selected=set())
+    qtbot.addWidget(dlg)
+    assert _leaf_texts(dlg) == {"speed (csv_1)", "speed (csv_2)", "rpm"}
+    # UserRole selection keys are untouched by the display change.
+    dlg._select_all()
+    assert set(dlg._checked_keys()) == {"csv_1::speed", "csv_1::rpm", "csv_2::speed"}
+
+
+def test_filter_matches_display_text_not_raw_key(qtbot: QtBot) -> None:
+    dlg = ExportCsvDialog(_app_vm_two_files_same_bare(), initial_selected=set())
+    qtbot.addWidget(dlg)
+    dlg._filter.setText("speed")
+    visible = {c.text(0) for c in dlg._iter_children() if not c.isHidden()}
+    assert visible == {"speed (csv_1)", "speed (csv_2)"}

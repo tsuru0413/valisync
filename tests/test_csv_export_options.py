@@ -142,3 +142,31 @@ def test_empty_delimiter_rejected() -> None:
 def test_empty_decimal_rejected() -> None:
     with pytest.raises(ValueError):
         CsvExportOptions(decimal="")
+
+
+# --- header_names (E-0, spec §1.2 — GUI-computed display header override) ----
+
+
+def test_header_names_none_falls_back_to_signal_name(tmp_path: Path) -> None:
+    """Default (header_names=None) writes the raw signal.name — no regression."""
+    s = _sig("mf4_1::speed", [0.0], [1.5])
+    out = tmp_path / "d.csv"
+    CsvExporter().export([s], out)
+    assert _read(out)[0] == "timestamp,mf4_1::speed"
+
+
+def test_header_names_overrides_signal_name_when_given(tmp_path: Path) -> None:
+    s = _sig("mf4_1::speed", [0.0], [1.5])
+    out = tmp_path / "d.csv"
+    CsvExporter().export([s], out, options=CsvExportOptions(header_names=("speed",)))
+    assert _read(out)[0] == "timestamp,speed"
+
+
+def test_header_names_applies_to_unit_row_column_alignment(tmp_path: Path) -> None:
+    """unit_row still lines up under the overridden header names."""
+    s = _sig("mf4_1::speed", [0.0], [1.5], unit="km/h")
+    out = tmp_path / "d.csv"
+    CsvExporter().export(
+        [s], out, options=CsvExportOptions(unit_row=True, header_names=("speed",))
+    )
+    assert _read(out) == ["timestamp,speed", "s,km/h", "0.0,1.5"]

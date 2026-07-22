@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from valisync.core.downsampler.downsampler import Downsampler
+from valisync.gui.display_names import display_names as _resolve_display_names
 
 if TYPE_CHECKING:
     from valisync.gui.viewmodels.app_viewmodel import AppViewModel
@@ -41,12 +42,43 @@ class SignalPreviewVM:
             return None
         return None
 
+    def _all_loaded_signal_keys(self) -> list[str]:
+        """Every signal_key across every currently loaded file (E-0 collision scope).
+
+        Used to resolve display_name so the "名前" row and the windowTitle
+        (same rule, spec §1.2) agree on whether a bare name needs qualifying —
+        scoped to ALL loaded signals, not just the active file's.
+        """
+        keys: list[str] = []
+        for group_key in self._app_vm.loaded_file_keys:
+            try:
+                keys.extend(
+                    sig.name for sig in self._app_vm.session.group_signals(group_key)
+                )
+            except KeyError:
+                continue
+        return keys
+
+    def display_name(self, key: str) -> str:
+        """Resolve *key* to its display string (E-0), scoped to all loaded signals.
+
+        *key* is included in the resolution population even when it is not
+        itself a currently-loaded signal (e.g. "unknown" keys passed straight
+        through from show_signal) so callers never get a KeyError — an
+        unresolvable key simply never collides with anything and comes back
+        as its own bare name.
+        """
+        keys = self._all_loaded_signal_keys()
+        if key not in keys:
+            keys = [*keys, key]
+        return _resolve_display_names(keys)[key]
+
     def properties(self) -> list[tuple[str, str]]:
         sig = self._signal()
         if sig is None:
             return []
         md = sig.metadata or {}
-        rows: list[tuple[str, str]] = [("名前", str(sig.name))]
+        rows: list[tuple[str, str]] = [("名前", self.display_name(sig.name))]
         unit = str(md.get("unit", ""))
         if unit:
             rows.append(("単位", unit))

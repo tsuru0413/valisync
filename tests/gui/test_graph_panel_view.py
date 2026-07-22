@@ -1206,10 +1206,11 @@ class TestAxisContextMenu:
         assert "この軸をオートフィット" in texts
         assert "範囲を指定…" in texts
         assert "軸を削除" in texts
-        # 曲線一覧 (signal_key ラベル・checkable・checked=visible)
-        entry_acts = [
-            a for a in menu.actions() if a.text() in (keys["csv::a"], keys["csv::b"])
-        ]
+        # 曲線一覧 (display 名ラベル・E-0 — 両方 "csv::a"/"csv::b" は同一ファイル
+        # 由来で bare 名が異なるため衝突なし・checkable・checked=visible)
+        bare_a = keys["csv::a"].split("::", 1)[-1]
+        bare_b = keys["csv::b"].split("::", 1)[-1]
+        entry_acts = [a for a in menu.actions() if a.text() in (bare_a, bare_b)]
         assert len(entry_acts) == 2
         assert all(a.isCheckable() and a.isChecked() for a in entry_acts)
 
@@ -1257,7 +1258,10 @@ class TestAxisContextMenu:
         qtbot.addWidget(view)
 
         menu = view.build_axis_menu(0)  # type: ignore[attr-defined]
-        act = next(a for a in menu.actions() if a.text() == keys["csv::a"])
+        # E-0: menu label is the display (bare) name, not the raw signal_key —
+        # no collision here (single entry on the axis).
+        bare_name = keys["csv::a"].split("::", 1)[-1]
+        act = next(a for a in menu.actions() if a.text() == bare_name)
         act.trigger()  # checkable → toggled → toggle_entry_visibility
 
         assert vm.entries_on_axis(0)[0][3] is False

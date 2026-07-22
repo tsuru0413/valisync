@@ -28,6 +28,7 @@ def _window(qtbot: QtBot) -> SignalPreviewWindow:
     app_vm = AppViewModel()
     app_vm.session.group_signals = lambda k: [_sig("g::A"), _sig("g::B")]
     app_vm.set_active_file("g")
+    app_vm.register_loaded("g")  # E-0: display_name scope = loaded_file_keys
     win = SignalPreviewWindow(SignalPreviewVM(app_vm))
     qtbot.addWidget(win)
     return win
@@ -53,7 +54,9 @@ def test_show_signal_replaces_content_single_instance(qtbot: QtBot) -> None:
     win.show_signal("g::A")
     win.show_signal("g::B")  # same window, content swapped
     assert len(win.preview_plot.listDataItems()) == 1  # not accumulated
-    assert win.windowTitle().endswith("g::B") or "g::B" in win.windowTitle()
+    # E-0 (UX-19): windowTitle shows the bare display name "B", not "g::B"
+    # (no collision here — single loaded file).
+    assert win.windowTitle().endswith("B")
 
 
 def test_show_signal_unknown_shows_no_curve(qtbot: QtBot) -> None:

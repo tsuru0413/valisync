@@ -925,7 +925,8 @@ def test_cursor_readings_linear_interpolation(tmp_path):
     vm.set_cursor(0.005)
     readings = vm.cursor_readings()
     assert len(readings) == 1
-    assert readings[0].name == key
+    # display name (E-0): bare name, no group_key prefix — no collision here.
+    assert readings[0].name == key.split("::", 1)[-1]
     assert readings[0].in_range is True
     assert readings[0].value == pytest.approx(0.5)
 
@@ -1087,7 +1088,8 @@ def test_delta_readings_dy_and_stats(tmp_path):
     vm.toggle_delta(True)  # B=0.75 (value≈75)
     vm.set_cursor_b(0.6)  # B=0.6 (value≈60)
     r = vm.delta_readings()[0]
-    assert r.name == key
+    # display name (E-0): bare name, no group_key prefix — no collision here.
+    assert r.name == key.split("::", 1)[-1]
     assert r.value_a == pytest.approx(20.0)
     assert r.dy == pytest.approx(40.0)  # y(0.6)-y(0.2) = 60-20
     # 範囲 [0.2,0.6] の統計: 値 20..60

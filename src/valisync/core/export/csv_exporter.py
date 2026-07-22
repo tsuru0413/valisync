@@ -23,6 +23,12 @@ class CsvExportOptions:
     decimal: str = "."
     unit_row: bool = False
     precision: int | None = None
+    #: 表示用ヘッダ名 (signals と同順・任意)。None は従来どおり raw signal.name を
+    #: 書く (無回帰)。GUI 側 (ExportCsvDialog) が display_names で計算して渡す —
+    #: 本モジュールは core であり gui.display_names を import しない (層違反回避、
+    #: E-0 spec §1.2)。長さは signals と一致すること (export() 側では未検証 —
+    #: 呼び出し元の契約)。
+    header_names: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         # 空区切り/空小数点は CSV 構造を壊す(列が融合する)ため核でも拒否。
@@ -72,7 +78,11 @@ class CsvExporter:
 
     def _header_rows(self, signals: list[Signal], opts: CsvExportOptions) -> list[str]:
         """ヘッダ行(+ unit_row 指定時は単位行)を返す。"""
-        names = [s.name for s in signals]
+        names = (
+            list(opts.header_names)
+            if opts.header_names is not None
+            else [s.name for s in signals]
+        )
         lines = [opts.delimiter.join([_TIMESTAMP_HEADER, *names])]
         if opts.unit_row:
             units = [s.metadata.get("unit", "") for s in signals]

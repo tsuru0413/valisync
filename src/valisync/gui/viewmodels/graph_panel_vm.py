@@ -25,6 +25,7 @@ from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
 from valisync.core.models import Signal
 from valisync.core.session import Session
 from valisync.core.statistics.range_stats import StatisticsResult
+from valisync.gui.display_names import display_names as _resolve_display_names
 from valisync.gui.theme import tokens
 from valisync.gui.viewmodels.observable import Observable
 from valisync.gui.viewmodels.y_axis_vm import YAxisVM
@@ -1100,6 +1101,16 @@ class GraphPanelVM(Observable):
         self.interp_method = method
         self._notify("cursor")
 
+    def _visible_display_names(self) -> dict[str, str]:
+        """Display names for the currently VISIBLE plotted entries (E-0, spec §1.2).
+
+        Collision-scoped to just this set (not every plotted entry, not every
+        loaded signal): a bare name only gets qualified with its group_key
+        when 2+ visible entries share it from distinct files. Shared by all
+        three readings methods so the readout pane, legend, and Δ table agree.
+        """
+        return _resolve_display_names(e.signal_key for e in self._plotted if e.visible)
+
     def cursor_readings(self) -> list[CursorReading]:
         """Interpolated value of each visible signal at cursor_t (Session-delegated).
 
@@ -1109,15 +1120,17 @@ class GraphPanelVM(Observable):
         if self.cursor_t is None:
             return []
         sig_map = self._signal_map()
+        names = self._visible_display_names()
         out: list[CursorReading] = []
         for entry in self._plotted:
             if not entry.visible:
                 continue
+            name = names[entry.signal_key]
             sig = sig_map.get(entry.signal_key)
             if sig is None:
                 out.append(
                     CursorReading(
-                        entry.signal_key,
+                        name,
                         entry.color,
                         None,
                         False,
@@ -1132,7 +1145,7 @@ class GraphPanelVM(Observable):
             r_hi = float(_fvals.max()) if _fvals.size else None
             out.append(
                 CursorReading(
-                    entry.signal_key,
+                    name,
                     entry.color,
                     val,
                     val is not None,
@@ -1154,6 +1167,7 @@ class GraphPanelVM(Observable):
         未設置のときだけこれを使う)。
         """
         sig_map = self._signal_map()
+        names = self._visible_display_names()
         out: list[CursorReading] = []
         for entry in self._plotted:
             if not entry.visible:
@@ -1164,7 +1178,7 @@ class GraphPanelVM(Observable):
             )
             out.append(
                 CursorReading(
-                    entry.signal_key,
+                    names[entry.signal_key],
                     entry.color,
                     None,
                     False,
@@ -1316,15 +1330,17 @@ class GraphPanelVM(Observable):
         a, b = self.cursor_t, self.cursor_t_b
         lo, hi = (a, b) if a <= b else (b, a)
         sig_map = self._signal_map()
+        names = self._visible_display_names()
         out: list[DeltaReading] = []
         for entry in self._plotted:
             if not entry.visible:
                 continue
+            name = names[entry.signal_key]
             sig = sig_map.get(entry.signal_key)
             if sig is None:
                 out.append(
                     DeltaReading(
-                        entry.signal_key,
+                        name,
                         entry.color,
                         None,
                         None,
@@ -1347,7 +1363,7 @@ class GraphPanelVM(Observable):
             stats = self._session.compute_statistics(sig, lo, hi)
             out.append(
                 DeltaReading(
-                    entry.signal_key,
+                    name,
                     entry.color,
                     va,
                     dy,
@@ -1378,7 +1394,10 @@ class GraphPanelVM(Observable):
         """Return (entry_id, signal_key, color, visible) for every entry on *axis_index*.
 
         Drives the axis-menu curve list (checkable, includes hidden entries).
-        signal_key doubles as the display label. Pure read — no notify.
+        Returns the raw signal_key, NOT a display label (E-0, spec §1.2) — the
+        View resolves the display string per-axis via display_names() so the
+        VM contract (and every existing consumer keyed on this tuple's str)
+        stays untouched. Pure read — no notify.
         """
         return [
             (e.entry_id, e.signal_key, e.color, e.visible)

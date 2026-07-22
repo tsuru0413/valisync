@@ -10,13 +10,13 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
 from valisync.gui import strings as S
 from valisync.gui.viewmodels.observable import Observable
 
 if TYPE_CHECKING:
     from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 
-_SEP = "::"
 _BASE_RE = re.compile(r"[\[.]")
 
 
@@ -110,7 +110,11 @@ class ChannelBrowserVM(Observable):
         group_sigs = self._app_vm.session.group_signals(active_key)  # Part A: cached
         prep: list[tuple[str, str, str, str]] = []
         for sig in group_sigs:
-            orig = sig.name.split(_SEP, 1)[1] if _SEP in sig.name else sig.name
+            orig = (
+                sig.name.split(KEY_SEPARATOR, 1)[1]
+                if KEY_SEPARATOR in sig.name
+                else sig.name
+            )
             unit = str(sig.metadata.get("unit", "")) if sig.metadata else ""
             prep.append((orig, orig.lower(), unit, sig.name))
         self._prep = prep
