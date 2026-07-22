@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import json
 import os
 import sys
 import tempfile
@@ -117,9 +118,38 @@ def main() -> int:
 
     args.out.mkdir(parents=True, exist_ok=True)
 
+    def panel_viewport_rect() -> dict[str, int] | None:
+        """アクティブなグラフパネルの plot viewport 矩形 (grab 画像のピクセル空間)。
+
+        `GraphPanelView.plot_widget`(QGraphicsView) の viewport を window 座標へ
+        mapTo し、devicePixelRatioF で物理ピクセルへ換算する — window.grab() が
+        保存する PNG は物理ピクセル寸法 (Windows 125% 等スケーリング時は論理サイズ
+        と一致しない)。パネル無し状態 (Welcome 等) は None (呼び出し側で省略)。
+        """
+        from PySide6.QtCore import QPoint
+
+        panels = list(window.graph_area_view._panel_views)
+        if not panels:
+            return None
+        _tab, _panel_id, panel_view = panels[0]
+        viewport = panel_view.plot_widget.viewport()
+        top_left = viewport.mapTo(window, QPoint(0, 0))
+        dpr = window.devicePixelRatioF()
+        return {
+            "x": round(top_left.x() * dpr),
+            "y": round(top_left.y() * dpr),
+            "w": round(viewport.width() * dpr),
+            "h": round(viewport.height() * dpr),
+        }
+
     def grab(name: str) -> None:
         settle()
         window.grab().save(str(args.out / f"{name}.png"))
+        rect = panel_viewport_rect()
+        if rect is not None:
+            (args.out / f"{name}.viewport.json").write_text(
+                json.dumps(rect), encoding="utf-8"
+            )
         print(f"captured {name}.png")
 
     settle(1.0)
