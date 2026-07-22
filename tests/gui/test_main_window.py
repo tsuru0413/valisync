@@ -643,7 +643,7 @@ def test_on_load_cancelled_updates_status_without_dialog(qtbot, monkeypatch):
     assert "キャンセル" in window.status_message()  # 右ラベルへ移設 (spec §2.4)
     assert "big.mf4" in window.status_message()
     assert dialogs == []  # モーダル無し(spec §6)
-    assert window.diagnostics_vm.counts() == (0, 0)  # 診断追記無し
+    assert window.diagnostics_vm.counts() == (0, 0, 0)  # 診断追記無し
 
 
 def test_load_file_wires_cancel_event_and_adapter(qtbot, monkeypatch, tmp_path):

@@ -1,3 +1,5 @@
+from unittest.mock import Mock
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHeaderView
 
@@ -10,6 +12,18 @@ def _mk(qtbot):
     vm = DiagnosticsViewModel()
     view = DiagnosticsView(vm)
     qtbot.addWidget(view)
+    return vm, view
+
+
+def _mk_no_confirm(qtbot):
+    """Same as _mk but with the Clear confirm dialog stubbed to always accept.
+
+    B5 inserted a QMessageBox.exec() into clear_diagnostics(); every existing
+    site that calls it (directly or via a real click) must inject this stub —
+    otherwise offscreen Qt hangs the test indefinitely in the modal loop.
+    """
+    vm, view = _mk(qtbot)
+    view._confirm_fn = lambda n: True
     return vm, view
 
 
@@ -39,7 +53,7 @@ def test_filter_warnings_only(qtbot):
 
 
 def test_clear_empties_view(qtbot):
-    vm, view = _mk(qtbot)
+    vm, view = _mk_no_confirm(qtbot)
     vm.add("a", [Diagnostic(level="warning", message="w")])
     view.clear_diagnostics()
     assert view.row_count() == 0
@@ -62,7 +76,7 @@ def test_empty_vm_shows_placeholder_then_hides_on_add(qtbot):
 
 
 def test_placeholder_returns_when_cleared_back_to_empty(qtbot):
-    vm, view = _mk(qtbot)
+    vm, view = _mk_no_confirm(qtbot)
     vm.add("a", [Diagnostic(level="error", message="e")])
     assert view._stack.currentWidget() is view._table
 
@@ -71,20 +85,21 @@ def test_placeholder_returns_when_cleared_back_to_empty(qtbot):
 
 
 def test_counts_chip_tracks_vm_counts_on_add_and_clear(qtbot):
-    vm, view = _mk(qtbot)
-    assert view._counts_label.text() == "⛔ 0 / ⚠ 0"
+    vm, view = _mk_no_confirm(qtbot)
+    assert view._counts_label.text() == "⛔ 0 / ⚠ 0 / ℹ 0"
 
     vm.add(
         "a",
         [
             Diagnostic(level="error", message="e"),
             Diagnostic(level="warning", message="w"),
+            Diagnostic(level="info", message="i"),
         ],
     )
-    assert view._counts_label.text() == "⛔ 1 / ⚠ 1"
+    assert view._counts_label.text() == "⛔ 1 / ⚠ 1 / ℹ 1"
 
     view.clear_diagnostics()
-    assert view._counts_label.text() == "⛔ 0 / ⚠ 0"
+    assert view._counts_label.text() == "⛔ 0 / ⚠ 0 / ℹ 0"
 
 
 def test_order_column_shows_seq_for_each_row(qtbot):
@@ -116,6 +131,91 @@ def test_message_column_stretches_other_columns_resize_to_contents(qtbot):
 
 
 # ---------------------------------------------------------------------------
+# B2: checkable exclusive filter buttons — checked and _filter share a single
+# truth source (spec §2.2). The three-point-combined tests below deliberately
+# use an error=1/warning=2/info=3 seed (distinguishable row counts) so a
+# mis-wired filter button cannot hide behind an accidental count collision;
+# exclusivity itself (a QButtonGroup guarantee) is never asserted standalone.
+# ---------------------------------------------------------------------------
+
+
+def test_btn_all_checked_by_default(qtbot):
+    _, view = _mk(qtbot)
+    assert view._btn_all.isChecked()
+
+
+def test_set_filter_programmatic_syncs_checked_button(qtbot):
+    """A direct (non-click) ``set_filter`` call still re-syncs the checked
+    button — the truth source is ``_filter``, not the button's own click."""
+    _, view = _mk(qtbot)
+    view.set_filter("warning")
+    assert view._filter == "warning"
+    assert view._btn_warn.isChecked()
+
+
+def test_filtered_empty_shows_contextual_placeholder_with_total(qtbot):
+    """Filtering to zero rows is textually distinct from a truly empty dock
+    (B2/UX-06): it names the active filter and the unfiltered total."""
+    vm, view = _mk(qtbot)
+    vm.add("a", [Diagnostic(level="warning", message="w")])
+
+    view.set_filter("error")
+    assert view.row_count() == 0
+    assert view._stack.currentWidget() is view._placeholder
+    assert view._placeholder.text() == "エラーに該当する診断はありません（全 1 件）"
+
+
+def test_message_cell_tooltip_shows_full_message(qtbot):
+    """B3: the message cell carries the full text as a tooltip, independent
+    of how much the Stretch column happens to clip on screen."""
+    vm, view = _mk(qtbot)
+    long_message = "非常に長い診断メッセージ" * 5
+    vm.add("a", [Diagnostic(level="error", message=long_message)])
+    message_col = 3
+    item = view._table.item(0, message_col)
+    assert item.toolTip() == long_message
+
+
+# ---------------------------------------------------------------------------
+# B5: Clear confirmation (UXG-27) — ``_confirm_fn`` attribute DI (same shape
+# as file_browser_view.FileBrowserView._confirm_fn) covers the 3 branches
+# without driving the real QMessageBox modal loop.
+# ---------------------------------------------------------------------------
+
+
+def test_clear_diagnostics_confirmed_clears(qtbot):
+    vm, view = _mk(qtbot)
+    vm.add(
+        "a",
+        [
+            Diagnostic(level="warning", message="w"),
+            Diagnostic(level="error", message="e"),
+        ],
+    )
+    received_n = []
+    view._confirm_fn = lambda n: received_n.append(n) or True
+    view.clear_diagnostics()
+    assert received_n == [2]
+    assert vm.entries() == []
+
+
+def test_clear_diagnostics_cancelled_keeps_entries(qtbot):
+    vm, view = _mk(qtbot)
+    vm.add("a", [Diagnostic(level="warning", message="w")])
+    view._confirm_fn = lambda n: False
+    view.clear_diagnostics()
+    assert len(vm.entries()) == 1
+
+
+def test_clear_diagnostics_empty_skips_confirm(qtbot):
+    _, view = _mk(qtbot)
+    confirm = Mock(return_value=True)
+    view._confirm_fn = confirm
+    view.clear_diagnostics()
+    confirm.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Real input-event paths (Layer B) — qtbot.mouseClick / mouseDClick drive the
 # SAME routing a real click/dblclick takes (QPushButton.clicked / QTableWidget
 # viewport hit-test → cellDoubleClicked), not a programmatic .click()/.emit()
@@ -123,22 +223,40 @@ def test_message_column_stretches_other_columns_resize_to_contents(qtbot):
 # ---------------------------------------------------------------------------
 
 
-def test_real_click_on_filter_buttons_filters_rows(qtbot):
-    """Real QPushButton clicks (not ``.click()``) drive the filter bar."""
-    vm, view = _mk(qtbot)
+def test_real_click_on_filter_buttons_syncs_filter_rows_and_checked(qtbot):
+    """Three-point-combined (spec §4): a real click on each filter button
+    must move ``_filter``, the displayed row count, and the button's checked
+    state together. The error=1/warning=2/info=3 seed makes each level's row
+    count distinguishable, so a swapped button<->level wire cannot hide
+    behind equal counts. Also covers the real Clear-button click path (with
+    the confirm dialog stubbed to accept — B5)."""
+    vm, view = _mk_no_confirm(qtbot)
     vm.add(
         "a",
         [
-            Diagnostic(level="error", message="e"),
-            Diagnostic(level="warning", message="w"),
+            Diagnostic(level="error", message="e1"),
+            Diagnostic(level="warning", message="w1"),
+            Diagnostic(level="warning", message="w2"),
+            Diagnostic(level="info", message="i1"),
+            Diagnostic(level="info", message="i2"),
+            Diagnostic(level="info", message="i3"),
         ],
     )
 
-    qtbot.mouseClick(view._btn_warn, Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(view._btn_err, Qt.MouseButton.LeftButton)
+    assert view._filter == "error"
     assert view.row_count() == 1
+    assert view._btn_err.isChecked()
+
+    qtbot.mouseClick(view._btn_warn, Qt.MouseButton.LeftButton)
+    assert view._filter == "warning"
+    assert view.row_count() == 2
+    assert view._btn_warn.isChecked()
 
     qtbot.mouseClick(view._btn_all, Qt.MouseButton.LeftButton)
-    assert view.row_count() == 2
+    assert view._filter is None
+    assert view.row_count() == 6
+    assert view._btn_all.isChecked()
 
     qtbot.mouseClick(view._btn_clear, Qt.MouseButton.LeftButton)
     assert view.row_count() == 0

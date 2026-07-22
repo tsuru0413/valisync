@@ -6,19 +6,28 @@ filter (All/Errors/Warnings), Clear, and a counts chip — per design spec
 "diagnostics" change tag. Double-clicking a row emits ``entry_activated`` with
 the entry's source (file basename) so MainWindow can activate it; the target
 is always the file — signal_name is display-only (see ``_on_double_click``).
-When the filtered
-entry list is empty, a placeholder replaces the table (spec §7: "ドックは
-診断ゼロでも存在。空時はプレースホルダ").
+When the filtered entry list is empty, a placeholder replaces the table
+(spec §7: "ドックは診断ゼロでも存在。空時はプレースホルダ"). The placeholder
+text distinguishes a true-zero dock (``DIAG_EMPTY``) from a filtered-zero
+result (``DIAG_EMPTY_FILTERED_TMPL`` — names the active filter and the
+unfiltered total) so a filtered-to-nothing view is never mistaken for an
+empty dock; this supersedes the prior same-display reading of
+2026-07-02-gui-feedback-errors-design.md §7 (see
+2026-07-22-diag-readout-consistency-design.md §2.2, B2/UX-06).
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QDockWidget,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QTableWidget,
@@ -36,7 +45,8 @@ _LEVEL_ICON = {"error": "⛔", "warning": "⚠", "info": "ℹ"}  # noqa: RUF001
 # receipt-order sequence number is acceptable) — header kept terse ("#").
 _HEADERS = ("レベル", "#", S.DIAG_COL_SOURCE, "メッセージ", "対象")
 _MESSAGE_COLUMN = 3  # index of "メッセージ" within _HEADERS
-_PLACEHOLDER_TEXT = "診断はありません"
+# level -> display label used in DIAG_EMPTY_FILTERED_TMPL (B2).
+_FILTER_LABEL = {"error": S.DIAG_FILTER_ERRORS, "warning": S.DIAG_FILTER_WARNINGS}
 
 
 class DiagnosticsView(QDockWidget):
@@ -49,6 +59,9 @@ class DiagnosticsView(QDockWidget):
         self.setObjectName("diagnostics_dock")  # required for saveState/restoreState
         self._vm = vm
         self._filter: str | None = None
+        # G-14/file_browser_view._confirm_fn 同型の属性 DI: tests replace this
+        # with a stub to avoid QMessageBox.exec()'s modal loop (B5).
+        self._confirm_fn: Callable[[int], bool] = self._default_confirm
 
         container = QWidget(self)
         outer = QVBoxLayout(container)
@@ -58,6 +71,18 @@ class DiagnosticsView(QDockWidget):
         self._btn_err = QPushButton(S.DIAG_FILTER_ERRORS)
         self._btn_warn = QPushButton(S.DIAG_FILTER_WARNINGS)
         self._btn_clear = QPushButton(S.DIAG_CLEAR)
+        # B2: the 3 filter buttons are checkable and mutually exclusive so the
+        # active filter is always visible; Clear stays a plain (non-checkable)
+        # action button. _filter is the single source of truth — set_filter()
+        # below re-syncs the checked button whenever it changes (including
+        # programmatic calls, which do not go through `clicked`).
+        for b in (self._btn_all, self._btn_err, self._btn_warn):
+            b.setCheckable(True)
+        self._filter_group = QButtonGroup(self)
+        self._filter_group.setExclusive(True)
+        for b in (self._btn_all, self._btn_err, self._btn_warn):
+            self._filter_group.addButton(b)
+        self._btn_all.setChecked(True)
         self._btn_all.clicked.connect(lambda: self.set_filter(None))
         self._btn_err.clicked.connect(lambda: self.set_filter("error"))
         self._btn_warn.clicked.connect(lambda: self.set_filter("warning"))
@@ -87,7 +112,7 @@ class DiagnosticsView(QDockWidget):
                 else QHeaderView.ResizeMode.ResizeToContents,
             )
 
-        self._placeholder = QLabel(_PLACEHOLDER_TEXT)
+        self._placeholder = QLabel(S.DIAG_EMPTY)
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         # QStackedWidget (not overlapping widgets) so the placeholder cleanly
@@ -107,9 +132,42 @@ class DiagnosticsView(QDockWidget):
 
     def set_filter(self, level: str | None) -> None:
         self._filter = level
+        # _filter is the truth source; keep the checkable buttons in sync even
+        # when called programmatically (setChecked does not emit `clicked`, so
+        # this never re-enters set_filter — B2 §2.2).
+        btn = {None: self._btn_all, "error": self._btn_err, "warning": self._btn_warn}[
+            level
+        ]
+        btn.setChecked(True)
         self._rebuild()
 
+    def _default_confirm(self, n: int) -> bool:
+        # Explicit QMessageBox (not QMessageBox.question) so the standard
+        # Yes/No can be relabelled to match the body's verb — same pattern as
+        # file_browser_view.FileBrowserView._default_confirm (G-14).
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(S.DIAG_CLEAR_CONFIRM_TITLE)
+        box.setText(S.DIAG_CLEAR_CONFIRM_BODY_TMPL.format(n=n))
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        yes_button = box.button(QMessageBox.StandardButton.Yes)
+        no_button = box.button(QMessageBox.StandardButton.No)
+        assert yes_button is not None
+        assert no_button is not None
+        yes_button.setText(S.DIAG_CLEAR_CONFIRM_YES)
+        no_button.setText(S.DIAG_CLEAR_CONFIRM_NO)
+        reply = box.exec()
+        return reply == QMessageBox.StandardButton.Yes
+
     def clear_diagnostics(self) -> None:
+        n = len(self._vm.entries(None))
+        if n == 0:
+            return
+        if not self._confirm_fn(n):
+            return
         self._vm.clear()  # triggers "diagnostics" → _rebuild
 
     def row_count(self) -> int:
@@ -132,17 +190,38 @@ class DiagnosticsView(QDockWidget):
                 e.signal_name or "—",
             )
             for c, text in enumerate(cells):
-                self._table.setItem(r, c, QTableWidgetItem(text))
+                item = QTableWidgetItem(text)
+                if c == _MESSAGE_COLUMN:
+                    # B3: Stretch can still clip a long message — hover shows
+                    # the full text regardless of column width.
+                    item.setToolTip(e.message)
+                self._table.setItem(r, c, item)
 
-        # placeholder tracks the *filtered* view, not just the VM's raw
-        # entries — an empty filter result (e.g. "Errors" with none) reads
-        # the same as a truly empty dock (spec §7).
-        self._stack.setCurrentWidget(self._table if entries else self._placeholder)
+        if entries:
+            self._stack.setCurrentWidget(self._table)
+        else:
+            # placeholder tracks the *filtered* view, not just the VM's raw
+            # entries — an empty filter result (e.g. "Errors" with none) now
+            # shows a filter-contextual message distinct from a truly empty
+            # dock, so it is never mistaken for "no diagnostics at all" (B2 —
+            # supersedes the prior same-display reading of
+            # 2026-07-02-gui-feedback-errors-design.md §7; see
+            # 2026-07-22-diag-readout-consistency-design.md §2.2).
+            if self._filter is None:
+                self._placeholder.setText(S.DIAG_EMPTY)
+            else:
+                total = len(self._vm.entries(None))
+                self._placeholder.setText(
+                    S.DIAG_EMPTY_FILTERED_TMPL.format(
+                        level=_FILTER_LABEL[self._filter], n=total
+                    )
+                )
+            self._stack.setCurrentWidget(self._placeholder)
 
-        errors, warnings = self._vm.counts()
+        errors, warnings, infos = self._vm.counts()
         # plain ASCII slash keeps ruff's ambiguous-unicode check (RUF001/003)
         # clean; the fullwidth variant reads identically here.
-        self._counts_label.setText(f"⛔ {errors} / ⚠ {warnings}")
+        self._counts_label.setText(f"⛔ {errors} / ⚠ {warnings} / ℹ {infos}")  # noqa: RUF001
 
     def _on_double_click(self, row: int, _col: int) -> None:
         entries = self._vm.entries(self._filter)

@@ -62,8 +62,9 @@ class DiagnosticsViewModel(Observable):
             return list(self._entries)
         return [e for e in self._entries if e.level == level]
 
-    def counts(self) -> tuple[int, int]:
-        """Return (error_count, warning_count)."""
+    def counts(self) -> tuple[int, int, int]:
+        """Return (error_count, warning_count, info_count)."""
         errors = sum(1 for e in self._entries if e.level == "error")
         warnings = sum(1 for e in self._entries if e.level == "warning")
-        return errors, warnings
+        infos = sum(1 for e in self._entries if e.level == "info")
+        return errors, warnings, infos

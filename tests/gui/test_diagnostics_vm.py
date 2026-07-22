@@ -24,7 +24,23 @@ def test_counts_errors_and_warnings():
     vm.add(
         "a", [_diag("error", "boom"), _diag("warning", "w1"), _diag("warning", "w2")]
     )
-    assert vm.counts() == (1, 2)
+    assert vm.counts() == (1, 2, 0)
+
+
+def test_counts_includes_infos():
+    vm = DiagnosticsViewModel()
+    vm.add(
+        "a",
+        [
+            _diag("error", "boom"),
+            _diag("warning", "w1"),
+            _diag("warning", "w2"),
+            _diag("info", "i1"),
+            _diag("info", "i2"),
+            _diag("info", "i3"),
+        ],
+    )
+    assert vm.counts() == (1, 2, 3)
 
 
 def test_entries_filter_by_level():
