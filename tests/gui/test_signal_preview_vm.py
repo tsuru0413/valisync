@@ -115,6 +115,65 @@ def test_plot_data_none_for_unknown(qtbot: QtBot) -> None:
     assert vm.plot_data() is None
 
 
+# ─── axis_label_parts (UX-43, spec §3) ────────────────────────────────────
+
+
+def test_axis_label_parts_returns_display_name_and_unit(qtbot: QtBot) -> None:
+    vm = _vm(qtbot)
+    vm.set_signal("g::Speed")
+    # E-0: display name, never the raw "g::Speed" key.
+    assert vm.axis_label_parts() == ("Speed", "km/h")
+
+
+def test_axis_label_parts_unit_none_when_missing(qtbot: QtBot) -> None:
+    app_vm = AppViewModel()
+    ts = np.arange(0.0, 10.0, 1.0)
+    sig = Signal(
+        name="g::NoUnit",
+        timestamps=ts,
+        values=np.sin(ts),
+        file_format="MDF4",
+        bus_type="CAN",
+        source_file="",
+        metadata={},
+    )
+    app_vm.session.group_signals = lambda k: [sig]
+    app_vm.set_active_file("g")
+    app_vm.register_loaded("g")
+    vm = SignalPreviewVM(app_vm)
+    vm.set_signal("g::NoUnit")
+    assert vm.axis_label_parts() == ("NoUnit", None)
+
+
+def test_axis_label_parts_empty_when_no_signal_set(qtbot: QtBot) -> None:
+    vm = _vm(qtbot)
+    assert vm.axis_label_parts() == ("", None)
+
+
+def test_axis_label_parts_qualified_name_on_collision(qtbot: QtBot) -> None:
+    """Scope = ALL loaded signals (same rule as display_name, spec §1.2)."""
+    app_vm = AppViewModel()
+    ts = np.arange(0.0, 10.0, 1.0)
+    vs = np.sin(ts)
+
+    def _group_signals(key: str) -> list[Signal]:
+        return {
+            "g1": [_sig("g1::Speed", ts, vs)],
+            "g2": [_sig("g2::Speed", ts, vs)],
+        }[key]
+
+    app_vm.session.group_signals = _group_signals
+    app_vm.register_loaded("g1")
+    app_vm.register_loaded("g2")
+    app_vm.set_active_file("g1")
+    vm = SignalPreviewVM(app_vm)
+    vm.set_signal("g1::Speed")
+    name, unit = vm.axis_label_parts()
+    assert name == "Speed (g1)"
+    assert "::" not in name
+    assert unit == "km/h"
+
+
 def test_time_range_does_not_materialize_sorted_view_cache(qtbot: QtBot) -> None:
     """properties() must read time range via Signal.time_range() (raw min/max),
     NOT sorted_view()[0][0]/[-1] which would inflate the FU-20 float64 cache

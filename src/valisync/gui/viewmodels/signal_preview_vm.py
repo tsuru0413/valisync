@@ -114,6 +114,21 @@ class SignalPreviewVM:
             rows.append(("ラベル", ", ".join(f"{k}={v}" for k, v in labels.items())))
         return rows
 
+    def axis_label_parts(self) -> tuple[str, str | None]:
+        """Left-axis label parts for the preview plot: (display_name, unit).
+
+        Uses display_name() (E-0) so the raw namespaced key (e.g.
+        "mf4_1::VehSpd") never leaks into the plot label -- same rule as the
+        "名前" property row and windowTitle (spec §3). Returns ("", None)
+        when no signal is resolved (mirrors properties()'s empty-list case).
+        """
+        sig = self._signal()
+        if sig is None:
+            return ("", None)
+        md = sig.metadata or {}
+        unit = str(md.get("unit", "")) or None
+        return (self.display_name(sig.name), unit)
+
     def plot_data(self) -> tuple[np.ndarray, np.ndarray] | None:
         sig = self._signal()
         if sig is None or len(sig.timestamps) == 0:

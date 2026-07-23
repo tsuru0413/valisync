@@ -69,6 +69,12 @@ class SignalPreviewWindow(QWidget):
     def _render(self) -> None:
         # Preview tab.
         self.preview_plot.clear()
+        # UX-43: axis labels. Color is left unspecified so the label
+        # inherits the global pyqtgraph "foreground" config (plot_foreground
+        # token, apply.py) -- same as the main plot's axes (spec §3).
+        self.preview_plot.setLabel("bottom", "Time", units="s")
+        name, unit = self._vm.axis_label_parts()
+        self.preview_plot.setLabel("left", name, units=unit)
         data = self._vm.plot_data()
         if data is not None:
             x, y = data

@@ -64,3 +64,29 @@ def test_show_signal_unknown_shows_no_curve(qtbot: QtBot) -> None:
     win.show_signal("g::Missing")
     assert len(win.preview_plot.listDataItems()) == 0
     assert win.property_row_count() == 0
+
+
+# ─── axis labels (UX-43, spec §3) ──────────────────────────────────────────
+
+
+def test_preview_axis_labels_bottom_time_left_display_name_unit(qtbot: QtBot) -> None:
+    win = _window(qtbot)
+    win.show_signal("g::A")
+    bottom = win.preview_plot.getAxis("bottom")
+    left = win.preview_plot.getAxis("left")
+    assert bottom.labelText == "Time"
+    assert bottom.labelUnits == "s"
+    # E-0: display name only -- the raw "g::A" key must never leak into the
+    # left-axis label (sabotage: using _signal().name directly would put
+    # "g::A" here instead of "A").
+    assert left.labelText == "A"
+    assert "::" not in left.labelText
+    assert left.labelUnits == "V"  # from _sig()'s metadata unit
+
+
+def test_preview_axis_label_swaps_with_shown_signal(qtbot: QtBot) -> None:
+    win = _window(qtbot)
+    win.show_signal("g::A")
+    win.show_signal("g::B")  # same window instance -- label must not be stale
+    left = win.preview_plot.getAxis("left")
+    assert left.labelText == "B"
