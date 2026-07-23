@@ -287,14 +287,38 @@ class ChannelBrowserView(QWidget):
 
     # ─── Context menu (R14.1) ──────────────────────────────────────────────────
 
-    def build_context_menu(self) -> QMenu:
-        """Build the signal context menu, greyed out per current selection."""
+    def build_context_menu(self, pos: QPoint | None = None) -> QMenu:
+        """Build the signal context menu, greyed out per current selection.
+
+        *pos* (tree viewport coordinates) identifies the row under the
+        right-click for the position-based "Show Signal Properties" item
+        (#15). It is deliberately NOT derived from the current selection:
+        a right-click does not change selection (see ``_show_context_menu``),
+        so a selection-based lookup would preview whatever was already
+        selected rather than the clicked row, and would also mis-enable when
+        a parent (array) node and a leaf are selected together (``parent``
+        resolves to no key and is excluded, so the selection can look like a
+        single leaf even though the click itself did not land on one).
+        *pos* being ``None`` (legacy callers) skips the position-based item
+        without affecting "Add to Active Panel", which stays selection-based.
+        """
         menu = QMenu(self)
         add = menu.addAction(S.ACTION_ADD_TO_ACTIVE_PANEL)
         add.setEnabled(bool(self.selected_signal_keys()))
         # Route through _emit_add_selected so the empty-selection guard is shared
         # with D&D (action is already disabled when empty; add is menu/D&D only).
         add.triggered.connect(lambda *_: self._emit_add_selected())
+
+        hit_key = (
+            self.model.signal_key_at(self.tree.indexAt(pos))
+            if pos is not None
+            else None
+        )
+        if hit_key is not None:
+            show_props = menu.addAction(S.ACTION_SHOW_SIGNAL_PROPERTIES)
+            show_props.triggered.connect(
+                lambda *_, key=hit_key: self.preview_requested.emit(key)
+            )
         return menu
 
     def _show_context_menu(self, pos: QPoint) -> None:
@@ -303,9 +327,11 @@ class ChannelBrowserView(QWidget):
         Driven by ``QTreeView.customContextMenuRequested`` so the menu appears on
         the real OS path (overriding contextMenuEvent on this container does not
         fire from the child item view). The menu operates on the current
-        multi-selection (R14.1 / H4), so this deliberately does NOT change the
-        selection — right-clicking with several rows selected keeps them all for
-        a bulk "Add to Active Panel".
+        multi-selection (R14.1 / H4) for "Add to Active Panel", so this
+        deliberately does NOT change the selection — right-clicking with several
+        rows selected keeps them all for a bulk add. "Show Signal Properties"
+        (#15) is position-based instead (see build_context_menu docstring), so
+        *pos* is threaded through for that lookup.
         """
         global_pos = self.tree.viewport().mapToGlobal(pos)
-        self.build_context_menu().exec(global_pos)
+        self.build_context_menu(pos).exec(global_pos)

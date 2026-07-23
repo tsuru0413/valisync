@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt
+from PySide6.QtCore import QItemSelectionModel, QModelIndex, QPoint, Qt
 from pytestqt.qtbot import QtBot
 
 from valisync.core.models import Delimiter, FormatDefinition
@@ -449,6 +449,114 @@ def test_context_menu_add_still_emits(qtbot: QtBot, tmp_path: Path) -> None:
     add_action = next(
         a for a in menu.actions() if a.text() == S.ACTION_ADD_TO_ACTIVE_PANEL
     )
+    with qtbot.waitSignal(view.add_to_panel_requested, timeout=1000):
+        add_action.trigger()
+
+
+# ─── Context menu: 信号プロパティを表示 (#15 — position-based) ───────────────
+# spec §2 / task-2-brief: 右クリックの対象は selected_signal_keys() (選択ベース)
+# ではなく indexAt(pos) の hit leaf (位置ベース) -- 右クリックは選択を変えない
+# ため、選択ベースだと「右クリックした行」でなく「既存選択行」がプレビューされる、
+# という 2 つの実バグを構造回避する (sabotage 2 種で下に実証)。
+
+
+def test_show_properties_uses_click_position_not_existing_selection(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """#15 Step 1: leaf 位置で右クリック -> 有効 -> triggered でその行の key が
+    preview_requested で発火する。別行 (Arr[1]) を選択中でも、右クリックした
+    Scalar 行の key が使われる (選択でなく位置が真実)。"""
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+
+    # Select a DIFFERENT leaf than the one we are about to right-click, so a
+    # selection-based implementation and a position-based one disagree.
+    parent = view.model.index(0, 0, QModelIndex())  # array parent (Arr)
+    other_leaf = view.model.index(1, 0, parent)  # Arr[1]
+    view.tree.selectionModel().select(
+        other_leaf,
+        QItemSelectionModel.SelectionFlag.Select
+        | QItemSelectionModel.SelectionFlag.Rows,
+    )
+
+    scalar_index = view.model.index(1, 0, QModelIndex())  # top-level "Scalar" leaf
+    pos = view.tree.visualRect(scalar_index).center()
+
+    menu = view.build_context_menu(pos)
+    show_props = next(
+        a for a in menu.actions() if a.text() == S.ACTION_SHOW_SIGNAL_PROPERTIES
+    )
+    assert show_props.isEnabled()
+    with qtbot.waitSignal(view.preview_requested, timeout=1000) as spy:
+        show_props.trigger()
+    assert spy.args[0].endswith("::Scalar")  # the CLICKED row, not the selected one
+
+
+def test_show_properties_absent_for_parent_click_position(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """#15: parent(array) ノード上で右クリック -> 非表示 (無効化条件)。"""
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+    parent_index = view.model.index(0, 0, QModelIndex())  # array parent, non-leaf
+    pos = view.tree.visualRect(parent_index).center()
+
+    menu = view.build_context_menu(pos)
+    assert not any(a.text() == S.ACTION_SHOW_SIGNAL_PROPERTIES for a in menu.actions())
+
+
+def test_show_properties_absent_for_blank_area(qtbot: QtBot, tmp_path: Path) -> None:
+    """#15: 空白部 (どの行にも当たらない) で右クリック -> 非表示。"""
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+    blank_pos = QPoint(5, 100_000)  # far below any row
+
+    menu = view.build_context_menu(blank_pos)
+    assert not any(a.text() == S.ACTION_SHOW_SIGNAL_PROPERTIES for a in menu.actions())
+
+
+def test_show_properties_absent_when_selection_based_would_misfire(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """#15 sabotage-2 guard: parent + leaf を同時選択していても、右クリック位置
+    が leaf でなければ (空白部) 無効のまま -- selected_signal_keys() は parent
+    を None 除外するため、選択ベースの有効化判定だと「選択数 == 1」に見えて
+    誤って有効化してしまう罠を、位置ベース判定で構造的に避ける。"""
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+    parent = view.model.index(0, 0, QModelIndex())
+    leaf_child = view.model.index(0, 0, parent)  # Arr[0]
+
+    selection_model = view.tree.selectionModel()
+    flags = (
+        QItemSelectionModel.SelectionFlag.Select
+        | QItemSelectionModel.SelectionFlag.Rows
+    )
+    selection_model.select(parent, flags)
+    selection_model.select(leaf_child, flags)
+    assert len(view.selected_signal_keys()) == 1  # parent excluded -> looks like 1
+
+    blank_pos = QPoint(5, 100_000)  # right-click somewhere with no item
+    menu = view.build_context_menu(blank_pos)
+    assert not any(a.text() == S.ACTION_SHOW_SIGNAL_PROPERTIES for a in menu.actions())
+
+
+def test_context_menu_add_still_emits_regardless_of_click_position(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """Regression: 「アクティブパネルへ追加」は選択ベース(複数選択前提)のまま
+    -- #15 の位置ベース化は「信号プロパティを表示」のみに閉じており、click
+    position が空白でも既存の Add 項目は選択に基づき有効のまま発火する。"""
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+    parent = view.model.index(0, 0, QModelIndex())
+    child = view.model.index(0, 0, parent)
+    view.tree.selectionModel().select(
+        child,
+        QItemSelectionModel.SelectionFlag.Select
+        | QItemSelectionModel.SelectionFlag.Rows,
+    )
+    blank_pos = QPoint(5, 100_000)
+    menu = view.build_context_menu(blank_pos)
+    add_action = next(
+        a for a in menu.actions() if a.text() == S.ACTION_ADD_TO_ACTIVE_PANEL
+    )
+    assert add_action.isEnabled()
     with qtbot.waitSignal(view.add_to_panel_requested, timeout=1000):
         add_action.trigger()
 

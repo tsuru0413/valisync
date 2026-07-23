@@ -188,6 +188,7 @@ CHANNEL_PLACEHOLDER_NO_CHANNELS: Final = (
     f"このファイルに信号がありません\n（詳細は「{DOCK_DIAGNOSTICS}」ドックへ）"
 )
 ACTION_ADD_TO_ACTIVE_PANEL: Final = "アクティブパネルへ追加"  # G-18
+ACTION_SHOW_SIGNAL_PROPERTIES: Final = "信号プロパティを表示"  # 雑メモ #15
 
 # ── データエクスプローラ (data_explorer_view・G-09/G-12) ─────────────────────
 DATA_EXPLORER_SOURCES: Final = "データソース"  # ツールバー名 (G-09)
