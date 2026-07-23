@@ -133,6 +133,7 @@ def test_context_menu_remove_unloads_file(qtbot: QtBot) -> None:
     from valisync.core.models import SignalGroup
 
     app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)  # overlay action requires comparison mode
     k1 = app_vm.session._groups.add(
         SignalGroup((), Path("/path/to/a.csv").absolute(), "CSV", datetime.now())
     )
@@ -148,7 +149,14 @@ def test_context_menu_remove_unloads_file(qtbot: QtBot) -> None:
 
     menu = view.build_context_menu(0)
     actions = menu.actions()
-    assert [act.text() for act in actions] == [S.ACTION_REMOVE_FILE]
+    # E-2a/b: reference_file_key is None here (app_vm._loaded_keys was set
+    # directly, bypassing register_loaded's auto-reference), so neither row is
+    # "the reference" — both new items appear for row 0 too (spec §2/§3).
+    assert [act.text() for act in actions] == [
+        S.ACTION_REMOVE_FILE,
+        S.ACTION_SET_REFERENCE,
+        S.ACTION_OVERLAY_REFERENCE,
+    ]
     actions[0].trigger()
 
     assert vm.files == ["b.csv"]
@@ -194,6 +202,7 @@ def test_right_click_on_row_opens_remove_menu_and_unloads(
     from valisync.core.models import SignalGroup
 
     app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)  # overlay action requires comparison mode
     k1 = app_vm.session._groups.add(
         SignalGroup((), Path("/path/to/a.csv").absolute(), "CSV", datetime.now())
     )
@@ -230,7 +239,13 @@ def test_right_click_on_row_opens_remove_menu_and_unloads(
 
     assert captured["row"] == 1
     assert view.list_view.currentIndex().row() == 1
-    assert [a.text() for a in captured["menu"].actions()] == [S.ACTION_REMOVE_FILE]
+    # E-2a/b: reference_file_key is None (see test_context_menu_remove_unloads_file),
+    # so both new items appear here too.
+    assert [a.text() for a in captured["menu"].actions()] == [
+        S.ACTION_REMOVE_FILE,
+        S.ACTION_SET_REFERENCE,
+        S.ACTION_OVERLAY_REFERENCE,
+    ]
 
     captured["menu"].actions()[0].trigger()
     assert vm.files == ["a.csv"]
@@ -357,3 +372,184 @@ def test_releasing_row_exposes_spinner_state(qtbot: QtBot, tmp_path: Path) -> No
     app_vm.unload_file(k1)
     assert view.model.data(view.model.index(1, 0), FileListModel.ReleasingRole) is True
     assert view.model.data(view.model.index(0, 0), FileListModel.ReleasingRole) is False
+
+
+# ─── E-2a/b: reference/overlay menu items (spec §2/§3) ───────────────────────
+
+
+def test_menu_single_file_shows_remove_only(qtbot: QtBot, tmp_path: Path) -> None:
+    """With only 1 loaded file, comparison mode can never be True (the >=2
+    guard in AppViewModel.is_comparison_mode()), and the affordances are now
+    gated as a symmetric pair on comparison mode (spec 2026-07-23 §3.3 M7) —
+    so neither "基準に設定" nor "基準の同名信号を重ねる" appears; only
+    削除 does. (Superseding the old "基準に設定 shown-but-disabled"
+    expectation, which made the row look actionable for zero visual effect.)
+    """
+    app_vm = AppViewModel()
+    app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())
+    vm = FileBrowserVM(app_vm)
+    view = FileBrowserView(vm)
+    qtbot.addWidget(view)
+
+    actions = view.build_context_menu(0).actions()
+    assert [a.text() for a in actions] == [S.ACTION_REMOVE_FILE]
+
+
+def test_menu_on_reference_row_disables_set_reference_hides_overlay(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    app_vm = AppViewModel()
+    app_vm.set_comparison_mode(
+        True
+    )  # proves is_ref gates overlay even in comparison mode
+    app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())  # becomes reference
+    app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
+    vm = FileBrowserVM(app_vm)
+    view = FileBrowserView(vm)
+    qtbot.addWidget(view)
+
+    actions = view.build_context_menu(0).actions()  # row 0 = a.csv = reference
+    assert [a.text() for a in actions] == [S.ACTION_REMOVE_FILE, S.ACTION_SET_REFERENCE]
+    assert actions[1].isEnabled() is False
+
+
+def test_menu_on_non_reference_row_enables_set_reference_shows_overlay(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)  # overlay action requires comparison mode
+    app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())  # becomes reference
+    app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
+    vm = FileBrowserVM(app_vm)
+    view = FileBrowserView(vm)
+    qtbot.addWidget(view)
+
+    actions = view.build_context_menu(1).actions()  # row 1 = b.csv = non-reference
+    assert [a.text() for a in actions] == [
+        S.ACTION_REMOVE_FILE,
+        S.ACTION_SET_REFERENCE,
+        S.ACTION_OVERLAY_REFERENCE,
+    ]
+    assert actions[1].isEnabled() is True
+
+
+def test_menu_guards_releasing_row_to_remove_file_only(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    app_vm, k1, _k2 = _two_file_app_vm_with_fake_teardown(tmp_path)
+    vm = FileBrowserVM(app_vm)
+    view = FileBrowserView(vm)
+    qtbot.addWidget(view)
+    app_vm.unload_file(k1)  # k1 -> releasing row (row 1, past the loaded rows)
+
+    actions = view.build_context_menu(1).actions()
+    assert [a.text() for a in actions] == [S.ACTION_REMOVE_FILE]
+
+
+def test_set_reference_action_updates_app_vm(qtbot: QtBot, tmp_path: Path) -> None:
+    app_vm = AppViewModel()
+    key1 = app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())
+    key2 = app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
+    app_vm.set_comparison_mode(True)  # affordance only appears in comparison mode
+    vm = FileBrowserVM(app_vm)
+    view = FileBrowserView(vm)
+    qtbot.addWidget(view)
+    assert app_vm.reference_file_key == key1
+
+    actions = view.build_context_menu(1).actions()
+    next(a for a in actions if a.text() == S.ACTION_SET_REFERENCE).trigger()
+
+    assert app_vm.reference_file_key == key2
+
+
+def test_overlay_action_emits_signal_with_target_key(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)  # overlay action requires comparison mode
+    app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())
+    key2 = app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
+    vm = FileBrowserVM(app_vm)
+    view = FileBrowserView(vm)
+    qtbot.addWidget(view)
+
+    seen: list[str] = []
+    view.overlay_reference_requested.connect(seen.append)
+    actions = view.build_context_menu(1).actions()
+    next(a for a in actions if a.text() == S.ACTION_OVERLAY_REFERENCE).trigger()
+
+    assert seen == [key2]
+
+
+def test_context_menu_hides_comparison_affordances_in_single_mode(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """Single mode (default OFF, 2+ files loaded): right-click shows ONLY
+    削除 — the comparison affordances ("基準に設定"/"重ねる") must be
+    symmetric, both hidden until comparison mode is enabled (spec §3.3 M7).
+    Before this fix, "基準に設定" appeared unconditionally (visually
+    ineffective in single mode) while "重ねる" alone was gated — this is the
+    "looks broken" asymmetry the fix removes."""
+    app_vm = AppViewModel()
+    app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())
+    app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
+    vm = FileBrowserVM(app_vm)
+    view = FileBrowserView(vm)
+    qtbot.addWidget(view)
+
+    labels = [a.text() for a in view.build_context_menu(1).actions()]
+
+    assert S.ACTION_SET_REFERENCE not in labels
+    assert S.ACTION_OVERLAY_REFERENCE not in labels
+    assert labels == [S.ACTION_REMOVE_FILE]
+
+
+def test_context_menu_shows_comparison_affordances_when_enabled(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    app_vm = AppViewModel()
+    app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())
+    app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
+    vm = FileBrowserVM(app_vm)
+    view = FileBrowserView(vm)
+    qtbot.addWidget(view)
+
+    app_vm.set_comparison_mode(True)
+    labels = [a.text() for a in view.build_context_menu(1).actions()]
+
+    assert S.ACTION_SET_REFERENCE in labels
+    assert S.ACTION_OVERLAY_REFERENCE in labels
+
+
+def test_set_reference_fires_model_reset_and_updates_badge_text(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """The reference change must actually reset the Qt model (data() reads
+    through to the live VM state regardless, so that alone would be a
+    false-green for a broken refresh wiring — spec §6 Layer B note)."""
+    app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)  # reference badge requires comparison mode
+    key1 = app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())
+    key2 = app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
+    vm = FileBrowserVM(app_vm)
+    view = FileBrowserView(vm)
+    qtbot.addWidget(view)
+
+    reset_count = 0
+
+    def _on_reset() -> None:
+        nonlocal reset_count
+        reset_count += 1
+
+    view.model.modelReset.connect(_on_reset)
+
+    actions = view.build_context_menu(1).actions()
+    next(a for a in actions if a.text() == S.ACTION_SET_REFERENCE).trigger()
+
+    assert reset_count >= 1
+    assert app_vm.reference_file_key == key2
+    assert view.model.data(view.model.index(0, 0)) == app_vm.session.source_name(key1)
+    assert (
+        view.model.data(view.model.index(1, 0))
+        == app_vm.session.source_name(key2) + S.FILE_REFERENCE_BADGE_SUFFIX
+    )

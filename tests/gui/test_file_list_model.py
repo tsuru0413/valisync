@@ -86,3 +86,43 @@ def test_releasing_row_foreground_uses_token(qtbot: QtBot, monkeypatch) -> None:
     index = model.index(0, 0, QModelIndex())
     expected = QColor(*active().colors.text_releasing.rgba)
     assert model.data(index, Qt.ItemDataRole.ForegroundRole) == expected
+
+
+# ─── E-2c: file-hue chip (DecorationRole, spec §4.3) ──────────────────────────
+
+
+def test_decoration_role_none_outside_comparison_mode(qtbot: QtBot) -> None:
+    app_vm = AppViewModel()
+    app_vm.register_loaded("k1")
+    vm = FileBrowserVM(app_vm)
+    model = FileListModel(vm)
+
+    index = model.index(0, 0, QModelIndex())
+    assert model.data(index, Qt.ItemDataRole.DecorationRole) is None
+
+
+def test_decoration_role_returns_hue_family_color_in_comparison_mode(
+    qtbot: QtBot,
+) -> None:
+    from PySide6.QtGui import QColor
+
+    from valisync.gui.theme.tokens import active
+
+    app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)
+    app_vm.register_loaded("k1")
+    app_vm.register_loaded("k2")
+    vm = FileBrowserVM(app_vm)
+    model = FileListModel(vm)
+
+    index0 = model.index(0, 0, QModelIndex())
+    index1 = model.index(1, 0, QModelIndex())
+    palette = active().colors.signal_palette
+    hue0 = app_vm.file_hue_index["k1"]
+    hue1 = app_vm.file_hue_index["k2"]
+    assert model.data(index0, Qt.ItemDataRole.DecorationRole) == QColor(
+        palette[hue0].hex
+    )
+    assert model.data(index1, Qt.ItemDataRole.DecorationRole) == QColor(
+        palette[hue1].hex
+    )

@@ -28,6 +28,7 @@ def _vm(qtbot: QtBot) -> SignalPreviewVM:
     vs = np.sin(ts)
     app_vm.session.group_signals = lambda k: [_sig("g::Speed", ts, vs)]
     app_vm.set_active_file("g")
+    app_vm.register_loaded("g")  # E-0: display_name scope = loaded_file_keys
     return SignalPreviewVM(app_vm)
 
 
@@ -35,7 +36,9 @@ def test_properties_include_name_unit_samples_timerange_minmax(qtbot: QtBot) -> 
     vm = _vm(qtbot)
     vm.set_signal("g::Speed")
     props = dict(vm.properties())
-    assert props["名前"] == "g::Speed"
+    # E-0 (UX-19): "名前" shows the bare display name, not the raw g::Speed key
+    # (no collision here — single loaded file).
+    assert props["名前"] == "Speed"
     assert props["単位"] == "km/h"
     assert props["サンプル数"] == "100"
     assert "時間範囲" in props and "s" in props["時間範囲"]
@@ -48,6 +51,46 @@ def test_properties_empty_for_unknown_or_none(qtbot: QtBot) -> None:
     assert vm.properties() == []  # no signal set
     vm.set_signal("g::Missing")
     assert vm.properties() == []
+
+
+# ─── display_name (E-0, spec §1.2) ────────────────────────────────────────
+
+
+def test_display_name_bare_when_no_collision(qtbot: QtBot) -> None:
+    vm = _vm(qtbot)
+    assert vm.display_name("g::Speed") == "Speed"
+
+
+def test_display_name_qualified_when_two_loaded_files_share_bare_name(
+    qtbot: QtBot,
+) -> None:
+    """Scope = ALL loaded signals, not just the active file's (spec §1.2)."""
+    app_vm = AppViewModel()
+    ts = np.arange(0.0, 10.0, 1.0)
+    vs = np.sin(ts)
+
+    def _group_signals(key: str) -> list[Signal]:
+        return {
+            "g1": [_sig("g1::Speed", ts, vs)],
+            "g2": [_sig("g2::Speed", ts, vs)],
+        }[key]
+
+    app_vm.session.group_signals = _group_signals
+    app_vm.register_loaded("g1")
+    app_vm.register_loaded("g2")
+    app_vm.set_active_file("g1")
+    vm = SignalPreviewVM(app_vm)
+    assert vm.display_name("g1::Speed") == "Speed (g1)"
+    assert vm.display_name("g2::Speed") == "Speed (g2)"
+
+
+def test_display_name_unresolvable_key_falls_back_to_bare_name(
+    qtbot: QtBot,
+) -> None:
+    """A key not among the loaded signals (e.g. stale/unknown) never crashes —
+    it just never collides with anything."""
+    vm = _vm(qtbot)
+    assert vm.display_name("g::TotallyUnknown") == "TotallyUnknown"
 
 
 def test_plot_data_downsampled_within_range(qtbot: QtBot) -> None:

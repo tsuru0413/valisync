@@ -114,7 +114,10 @@ def test_readout_shows_legend_without_cursor(
     assert area.readout_pane.placeholder_text() == ""
     assert not area.readout_stowed()
     rows = area.readout_pane.row_texts()
-    assert any(sig_b in name for name, _ in rows)  # panel 1 (sigB) がアクティブ
+    # E-0: row name is the bare display name (no collision — single file), not
+    # the raw "csv_1::sigB" key.
+    bare_b = sig_b.split("::", 1)[-1]
+    assert any(bare_b in name for name, _ in rows)  # panel 1 (sigB) がアクティブ
 
 
 def test_readout_stows_when_active_panel_has_no_signals(

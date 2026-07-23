@@ -59,7 +59,9 @@ class SignalPreviewWindow(QWidget):
     def show_signal(self, key: str) -> None:
         self._vm.set_signal(key)
         self._render()
-        self.setWindowTitle(S.PREVIEW_TITLE_TMPL.format(key=key))
+        # E-0: windowTitle uses the same display_name rule as the "名前" row
+        # (scope = all loaded signals, spec §1.2) — never the raw namespaced key.
+        self.setWindowTitle(S.PREVIEW_TITLE_TMPL.format(key=self._vm.display_name(key)))
         self.show()
         self.raise_()
         self.activateWindow()

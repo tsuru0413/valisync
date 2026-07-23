@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QLabel,
     QListView,
@@ -35,6 +35,13 @@ class FileBrowserView(QWidget):
     vm:
         The FileBrowser ViewModel providing the file list and handling selection.
     """
+
+    # E-2b: emitted with the target file's group key when the user picks
+    # "基準の同名信号を重ねる". The overlay handler needs the active panel /
+    # Session (MainWindow-owned, outside FileBrowserVM's reach), so this view
+    # only routes the request — same pattern as ChannelBrowserView's
+    # add_to_panel_requested.
+    overlay_reference_requested = Signal(str)
 
     def __init__(
         self,
@@ -102,11 +109,33 @@ class FileBrowserView(QWidget):
             self._vm.select_file(-1)
 
     def build_context_menu(self, row: int) -> QMenu:
-        """Single-action menu ('Remove File') — confirms before unloading list *row*."""
+        """Menu for list *row*: 'Remove File' + the E-2a/b reference actions.
+
+        The comparison affordances ("基準に設定"/"基準の同名信号を重ねる")
+        are gated as a pair on comparison mode (2+ loaded files AND the user
+        toggle) — in single mode neither appears, since "基準に設定" would
+        be visually inert there (no badge/chip to show for it) while
+        "重ねる" alone stayed hidden; showing one without the other read as
+        broken (spec 2026-07-23 §3.3 M7). Releasing/out-of-range rows resolve
+        no key, so both are skipped regardless of mode. On the reference row
+        itself, "基準に設定" is disabled and "基準の同名信号を重ねる" is
+        omitted (spec §2/§3).
+        """
         menu = QMenu(self)
         menu.addAction(S.ACTION_REMOVE_FILE).triggered.connect(
             lambda *_: self._confirm_and_unload(row)
         )
+        key = self._vm.key_at(row)
+        if key is not None and self._vm.is_comparison_mode():
+            is_ref = self._vm.is_reference(row)
+            set_ref_action = menu.addAction(S.ACTION_SET_REFERENCE)
+            set_ref_action.setEnabled(not is_ref)
+            set_ref_action.triggered.connect(lambda *_: self._vm.set_reference(row))
+            if not is_ref:
+                overlay_action = menu.addAction(S.ACTION_OVERLAY_REFERENCE)
+                overlay_action.triggered.connect(
+                    lambda *_: self.overlay_reference_requested.emit(key)
+                )
         return menu
 
     def _default_confirm(self, filename: str) -> bool:

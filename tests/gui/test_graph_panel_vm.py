@@ -29,6 +29,7 @@ from valisync.core.interpolation import InterpolationMethod
 from valisync.core.models import Delimiter, FormatDefinition, Signal, SignalGroup
 from valisync.core.session import Session
 from valisync.core.statistics.range_stats import StatisticsResult  # noqa: F401
+from valisync.gui.color_variants import hue_variant
 from valisync.gui.theme.tokens import active
 from valisync.gui.viewmodels.graph_panel_vm import (
     CursorReading,  # noqa: F401
@@ -135,6 +136,24 @@ def _loaded_vm(tmp_path: Path, unit: str = "km/h") -> GraphPanelVM:
     vm = GraphPanelVM(session)
     vm.add_signal(key)
     return vm
+
+
+class _FakeHueResolver:
+    """Mutable stand-in for ``AppViewModel.file_hue_resolver()``'s closure.
+
+    The real resolver reads AppViewModel state fresh on every call (so one
+    resolver instance injected at panel-construction time stays correct
+    across later loads/unloads); this stub's ``mapping`` dict plays the same
+    role, letting a test flip "comparison mode just started" mid-test by
+    populating it (mirrors AppViewModel.register_loaded assigning
+    file_hue_index, gated by is_comparison_mode()).
+    """
+
+    def __init__(self) -> None:
+        self.mapping: dict[str, int] = {}
+
+    def __call__(self, group_key: str) -> int | None:
+        return self.mapping.get(group_key)
 
 
 # ─── RenderCurve ─────────────────────────────────────────────────────────────
@@ -246,6 +265,34 @@ def test_add_signal_visible_by_default(tmp_path: Path) -> None:
 
     snapshot = vm.inspect()
     assert snapshot["plotted_signals"][0]["visible"] is True
+
+
+# ─── plotted_entries (E-2b) ──────────────────────────────────────────────────
+
+
+def test_plotted_entries_returns_entry_id_signal_key_axis_index_tuples(
+    tmp_path: Path,
+) -> None:
+    """plotted_entries() is the axis-aware, non-deduped public read (spec §3) —
+    unlike plotted_signal_keys() (deduped, no axis) or entries_on_axis()
+    (scoped to one axis)."""
+    session, _ = _loaded_session(tmp_path, n_signals=2)
+    key1 = session.signals()[0].name
+    key2 = session.signals()[1].name
+    vm = GraphPanelVM(session)
+    vm.add_signal_to_axis(key1, 0)
+    vm.create_new_axis(key2)  # axis 1
+
+    entries = vm.plotted_entries()
+
+    assert {(sk, ax) for _eid, sk, ax in entries} == {(key1, 0), (key2, 1)}
+    entry_ids = [eid for eid, _sk, _ax in entries]
+    assert entry_ids == sorted(set(entry_ids))  # monotonic ids, no duplicates
+
+
+def test_plotted_entries_empty_when_nothing_plotted() -> None:
+    vm = GraphPanelVM(Session())
+    assert vm.plotted_entries() == []
 
 
 # ─── remove_signal ───────────────────────────────────────────────────────────
@@ -833,6 +880,232 @@ def test_palette_cycles_beyond_palette_length(tmp_path: Path) -> None:
     assert colors[8] == colors[0]
 
 
+# ─── E-2c: file-hue variant colors (spec §4.1/§4.2) ──────────────────────────
+
+
+def test_variant_step_assigned_on_every_add_even_without_a_resolver(
+    tmp_path: Path,
+) -> None:
+    """variant_step is sticky from the very first add — no resolver injected
+    at all (the "1 file, plain construction" case) still records 0/1/2, so a
+    later mode transition's reapply has something meaningful to read."""
+    session, _key = _loaded_session(tmp_path, n_rows=5, n_signals=3)
+    vm = GraphPanelVM(session)  # no hue_resolver
+    for sig in session.signals()[:3]:
+        vm.add_signal(sig.name)
+
+    steps = [p["variant_step"] for p in vm.inspect()["plotted_signals"]]
+    assert steps == [0, 1, 2]
+
+
+def test_variant_step_reuses_gap_after_removal(tmp_path: Path) -> None:
+    """Removing the step-1 entry then adding a 4th same-file signal reuses
+    step 1 (minimum free slot) rather than continuing to append."""
+    session, key = _loaded_session(tmp_path, n_rows=5, n_signals=4)
+    resolver = _FakeHueResolver()
+    resolver.mapping[key] = 0
+    vm = GraphPanelVM(session, hue_resolver=resolver)
+    sigs = session.signals()
+    for sig in sigs[:3]:
+        vm.add_signal(sig.name)
+    entries = vm.inspect()["plotted_signals"]
+    step1_entry_id = next(e["entry_id"] for e in entries if e["variant_step"] == 1)
+
+    vm.remove_entry(step1_entry_id)
+    vm.add_signal(sigs[3].name)
+
+    new_entry = vm.inspect()["plotted_signals"][-1]
+    assert new_entry["variant_step"] == 1
+
+
+def test_variant_step_cycles_deterministically_once_all_3_slots_used(
+    tmp_path: Path,
+) -> None:
+    """With steps 0/1/2 all occupied, the 4th same-file add falls back to
+    "total entries of this file in this panel, mod 3" (spec §4.1) — here
+    3 existing entries -> 3 % 3 == 0."""
+    session, key = _loaded_session(tmp_path, n_rows=5, n_signals=4)
+    resolver = _FakeHueResolver()
+    resolver.mapping[key] = 0
+    vm = GraphPanelVM(session, hue_resolver=resolver)
+    for sig in session.signals():
+        vm.add_signal(sig.name)
+
+    steps = [p["variant_step"] for p in vm.inspect()["plotted_signals"]]
+    assert steps == [0, 1, 2, 0]
+
+
+def test_variant_step_counted_per_panel_group_not_globally(tmp_path: Path) -> None:
+    """A 2nd file's first signal in the SAME panel gets its own step 0 —
+    variant_step is scoped to (panel, group_key), not the panel's global
+    entry count."""
+    session, key_a = _loaded_session(tmp_path, n_rows=5, n_signals=1)
+    csv_b = _write_csv(tmp_path / "b.csv", 5, 1)
+    key_b = session.load(csv_b, _csv_format(1)).key
+    resolver = _FakeHueResolver()
+    resolver.mapping[key_a] = 0
+    resolver.mapping[key_b] = 1
+    vm = GraphPanelVM(session, hue_resolver=resolver)
+
+    vm.add_signal(f"{key_a}::s1")
+    vm.add_signal(f"{key_b}::s1")
+
+    steps = [p["variant_step"] for p in vm.inspect()["plotted_signals"]]
+    assert steps == [0, 0]  # each file's FIRST entry in this panel is step 0
+
+
+def test_resolver_none_result_falls_back_to_count_mod_color(tmp_path: Path) -> None:
+    """When the injected resolver returns None (not yet in comparison mode),
+    the color is the legacy count-mod assignment — unaffected by the
+    resolver's mere presence."""
+    session, _key = _loaded_session(tmp_path)
+    resolver = _FakeHueResolver()  # empty mapping -> always None
+    vm = GraphPanelVM(session, hue_resolver=resolver)
+
+    vm.add_signal(_first_signal_key(session))
+
+    color = vm.inspect()["plotted_signals"][0]["color"]
+    assert color == active().colors.signal_palette[0].hex
+
+
+def test_transition_separates_previously_collapsed_variants(tmp_path: Path) -> None:
+    """CRITICAL regression (closing-review): 3 signals added to ONE file while
+    the resolver still returns None (single-file/fallback mode) each record a
+    distinct sticky variant_step. Once a 2nd file's load flips the resolver to
+    hue-aware (simulated here by populating the fake resolver's mapping) and
+    reapply_auto_colors runs, the 3 entries must render as 3 DISTINCT shades
+    of their file's hue family — not collapse onto the same
+    hue_variant(base, 0) color, which is what happens if variant_step were
+    computed lazily at reapply time instead of recorded sticky at add time."""
+    session, key = _loaded_session(tmp_path, n_rows=5, n_signals=3)
+    resolver = _FakeHueResolver()
+    vm = GraphPanelVM(session, hue_resolver=resolver)
+    for sig in session.signals():
+        vm.add_signal(sig.name)
+    steps_before = [p["variant_step"] for p in vm.inspect()["plotted_signals"]]
+    assert steps_before == [0, 1, 2]  # sticky, despite resolver being None so far
+
+    resolver.mapping[key] = 3  # 2nd file's load assigns this file hue index 3
+    vm.reapply_auto_colors()
+
+    colors_after = [p["color"] for p in vm.inspect()["plotted_signals"]]
+    assert len(set(colors_after)) == 3  # NOT collapsed to one color
+    base_hex = active().colors.signal_palette[3].hex
+    assert colors_after == [hue_variant(base_hex, step) for step in steps_before]
+
+
+def test_reapply_auto_colors_is_idempotent(tmp_path: Path) -> None:
+    session, key = _loaded_session(tmp_path, n_rows=5, n_signals=2)
+    resolver = _FakeHueResolver()  # starts None -> fallback colors on add
+    vm = GraphPanelVM(session, hue_resolver=resolver)
+    fallback_colors = []
+    for sig in session.signals():
+        vm.add_signal(sig.name)
+    fallback_colors = [p["color"] for p in vm.inspect()["plotted_signals"]]
+
+    resolver.mapping[key] = 1  # comparison mode begins
+    vm.reapply_auto_colors()
+    colors_first = [p["color"] for p in vm.inspect()["plotted_signals"]]
+    vm.reapply_auto_colors()
+    colors_second = [p["color"] for p in vm.inspect()["plotted_signals"]]
+
+    assert colors_first != fallback_colors  # the first reapply DID change something
+    assert colors_first == colors_second  # the second reapply changes nothing further
+
+
+def test_reapply_auto_colors_skips_manually_pinned_entries(tmp_path: Path) -> None:
+    session, key = _loaded_session(tmp_path, n_rows=5, n_signals=2)
+    resolver = _FakeHueResolver()  # starts None -> fallback colors on add
+    vm = GraphPanelVM(session, hue_resolver=resolver)
+    sigs = session.signals()
+    vm.add_signal(sigs[0].name)
+    vm.add_signal(sigs[1].name)
+    pinned_id = vm.inspect()["plotted_signals"][0]["entry_id"]
+    vm.set_color(pinned_id, "#123456")
+
+    resolver.mapping[key] = 2  # comparison mode begins
+    vm.reapply_auto_colors()
+
+    entries = vm.inspect()["plotted_signals"]
+    pinned = next(e for e in entries if e["entry_id"] == pinned_id)
+    unpinned = next(e for e in entries if e["entry_id"] != pinned_id)
+    assert pinned["color"] == "#123456"
+    assert pinned["color_is_auto"] is False
+    assert unpinned["color_is_auto"] is True
+    assert unpinned["color"] == hue_variant(active().colors.signal_palette[2].hex, 1)
+
+
+def test_reapply_auto_colors_busts_render_cache(tmp_path: Path) -> None:
+    """render_data() must reflect the reapplied color, not a stale cached
+    curve — color is intentionally NOT part of the cache key (set_color's
+    documented constraint), so reapply must invalidate explicitly."""
+    session, key = _loaded_session(tmp_path)
+    resolver = _FakeHueResolver()
+    vm = GraphPanelVM(session, hue_resolver=resolver)
+    vm.add_signal(_first_signal_key(session))
+    stale_color = vm.render_data()[0].color  # populates the cache
+
+    resolver.mapping[key] = 4
+    vm.reapply_auto_colors()
+    curves = vm.render_data()
+
+    assert curves[0].color != stale_color
+    assert curves[0].color == hue_variant(active().colors.signal_palette[4].hex, 0)
+
+
+def test_variant_step_and_color_preserved_across_cross_panel_move(
+    tmp_path: Path,
+) -> None:
+    """extract_axis/insert_axis (cross-panel axis move) must carry color and
+    variant_step verbatim (spec §4.1's explicit "既存挙動" callout)."""
+    session, key = _loaded_session(tmp_path, n_rows=5, n_signals=2)
+    src_resolver = _FakeHueResolver()
+    src_resolver.mapping[key] = 5
+    src = GraphPanelVM(session, hue_resolver=src_resolver)
+    src.add_signal(session.signals()[0].name)
+    before = src.inspect()["plotted_signals"][0]
+
+    moved = src.extract_axis(0)
+    assert moved is not None
+    axis, entries = moved
+    dst_resolver = _FakeHueResolver()  # different (empty) resolver on purpose
+    dst = GraphPanelVM(session, hue_resolver=dst_resolver)
+    dst.insert_axis(axis, entries, column=0, position=None)
+
+    after = dst.inspect()["plotted_signals"][0]
+    assert after["color"] == before["color"]
+    assert after["variant_step"] == before["variant_step"]
+
+    # Isolation: a 2nd same-file signal added to dst computes its step from
+    # dst's OWN plotted entries (now including the moved one), not src's.
+    dst.add_signal(session.signals()[1].name)
+    second = dst.inspect()["plotted_signals"][1]
+    assert second["variant_step"] == 1
+
+
+def test_new_adds_after_reverting_to_single_file_use_count_mod_fallback(
+    tmp_path: Path,
+) -> None:
+    """Spec §4.2's intentional non-symmetry: unloading back to 1 file does
+    NOT recolor existing entries (nothing calls reapply on "unloaded"), but a
+    NEW add after the revert uses the legacy count-mod assignment again."""
+    session, key = _loaded_session(tmp_path, n_rows=5, n_signals=2)
+    resolver = _FakeHueResolver()
+    resolver.mapping[key] = 3  # comparison mode active, this file's hue = 3
+    vm = GraphPanelVM(session, hue_resolver=resolver)
+    sigs = session.signals()
+    vm.add_signal(sigs[0].name)
+    hue_color_before = vm.inspect()["plotted_signals"][0]["color"]
+    assert hue_color_before == active().colors.signal_palette[3].hex
+
+    resolver.mapping.clear()  # simulate: back down to 1 loaded file
+    vm.add_signal(sigs[1].name)
+
+    entries = vm.inspect()["plotted_signals"]
+    assert entries[0]["color"] == hue_color_before  # untouched — no reapply ran
+    assert entries[1]["color"] == active().colors.signal_palette[1].hex  # count-mod
+
+
 # ─── reset with no fittable signals clears the range (review finding ⑦) ─────────
 
 
@@ -925,7 +1198,8 @@ def test_cursor_readings_linear_interpolation(tmp_path):
     vm.set_cursor(0.005)
     readings = vm.cursor_readings()
     assert len(readings) == 1
-    assert readings[0].name == key
+    # display name (E-0): bare name, no group_key prefix — no collision here.
+    assert readings[0].name == key.split("::", 1)[-1]
     assert readings[0].in_range is True
     assert readings[0].value == pytest.approx(0.5)
 
@@ -1087,7 +1361,8 @@ def test_delta_readings_dy_and_stats(tmp_path):
     vm.toggle_delta(True)  # B=0.75 (value≈75)
     vm.set_cursor_b(0.6)  # B=0.6 (value≈60)
     r = vm.delta_readings()[0]
-    assert r.name == key
+    # display name (E-0): bare name, no group_key prefix — no collision here.
+    assert r.name == key.split("::", 1)[-1]
     assert r.value_a == pytest.approx(20.0)
     assert r.dy == pytest.approx(40.0)  # y(0.6)-y(0.2) = 60-20
     # 範囲 [0.2,0.6] の統計: 値 20..60

@@ -161,3 +161,172 @@ def test_releasing_file_stays_after_loaded_rows_until_released(tmp_path: Path) -
     app_vm.mark_released(k1)
     assert vm.files == [n2]
     assert vm.is_releasing(0) is False
+
+
+# ─── E-2a: reference file badge/menu-support API ─────────────────────────────
+
+
+def test_no_badge_with_a_single_loaded_file(tmp_path: Path) -> None:
+    """Comparison mode requires 2+ files — a single file never shows the badge
+    even though it is (implicitly) the reference (spec §2 — frozen catalogue)."""
+    app_vm = AppViewModel()
+    key = app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())
+    vm = FileBrowserVM(app_vm)
+
+    assert app_vm.reference_file_key == key
+    assert vm.files == ["a.csv"]  # no " ◎基準" suffix
+    assert vm.is_comparison_mode() is False
+
+
+def test_badge_shown_on_reference_row_in_comparison_mode(tmp_path: Path) -> None:
+    app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)
+    key1 = app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())
+    app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
+    vm = FileBrowserVM(app_vm)
+
+    assert app_vm.reference_file_key == key1  # first load, unchanged
+    assert vm.files == ["a.csv ◎基準", "b.csv"]
+    assert vm.is_comparison_mode() is True
+
+
+def test_badge_follows_reference_change(tmp_path: Path) -> None:
+    app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)  # badge display requires comparison mode
+    app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())
+    key2 = app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
+    vm = FileBrowserVM(app_vm)
+
+    vm.set_reference(1)  # b.csv becomes the reference
+
+    assert app_vm.reference_file_key == key2
+    assert vm.files == ["a.csv", "b.csv ◎基準"]
+
+
+def test_key_at_and_is_reference(tmp_path: Path) -> None:
+    app_vm = AppViewModel()
+    key1 = app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())
+    key2 = app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
+    vm = FileBrowserVM(app_vm)
+
+    assert vm.key_at(0) == key1
+    assert vm.key_at(1) == key2
+    assert vm.key_at(2) is None  # out of range
+    assert vm.key_at(-1) is None
+
+    assert vm.is_reference(0) is True
+    assert vm.is_reference(1) is False
+    assert vm.is_reference(2) is False  # out-of-range row is never "the reference"
+
+
+def test_key_at_none_for_releasing_row(tmp_path: Path) -> None:
+    """Releasing rows guard the same way select_file/unload do (spec §2)."""
+    app_vm = AppViewModel()
+
+    class _Fake:
+        def enqueue(self, key: str, group: object) -> None:
+            pass
+
+    app_vm.set_teardown(_Fake())
+    key1 = app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())
+    app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
+    vm = FileBrowserVM(app_vm)
+    app_vm.unload_file(key1)  # key1 -> releasing (row 1, past the loaded rows)
+
+    assert vm.key_at(1) is None
+    assert vm.is_reference(1) is False
+
+
+def test_set_reference_out_of_range_is_noop(tmp_path: Path) -> None:
+    app_vm = AppViewModel()
+    key = app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())
+    vm = FileBrowserVM(app_vm)
+
+    vm.set_reference(5)
+
+    assert app_vm.reference_file_key == key  # unchanged
+
+
+def test_vm_refreshes_on_reference_notification() -> None:
+    """FileBrowserVM subscribes to the 'reference' tag directly (spec §2 —
+    without it, the badge would not move on a bare set_reference_file call)."""
+    app_vm = AppViewModel()
+    app_vm.register_loaded("k1")
+    app_vm.register_loaded("k2")
+    vm = FileBrowserVM(app_vm)
+    notifications: list[str] = []
+    vm.subscribe(notifications.append)
+
+    app_vm.set_reference_file("k2")
+
+    assert "files" in notifications
+
+
+# ─── E-2c: file-hue chip color ────────────────────────────────────────────────
+
+
+def test_chip_color_none_with_a_single_loaded_file() -> None:
+    app_vm = AppViewModel()
+    app_vm.register_loaded("k1")
+    vm = FileBrowserVM(app_vm)
+
+    assert vm.chip_color(0) is None
+
+
+def test_chip_color_matches_file_hue_index_in_comparison_mode() -> None:
+    from valisync.gui.theme.tokens import active
+
+    app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)
+    app_vm.register_loaded("k1")
+    app_vm.register_loaded("k2")
+    vm = FileBrowserVM(app_vm)
+    palette = active().colors.signal_palette
+
+    assert vm.chip_color(0) == palette[app_vm.file_hue_index["k1"]].hex
+    assert vm.chip_color(1) == palette[app_vm.file_hue_index["k2"]].hex
+
+
+def test_chip_color_none_for_out_of_range_or_releasing_row() -> None:
+    app_vm = AppViewModel()
+    app_vm.register_loaded("k1")
+    app_vm.register_loaded("k2")
+    vm = FileBrowserVM(app_vm)
+
+    assert vm.chip_color(5) is None
+
+
+# ─── comparison-mode toggle (spec 2026-07-23 §3.2, T-B3) ──────────────────────
+
+
+def test_toggle_comparison_refreshes_badge_and_chip(tmp_path: Path) -> None:
+    """Toggling comparison_mode AFTER construction must refresh the badge/chip.
+
+    Unlike the badge/chip tests above (which set_comparison_mode(True) before
+    constructing the VM, so the initial _refresh() already sees the flag ON),
+    this toggles post-construction — the only way to exercise the
+    "comparison_mode" notify subscription itself (without it, the badge/chip
+    would go stale until an unrelated "loaded"/"reference" notify happens to
+    fire — spec's false-green concern)."""
+    app_vm = AppViewModel()
+    app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())
+    app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
+    vm = FileBrowserVM(app_vm)
+    notifications: list[str] = []
+    vm.subscribe(notifications.append)
+
+    assert vm.files == ["a.csv", "b.csv"]  # comparison mode OFF: no badge
+    assert vm.chip_color(0) is None
+
+    app_vm.set_comparison_mode(True)
+
+    assert "files" in notifications
+    assert vm.files == ["a.csv ◎基準", "b.csv"]
+    assert vm.chip_color(0) is not None
+
+    notifications.clear()
+    app_vm.set_comparison_mode(False)
+
+    assert "files" in notifications
+    assert vm.files == ["a.csv", "b.csv"]  # frozen predicate falls back to False
+    assert vm.chip_color(0) is None

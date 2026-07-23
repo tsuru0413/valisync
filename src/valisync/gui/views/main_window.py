@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 from valisync.core.loaders.csv_format_detector import CsvFormatDetector
 from valisync.core.models.format_def import FormatDefinition
 from valisync.core.session import LoadOutcome
+from valisync.gui import reference_overlay
 from valisync.gui import strings as S
 from valisync.gui.strings import mn
 from valisync.gui.theme import apply as theme_apply
@@ -367,6 +368,15 @@ class MainWindow(QMainWindow):
             interp_menu.addAction(act)
         analyze_menu.addSeparator()
         analyze_menu.addAction(self._analysis_actions.step_hint)
+        # 比較モードトグル (comparison-mode-toggle spec §2 M4): AnalysisActions
+        # (panel-scoped) には載せない — app_vm 由来の状態を同期できないため、
+        # MainWindow 所有の独立 QAction とし checked/enabled は
+        # _sync_analysis_actions 内で app_vm を直読して同期する。
+        analyze_menu.addSeparator()
+        self._comparison_mode_action = QAction(S.ACTION_COMPARISON_MODE, self)
+        self._comparison_mode_action.setCheckable(True)
+        self._comparison_mode_action.triggered.connect(self._on_toggle_comparison_mode)
+        analyze_menu.addAction(self._comparison_mode_action)
         analyze_menu.setToolTipsVisible(True)
         # aboutToShow の setChecked 同期は toggled は発火させても triggered は発火
         # させない (Qt 仕様) ため、ここで無条件に同期してもハンドラは起動しない。
@@ -412,6 +422,9 @@ class MainWindow(QMainWindow):
         # ── Cross-view wiring ────────────────────────────────────────────────
         self.channel_browser_view.add_to_panel_requested.connect(
             self._add_to_active_panel
+        )
+        self.file_browser_view.overlay_reference_requested.connect(
+            self._overlay_reference_signals
         )
         # FU-13: single-instance, non-modal preview window opened by double-click.
         self.signal_preview_window = SignalPreviewWindow(
@@ -619,6 +632,32 @@ class MainWindow(QMainWindow):
         for key in keys:
             target.add_signal(key)
 
+    def _overlay_reference_signals(self, target_key: str) -> None:
+        """基準ファイルの同名信号をアクティブパネルの同軸へ重ねる (E-2b)。
+
+        Thin dispatcher (spec §3's "重ねハンドラ"): resolve the active panel /
+        reference key here (Qt-owned state), delegate the actual matching
+        algorithm to the pure ``reference_overlay`` module, then render the
+        result as a status message.
+        """
+        reference_key = self.app_vm.reference_file_key
+        if reference_key is None:
+            return  # 防御的 no-op (メニューはロード済みファイルがある時のみ出る)
+        panels = self.graph_area_vm.panels(self.graph_area_vm.active_tab_index)
+        if not panels:
+            return  # 防御的 no-op (VM 不変条件により通常到達不能)
+        panel = panels[self.graph_area_vm.active_panel_index()]
+        result = reference_overlay.overlay_reference_signals(
+            panel, self.app_vm.session, reference_key, target_key
+        )
+        target_name = reference_overlay.file_display_name(
+            self.app_vm.session, self.app_vm.loaded_file_keys, target_key
+        )
+        self.set_status_message(
+            reference_overlay.format_overlay_summary(result, target_name),
+            timeout_ms=8000,
+        )
+
     def _active_panel_vm(self) -> GraphPanelVM | None:
         """Analyze メニューの AnalysisActions dispatch (spec §2.2: メニューバー経由
         は常にアクティブパネルへ配送)。GraphAreaView 側の解決を素通しする。"""
@@ -631,8 +670,29 @@ class MainWindow(QMainWindow):
         仕様)、ここで無条件に呼んでも共有 QAction の VM 変異ハンドラ (triggered
         配線) は起動しない — 「メニューを開いただけでカーソルが動く」事故の構造的
         防止 (spec §2.2 blocker)。
+
+        比較モード項目 (comparison-mode-toggle spec §2 M4) は panel VM でなく
+        app_vm を直読する — checked は生フラグ `comparison_enabled`
+        (`is_comparison_mode()` の AND ≥2 述語ではない・取り違えは「1 ファイル+ON」で
+        checked が誤って False になる退行)。
         """
         sync_analysis_actions(self._analysis_actions, self._active_panel_vm())
+        self._comparison_mode_action.setChecked(self.app_vm.comparison_enabled)
+        enabled = len(self.app_vm.loaded_file_keys) >= 2
+        self._comparison_mode_action.setEnabled(enabled)
+        if not enabled:
+            self._comparison_mode_action.setToolTip(S.TOOLTIP_COMPARISON_NEEDS_TWO)
+
+    def _on_toggle_comparison_mode(self, checked: bool) -> None:
+        """比較モードトグルのハンドラ。ON 時は基準ファイルを開示する (spec §3 M8) —
+        `register_loaded` が無条件に最初のロードを基準へ設定済みだが単一モードでは
+        不可視のため、「いつの間にか基準が決まっている」唐突さを避ける。"""
+        self.app_vm.set_comparison_mode(checked)
+        if checked and self.app_vm.reference_file_key is not None:
+            name = self.app_vm.session.source_name(self.app_vm.reference_file_key)
+            self.set_status_message(
+                S.STATUS_COMPARISON_REFERENCE_TMPL.format(name=name)
+            )
 
     # ─── Actions ────────────────────────────────────────────────────────────────
 

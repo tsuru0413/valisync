@@ -288,7 +288,7 @@ def test_dblclick_opens_preview_window(qtbot: QtBot, tmp_path: Path) -> None:
     タブに波形が描画される (入力経路が追加からプレビューへ変更)。"""
     skip_unless_real_display()
 
-    window, key = _make_window_with_two_panels_and_signal(qtbot, tmp_path)
+    window, _key = _make_window_with_two_panels_and_signal(qtbot, tmp_path)
     pw = window.signal_preview_window
     assert not pw.isVisible(), "プレビューウィンドウはダブルクリックまで閉じているべき"
 
@@ -317,6 +317,11 @@ def test_dblclick_opens_preview_window(qtbot: QtBot, tmp_path: Path) -> None:
     assert len(pw.preview_plot.listDataItems()) == 1, (
         f"プレビュータブに波形が描画されていない。screenshot: {shot}"
     )
-    assert key in pw.windowTitle(), (
+    # E-0 (UX-19): windowTitle は生キー("csv_1::speed")でなく bare 表示名
+    # ("speed" — 単一ファイル・衝突なしのため qualify されない) を表示する。
+    assert pw.windowTitle().endswith("speed"), (
         f"プレビューウィンドウのタイトルに信号名がない (got {pw.windowTitle()!r})。"
+    )
+    assert "::" not in pw.windowTitle(), (
+        f"プレビューウィンドウのタイトルに内部キーが露出 (got {pw.windowTitle()!r})。"
     )

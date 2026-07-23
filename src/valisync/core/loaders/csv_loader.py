@@ -103,13 +103,21 @@ class CsvLoader:
         name_total: dict[str, int] = {}
         for n in signal_names:
             name_total[n] = name_total.get(n, 0) + 1
+        # E-2b: 位置(sig_idx)ベースで dedup 対象を記録 — [idx] 付与が確定した名前は
+        # metadata["name_deduplicated"] へ反映し、クロスファイル同名照合の除外根拠
+        # にする(mdf_loader.py の同型フラグと対の措置・spec §3 step 5)。
+        deduplicated_indices: set[int] = set()
         if any(c > 1 for c in name_total.values()):
             name_seen: dict[str, int] = {}
             renamed: list[str] = []
-            for n in signal_names:
+            for i, n in enumerate(signal_names):
                 idx = name_seen.get(n, 0)
                 name_seen[n] = idx + 1
-                renamed.append(f"{n}[{idx}]" if name_total[n] > 1 else n)
+                if name_total[n] > 1:
+                    deduplicated_indices.add(i)
+                    renamed.append(f"{n}[{idx}]")
+                else:
+                    renamed.append(n)
             dups = sorted(n for n, c in name_total.items() if c > 1)
             diagnostics.append(
                 Diagnostic(
@@ -253,6 +261,8 @@ class CsvLoader:
             metadata: dict[str, Any] = {}
             if sig_idx in unit_by_sig_idx:
                 metadata["unit"] = unit_by_sig_idx[sig_idx]
+            if sig_idx in deduplicated_indices:
+                metadata["name_deduplicated"] = True
             # LD-06: 非有限値は受け入れ(NaN は欠測として正当)・件数を可視化
             if nonfinite_counts.get(sig_idx):
                 diagnostics.append(

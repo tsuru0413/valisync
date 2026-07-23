@@ -65,6 +65,7 @@ from valisync.gui.adapters.qt_signal_models import (
     decode_signal_keys,
     encode_axis_move,
 )
+from valisync.gui.display_names import display_names as _resolve_display_names
 from valisync.gui.theme import qss, tokens
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM, RenderCurve
 from valisync.gui.viewmodels.y_axis_vm import YAxisVM
@@ -2607,8 +2608,13 @@ class GraphPanelView(QWidget):
             lambda *_: self.vm.remove_axis(axis_index)
         )
         menu.addSeparator()
-        for entry_id, name, _color, visible in self.vm.entries_on_axis(axis_index):
-            act = menu.addAction(name)
+        entries = self.vm.entries_on_axis(axis_index)
+        # E-0: VM returns raw signal_key (spec §1.2) — resolve display text here,
+        # scoped to just this axis's entries (collision = same bare name from
+        # 2+ distinct files, ON THIS AXIS).
+        names = _resolve_display_names(sk for _eid, sk, _c, _v in entries)
+        for entry_id, signal_key, _color, visible in entries:
+            act = menu.addAction(names[signal_key])
             act.setCheckable(True)
             act.setChecked(visible)  # BEFORE toggled.connect (no spurious fire)
             act.toggled.connect(
