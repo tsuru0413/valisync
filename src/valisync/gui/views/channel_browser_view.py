@@ -53,8 +53,15 @@ _UNIT_COLUMN_MIN_WIDTH = 40  # 空/短い Unit しかない場合のフォール
 # だが、channel_dock の *既定*構築幅をヘッダー文言除去 (#14) 後も 258px
 # (256 + 枠2px) へ押し上げる真因 — ドラッグでの真の最小幅は元々
 # CollapsibleDockTitleBar 側 (~181px) が律速だった (Task 5 実測)。
+#
+# Task 5 追調整 (ユーザー決定): 既定構築幅は「最小まで詰めた 181px」ではなく
+# 中間の ~200px にする (長い信号名が過度に省略されないバランス)。
+# minimumSizeHint は変更していない (ドラッグでの真の最小到達幅は 181px の
+# まま維持) — このコンスタントは *既定* 幅だけを動かす。実測 (real display・
+# resizeDocks 経由) で 198 -> channel_dock.width()==200 (198 + 枠2px、258px
+# 時と同じ "+2" パターン) を確認済み。
 _TREE_MIN_SECTION_SIZE = 20  # px (Qt 既定は環境依存 16-23px 級 — 明示的に固定)
-_TREE_SIZEHINT_WIDTH = 120  # px (Name+Unit の詰めた実用幅の目安・elide 前提)
+_TREE_SIZEHINT_WIDTH = 198  # px (実測: channel_dock 既定構築幅 200px を生む値)
 
 
 class _ChannelTree(QTreeView):

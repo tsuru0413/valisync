@@ -128,6 +128,15 @@ def test_channel_dock_reaches_narrow_floor_on_real_display(
         f" screenshot: {shot_default}"
     )
 
+    # Task 5 追調整 (ユーザー決定): 既定構築幅は最小まで詰めた床 (~181px) では
+    # なく中間の ~200px を狙う (実測: _TREE_SIZEHINT_WIDTH=198 ->
+    # channel_dock.width()==200 ぴったり)。フォント差でズレる可能性を見込み
+    # レンジで許容する。
+    assert 190 <= default_width <= 215, (
+        "既定構築幅が目標の中間値 (~200px 近傍) から外れている "
+        f"(default={default_width}). screenshot: {shot_default}"
+    )
+
     # Drive the same QMainWindow dock-area layout engine an interactive
     # separator drag would (resizeDocks is the programmatic entry point to
     # QDockAreaLayout::resizeDocks, used identically by mouse-driven resize).
@@ -141,11 +150,14 @@ def test_channel_dock_reaches_narrow_floor_on_real_display(
         f"[task5] real-display channel_dock.width() floor={floor_width} "
         f"screenshot={shot_floor}"
     )
-    # <=, not <: on a real display the *default* construction width can
-    # already equal the true drag-to-minimum floor (Task 5 実測: 修正後は
-    # title-bar 律速の floor に既定構築幅がぴったり一致することが判明した
-    # -- これは劣化ではなくベストケース。resizeDocks は「それより細くは
-    # ならない」ことだけを保証すればよい。
+    # <=, not <: resizeDocks は「それより細くはならない」ことだけを保証すれば
+    # よい (floor が default と一致する環境があっても劣化ではない)。
+    #
+    # Task 5 追調整 (ユーザー決定) 前は、既定構築幅が title-bar 律速の floor
+    # にぴったり一致していた (default==floor==~181px、当時のベストケース)。
+    # 追調整後は既定構築幅を意図的に floor より広い中間値 (~200px) にした
+    # ので、通常はここで floor_width < default_width になる (ドラッグで
+    # さらに 181px まで詰められることを示す = 最小幅維持の実証)。
     assert floor_width <= default_width, (
         "resizeDocks で channel_dock が既定幅より広がってしまった (退行) "
         f"(default={default_width}, floor={floor_width}). screenshot: {shot_floor}"
@@ -153,6 +165,11 @@ def test_channel_dock_reaches_narrow_floor_on_real_display(
     assert floor_width < 230, (
         f"目標下限 (~181px 近傍・実測はフォント依存) に対して有意な改善が"
         f"見られない (floor={floor_width}). screenshot: {shot_floor}"
+    )
+    assert floor_width < default_width, (
+        "既定幅とドラッグ最小床が一致してしまっている -- 中間幅への追調整"
+        f"(ユーザー決定) が効いていない可能性 (default={default_width}, "
+        f"floor={floor_width}). screenshot: {shot_floor}"
     )
 
     # Elide check on real rendering: the long name's full rendered width
@@ -185,4 +202,50 @@ def test_channel_dock_reaches_narrow_floor_on_real_display(
     assert widened_name_col > name_col_width, (
         "再拡大で Name 列 (Stretch モード) が広がらなかった "
         f"(narrow={name_col_width}, widened={widened_name_col})."
+    )
+
+
+def test_channel_dock_default_width_tracks_sizehint_widening(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Task 5 追調整 (ユーザー決定) の因果関係を実 display で直接実証する:
+    _TREE_SIZEHINT_WIDTH/_FILE_LIST_SIZEHINT_WIDTH を追調整前のタイトな値
+    (120・当時の既定=床=~181px) へ monkeypatch すると channel_dock の既定
+    構築幅が有意に狭くなること。
+
+    file_dock と channel_dock は同一カラムに縦積みのため、片方だけ patch
+    しても列幅は変わらない (両者の sizeHint の max で列幅が決まる -- Task 5
+    のクロスファイルブロッカーと同型。実際、channel 側だけ patch する初期
+    実装ではこのテストが honest-RED にならず 200==200 で失敗し、この
+    cross-file 依存を再発見した)。
+
+    offscreen では書けない (実測: QT_QPA_PLATFORM=offscreen は "This plugin
+    does not support propagateSizeHints()" のとおり sizeHint 変更が
+    channel_dock.width() へ一切反映されない -- 120/198/400 いずれも同じ
+    230px に張り付く。real display のみが sizeHint→レイアウトの伝播を
+    正しく反映するため、この比較は realgui に置く。マウス操作は一切なし
+    (MainWindow を2つ独立構築して比較するのみ)。"""
+    skip_unless_real_display()
+
+    import valisync.gui.views.channel_browser_view as cbv
+    import valisync.gui.views.file_browser_view as fbv
+
+    mw_wide = _shown_mw(qtbot, tmp_path)
+    wide_default = mw_wide.channel_dock.width()
+    print(
+        f"[task5] real-display wide (_TREE_SIZEHINT_WIDTH=198) default={wide_default}"
+    )
+
+    monkeypatch.setattr(cbv, "_TREE_SIZEHINT_WIDTH", 120)
+    monkeypatch.setattr(fbv, "_FILE_LIST_SIZEHINT_WIDTH", 120)
+    mw_narrow = _shown_mw(qtbot, tmp_path)
+    narrow_default = mw_narrow.channel_dock.width()
+    print(
+        f"[task5] real-display narrow (both sizeHint widths=120) "
+        f"default={narrow_default}"
+    )
+
+    assert wide_default > narrow_default, (
+        "既定構築幅が sizeHint 定数に連動していない (中間幅への"
+        f"調整が効いていない可能性): wide={wide_default}, narrow={narrow_default}"
     )

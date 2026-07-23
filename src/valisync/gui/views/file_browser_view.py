@@ -34,7 +34,11 @@ if TYPE_CHECKING:
 # だけを直しても file 側がそのままでは効果が相殺される (Task 5 実測で発覚
 # したブロッカー・当初のタスク範囲は channel_browser_view.py のみだったが
 # 根本解決のため対で修正)。
-_FILE_LIST_SIZEHINT_WIDTH = 120  # px -- _ChannelTree の同値と揃える
+#
+# Task 5 追調整 (ユーザー決定): 既定構築幅は中間の ~200px にする (181px は
+# minimumSizeHint 経由の真の最小幅として維持・ドラッグで到達可能なまま)。
+# _ChannelTree と同じ 198 (実測: 198 -> file_dock.width()==200)。
+_FILE_LIST_SIZEHINT_WIDTH = 198  # px -- _ChannelTree の同値と揃える
 
 
 class _FileList(QListView):

@@ -894,6 +894,47 @@ def test_tree_sizehint_sabotage_reverts_to_qt_default_256(
     assert view.tree.sizeHint() == _QSize(256, 192)
 
 
+# ─── Mid-point default width (Task 5 追調整・ユーザー決定) ────────────────────
+# ユーザー決定: 既定構築幅は「ドラッグで詰められる真の最小 (~181px)」まで
+# 詰め切らず、中間の ~200px にする (長い信号名が過度に省略されないバランス)。
+# minimumSizeHint 側 (真の最小・タイトルバー律速) は変更していない --
+# CollapsibleDockTitleBar 側の変更を要する話ではないため、ここで直接は
+# 検証しない (真の最小到達は上記 test_channel_dock_default_width_below_tree_
+# sizehint_pin および realgui 側の resizeDocks 実測に委ねる)。
+
+
+def test_tree_sizehint_width_widened_from_tight_minimum() -> None:
+    """回帰ガード: _TREE_SIZEHINT_WIDTH が当初タイトな値 (120) へ巻き戻って
+    いないこと。この定数を大きくしたこと自体が本追調整の変更点。"""
+    from valisync.gui.views.channel_browser_view import _TREE_SIZEHINT_WIDTH
+
+    assert _TREE_SIZEHINT_WIDTH > 150  # 旧タイトな値(120)より明確に大きい
+    assert _TREE_SIZEHINT_WIDTH < 256  # Qt 既定 256px へ逆戻りしていない
+
+
+def test_file_list_sizehint_width_widened_from_tight_minimum() -> None:
+    """file_dock 側 (_FILE_LIST_SIZEHINT_WIDTH) も同じ回帰ガード -- 両ファイル
+    は同一カラムに縦積みのため対で動かす必要がある (Task 5 のクロスファイル
+    ブロッカーと同型)。"""
+    from valisync.gui.views.file_browser_view import _FILE_LIST_SIZEHINT_WIDTH
+
+    assert _FILE_LIST_SIZEHINT_WIDTH > 150
+    assert _FILE_LIST_SIZEHINT_WIDTH < 256
+
+
+# NOTE: 「_TREE_SIZEHINT_WIDTH を動かすと channel_dock の既定構築幅が連動して
+# 動く」ことの直接実証は offscreen (QT_QPA_PLATFORM=offscreen) では書けない --
+# 実測したところ offscreen は "This plugin does not support
+# propagateSizeHints()" という Qt 自身の警告どおり、sizeHint を 120/198/400
+# のどれに変えても channel_dock.width() が常に同じ値 (230) に張り付き、
+# 変化を一切反映しない (offscreen プラットフォームプラグインの構造的制約 --
+# memory gui_dock_toggle_width_change_needs_real_display_and_layout と同根)。
+# そのため、この因果関係の直接証明は realgui 側 (real display・resizeDocks
+# 駆動・マウス操作なし) に置く --
+# tests/realgui/test_channel_dock_min_width_realclick.py の
+# test_channel_dock_default_width_tracks_sizehint_widening 参照。
+
+
 def test_file_browser_list_view_also_needed_the_same_fix(qtbot: QtBot) -> None:
     """cross-file finding (Task 5 Step 1 実測): channel_dock と file_dock は
     同一カラムに縦積みのため、file_dock 側の QListView が Qt 既定 256px の
