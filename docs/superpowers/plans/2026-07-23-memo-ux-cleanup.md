@@ -30,12 +30,12 @@
 - Modify: `src/valisync/gui/strings.py`（`CHANNEL_HEADER_COUNT_TMPL`/`CHANNEL_HEADER_EMPTY_TMPL` 改訂・`CHANNEL_HEADER_NO_FILE` 新設）
 - Test: `tests/gui/test_channel_browser_vm*.py`・`tests/gui/test_channel_browser_view*.py`
 
-- [ ] **Step 1（TDD）**: `header_text()` が (a) 通常でファイル名を含まず「{total} 信号中 {shown} 件を表示」(b) 空で「0 信号」(c) 未選択で `S.CHANNEL_HEADER_NO_FILE`（strings 経由）を返すテスト。
-- [ ] **Step 2（RED）**: FAIL（現状ファイル名込み・未選択直書き）。
-- [ ] **Step 3（実装）**: `strings.py` の該当テンプレからファイル名除去・`CHANNEL_HEADER_NO_FILE` 追加。`header_text()` を改訂（未選択も strings 経由）・docstring「which file, how many shown」を更新。`channel_browser_view.py` の `header_label` に `setWordWrap(True)`。対訳表（docs/design.md 表記規約）該当行更新。
-- [ ] **Step 4（GREEN）**: Step 1 PASS。
-- [ ] **Step 5（最小幅 Layer B）**: `channel_dock.minimumSizeHint().width()` がファイル名込み想定より小さい方向（相対比較・絶対 px 非依存・床はタイトルバー ~181px をコメント明記）。word-wrap でヘッダーが2行化してレイアウト破綻しないこと。
-- [ ] **Step 6（ゲート＋commit）**: green → `feat(gui): チャンネルブラウザ ヘッダーのファイル名廃止＋最小幅縮小 (#14)`
+- [x] **Step 1（TDD）**: `header_text()` が (a) 通常でファイル名を含まず「{total} 信号中 {shown} 件を表示」(b) 空で「0 信号」(c) 未選択で `S.CHANNEL_HEADER_NO_FILE`（strings 経由）を返すテスト。
+- [x] **Step 2（RED）**: FAIL（現状ファイル名込み・未選択直書き）。
+- [x] **Step 3（実装）**: `strings.py` の該当テンプレからファイル名除去・`CHANNEL_HEADER_NO_FILE` 追加。`header_text()` を改訂（未選択も strings 経由）・docstring「which file, how many shown」を更新。`channel_browser_view.py` の `header_label` に `setWordWrap(True)`。対訳表（docs/design.md 表記規約）該当行更新。
+- [x] **Step 4（GREEN）**: Step 1 PASS。
+- [x] **Step 5（最小幅 Layer B）**: `channel_dock.minimumSizeHint().width()` がファイル名込み想定より小さい方向（相対比較・絶対 px 非依存・床はタイトルバー ~181px をコメント明記）。word-wrap でヘッダーが2行化してレイアウト破綻しないこと。
+- [x] **Step 6（ゲート＋commit）**: green → `feat(gui): チャンネルブラウザ ヘッダーのファイル名廃止＋最小幅縮小 (#14)`
 
 ---
 
@@ -46,11 +46,11 @@
 - Modify: `src/valisync/gui/strings.py`（`ACTION_SHOW_SIGNAL_PROPERTIES`）
 - Test: `tests/gui/test_channel_browser_view*.py`
 
-- [ ] **Step 1（TDD）**: leaf 位置で右クリック→「信号プロパティを表示」有効・triggered で `preview_requested` が**その位置の行のキー**で発火（signal spy）。parent 位置/空白で無効（非表示 or disabled）。
-- [ ] **Step 2（RED）**: FAIL（項目未実装）。
-- [ ] **Step 3（実装）**: `build_context_menu` を `pos`（または hit index）を受ける形にし、`indexAt(pos)` の `model.signal_key_at` が leaf キーのとき「信号プロパティを表示」を追加。`triggered` で `self.preview_requested.emit(hit_key)`（ダブルクリック `_emit_preview` と同型）。`_show_context_menu` から pos を渡す配線。`strings.py` へ `ACTION_SHOW_SIGNAL_PROPERTIES`。「アクティブパネルへ追加」は無回帰維持。
-- [ ] **Step 4（GREEN＋sabotage）**: Step 1 PASS。**sabotage 2 種を実証**: (1) `selected_signal_keys()` 選択ベース実装 → 別行選択中に非選択 leaf を右クリックで既存選択行がプレビューされ RED。(2) parent+leaf 同時選択で有効化する実装 → RED。改変を戻して GREEN。
-- [ ] **Step 5（ゲート＋commit）**: green → `feat(gui): チャンネルブラウザ右クリックに「信号プロパティを表示」(#15)`
+- [x] **Step 1（TDD）**: leaf 位置で右クリック→「信号プロパティを表示」有効・triggered で `preview_requested` が**その位置の行のキー**で発火（signal spy）。parent 位置/空白で無効（非表示 or disabled）。
+- [x] **Step 2（RED）**: FAIL（項目未実装）。
+- [x] **Step 3（実装）**: `build_context_menu` を `pos`（または hit index）を受ける形にし、`indexAt(pos)` の `model.signal_key_at` が leaf キーのとき「信号プロパティを表示」を追加。`triggered` で `self.preview_requested.emit(hit_key)`（ダブルクリック `_emit_preview` と同型）。`_show_context_menu` から pos を渡す配線。`strings.py` へ `ACTION_SHOW_SIGNAL_PROPERTIES`。「アクティブパネルへ追加」は無回帰維持。
+- [x] **Step 4（GREEN＋sabotage）**: Step 1 PASS。**sabotage 2 種を実証**: (1) `selected_signal_keys()` 選択ベース実装 → 別行選択中に非選択 leaf を右クリックで既存選択行がプレビューされ RED。(2) parent+leaf 同時選択で有効化する実装 → RED。改変を戻して GREEN。
+- [x] **Step 5（ゲート＋commit）**: green → `feat(gui): チャンネルブラウザ右クリックに「信号プロパティを表示」(#15)`
 
 ---
 
@@ -102,12 +102,12 @@
 - Modify: `src/valisync/gui/views/channel_browser_view.py`（ツリーの列 resize/minimumSectionSize・tree の minimumWidth/sizeHint 方針・名前列 elide）
 - Test: `tests/gui/test_channel_browser_view*.py`＋realgui（実ドラッグで細くできる実証）
 
-- [ ] **Step 1（現状測定 → RED）**: 実 `MainWindow` で `channel_dock` を最小まで詰めた実幅（or `minimumSizeHint().width()`）が現状 ~258px であることを測り、目標「258px より有意に小さい（~181px 近傍）」の assert が現状 RED になることを実証（honest-RED）。
-- [ ] **Step 2（実装）**: ツリー（`ChannelBrowserView.tree`）を縮小可能に — `header().setMinimumSectionSize(小)`／名前列 `resizeMode` を Interactive 等にして詰められるように・elide（`setTextElideMode(ElideRight)`）で長い名前を「…」省略。ツリー/ビューの `minimumWidth`/`sizeHint` を下げてドックを 258px より細くドラッグ可に。**タイトルバー ~181px より下は狙わない**（スコープ外）。
-- [ ] **Step 3（GREEN＋実測報告）**: Step 1 の assert が GREEN（最小幅が 258→~181px 近傍へ低下）。実 window で**実際の下限を実測して報告**（推定 181px との乖離があれば原因特定）。**sabotage**: 列縮小を無効化（minimumSectionSize を元に戻す）→ 最小幅が 258px へ戻り assert RED。
-- [ ] **Step 4（realgui — 実ドラッグ）**: 実 OS でドック境界（or splitter）を実ドラッグして `channel_dock` が現状より細くなる（~181px 近傍まで到達）ことを実測・スクショ。名前列が elide されること・列ヘッダドラッグで再拡大可を確認。既存ソート/フィルタ/D&D/選択が列幅変更で無回帰。
-- [ ] **Step 5（凍結カタログ確認）**: ツリー縮小は最小幅を下げるだけで**既定幅は不変**（カタログは既定/保存幅で描画）→ 02-05 等が無回帰であることを撮影 compare で確認（差分ゼロ期待・出れば原因特定）。
-- [ ] **Step 6（ゲート＋commit）**: green → `feat(gui): チャンネルブラウザのツリーを縮小可能にし最小ドック幅を下げる (#14 拡張)`
+- [x] **Step 1（現状測定 → RED）**: 実 `MainWindow` で `channel_dock` を最小まで詰めた実幅（or `minimumSizeHint().width()`）が現状 ~258px であることを測り、目標「258px より有意に小さい（~181px 近傍）」の assert が現状 RED になることを実証（honest-RED）。
+- [x] **Step 2（実装）**: ツリー（`ChannelBrowserView.tree`）を縮小可能に — `header().setMinimumSectionSize(小)`／名前列 `resizeMode` を Interactive 等にして詰められるように・elide（`setTextElideMode(ElideRight)`）で長い名前を「…」省略。ツリー/ビューの `minimumWidth`/`sizeHint` を下げてドックを 258px より細くドラッグ可に。**タイトルバー ~181px より下は狙わない**（スコープ外）。
+- [x] **Step 3（GREEN＋実測報告）**: Step 1 の assert が GREEN（最小幅が 258→~181px 近傍へ低下）。実 window で**実際の下限を実測して報告**（推定 181px との乖離があれば原因特定）。**sabotage**: 列縮小を無効化（minimumSectionSize を元に戻す）→ 最小幅が 258px へ戻り assert RED。
+- [x] **Step 4（realgui — 実ドラッグ）**: 実 OS でドック境界（or splitter）を実ドラッグして `channel_dock` が現状より細くなる（~181px 近傍まで到達）ことを実測・スクショ。名前列が elide されること・列ヘッダドラッグで再拡大可を確認。既存ソート/フィルタ/D&D/選択が列幅変更で無回帰。
+- [x] **Step 5（凍結カタログ確認）**: ツリー縮小は最小幅を下げるだけで**既定幅は不変**（カタログは既定/保存幅で描画）→ 02-05 等が無回帰であることを撮影 compare で確認（差分ゼロ期待・出れば原因特定）。
+- [x] **Step 6（ゲート＋commit）**: green → `feat(gui): チャンネルブラウザのツリーを縮小可能にし最小ドック幅を下げる (#14 拡張)`
 
 ---
 

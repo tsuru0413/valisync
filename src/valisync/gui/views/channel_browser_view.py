@@ -69,8 +69,9 @@ class _ChannelTree(QTreeView):
 
     QTreeView 自体は "hint" を返さない (上記コメント参照) ため、
     ChannelBrowserView (延いては channel_dock) の既定構築幅が不必要に
-    256px 級へ張り付く。height は super() のまま (行数依存を保つ) にし、
-    width だけ詰めた既定値に差し替える。"""
+    256px 級へ張り付く。height は super() のまま (Qt の
+    QAbstractScrollArea ハードコード既定 192px 固定・行数には依存しない)
+    にし、width だけ詰めた既定値に差し替える。"""
 
     def sizeHint(self) -> QSize:
         return QSize(_TREE_SIZEHINT_WIDTH, super().sizeHint().height())

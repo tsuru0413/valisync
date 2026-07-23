@@ -635,3 +635,26 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   [memo-ux-cleanup spec](superpowers/specs/2026-07-23-memo-ux-cleanup-design.md)。
   **follow-up**: `task_bd63c2f2`（片方折りたたみの central-width ~24px drift の
   真の解決＝central と rail の joint リサイズ調査）。
+  **Task 5（#14 拡張）**: Task 4 実測で確定した真因（列幅 pin はツリー
+  `tree.sizeHint()` が Qt `QAbstractScrollArea` のハードコード既定
+  `QSize(256,192)` を返すことに由来 — ヘッダー/タイトルバーいずれも非律速。
+  Task 1 のヘッダーからのファイル名除去だけでは最小幅は不変）を受け、
+  ツリー/リストを縮小可能化。`_ChannelTree`/`_FileList`
+  （`channel_browser_view.py`/`file_browser_view.py` の薄い `QTreeView`/
+  `QListView` 派生）で `sizeHint()` の width 成分のみ差し替え＋
+  `header().setMinimumSectionSize(20)`＋名前列 `setTextElideMode(ElideRight)`
+  を明示。**file_browser 側も対で必須**と実測発覚（cross-file 必然 — file_dock
+  と channel_dock は同一カラムに縦積みのため、片方だけ直しても他方の Qt
+  既定 256px が列幅を pin し効果が相殺される。brief のファイルスコープ外
+  だったがユーザー追認済み）。既定構築幅は当初 258→181px（真の床＝
+  `CollapsibleDockTitleBar` 律速・元々ドラッグ到達可能）まで詰め切ったが、
+  ユーザー決定で追調整コミットにて中間値 **258→200px**（最小 181px は維持・
+  長い信号名が過度に省略されないバランス）へ調整。コミット `01c7447`
+  （縮小可能化）＋`241335d`（既定幅を中間値へ調整）。**凍結カタログ 01-05**
+  （File/Channel ブラウザ幅の変化に伴うプロット viewport 縮小）を両テーマ
+  再ベースライン（06-10 は列幅の影響を受けず完全一致・不変）。realgui は
+  実マウスドラッグが既知のハングリスク（[[gui_realgui_drag_qtimer_hang]]
+  と同種の共有機ハングを実際に発生・安全のため断念）のため `resizeDocks`
+  （実ドラッグと同一 `QDockAreaLayout` エンジンを駆動する正規 API）で
+  既定幅/床/再拡大を real display 実測で代替担保。**follow-up**: #17 の
+  ~24px プロット drift（`task_bd63c2f2`）は本タスク後も継続 open。
