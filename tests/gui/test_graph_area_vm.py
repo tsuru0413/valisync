@@ -806,6 +806,7 @@ def test_extract_axis_preserves_manual_range_of_sole_axis(
 def test_initial_panel_hue_colors_wired_via_graph_area_vm(tmp_path: Path) -> None:
     """Construction site #1 (__init__'s initial panel)."""
     app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)  # hue-family colors require an explicit opt-in
     key1 = app_vm.request_load(_write_csv(tmp_path / "a.csv"), _csv_format())
     key2 = app_vm.request_load(_write_csv_n(tmp_path / "b.csv", 2), _csv_format_n(2))
     area = GraphAreaVM(app_vm)
@@ -831,6 +832,7 @@ def test_initial_panel_hue_colors_wired_via_graph_area_vm(tmp_path: Path) -> Non
 def test_add_tab_panel_hue_colors_wired_via_graph_area_vm(tmp_path: Path) -> None:
     """Construction site #2 (add_tab)."""
     app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)  # hue-family colors require an explicit opt-in
     app_vm.request_load(_write_csv(tmp_path / "a.csv"), _csv_format())
     key2 = app_vm.request_load(_write_csv_n(tmp_path / "b.csv", 2), _csv_format_n(2))
     area = GraphAreaVM(app_vm)
@@ -851,6 +853,7 @@ def test_add_panel_hue_colors_wired_via_graph_area_vm(tmp_path: Path) -> None:
     """Construction site #3 (add_panel) -- not required by spec §6's explicit
     list but cheap to cover given the same factory backs all 3 sites."""
     app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)  # hue-family colors require an explicit opt-in
     key2 = app_vm.request_load(_write_csv_n(tmp_path / "b.csv", 2), _csv_format_n(2))
     app_vm.request_load(_write_csv(tmp_path / "a.csv"), _csv_format())
     area = GraphAreaVM(app_vm)
@@ -874,8 +877,16 @@ def test_second_file_load_reapplies_hue_colors_to_existing_panel(
     trigger reapply_auto_colors on every existing panel via the "loaded"
     handler -- not just refresh(). Exercises the closing-review Critical
     scenario (3 signals added before comparison mode, then separated on
-    reapply) through the REAL AppViewModel/GraphAreaVM wiring."""
+    reapply) through the REAL AppViewModel/GraphAreaVM wiring. The comparison
+    flag is enabled up front (comparison-mode-toggle spec §1): with it
+    already ON, is_comparison_mode() still reads False for this 1st load
+    (the >=2-files guard), so the "loaded" handler's reapply is exercised as
+    a no-op here exactly as before, and flips hue-family only once the 2nd
+    file's "loaded" notification lands -- this test is about that
+    "loaded"-handler reapply wiring, not the flag toggle itself (which has
+    its own dedicated coverage in test_graph_area_comparison_mode.py)."""
     app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)
     key1 = app_vm.request_load(_write_csv_n(tmp_path / "a.csv", 3), _csv_format_n(3))
     area = GraphAreaVM(app_vm)
     panel = area.panels(0)[0]

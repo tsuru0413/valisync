@@ -109,6 +109,7 @@ def test_decoration_role_returns_hue_family_color_in_comparison_mode(
     from valisync.gui.theme.tokens import active
 
     app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)
     app_vm.register_loaded("k1")
     app_vm.register_loaded("k2")
     vm = FileBrowserVM(app_vm)

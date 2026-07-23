@@ -338,7 +338,11 @@ def test_unload_without_teardown_frees_immediately_no_releasing(tmp_path) -> Non
 
 
 def test_is_comparison_mode_requires_2_files() -> None:
+    """With the flag ON, is_comparison_mode() still requires 2+ files (the
+    AND guard from comparison-mode-toggle spec §1) -- flag toggling itself is
+    covered by test_app_viewmodel_comparison_mode.py's T-A1/T-A2."""
     vm = AppViewModel()
+    vm.set_comparison_mode(True)
     assert vm.is_comparison_mode() is False
 
     vm.register_loaded("k1")
@@ -388,7 +392,11 @@ def test_file_hue_index_cycles_mod_palette_length() -> None:
 
 
 def test_file_hue_resolver_returns_none_below_2_files() -> None:
+    """Flag ON isolates the "<2 files" cause of None from the "flag OFF"
+    cause (comparison-mode-toggle spec §1) -- otherwise this would pass
+    trivially regardless of whether the count guard works."""
     vm = AppViewModel()
+    vm.set_comparison_mode(True)
     vm.register_loaded("k1")
     resolver = vm.file_hue_resolver()
 
@@ -397,6 +405,7 @@ def test_file_hue_resolver_returns_none_below_2_files() -> None:
 
 def test_file_hue_resolver_returns_assigned_hue_in_comparison_mode() -> None:
     vm = AppViewModel()
+    vm.set_comparison_mode(True)
     vm.register_loaded("k1")
     vm.register_loaded("k2")
     resolver = vm.file_hue_resolver()
@@ -409,8 +418,11 @@ def test_file_hue_resolver_returns_assigned_hue_in_comparison_mode() -> None:
 def test_file_hue_resolver_closure_reads_live_state() -> None:
     """One resolver instance created before the 2nd load must still see it —
     the closure reads AppViewModel state fresh on every call, not a snapshot
-    at creation time (spec §4.1's "同一インスタンス注入で後続ロードも正しい")."""
+    at creation time (spec §4.1's "同一インスタンス注入で後続ロードも正しい").
+    Flag is enabled up front here since this test is about live *file-count*
+    tracking, not the flag itself (comparison-mode-toggle spec §1)."""
     vm = AppViewModel()
+    vm.set_comparison_mode(True)
     vm.register_loaded("k1")
     resolver = vm.file_hue_resolver()
     assert resolver("k1") is None  # still 1 file

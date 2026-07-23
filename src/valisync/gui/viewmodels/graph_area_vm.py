@@ -88,11 +88,15 @@ class GraphAreaVM(Observable):
 
         On ``"loaded"`` a signal added before its data existed must re-render,
         and every not-manually-pinned entry is recolored into its file's hue
-        family (E-2c, spec §4.2 — reapply_auto_colors is a no-op below 2 loaded
-        files, so a 1st load costs nothing extra here); on ``"unloaded"``
-        panels drop signals whose group is gone (R7.4) and are NOT recolored
-        (spec §4.2's intentional non-symmetry — existing colors stay put).
-        This is the panel coordination previously done by ``MainWindow``.
+        family (E-2c, spec §4.2 — reapply_auto_colors is a no-op when
+        is_comparison_mode() is false, so a 1st load costs nothing extra
+        here); on ``"unloaded"`` panels drop signals whose group is gone
+        (R7.4) and are NOT recolored (spec §4.2's intentional non-symmetry —
+        existing colors stay put). On ``"comparison_mode"`` (the user
+        toggling comparison mode on/off, comparison-mode-toggle spec §4)
+        every panel reapplies auto colors the same way — ON recolors into
+        hue families, OFF is a no-op that freezes existing colors. This is
+        the panel coordination previously done by ``MainWindow``.
         """
         if change == "loaded":
 
@@ -103,6 +107,14 @@ class GraphAreaVM(Observable):
             self._for_each_panel(_reconcile)
         elif change == "unloaded":
             self._for_each_panel(lambda p: p.prune_missing_signals())
+        elif change == "comparison_mode":
+            # ON: recolor autos into hue families. OFF: reapply is a
+            # structural no-op (resolver returns None for every group ->
+            # reapply_auto_colors' `continue` on `hue is None` leaves
+            # existing colors untouched), so the SAME call gives
+            # freeze-on-OFF for free (spec §4, user decision 3). No ON/OFF
+            # branching needed.
+            self._for_each_panel(lambda p: p.reapply_auto_colors())
         elif change == "offsets":
             # R14.5: push the latest offsets to EVERY panel (all tabs) and
             # re-render. _for_each_panel spans all tabs (propagate_cursor is

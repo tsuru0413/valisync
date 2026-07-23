@@ -133,6 +133,7 @@ def test_context_menu_remove_unloads_file(qtbot: QtBot) -> None:
     from valisync.core.models import SignalGroup
 
     app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)  # overlay action requires comparison mode
     k1 = app_vm.session._groups.add(
         SignalGroup((), Path("/path/to/a.csv").absolute(), "CSV", datetime.now())
     )
@@ -201,6 +202,7 @@ def test_right_click_on_row_opens_remove_menu_and_unloads(
     from valisync.core.models import SignalGroup
 
     app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)  # overlay action requires comparison mode
     k1 = app_vm.session._groups.add(
         SignalGroup((), Path("/path/to/a.csv").absolute(), "CSV", datetime.now())
     )
@@ -395,6 +397,9 @@ def test_menu_on_reference_row_disables_set_reference_hides_overlay(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
     app_vm = AppViewModel()
+    app_vm.set_comparison_mode(
+        True
+    )  # proves is_ref gates overlay even in comparison mode
     app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())  # becomes reference
     app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
     vm = FileBrowserVM(app_vm)
@@ -410,6 +415,7 @@ def test_menu_on_non_reference_row_enables_set_reference_shows_overlay(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
     app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)  # overlay action requires comparison mode
     app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())  # becomes reference
     app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
     vm = FileBrowserVM(app_vm)
@@ -457,6 +463,7 @@ def test_overlay_action_emits_signal_with_target_key(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
     app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)  # overlay action requires comparison mode
     app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())
     key2 = app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
     vm = FileBrowserVM(app_vm)
@@ -478,6 +485,7 @@ def test_set_reference_fires_model_reset_and_updates_badge_text(
     through to the live VM state regardless, so that alone would be a
     false-green for a broken refresh wiring — spec §6 Layer B note)."""
     app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)  # reference badge requires comparison mode
     key1 = app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())
     key2 = app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
     vm = FileBrowserVM(app_vm)

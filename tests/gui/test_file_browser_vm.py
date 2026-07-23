@@ -180,6 +180,7 @@ def test_no_badge_with_a_single_loaded_file(tmp_path: Path) -> None:
 
 def test_badge_shown_on_reference_row_in_comparison_mode(tmp_path: Path) -> None:
     app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)
     key1 = app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())
     app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
     vm = FileBrowserVM(app_vm)
@@ -191,6 +192,7 @@ def test_badge_shown_on_reference_row_in_comparison_mode(tmp_path: Path) -> None
 
 def test_badge_follows_reference_change(tmp_path: Path) -> None:
     app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)  # badge display requires comparison mode
     app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())
     key2 = app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
     vm = FileBrowserVM(app_vm)
@@ -275,6 +277,7 @@ def test_chip_color_matches_file_hue_index_in_comparison_mode() -> None:
     from valisync.gui.theme.tokens import active
 
     app_vm = AppViewModel()
+    app_vm.set_comparison_mode(True)
     app_vm.register_loaded("k1")
     app_vm.register_loaded("k2")
     vm = FileBrowserVM(app_vm)
