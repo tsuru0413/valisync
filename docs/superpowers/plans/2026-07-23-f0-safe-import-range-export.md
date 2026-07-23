@@ -36,9 +36,9 @@
 **Interfaces:**
 - Consumes: 既存 `_ts_col`/`_sig_start`/`_sig_end`/`_header` ウィジェット・`chrome_cursor_a`/`drop_highlight` トークン。
 
-- [ ] **Step 1（0 始まりヘッダ TDD）**: プレビュー水平ヘッダが `"0: <名前>"`/`"1: <名前>"`（has_header 時）・`"0"`/`"1"`（無ヘッダ）で、スピン値と一致するテスト。ragged 行（`rows[0]` が短い）で IndexError しないこと。
-- [ ] **Step 2（RED）**: `uv run pytest tests/gui/test_csv_format_dialog.py -q` → FAIL（現状ヘッダラベル未設定）。
-- [ ] **Step 3（実装）**: `_refresh()` に:
+- [x] **Step 1（0 始まりヘッダ TDD）**: プレビュー水平ヘッダが `"0: <名前>"`/`"1: <名前>"`（has_header 時）・`"0"`/`"1"`（無ヘッダ）で、スピン値と一致するテスト。ragged 行（`rows[0]` が短い）で IndexError しないこと。
+- [x] **Step 2（RED）**: `uv run pytest tests/gui/test_csv_format_dialog.py -q` → FAIL（現状ヘッダラベル未設定）。
+- [x] **Step 3（実装）**: `_refresh()` に:
 
 ```python
 n_cols = max((len(r) for r in rows), default=0)
@@ -50,12 +50,12 @@ for ci in range(n_cols):
 self._preview.setHorizontalHeaderLabels(labels)
 ```
 
-- [ ] **Step 4（GREEN）**: Step 1 PASS。
-- [ ] **Step 5（列ハイライト TDD）**: 時間列スピン変更 → 該当列セル背景が `chrome_cursor_a` ティントへ移動・旧列非着色。信号列 `_sig_start`..`_sig_end` が信号ティント。`ts_col ∈ 信号範囲` の過渡で ts_col 勝ち。**sabotage**: 固定列着色 → RED。
-- [ ] **Step 6（実装）**: `_refresh()` 本体で `QTableWidgetItem.setBackground(QColor(...))`。信号範囲を先に塗り→時間列を後で塗る。トークン色から低 α の `QColor` 導出。**`_ts_col`/`_sig_start`/`_sig_end` の `valueChanged` と `_header.stateChanged` を全て `_refresh` へ接続**（現状 `_validate` のみの `_header`/スピンを追加接続）。
-- [ ] **Step 7（可読性 TDD — I1）**: 時間列/信号列ティント値が**両テーマで非テキスト最低 3:1**（値ベース機械検証・既存 warning/info テストと同型）。LIGHT で `drop_highlight` 低 α が不足するなら `tokens.py` に色相保持の LIGHT 専用信号ハイライト値を追加し 3:1 を満たす値を test-lock。**sabotage**: 3:1 未満の値へ差し替え → RED。
-- [ ] **Step 8（GREEN＋回帰）**: Step 5/7 PASS。`CsvFormatDetector`/`DetectedFormat` の 0 始まり列インデックス不変を Layer A で回帰ガード（T-A4）。ヘッダ ON/OFF トグルで名前部が追従（stale なし）。
-- [ ] **Step 9（ゲート＋commit）**: 全ゲート green → `feat(gui): CSV 取込ダイアログ 0 始まりヘッダ＋列ハイライト (UX-05)`
+- [x] **Step 4（GREEN）**: Step 1 PASS。
+- [x] **Step 5（列ハイライト TDD）**: 時間列スピン変更 → 該当列セル背景が `chrome_cursor_a` ティントへ移動・旧列非着色。信号列 `_sig_start`..`_sig_end` が信号ティント。`ts_col ∈ 信号範囲` の過渡で ts_col 勝ち。**sabotage**: 固定列着色 → RED。
+- [x] **Step 6（実装）**: `_refresh()` 本体で `QTableWidgetItem.setBackground(QColor(...))`。信号範囲を先に塗り→時間列を後で塗る。トークン色から低 α の `QColor` 導出。**`_ts_col`/`_sig_start`/`_sig_end` の `valueChanged` と `_header.stateChanged` を全て `_refresh` へ接続**（現状 `_validate` のみの `_header`/スピンを追加接続）。
+- [x] **Step 7（可読性 TDD — I1）**: 時間列/信号列ティント値が**両テーマで非テキスト最低 3:1**（値ベース機械検証・既存 warning/info テストと同型）。LIGHT で `drop_highlight` 低 α が不足するなら `tokens.py` に色相保持の LIGHT 専用信号ハイライト値を追加し 3:1 を満たす値を test-lock。**sabotage**: 3:1 未満の値へ差し替え → RED。
+- [x] **Step 8（GREEN＋回帰）**: Step 5/7 PASS。`CsvFormatDetector`/`DetectedFormat` の 0 始まり列インデックス不変を Layer A で回帰ガード（T-A4）。ヘッダ ON/OFF トグルで名前部が追従（stale なし）。
+- [x] **Step 9（ゲート＋commit）**: 全ゲート green → `feat(gui): CSV 取込ダイアログ 0 始まりヘッダ＋列ハイライト (UX-05)`
   - 注: トークンを追加した場合、`uv run python scripts/export_design_tokens.py` で design 差分が出る（Task 5 で DesignSync 反映）。
 
 ---
@@ -69,9 +69,9 @@ self._preview.setHorizontalHeaderLabels(labels)
 **Interfaces:**
 - Produces: `CsvExportOptions.time_start: float | None`・`time_end: float | None`（既定 None）。`_rows_unified_timeline`/`_rows_shared_timeline` が閉区間フィルタ。
 
-- [ ] **Step 1（範囲フィルタ TDD）**: `time_start`/`time_end` を与え、出力行が**閉区間 [start,end]** のみ・None は無制限・浮動小数境界（t==start/end 含有）を検証。**prod スケール（330k 相当）で行数削減の正しさ**。
-- [ ] **Step 2（RED）**: FAIL（フィールド未定義）。
-- [ ] **Step 3（実装）**: `CsvExportOptions` 末尾に既定付きフィールド追加＋`__post_init__` で `start>end` 検証:
+- [x] **Step 1（範囲フィルタ TDD）**: `time_start`/`time_end` を与え、出力行が**閉区間 [start,end]** のみ・None は無制限・浮動小数境界（t==start/end 含有）を検証。**prod スケール（330k 相当）で行数削減の正しさ**。
+- [x] **Step 2（RED）**: FAIL（フィールド未定義）。
+- [x] **Step 3（実装）**: `CsvExportOptions` 末尾に既定付きフィールド追加＋`__post_init__` で `start>end` 検証:
 
 ```python
 time_start: float | None = None
@@ -85,9 +85,9 @@ def __post_init__(self) -> None:
 `_rows_unified_timeline`/`_rows_shared_timeline` の行ループで行時刻 `t` に対し
 `(time_start is None or t >= time_start) and (time_end is None or t <= time_end)` を満たす行のみ yield（**タイムライン解決後**に適用）。ヘッダ/単位行は無条件出力（範囲外 0 行なら header-only）。
 
-- [ ] **Step 4（GREEN）**: Step 1 PASS。
-- [ ] **Step 5（境界/タイムライン TDD）**: `start>end`→ValueError・範囲外→header-only・`start==end` 境界。統合タイムライン解決後に範囲適用（shared-timeline mismatch loud-fail 維持）。既存 `test_csv_exporter` が新フィールド既定 None で後方互換（無回帰）。
-- [ ] **Step 6（ゲート＋commit）**: green → `feat(core): CSV エクスポートに時間範囲フィルタ (CsvExportOptions.time_start/time_end) (UX-28)`
+- [x] **Step 4（GREEN）**: Step 1 PASS。
+- [x] **Step 5（境界/タイムライン TDD）**: `start>end`→ValueError・範囲外→header-only・`start==end` 境界。統合タイムライン解決後に範囲適用（shared-timeline mismatch loud-fail 維持）。既存 `test_csv_exporter` が新フィールド既定 None で後方互換（無回帰）。
+- [x] **Step 6（ゲート＋commit）**: green → `feat(core): CSV エクスポートに時間範囲フィルタ (CsvExportOptions.time_start/time_end) (UX-28)`
 
 ---
 
@@ -102,14 +102,14 @@ def __post_init__(self) -> None:
 **Interfaces:**
 - Consumes: Task 2 の `CsvExportOptions.time_start/time_end`・`GraphAreaVM.active_tab()`・`GraphPanelVM.x_range`（属性）・`cursor_state`・`AppViewModel` オフセット。
 
-- [ ] **Step 1（範囲ラジオ→options TDD）**: [全期間]→None/None・[現在の表示範囲]→x_range・[カーソル A–B]→cursor min/max が `CsvExportOptions` に注入されるテスト。**ガード**: x_range None で [表示範囲] disabled・A/B 未設置で [A–B] disabled・**選択信号オフセット時に表示由来2ラジオ disabled**。マルチタブでアクティブタブ参照。
-- [ ] **Step 2（RED）**: FAIL（範囲 UI 未実装）。
-- [ ] **Step 3（実装）**: `ExportCsvDialog.__init__`/`.ask` 末尾に**既定 None のキーワード引数**（`x_range`・`cursor_a`・`cursor_b`・`offset_active`）を追加。range `QRadioButton` 群（[全期間]既定 checked）＋各ガードで `setEnabled`。`_current_options()` で range→`time_start/time_end` 注入。`main_window.export_csv` で `active_tab()`/`active_panel().x_range`/`cursor_state`/オフセットをスナップショットして渡す（View 分離）。文言は `strings.py` の `Final` 定数（範囲ラベル・ラジオ3種・カーソル範囲併記テンプレ・tooltip）。
-- [ ] **Step 4（GREEN）**: Step 1 PASS。
-- [ ] **Step 5（選択数フッター TDD）**: 「N 信号を選択中」= 総選択数 `len(_checked_keys())`（フィルタ非依存）。選択済みをフィルタで隠してもフッター不変・フッター数==出力集合数。すべて選択/解除は `blockSignals` バッチ化。**sabotage**: フッターをフィルタ後の可視数にする → RED。
-- [ ] **Step 6（実装）**: `_validate` 相乗りで `QLabel` 更新＋`_select_all`/`_select_none` バッチ化。
-- [ ] **Step 7（GREEN＋後方互換）**: Step 5 PASS。既存 export ダイアログテスト（直接構築）が既定 None 引数で無回帰。
-- [ ] **Step 8（ゲート＋commit）**: green → `feat(gui): エクスポートダイアログに出力範囲ラジオ＋選択数フッター (UX-28)`
+- [x] **Step 1（範囲ラジオ→options TDD）**: [全期間]→None/None・[現在の表示範囲]→x_range・[カーソル A–B]→cursor min/max が `CsvExportOptions` に注入されるテスト。**ガード**: x_range None で [表示範囲] disabled・A/B 未設置で [A–B] disabled・**選択信号オフセット時に表示由来2ラジオ disabled**。マルチタブでアクティブタブ参照。
+- [x] **Step 2（RED）**: FAIL（範囲 UI 未実装）。
+- [x] **Step 3（実装）**: `ExportCsvDialog.__init__`/`.ask` 末尾に**既定 None のキーワード引数**（`x_range`・`cursor_a`・`cursor_b`・`offset_active`）を追加。range `QRadioButton` 群（[全期間]既定 checked）＋各ガードで `setEnabled`。`_current_options()` で range→`time_start/time_end` 注入。`main_window.export_csv` で `active_tab()`/`active_panel().x_range`/`cursor_state`/オフセットをスナップショットして渡す（View 分離）。文言は `strings.py` の `Final` 定数（範囲ラベル・ラジオ3種・カーソル範囲併記テンプレ・tooltip）。
+- [x] **Step 4（GREEN）**: Step 1 PASS。
+- [x] **Step 5（選択数フッター TDD）**: 「N 信号を選択中」= 総選択数 `len(_checked_keys())`（フィルタ非依存）。選択済みをフィルタで隠してもフッター不変・フッター数==出力集合数。すべて選択/解除は `blockSignals` バッチ化。**sabotage**: フッターをフィルタ後の可視数にする → RED。
+- [x] **Step 6（実装）**: `_validate` 相乗りで `QLabel` 更新＋`_select_all`/`_select_none` バッチ化。
+- [x] **Step 7（GREEN＋後方互換）**: Step 5 PASS。既存 export ダイアログテスト（直接構築）が既定 None 引数で無回帰。
+- [x] **Step 8（ゲート＋commit）**: green → `feat(gui): エクスポートダイアログに出力範囲ラジオ＋選択数フッター (UX-28)`
 
 ---
 
@@ -123,13 +123,13 @@ def __post_init__(self) -> None:
 **Interfaces:**
 - Produces: `SignalPreviewVM.axis_label_parts() -> tuple[str, str | None]`（display_name, unit）。
 
-- [ ] **Step 1（ラベル TDD）**: `preview_plot` の bottom ラベル=「Time」(units="s")・left ラベルに **display_name（`::` なし）＋unit**。`axis_label_parts()` が `display_names.display_name(sig.name)` と unit を返す。**sabotage**: 生キー `_signal().name` を使う → `::` が出て RED。
-- [ ] **Step 2（RED）**: FAIL（ラベル/アクセサ未実装）。
-- [ ] **Step 3（実装）**: `SignalPreviewVM.axis_label_parts()` 追加。`_render()` で
+- [x] **Step 1（ラベル TDD）**: `preview_plot` の bottom ラベル=「Time」(units="s")・left ラベルに **display_name（`::` なし）＋unit**。`axis_label_parts()` が `display_names.display_name(sig.name)` と unit を返す。**sabotage**: 生キー `_signal().name` を使う → `::` が出て RED。
+- [x] **Step 2（RED）**: FAIL（ラベル/アクセサ未実装）。
+- [x] **Step 3（実装）**: `SignalPreviewVM.axis_label_parts()` 追加。`_render()` で
   `preview_plot.setLabel("bottom", "Time", units="s")`／`preview_plot.setLabel("left", name, units=unit)`
   （name/unit は `axis_label_parts()`・色は明示せず `plot_foreground` 継承）。
-- [ ] **Step 4（GREEN）**: Step 1 PASS。
-- [ ] **Step 5（ゲート＋commit）**: green → `feat(gui): 信号プレビュー窓に軸ラベル (Time/信号名 unit・display_name) (UX-43)`
+- [x] **Step 4（GREEN）**: Step 1 PASS。
+- [x] **Step 5（ゲート＋commit）**: green → `feat(gui): 信号プレビュー窓に軸ラベル (Time/信号名 unit・display_name) (UX-43)`
 
 ---
 
@@ -141,20 +141,20 @@ def __post_init__(self) -> None:
 - Modify: `docs/design.md`・`docs/uiux-adversarial-review-catalog.md`・`CLAUDE.md`
 - Verify: `design_export/screenshots_catalog_{dark,light}`
 
-- [ ] **Step 1（realgui T-C1/2/3）**:
+- [x] **Step 1（realgui T-C1/2/3）**:
   - T-C1: 実 CSV → フォーマットダイアログでスピン実操作 → 0 始まりヘッダ＋列ハイライトを実ピクセル確認（スクショ目視）。
   - T-C2: 2 カーソル設置 → [カーソル A–B] 選択 → **実出力ファイルの行時間範囲が A–B に収まる**ことを実ファイル読み直しで検証。全期間との行数差。
   - T-C3: プレビューを開き軸ラベルをスクショ目視。
   - エビデンスを `design_export/evidence_f0/` へ保存し Read で目視・所見を report へ。
-- [ ] **Step 2（realgui フル）**: `uv run pytest tests/realgui/ --realgui -q`（timeout 600000・バッチ可）。既知フレークは単体で切り分け。
-- [ ] **Step 3（撮影 DI 更新＋凍結）**: `capture_ui_screenshots.py` の ExportCsvDialog 直接構築（:216 付近）を**新 DI 署名へ更新**し決定的カーソル（例 3.0/6.0）を注入して [カーソル A–B] enabled＋実範囲ラベルを撮る。プレビュー窓に viewport crop 相当を用意。撮影 → `compare_screenshots.py`（両テーマ・`--crop-meta`）。**per-state 期待差分**（エクスポート=範囲ラジオ3行＋フッター／CSV ダイアログ=0始まりヘッダ+ハイライト／プレビュー 08=軸ラベル＋波形再配置〔データ不変〕）に限定を実証。main window プロット面 viewport は不変。想定外差分は原因特定。
-- [ ] **Step 4（昇格＋決定性）**: 想定差分に限定なら昇格 → 再撮影 compare exit 0（両テーマ）＋決定性。
-- [ ] **Step 5（docs）**:
+- [x] **Step 2（realgui フル）**: `uv run pytest tests/realgui/ --realgui -q`（timeout 600000・バッチ可）。既知フレークは単体で切り分け。
+- [x] **Step 3（撮影 DI 更新＋凍結）**: `capture_ui_screenshots.py` の ExportCsvDialog 直接構築（:216 付近）を**新 DI 署名へ更新**し決定的カーソル（例 3.0/6.0）を注入して [カーソル A–B] enabled＋実範囲ラベルを撮る。プレビュー窓に viewport crop 相当を用意。撮影 → `compare_screenshots.py`（両テーマ・`--crop-meta`）。**per-state 期待差分**（エクスポート=範囲ラジオ3行＋フッター／CSV ダイアログ=0始まりヘッダ+ハイライト／プレビュー 08=軸ラベル＋波形再配置〔データ不変〕）に限定を実証。main window プロット面 viewport は不変。想定外差分は原因特定。
+- [x] **Step 4（昇格＋決定性）**: 想定差分に限定なら昇格 → 再撮影 compare exit 0（両テーマ）＋決定性。
+- [x] **Step 5（docs）**:
   - docs/design.md 決定履歴に 1 エントリ（F-0・0 始まり列/ハイライト・範囲エクスポート＋オフセット座標系契約・プレビューラベル・敵対的レビュー I1-I3 の要点）。トークン追加時は design.md のトークン節反映。
   - docs/uiux-adversarial-review-catalog.md: UX-05 → ✅解消・UX-28 → ✅解消・UX-43 → ✅解消の注記。
   - CLAUDE.md の 横断/UIUX 敵対的レビュー行へ F-0 完了サマリ（F-1/F-2 は defer・次候補）。
-- [ ] **Step 6（プランのチェックボックス更新）**: 消化済みへ。
-- [ ] **Step 7（最終ゲート＋commit）**: `uv run pytest -q`・ruff・mypy green → `feat(gui): F-0 realgui ①ゲート＋凍結検証＋docs`
+- [x] **Step 6（プランのチェックボックス更新）**: 消化済みへ。
+- [x] **Step 7（最終ゲート＋commit）**: `uv run pytest -q`・ruff・mypy green → `feat(gui): F-0 realgui ①ゲート＋凍結検証＋docs`
 
 ## Self-Review 済み確認事項
 

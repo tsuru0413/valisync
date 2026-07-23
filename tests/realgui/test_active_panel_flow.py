@@ -45,6 +45,8 @@ from valisync.gui import strings as S
 
 pytestmark = pytest.mark.realgui
 
+_EVIDENCE_DIR_F0 = Path(__file__).resolve().parents[2] / "design_export" / "evidence_f0"
+
 
 def _pump(dt: float = 0.03) -> None:
     from PySide6.QtWidgets import QApplication
@@ -316,6 +318,29 @@ def test_dblclick_opens_preview_window(qtbot: QtBot, tmp_path: Path) -> None:
     qtbot.waitUntil(lambda: len(pw.preview_plot.listDataItems()) == 1, timeout=2000)
     assert len(pw.preview_plot.listDataItems()) == 1, (
         f"プレビュータブに波形が描画されていない。screenshot: {shot}"
+    )
+
+    # ── T-C3 (F-0/UX-43): 軸ラベルが実描画パイプラインで実際に設定されている ──
+    # (headless Layer B は setLabel 呼び出しの引数を直接検証済み — 本テストは
+    # 実ダブルクリック -> show_signal -> _render という実経路の終状態を確認する)。
+    _EVIDENCE_DIR_F0.mkdir(parents=True, exist_ok=True)
+    shot_f0 = _EVIDENCE_DIR_F0 / "05_signal_preview_axis_labels.png"
+    pw.grab().save(str(shot_f0))
+
+    bottom_axis = pw.preview_plot.getAxis("bottom")
+    assert bottom_axis.labelText == "Time", (
+        f"下軸ラベルが 'Time' でない: {bottom_axis.labelText!r}. screenshot: {shot_f0}"
+    )
+    assert bottom_axis.labelUnits == "s", (
+        f"下軸単位が 's' でない: {bottom_axis.labelUnits!r}. screenshot: {shot_f0}"
+    )
+    left_axis = pw.preview_plot.getAxis("left")
+    assert left_axis.labelText == "speed", (
+        f"左軸ラベルが display_name 'speed' でない (:: 内部キー露出の疑い): "
+        f"{left_axis.labelText!r}. screenshot: {shot_f0}"
+    )
+    assert "::" not in left_axis.labelText, (
+        f"左軸ラベルに内部キー '::' が露出: {left_axis.labelText!r}"
     )
     # E-0 (UX-19): windowTitle は生キー("csv_1::speed")でなく bare 表示名
     # ("speed" — 単一ファイル・衝突なしのため qualify されない) を表示する。

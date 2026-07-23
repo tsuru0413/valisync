@@ -211,9 +211,25 @@ def main() -> int:
         settle()
 
         # --- 06: CSV エクスポートダイアログ (エラーラベル表示状態) -------------
+        # F-0/UX-28: 出力範囲 DI — 実際に main_window.export_csv が渡すのと同じ
+        # 値 (アクティブパネルの x_range・カーソル A/B) を注入する。カーソルは
+        # 03_cursor で既に設置済みの決定的な値 (3.0/6.0) をそのまま再利用する
+        # (別の定数を重複させると値がずれるリスクがあるため単一の真実に揃える)。
+        # 選択数は意図的に空のまま (既存のエラー行可視化状態を維持) — 範囲ラジオの
+        # enabled/ラベルは選択集合と無関係に x_range/cursor スナップショットだけで
+        # 決まるため、この状態のままでも [カーソル A-B] enabled + 実範囲ラベルが写る。
         from valisync.gui.views.export_csv_dialog import ExportCsvDialog
 
-        dlg = ExportCsvDialog(window.app_vm, initial_selected=set())
+        export_panel = window.graph_area_vm.active_panel()
+        export_cursor_state = window.graph_area_vm.active_tab().cursor_state
+        dlg = ExportCsvDialog(
+            window.app_vm,
+            initial_selected=set(),
+            x_range=export_panel.x_range,
+            cursor_a=export_cursor_state.cursor_t,
+            cursor_b=export_cursor_state.cursor_t_b,
+            offset_for=export_panel.offset_for,
+        )
         dlg._validate()  # 撮影ツールとしての private 利用: エラー行を可視化
         dlg.show()
         settle()
@@ -234,6 +250,14 @@ def main() -> int:
         fmt_dlg.close()
 
         # --- 08: 信号プレビュー窓 ----------------------------------------------
+        # F-0/UX-43: viewport.json はあえて出力しない — spec §6 M は 08 を他の
+        # ダイアログ状態と同様に --crop-meta の比較対象から明示的に SKIP する設計
+        # (main window プロット面 (02-05/09) への非波及証明とスコープを分離する
+        # ため、viewport.json を持たせると 08 が crop-meta に巻き込まれてしまう)。
+        # 軸ラベル追加によるプロット領域の幾何変化/波形データ不変は Task 5 で
+        # design_export/screenshots_f0_{dark,light} と旧
+        # screenshots_catalog_{dark,light} の 08 をフル画像比較+目視で個別確認する
+        # (design.md 決定履歴・Task 5 report に記録)。
         window.signal_preview_window.show_signal(keys[0])
         settle()
         window.signal_preview_window.grab().save(
