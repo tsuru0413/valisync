@@ -152,7 +152,13 @@ class FileBrowserVM(Observable):
 
     def _on_app_change(self, change: str) -> None:
         """Handle notifications from AppViewModel."""
-        if change in ("loaded", "unloaded", "releasing", "reference"):
+        if change in (
+            "loaded",
+            "unloaded",
+            "releasing",
+            "reference",
+            "comparison_mode",
+        ):
             self._refresh()
 
     def _refresh(self) -> None:

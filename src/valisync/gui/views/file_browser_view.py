@@ -111,23 +111,27 @@ class FileBrowserView(QWidget):
     def build_context_menu(self, row: int) -> QMenu:
         """Menu for list *row*: 'Remove File' + the E-2a/b reference actions.
 
-        The reference actions are guarded the same way as select_file/unload
-        (releasing/out-of-range rows resolve no key, so they are skipped
-        entirely — spec §2). On the reference row itself, "基準に設定" is
-        disabled and "基準の同名信号を重ねる" is omitted (spec §2/§3); the
-        overlay item additionally requires comparison mode (2+ loaded files).
+        The comparison affordances ("基準に設定"/"基準の同名信号を重ねる")
+        are gated as a pair on comparison mode (2+ loaded files AND the user
+        toggle) — in single mode neither appears, since "基準に設定" would
+        be visually inert there (no badge/chip to show for it) while
+        "重ねる" alone stayed hidden; showing one without the other read as
+        broken (spec 2026-07-23 §3.3 M7). Releasing/out-of-range rows resolve
+        no key, so both are skipped regardless of mode. On the reference row
+        itself, "基準に設定" is disabled and "基準の同名信号を重ねる" is
+        omitted (spec §2/§3).
         """
         menu = QMenu(self)
         menu.addAction(S.ACTION_REMOVE_FILE).triggered.connect(
             lambda *_: self._confirm_and_unload(row)
         )
         key = self._vm.key_at(row)
-        if key is not None:
+        if key is not None and self._vm.is_comparison_mode():
             is_ref = self._vm.is_reference(row)
             set_ref_action = menu.addAction(S.ACTION_SET_REFERENCE)
             set_ref_action.setEnabled(not is_ref)
             set_ref_action.triggered.connect(lambda *_: self._vm.set_reference(row))
-            if not is_ref and self._vm.is_comparison_mode():
+            if not is_ref:
                 overlay_action = menu.addAction(S.ACTION_OVERLAY_REFERENCE)
                 overlay_action.triggered.connect(
                     lambda *_: self.overlay_reference_requested.emit(key)

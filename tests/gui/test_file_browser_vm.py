@@ -294,3 +294,39 @@ def test_chip_color_none_for_out_of_range_or_releasing_row() -> None:
     vm = FileBrowserVM(app_vm)
 
     assert vm.chip_color(5) is None
+
+
+# ─── comparison-mode toggle (spec 2026-07-23 §3.2, T-B3) ──────────────────────
+
+
+def test_toggle_comparison_refreshes_badge_and_chip(tmp_path: Path) -> None:
+    """Toggling comparison_mode AFTER construction must refresh the badge/chip.
+
+    Unlike the badge/chip tests above (which set_comparison_mode(True) before
+    constructing the VM, so the initial _refresh() already sees the flag ON),
+    this toggles post-construction — the only way to exercise the
+    "comparison_mode" notify subscription itself (without it, the badge/chip
+    would go stale until an unrelated "loaded"/"reference" notify happens to
+    fire — spec's false-green concern)."""
+    app_vm = AppViewModel()
+    app_vm.request_load(_write_csv(tmp_path / "a.csv"), _fmt())
+    app_vm.request_load(_write_csv(tmp_path / "b.csv"), _fmt())
+    vm = FileBrowserVM(app_vm)
+    notifications: list[str] = []
+    vm.subscribe(notifications.append)
+
+    assert vm.files == ["a.csv", "b.csv"]  # comparison mode OFF: no badge
+    assert vm.chip_color(0) is None
+
+    app_vm.set_comparison_mode(True)
+
+    assert "files" in notifications
+    assert vm.files == ["a.csv ◎基準", "b.csv"]
+    assert vm.chip_color(0) is not None
+
+    notifications.clear()
+    app_vm.set_comparison_mode(False)
+
+    assert "files" in notifications
+    assert vm.files == ["a.csv", "b.csv"]  # frozen predicate falls back to False
+    assert vm.chip_color(0) is None
