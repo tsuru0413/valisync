@@ -51,6 +51,14 @@ def test_remove_file_menu_appears_on_real_os_right_click(
         SignalGroup((), Path("b.csv").absolute(), "CSV", datetime.now())
     )
     app_vm._loaded_keys = [k1, k2]
+    # This test's E-2a/b assertions (below) exercise the comparison-mode
+    # affordances ("基準に設定"/"基準の同名信号を重ねる"), which the
+    # comparison-mode-toggle spec (2026-07-23 §3 M7) now gates on an explicit
+    # user opt-in rather than "2+ files loaded" alone — enable it here so the
+    # menu-content assertion continues to test what it always intended to
+    # (M13 site-by-site follow-up; this site's intent is comparison behavior,
+    # not single-mode behavior).
+    app_vm.set_comparison_mode(True)
 
     view = FileBrowserView(FileBrowserVM(app_vm))
     qtbot.addWidget(view)

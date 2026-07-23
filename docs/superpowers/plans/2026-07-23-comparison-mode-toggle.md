@@ -1,6 +1,6 @@
 # 比較モードのユーザー切り替え Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 比較モードの起動を「ファイル数 ≥ 2 の自動判定」から「Analyze メニューで明示的に切り替える transient フラグ」へ置換する。既定シングル・OFF で家系色凍結・1 ファイル完全従来互換。
 
@@ -35,7 +35,7 @@
 - Produces: `AppViewModel.set_comparison_mode(enabled: bool) -> None`（notify `"comparison_mode"`）・`AppViewModel.comparison_enabled: bool`（生フラグ property）・`is_comparison_mode()` は `_comparison_enabled and len>=2`。
 - Consumes: 既存 `reapply_auto_colors()`・`file_hue_resolver()`・`_for_each_panel`。
 
-- [ ] **Step 1（述語 TDD — 失敗テスト）**: `tests/gui/test_app_viewmodel_comparison_mode.py`（新規）に T-A1/T-A2 を書く。
+- [x] **Step 1（述語 TDD — 失敗テスト）**: `tests/gui/test_app_viewmodel_comparison_mode.py`（新規）に T-A1/T-A2 を書く。
 
 ```python
 def test_comparison_predicate_gates_on_flag_and_count(app_vm_with_two_files):
@@ -62,8 +62,8 @@ def test_set_comparison_mode_same_value_is_noop(app_vm_with_two_files):
     assert calls == ["comparison_mode"]
 ```
 
-- [ ] **Step 2（RED 確認）**: `uv run pytest tests/gui/test_app_viewmodel_comparison_mode.py -q` → FAIL（`set_comparison_mode`/`comparison_enabled` 未定義）。
-- [ ] **Step 3（実装）**: `app_viewmodel.py`。`__init__` に `self._comparison_enabled: bool = False`。述語を置換:
+- [x] **Step 2（RED 確認）**: `uv run pytest tests/gui/test_app_viewmodel_comparison_mode.py -q` → FAIL（`set_comparison_mode`/`comparison_enabled` 未定義）。
+- [x] **Step 3（実装）**: `app_viewmodel.py`。`__init__` に `self._comparison_enabled: bool = False`。述語を置換:
 
 ```python
 def is_comparison_mode(self) -> bool:
@@ -84,8 +84,8 @@ def comparison_enabled(self) -> bool:
 
 `inspect()`/状態スナップショット（`get_state` 付近）へ `"comparison_enabled": self._comparison_enabled` を `reference_file` と同層で追加。`register_loaded` docstring の「2nd file's load flips is_comparison_mode() true」を「比較モードの発火はトグル/フラグ ON（かつ ≥2 ファイル）時」に更新。
 
-- [ ] **Step 4（GREEN 確認）**: `uv run pytest tests/gui/test_app_viewmodel_comparison_mode.py -q` → PASS。
-- [ ] **Step 5（GraphAreaVM 配線 TDD — T-B5/T-B6）**: `tests/gui/test_graph_area_comparison_mode.py`（新規）に、2 ファイルロード済み（count-mod）→ `app_vm.set_comparison_mode(True)` → 各パネルが家系色になる（T-B5）・**任意パネル（初期＋add_tab）**が hue 由来色を持つ（T-B6）を書く。
+- [x] **Step 4（GREEN 確認）**: `uv run pytest tests/gui/test_app_viewmodel_comparison_mode.py -q` → PASS。
+- [x] **Step 5（GraphAreaVM 配線 TDD — T-B5/T-B6）**: `tests/gui/test_graph_area_comparison_mode.py`（新規）に、2 ファイルロード済み（count-mod）→ `app_vm.set_comparison_mode(True)` → 各パネルが家系色になる（T-B5）・**任意パネル（初期＋add_tab）**が hue 由来色を持つ（T-B6）を書く。
 
 ```python
 def test_toggle_on_recolors_all_panels_via_comparison_mode_branch(area_vm_two_files):
@@ -104,8 +104,8 @@ def test_resolver_reaches_added_tab_panel(area_vm_two_files):
     assert _any_hue_family_color(area_vm.active_tab().panel_vm)
 ```
 
-- [ ] **Step 6（RED 確認）**: FAIL（`_on_app_change` に `comparison_mode` 分岐が無く再着色されない）。
-- [ ] **Step 7（実装）**: `graph_area_vm.py` `_on_app_change` に分岐追加:
+- [x] **Step 6（RED 確認）**: FAIL（`_on_app_change` に `comparison_mode` 分岐が無く再着色されない）。
+- [x] **Step 7（実装）**: `graph_area_vm.py` `_on_app_change` に分岐追加:
 
 ```python
 elif change == "comparison_mode":
@@ -114,18 +114,18 @@ elif change == "comparison_mode":
     self._for_each_panel(lambda p: p.reapply_auto_colors())
 ```
 
-- [ ] **Step 8（GREEN 確認）**: Step 5 のテスト PASS。
-- [ ] **Step 9（OFF 凍結＋no-churn TDD — T-A4）**: 2 ファイル・ON で家系色 → `set_comparison_mode(False)` → (a) 色不変 (b) `notify` 回数=0・`_cache` 同一性 を assert。**sabotage 2 種を実証**: (1) `reapply_auto_colors` の `hue is None` の `continue` を「count-mod へ戻す」へ改変 → 色不変 assert RED。(2) invalidate/notify を `if changed` の外へ → no-churn assert RED。改変を戻して GREEN。
-- [ ] **Step 10（sticky／2→1 unload／E-0 独立 TDD — T-A6/T-A7/T-A5）**:
+- [x] **Step 8（GREEN 確認）**: Step 5 のテスト PASS。
+- [x] **Step 9（OFF 凍結＋no-churn TDD — T-A4）**: 2 ファイル・ON で家系色 → `set_comparison_mode(False)` → (a) 色不変 (b) `notify` 回数=0・`_cache` 同一性 を assert。**sabotage 2 種を実証**: (1) `reapply_auto_colors` の `hue is None` の `continue` を「count-mod へ戻す」へ改変 → 色不変 assert RED。(2) invalidate/notify を `if changed` の外へ → no-churn assert RED。改変を戻して GREEN。
+- [x] **Step 10（sticky／2→1 unload／E-0 独立 TDD — T-A6/T-A7/T-A5）**:
   - T-A6: 単一で同一ファイル 3 信号 add → ON → 3 本相異バリアント（潰れない）。
   - T-A7: 2 ファイル・ON で家系色 → 1 ファイルへ unload → 生存曲線は家系色凍結・`comparison_enabled` True 保持。
   - T-A5（E-0 独立・setup 明示）: 2 つの distinct group_key で同一裸名 → **同一アクティブパネル**へ `add_signal_to_axis` で両プロット → 両 visible → `cursor_readings` の name に「bare (group_key)」併記が出る（`is_comparison_mode()` False でも）。**sabotage**: readings の `_visible_display_names` を `is_comparison_mode()` ゲートで包む → RED。
-- [ ] **Step 11（VM テストスイープ — M13）**: `uv run pytest tests/gui/ -q` を実行し、`is_comparison_mode`/hue/family/badge/chip を 2 ファイルで検証する既存 E-2 VM テストの FAIL を**サイト別に**修正。判断基準:
+- [x] **Step 11（VM テストスイープ — M13）**: `uv run pytest tests/gui/ -q` を実行し、`is_comparison_mode`/hue/family/badge/chip を 2 ファイルで検証する既存 E-2 VM テストの FAIL を**サイト別に**修正。判断基準:
   - テストの意図が「比較挙動の検証」→ setup に `app_vm.set_comparison_mode(True)` を明示追加。
   - テストの意図が「単一挙動（count-mod）の検証」→ フラグ OFF のまま存置し、期待値を count-mod に整合。
   - `_FakeHueResolver` を注入する isolation テスト → 存置（フラグ回帰の実検出網は GraphAreaVM 経由＋Layer B/C）。
   - 修正した全サイトを report に file:line で列挙（機械置換でないことの証跡）。
-- [ ] **Step 12（ゲート＋commit）**: 全ゲート green → `feat(gui): 比較モード transient フラグ＋述語置換＋GraphAreaVM 再着色配線`
+- [x] **Step 12（ゲート＋commit）**: 全ゲート green → `feat(gui): 比較モード transient フラグ＋述語置換＋GraphAreaVM 再着色配線`
 
 ---
 
@@ -139,7 +139,7 @@ elif change == "comparison_mode":
 **Interfaces:**
 - Consumes: Task 1 の `AppViewModel.is_comparison_mode()`（フラグ連動済み）・`"comparison_mode"` notify。
 
-- [ ] **Step 1（購読 TDD — T-B3）**: トグルで FileBrowser モデルが再構築される（バッジ/チップ出現/消滅）ことを書く。
+- [x] **Step 1（購読 TDD — T-B3）**: トグルで FileBrowser モデルが再構築される（バッジ/チップ出現/消滅）ことを書く。
 
 ```python
 def test_toggle_comparison_refreshes_badge_and_chip(fb_vm_two_files):
@@ -155,16 +155,16 @@ def test_toggle_comparison_refreshes_badge_and_chip(fb_vm_two_files):
     assert vm.chip_color(_reference_row(vm)) is None
 ```
 
-- [ ] **Step 2（RED 確認）**: FAIL（`_on_app_change` が `"comparison_mode"` を購読していないため refresh されない）。
-- [ ] **Step 3（実装）**: `file_browser_vm.py` の `_on_app_change` タグ集合へ `"comparison_mode"` を追加:
+- [x] **Step 2（RED 確認）**: FAIL（`_on_app_change` が `"comparison_mode"` を購読していないため refresh されない）。
+- [x] **Step 3（実装）**: `file_browser_vm.py` の `_on_app_change` タグ集合へ `"comparison_mode"` を追加:
 
 ```python
 if change in ("loaded", "unloaded", "releasing", "reference", "comparison_mode"):
     self._refresh()
 ```
 
-- [ ] **Step 4（GREEN 確認）**: Step 1 PASS。
-- [ ] **Step 5（affordance 対称化 TDD — T-B4）**: 単一モードの右クリックは「削除」のみ・比較 ON で「基準に設定」（reference 行は disabled）＋「基準の同名信号を重ねる」（非 reference 行）が現れる。
+- [x] **Step 4（GREEN 確認）**: Step 1 PASS。
+- [x] **Step 5（affordance 対称化 TDD — T-B4）**: 単一モードの右クリックは「削除」のみ・比較 ON で「基準に設定」（reference 行は disabled）＋「基準の同名信号を重ねる」（非 reference 行）が現れる。
 
 ```python
 def test_context_menu_hides_comparison_affordances_in_single_mode(fb_view_two_files):
@@ -184,8 +184,8 @@ def test_context_menu_shows_comparison_affordances_when_enabled(fb_view_two_file
     assert S.ACTION_OVERLAY_REFERENCE in labels
 ```
 
-- [ ] **Step 6（RED 確認）**: FAIL（現行は単一モードでも「基準に設定」を表示）。
-- [ ] **Step 7（実装）**: `file_browser_view.py` の右クリックメニュー構築（:120-135）を、比較 affordance 全体を `is_comparison_mode()` ゲートで囲う:
+- [x] **Step 6（RED 確認）**: FAIL（現行は単一モードでも「基準に設定」を表示）。
+- [x] **Step 7（実装）**: `file_browser_view.py` の右クリックメニュー構築（:120-135）を、比較 affordance 全体を `is_comparison_mode()` ゲートで囲う:
 
 ```python
 key = self._vm.key_at(row)
@@ -201,8 +201,8 @@ if key is not None and self._vm.is_comparison_mode():
         )
 ```
 
-- [ ] **Step 8（GREEN 確認＋既存テスト追随）**: Step 5 PASS。`tests/gui/test_file_browser_view*.py` の既存メニューテストのうち「単一モードで基準に設定が出る」前提を修正（サイト別）。
-- [ ] **Step 9（ゲート＋commit）**: 全ゲート green → `feat(gui): FileBrowser 比較 affordance を比較モード連動へ対称化＋comparison_mode 購読`
+- [x] **Step 8（GREEN 確認＋既存テスト追随）**: Step 5 PASS。`tests/gui/test_file_browser_view*.py` の既存メニューテストのうち「単一モードで基準に設定が出る」前提を修正（サイト別）。
+- [x] **Step 9（ゲート＋commit）**: 全ゲート green → `feat(gui): FileBrowser 比較 affordance を比較モード連動へ対称化＋comparison_mode 購読`
 
 ---
 
@@ -216,7 +216,7 @@ if key is not None and self._vm.is_comparison_mode():
 **Interfaces:**
 - Consumes: Task 1 の `app_vm.set_comparison_mode`/`comparison_enabled`/`loaded_file_keys`。
 
-- [ ] **Step 1（メニュー同期 TDD — T-B1）**: 2 ファイルロード → `aboutToShow` 相当の同期 → 項目 enabled・unchecked。トリガ → `app_vm.comparison_enabled` True＋checked。**sabotage**: checkstate を `is_comparison_mode()` へ差し替える → 「1 ファイル＋ON」で checked が False になり RED（生フラグ厳守を捕捉）。
+- [x] **Step 1（メニュー同期 TDD — T-B1）**: 2 ファイルロード → `aboutToShow` 相当の同期 → 項目 enabled・unchecked。トリガ → `app_vm.comparison_enabled` True＋checked。**sabotage**: checkstate を `is_comparison_mode()` へ差し替える → 「1 ファイル＋ON」で checked が False になり RED（生フラグ厳守を捕捉）。
 
 ```python
 def test_comparison_action_reflects_raw_flag_and_enabled_on_count(main_window_two_files):
@@ -237,8 +237,8 @@ def test_comparison_action_checkstate_uses_raw_flag_not_predicate(main_window_on
     assert mw._comparison_mode_action.isEnabled() is False  # <2 files
 ```
 
-- [ ] **Step 2（RED 確認）**: FAIL（`_comparison_mode_action` 未定義）。
-- [ ] **Step 3（実装）**: `main_window.py`。MainWindow 所有の checkable QAction を作り Analyze メニューへ追加:
+- [x] **Step 2（RED 確認）**: FAIL（`_comparison_mode_action` 未定義）。
+- [x] **Step 3（実装）**: `main_window.py`。MainWindow 所有の checkable QAction を作り Analyze メニューへ追加:
 
 ```python
 self._comparison_mode_action = QAction(S.ACTION_COMPARISON_MODE, self)
@@ -272,10 +272,10 @@ def _on_toggle_comparison_mode(self, checked: bool) -> None:
 
 `strings.py` へ `ACTION_COMPARISON_MODE`（& なし）・`TOOLTIP_COMPARISON_NEEDS_TWO`・`STATUS_COMPARISON_REFERENCE_TMPL`。
 
-- [ ] **Step 4（GREEN 確認）**: Step 1 PASS。
-- [ ] **Step 5（<2 無効＋checked 保持 TDD — T-B2）**: 1 ファイル → 項目 disabled。2 ファイル・ON → 1 ファイルへ unload → 項目 disabled かつ **checkstate=checked 保持**（意図的決定をロック）。
-- [ ] **Step 6（ニーモニクス無変更 — M5）**: `uv run pytest tests/gui/test_menu_mnemonics.py -q` が**変更なしで PASS**することを確認（`comparison_mode` にニーモニクス非付与ゆえ G-46 walk 集合・対訳表は不変）。もし FAIL したらニーモニクスを付けてしまっている退行。
-- [ ] **Step 7（ゲート＋commit）**: 全ゲート green → `feat(gui): Analyze メニュー「比較モード」トグル＋基準ファイル開示`
+- [x] **Step 4（GREEN 確認）**: Step 1 PASS。
+- [x] **Step 5（<2 無効＋checked 保持 TDD — T-B2）**: 1 ファイル → 項目 disabled。2 ファイル・ON → 1 ファイルへ unload → 項目 disabled かつ **checkstate=checked 保持**（意図的決定をロック）。
+- [x] **Step 6（ニーモニクス無変更 — M5）**: `uv run pytest tests/gui/test_menu_mnemonics.py -q` が**変更なしで PASS**することを確認（`comparison_mode` にニーモニクス非付与ゆえ G-46 walk 集合・対訳表は不変）。もし FAIL したらニーモニクスを付けてしまっている退行。
+- [x] **Step 7（ゲート＋commit）**: 全ゲート green → `feat(gui): Analyze メニュー「比較モード」トグル＋基準ファイル開示`
 
 ---
 
@@ -286,16 +286,16 @@ def _on_toggle_comparison_mode(self, checked: bool) -> None:
 - Modify: `docs/design.md`（決定履歴）・`docs/uiux-adversarial-review-catalog.md`・`CLAUDE.md`
 - Verify: `design_export/screenshots_catalog_{dark,light}`（01-09 差分ゼロ）
 
-- [ ] **Step 1（realgui T-C1 拡張）**: 既存 `test_comparison_model_realclick.py` に、2 ファイルロード → 実 OS で Analyze メニュー「比較モード」クリック → 家系色が**実ピクセルで出現**（ON 前 count-mod・ON 後 青系/橙系）→ 再クリックで OFF → **家系色が凍結（count-mod へ戻らない）**を実ピクセルで実証 → ◎基準バッジの出現/消滅。エビデンススクショを `design_export/evidence_comparison_toggle/` へ保存し Read で目視、所見を report へ。
-- [ ] **Step 2（realgui フル）**: `uv run pytest tests/realgui/ --realgui -q`（timeout 600000・バッチ可）。既知の順序フレークは単体再実行で切り分け。
-- [ ] **Step 3（凍結カタログ差分ゼロ検証 — M16）**: 撮影 → `compare_screenshots.py`（両テーマ・`--crop-meta`）で **01-09 全状態が現行ベースライン（PR #145）と完全一致**を実証（トグルは全状態 1 ファイルで不可視 → 差分ゼロ）。想定外差分があれば原因特定。決定性 exit 0。
-- [ ] **Step 4（スイープ監査 — M13）**: Task 1/2/3 で修正した既存 E-2 テストサイトを横断監査し、機械的 `set_comparison_mode(True)` 挿入が意図を消していないか・14 サイト相当を漏れなく整合させたかを report へ列挙（`rg 'set_comparison_mode' tests/` で全挿入点を確認）。
-- [ ] **Step 5（docs）**:
+- [x] **Step 1（realgui T-C1 拡張）**: 既存 `test_comparison_model_realclick.py` に、2 ファイルロード → 実 OS で Analyze メニュー「比較モード」クリック → 家系色が**実ピクセルで出現**（ON 前 count-mod・ON 後 青系/橙系）→ 再クリックで OFF → **家系色が凍結（count-mod へ戻らない）**を実ピクセルで実証 → ◎基準バッジの出現/消滅。エビデンススクショを `design_export/evidence_comparison_toggle/` へ保存し Read で目視、所見を report へ。
+- [x] **Step 2（realgui フル）**: `uv run pytest tests/realgui/ --realgui -q`（timeout 600000・バッチ可）。既知の順序フレークは単体再実行で切り分け。
+- [x] **Step 3（凍結カタログ差分ゼロ検証 — M16）**: 撮影 → `compare_screenshots.py`（両テーマ・`--crop-meta`）で **01-09 全状態が現行ベースライン（PR #145）と完全一致**を実証（トグルは全状態 1 ファイルで不可視 → 差分ゼロ）。想定外差分があれば原因特定。決定性 exit 0。
+- [x] **Step 4（スイープ監査 — M13）**: Task 1/2/3 で修正した既存 E-2 テストサイトを横断監査し、機械的 `set_comparison_mode(True)` 挿入が意図を消していないか・14 サイト相当を漏れなく整合させたかを report へ列挙（`rg 'set_comparison_mode' tests/` で全挿入点を確認）。
+- [x] **Step 5（docs）**:
   - `docs/design.md` 決定履歴に 1 エントリ（比較モードのユーザー切り替え・transient・Analyze メニュー・OFF 凍結・affordance 対称化・カタログ差分ゼロ・敵対的レビュー M1-M16 の要点）。
   - `docs/uiux-adversarial-review-catalog.md`: E-2 系の関連項目へ「単一/比較のユーザー切り替えを追加（2026-07-23）」注記。
   - `CLAUDE.md` の 横断/UIUX 敵対的レビュー行へ本増分の完了サマリ（E-2 に比較モードトグルを追加・次=増分F）。
-- [ ] **Step 6（プランのチェックボックス更新）**: 全タスク消化済みへ。
-- [ ] **Step 7（最終ゲート＋commit）**: `uv run pytest -q`・ruff・mypy green → `feat(gui): 比較モード realgui ①ゲート＋凍結検証＋docs`
+- [x] **Step 6（プランのチェックボックス更新）**: 全タスク消化済みへ。
+- [x] **Step 7（最終ゲート＋commit）**: `uv run pytest -q`・ruff・mypy green → `feat(gui): 比較モード realgui ①ゲート＋凍結検証＋docs`
 
 ## Self-Review 済み確認事項
 

@@ -49,6 +49,9 @@ from valisync.gui import strings as S
 pytestmark = pytest.mark.realgui
 
 _EVIDENCE_DIR = Path(__file__).resolve().parents[2] / "design_export" / "evidence_e2"
+_EVIDENCE_DIR_TOGGLE = (
+    Path(__file__).resolve().parents[2] / "design_export" / "evidence_comparison_toggle"
+)
 
 _N = 30
 _DT = 0.1
@@ -68,6 +71,24 @@ def _pump(dt: float = 0.03) -> None:
 def _pump_n(n: int, dt: float = 0.02) -> None:
     for _ in range(n):
         _pump(dt)
+
+
+def _click(x: int, y: int) -> None:
+    """Real left click at physical (x, y) — menu bar / QMenu item selection.
+
+    Established pattern (test_theme_menu_realclick.py): raw OS input injects
+    into the message queue; the caller's subsequent qtbot.waitUntil pumps
+    events and drives the (non-blocking) QMenuBar/QMenu popup open/dismiss.
+    """
+    at(x, y, LDOWN)
+    time.sleep(0.05)
+    at(x, y, LUP)
+
+
+def _phys_center(widget, rect):  # type: ignore[no-untyped-def]
+    dpr = widget.devicePixelRatioF()
+    gp = widget.mapToGlobal(rect.center())
+    return round(gp.x() * dpr), round(gp.y() * dpr)
 
 
 def _menu_hang_watchdog(stop: threading.Event) -> None:
@@ -253,6 +274,13 @@ def test_reference_overlay_hue_family_and_e0_display_names(
     window._on_loaded(outcome_b)
     key1, key2 = outcome_a.key, outcome_b.key  # csv_1 / csv_2 — spec §1.1 keying
     assert window.app_vm.reference_file_key == key1  # 既定=最初のロード (E-2a)
+    # 比較モードのユーザー切り替え (2026-07-23 spec) で is_comparison_mode() は
+    # 「明示フラグ AND 2+ファイル」に変わり、既定 OFF になった。本テストの意図は
+    # 比較モード ON 時の重ね/家系色/バッジ/チップ挙動そのものの検証なので (M13
+    # サイト別判断・機械的挿入ではなく意図確認済み)、ここで明示的に ON にする —
+    # トグル UI 自体の実クリック経路は下の
+    # test_comparison_mode_toggle_journey_realclick が別途担保する。
+    window.app_vm.set_comparison_mode(True)
 
     vehspd1 = _bare_key(session, key1, "VehSpd")
     engspeed1 = _bare_key(session, key1, "EngineSpeed")
@@ -426,6 +454,221 @@ def test_reference_overlay_hue_family_and_e0_display_names(
     assert leaf_texts, "エクスポートツリーが空"
     assert not any("::" in t for t in leaf_texts), (
         f"エクスポートツリーに内部キー '::' が露出: {leaf_texts}. screenshot: {shot_export}"
+    )
+
+    window.close()
+
+
+# ─── T-C1: 比較モードのユーザー切り替え実ジャーニー (Task 4 Step 1) ───────────
+
+
+def test_comparison_mode_toggle_journey_realclick(qtbot: QtBot, tmp_path: Path) -> None:
+    """実 OS で Analyze>比較モードをトグルし、家系色の出現/凍結・◎基準バッジの
+    出現/消滅を実ピクセルで実証する (comparison-mode-toggle spec §7 T-C1)。
+
+    4本 (VehSpd1/EngineSpeed1/VehSpd2/EngineSpeed2) を「重ねる」ボタンを使わず
+    手動で直接プロットする — 比較モード OFF (既定) では affordance 自体が
+    非表示 (spec §3 M7 対称化) なので使えないため。この直接プロットが同時に
+    count-mod と家系色を実ピクセルで区別可能にする鍵になる:
+    add 順の count-mod は「エントリ位置 mod パレット長」でファイル非依存に色を
+    進めるため、csv_1 の2本目 (EngineSpeed1) は palette[1]=橙になる。一方、
+    家系色は「ファイルごとに1色相・同ファイル内はバリアント」なので
+    EngineSpeed1 は csv_1 の青ファミリーになる。この青/橙の反転が
+    「トグル ON で家系色が実際に出現した」ことの動かぬ証拠になる。
+    """
+    skip_unless_real_display()
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtWidgets import QApplication
+
+    from valisync.core.models import Delimiter, FormatDefinition
+    from valisync.gui.strings import strip_mnemonic
+    from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+    from valisync.gui.views.main_window import MainWindow
+
+    _EVIDENCE_DIR_TOGGLE.mkdir(parents=True, exist_ok=True)
+    a_csv, b_csv = _build_fixture(tmp_path)
+
+    window = MainWindow(AppViewModel())
+    qtbot.addWidget(window)
+
+    fmt_a = FormatDefinition(
+        name="a_fmt",
+        delimiter=Delimiter.COMMA,
+        timestamp_column=0,
+        timestamp_unit="sec",
+        signal_start_column=1,
+        signal_end_column=2,
+        has_header=True,
+    )
+    fmt_b = FormatDefinition(
+        name="b_fmt",
+        delimiter=Delimiter.COMMA,
+        timestamp_column=0,
+        timestamp_unit="sec",
+        signal_start_column=1,
+        signal_end_column=3,
+        has_header=True,
+    )
+    session = window.app_vm.session
+    outcome_a = session.load(a_csv, fmt_a)
+    window._on_loaded(outcome_a)
+    outcome_b = session.load(b_csv, fmt_b)
+    window._on_loaded(outcome_b)
+    key1, key2 = outcome_a.key, outcome_b.key
+
+    assert window.app_vm.comparison_enabled is False, "既定はシングル (opt-in)"
+    assert window.app_vm.is_comparison_mode() is False
+
+    vehspd1 = _bare_key(session, key1, "VehSpd")
+    engspeed1 = _bare_key(session, key1, "EngineSpeed")
+    vehspd2 = _bare_key(session, key2, "VehSpd")
+    engspeed2 = _bare_key(session, key2, "EngineSpeed")
+
+    vm = window.graph_area_vm
+    panel_vm = vm.panels(vm.active_tab_index)[vm.active_panel_index()]
+    panel_vm.add_signal_to_axis(vehspd1, 0)
+    panel_vm.add_signal_to_axis(engspeed1, 0)
+    panel_vm.add_signal_to_axis(vehspd2, 0)
+    panel_vm.add_signal_to_axis(engspeed2, 0)
+
+    window.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+    screen = QApplication.primaryScreen().availableGeometry()
+    window.setGeometry(
+        screen.x() + 60,
+        screen.y() + 60,
+        min(1200, screen.width() - 120),
+        min(820, screen.height() - 120),
+    )
+    window.show()
+    window.raise_()
+    window.activateWindow()
+    qtbot.waitExposed(window)
+    _pump_n(4)
+
+    panel_view = next(w for _t, _p, w in window.graph_area_view._panel_views)
+    qtbot.waitUntil(
+        lambda: (
+            bool(panel_view._view_boxes)
+            and panel_view._view_boxes[0].sceneBoundingRect().height() > 100
+        ),
+        timeout=3000,
+    )
+    _pump_n(3)
+
+    by_key = {sk: eid for eid, sk, _ax in panel_vm.plotted_entries()}
+
+    def _pen(sk: str) -> str:
+        return panel_view.pen_color(by_key[sk])
+
+    vb0 = panel_view._view_boxes[0]
+
+    def _pixel_matches(t: float, val: float, expected_hex: str) -> bool:
+        scene_pt = vb0.mapViewToScene(QPointF(t, val))
+        col, row = to_phys(panel_view, scene_pt.x(), scene_pt.y())
+        image = QApplication.primaryScreen().grabWindow(0).toImage()
+        return _find_pixel_near(image, col, row, _rgb(expected_hex))
+
+    def _shot(name: str) -> Path:
+        time.sleep(0.15)  # DWM compositor flush (memory: FU-12 の教訓)
+        _pump_n(2)
+        path = _EVIDENCE_DIR_TOGGLE / name
+        with contextlib.suppress(Exception):
+            QApplication.primaryScreen().grabWindow(0).save(str(path))
+        return path
+
+    fb = window.file_browser_view
+
+    # ─── (1) トグル前 = count-mod・◎基準バッジなし ─────────────────────────
+    pen_engspeed1_before = _pen(engspeed1)
+    assert not _is_blue_family(_rgb(pen_engspeed1_before)), (
+        "トグル前は count-mod のはずが engspeed1 が既に blue-family: "
+        f"{pen_engspeed1_before}"
+    )
+    assert _is_orange_family(_rgb(pen_engspeed1_before)), (
+        "count-mod で add 順2番目の engspeed1 は palette[1]=橙のはず: "
+        f"{pen_engspeed1_before}"
+    )
+    assert not fb._vm.files[0].endswith(S.FILE_REFERENCE_BADGE_SUFFIX), (
+        "トグル前は◎基準バッジが出ないはず"
+    )
+
+    shot_before = _shot("01_before_toggle_countmod.png")
+    assert _pixel_matches(1.5, 11.5, pen_engspeed1_before), (
+        f"トグル前スクショに count-mod 色 {pen_engspeed1_before} が見つからない。"
+        f" screenshot: {shot_before}"
+    )
+
+    # ─── (2) 実 OS: メニューバー→Analyze→比較モード を実クリック (ON) ────────
+    menubar = window.menuBar()
+    analyze_action = next(
+        a
+        for a in menubar.actions()
+        if strip_mnemonic(a.text()) == strip_mnemonic(S.MENU_ANALYZE)
+    )
+    _click(*_phys_center(menubar, menubar.actionGeometry(analyze_action)))
+    qtbot.waitUntil(lambda: QApplication.activePopupWidget() is not None, timeout=3000)
+    analyze_menu = QApplication.activePopupWidget()
+
+    comparison_action = next(
+        a for a in analyze_menu.actions() if a.text() == S.ACTION_COMPARISON_MODE
+    )
+    assert comparison_action.isEnabled(), "2ファイルロード済みなので有効のはず"
+    assert not comparison_action.isChecked(), "トグル前は unchecked のはず"
+
+    _click(*_phys_center(analyze_menu, analyze_menu.actionGeometry(comparison_action)))
+    qtbot.waitUntil(lambda: window.app_vm.is_comparison_mode() is True, timeout=3000)
+    _pump_n(4)
+
+    assert window.app_vm.comparison_enabled is True
+    assert comparison_action.isChecked()
+
+    pen_engspeed1_on = _pen(engspeed1)
+    assert _is_blue_family(_rgb(pen_engspeed1_on)), (
+        f"ON 後は engspeed1 が家系色(青)のはずが: {pen_engspeed1_on}"
+    )
+    assert fb._vm.files[0].endswith(S.FILE_REFERENCE_BADGE_SUFFIX), (
+        "ON 後は◎基準バッジが出るはず"
+    )
+
+    shot_on = _shot("02_after_toggle_on_families.png")
+    assert _pixel_matches(1.5, 11.5, pen_engspeed1_on), (
+        f"ON 後スクショに家系色 {pen_engspeed1_on} が見つからない。 screenshot: {shot_on}"
+    )
+
+    # ─── (3) 再度実クリックで OFF → 家系色は凍結 (count-mod へ戻らない) ─────
+    _click(*_phys_center(menubar, menubar.actionGeometry(analyze_action)))
+    qtbot.waitUntil(lambda: QApplication.activePopupWidget() is not None, timeout=3000)
+    analyze_menu2 = QApplication.activePopupWidget()
+    comparison_action2 = next(
+        a for a in analyze_menu2.actions() if a.text() == S.ACTION_COMPARISON_MODE
+    )
+    assert comparison_action2.isChecked(), "再オープン時も checked が同期されるはず"
+
+    _click(
+        *_phys_center(analyze_menu2, analyze_menu2.actionGeometry(comparison_action2))
+    )
+    qtbot.waitUntil(lambda: window.app_vm.is_comparison_mode() is False, timeout=3000)
+    _pump_n(4)
+
+    assert window.app_vm.comparison_enabled is False
+    assert not comparison_action2.isChecked()
+
+    pen_engspeed1_off = _pen(engspeed1)
+    assert pen_engspeed1_off == pen_engspeed1_on, (
+        "OFF で色が変化した = 凍結でなく再着色/復帰してしまっている: "
+        f"{pen_engspeed1_on!r} -> {pen_engspeed1_off!r}"
+    )
+    assert _is_blue_family(_rgb(pen_engspeed1_off)), (
+        f"OFF 後も家系色(青)のまま凍結のはずが: {pen_engspeed1_off}"
+    )
+    assert not fb._vm.files[0].endswith(S.FILE_REFERENCE_BADGE_SUFFIX), (
+        "OFF 後は◎基準バッジが消えるはず"
+    )
+
+    shot_off = _shot("03_after_toggle_off_frozen.png")
+    assert _pixel_matches(1.5, 11.5, pen_engspeed1_off), (
+        "OFF 後スクショに凍結された家系色 "
+        f"{pen_engspeed1_off} が見つからない。 screenshot: {shot_off}"
     )
 
     window.close()

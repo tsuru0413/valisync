@@ -445,3 +445,61 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   確認）。ベースラインを昇格・再撮影で決定性 exit 0（9/9 states・両テーマ）を実証。
   設計は [E-0+E-2 spec](superpowers/specs/2026-07-23-e2-comparison-model-design.md)。
   **claude.ai/design への再同期はマージ後に実施**（controller）。
+- 2026-07-23: 比較モードのユーザー切り替え（E-2 拡張・トークン変更なし・同一ブランチ
+  `feature/e2-comparison-model` へ畳んで出荷）。E-2 出荷直後のユーザー決定で、比較
+  モード（色相ファミリー・◎基準バッジ・チップ・比較 affordance）の起動を「ファイル
+  数 ≥ 2 の自動判定」から**ユーザーが明示的に切り替えるフラグ**へ変更 — 既定は
+  シングル（count-mod・比較 affordance なし）、Analyze メニューの checkable 「比較
+  モード」項目で opt-in する。**ユーザー決定3点（確定・spec 冒頭）**: (1) 既定=
+  シングル、(2) 切り替え UI=Analyze メニュー、(3) OFF 遷移=色相ファミリー色を
+  固定（count-mod へ戻さない・手動ピン色は常に不変）。**フラグは transient**
+  （`reference_file_key` と同じく QSettings 非永続・再起動で常に既定シングルへ戻る
+  — 将来の `.vsession`〔増分F〕でセッション内真実面を確定するまでの意図的な設計）。
+  `AppViewModel.is_comparison_mode()` を「明示フラグ AND 2+ファイル」の単一述語へ
+  置換（全 consumer が同じ1点を読むため追従は自動）、`comparison_enabled`（生フラグ・
+  メニュー checkstate 用）と使い分ける。OFF 凍結は新規メカニズムでなく
+  `reapply_auto_colors` の既存 `hue is None: continue` 分岐（既存色を触らない）
+  から自然に導かれる — ON/OFF で分岐しない単一の再着色呼び出しで両方が成立する。
+  FileBrowser の比較 affordance（「基準に設定」/「基準の同名信号を重ねる」）を
+  比較モードへ対称化（旧は「基準に設定」のみ常時表示・単一モードで視覚的に無効な
+  操作が可能に見える非対称を解消）。**8 レンズ敵対的レビュー（34 findings・33
+  confirmed=全 Minor）を M1-M16 として反映**: transient 化（M1）・`inspect()` 露出
+  （M2）・docstring 更新（M3）・QAction は MainWindow 所有の独立 checkable（panel-
+  scoped `AnalysisActions` に載せない、M4）・ニーモニクス非付与（兄弟葉項目と整合、
+  M5）・2ファイル未満での checked+disabled 保持（「設定は保持・2つ以上で再適用」の
+  意図的到達状態、M6）・affordance 対称化（M7）・基準ファイルのステータス開示（M8）・
+  2→1 unload 後の凍結（M9）・ON 再着色の専用テスト（M10）・resolver の全パネル到達
+  保証（M11）・OFF の no-churn（invalidate/notify を発生させない、M12）・既存 E-2
+  テストのサイト別追随（機械的挿入禁止、M13）・E-0（表示名）との独立性維持（M14/
+  M15）・凍結カタログは差分ゼロが正しい期待（M16、下記）。**カタログ検証（M16）**:
+  現行カタログは全状態1ファイルのため `is_comparison_mode()` は恒常 False —
+  比較モードのフラグ導入はカタログ表示を一切変えない。01-09 全状態が既存ベース
+  ライン（PR #145 時点）と完全一致することを両テーマ・`--crop-meta`・通常比較の
+  双方で実証し（決定性=フレッシュ再撮影でも exit 0）、家系色の実描画検証は
+  realgui 一本化とした（カタログには比較状態の被覆が元々存在しないため）。**realgui
+  T-C1（`tests/realgui/test_comparison_model_realclick.py` に追加）が家系色の一次
+  被覆**: 2ファイルロード→4信号を直接プロット（「重ねる」ボタンは OFF では非表示
+  のため使わない）→トグル前は count-mod（add順2番目の EngineSpeed が
+  palette[1]=橙になる、ファイル非依存）を実ピクセルで確認→実 OS でメニューバー
+  →Analyze→「比較モード」を実クリック→家系色（同ファイルの2信号が青ファミリー
+  に揃う）が実ピクセルで出現→再クリックで OFF→色が変化しない（凍結）ことを実
+  ピクセルで確認→◎基準バッジの出現/消滅も実証。スクショは
+  `design_export/evidence_comparison_toggle/`（3枚: トグル前=4色分散・ON後=
+  青系2＋橙系2に収束＋◎基準バッジ＋ステータス「比較モード: 基準ファイル=a.csv」・
+  OFF後=ON と同一色のまま凍結＋バッジ消滅）。この可視化が「比較モードは色を
+  ファイルごとに束ねる」という機能そのものの動かぬ証拠になる。**既存 E-2 realgui
+  テストの追随**: `test_reference_overlay_hue_family_and_e0_display_names`
+  （比較 affordance・家系色・バッジ・チップを検証する既存テスト）はフラグ既定
+  OFF 化で RED 化するため `set_comparison_mode(True)` を明示追加（意図は比較挙動
+  の検証そのものなので機械挿入ではなく妥当）。`tests/gui/` 側も同型のサイト別
+  追随を実施（`test_app_viewmodel.py`/`test_file_browser_view.py`/
+  `test_file_browser_vm.py`/`test_file_list_model.py`/`test_graph_area_vm.py`
+  の計19サイト＋realgui 1サイト＝計20サイトを file:line 単位で確認、単一モード
+  期待の既存テストは意図的にフラグ OFF のまま存置）。realgui フル 97/97 pass
+  （既知の実行順依存フォント計量フレーク3件〔`test_hit_targets.py` chevron/
+  タブ✕・`test_expansion_dialog_realinput.py` wheel — D-3 増分で既に記録済みの
+  「51ファイル一括実行でのみ発生」クラスタ〕は単体/小グループでは 100% pass し
+  本増分と無関係と確認）。設計は
+  [comparison-mode-toggle spec](superpowers/specs/2026-07-23-comparison-mode-toggle-design.md)。
+  **claude.ai/design への再同期はマージ後に実施**（controller — トークン変更が
+  ないため実質no-op）。
