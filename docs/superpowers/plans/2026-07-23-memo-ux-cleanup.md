@@ -64,20 +64,20 @@
 **Interfaces:**
 - Consumes: 既存 `DockCollapseRail`・`_collapsed`（dockCollapsed 永続）・`_apply_dock_corners`・`_apply_default_dock_ratio`。
 
-- [ ] **Step 1（スパイク — 候補 A の実現可能性を realgui 実機実証）**: レールを各辺の**最外ドック**（`QDockWidget`・`splitDockWidget` で最外全高）へ移す最小プロトタイプを組み、**片方折りたたみで実 OS レールが開ドックの外側（`rail.left() >= openDock.right()`・非重なり）**に来ることを realgui スクショ＋矩形実測で確認。**成立しなければ BLOCKED でコントローラへ即エスカレーション**（緩和 B はユーザー再承認が要るため実装者は独断で進めない）。
-- [ ] **Step 2（honest-RED）**: 現状（レールが中央側 col2）で「非重なり境界」assert が RED になることを実証（機構変更前）。
-- [ ] **Step 3（実装 — 候補 A＋ガードレール）**: レール最外ドック化を本実装。ガードレール全て:
-  - レールドック `setFeatures(NoDockWidgetFeatures)`（非移動/非クローズ/非フロート）＋薄いレール見た目（タイトルバー無し）。
-  - `objectName` 安定＋既存 `saveState` blob 互換（旧 state 復元の互換/移行）。
-  - `dockLocationChanged` で最外順序を能動是正（removeDockWidget＋再 split）。
-  - `restoreState` 後に順序＋`setCorner`＋`_apply_default_dock_ratio` を再適用（レールが 3 番目の参加者になる 1:4/corner 干渉を調整）。
-  - 空時 `setVisible(False)`（ゼロ幅）。
-- [ ] **Step 4（Layer C — T-C1/T-C1b/T-C2）**:
-  - T-C1: 片方折りたたみでレール非重なり外側（`rail.left() >= openDock.right()`・`widgetAt(レール中心)` がレール）・File/Channel 両対称。
-  - T-C1b: 開ドックを実 OS D&D でレール外へ→最外再アサート。順序を崩した save→restore 後にレール最外復元。
-  - T-C2: 両方折りたたみ（09 相当）レール画面端・全展開レールゼロ幅が無回帰。collapse→expand 後 `dock.width()/height()` が `_expanded_extent` と両側数 px 一致。
-- [ ] **Step 5（既存テスト移行）**: `test_collapsible_docks_realclick.py` の `central.width` reclaim assert（単独折りたたみで無効）をレール矩形 x 比較へ置換・内部ハンドル（`_central_with_rails`/`_collapse_rails[area]`/`rail._tabs`）直参照を機構に合わせ移行。既存 collapse 系全数無回帰。
-- [ ] **Step 6（ゲート＋commit）**: green → `feat(gui): 折りたたみレールを画面端(開ドックの外側)へ — レール最外ドック化 (#17)`
+- [x] **Step 1（スパイク — 候補 A の実現可能性を realgui 実機実証）**: **GREEN で確定**（BLOCKED でない）。実機スパイクで機構を確定: Right/Bottom は `addDockWidget(area, rail, orientation)` の append が「最外の全高/全幅ドック」を作る（既存 File/Channel カラムがあっても append 先は最外）。Left は append が内側着地のため rail-first の rebuild で最外化。片方折りたたみで `rail.left(1112) >= channel.right(1107)`（gap=5・非重なり）を矩形実測＋スクショで確認。
+- [x] **Step 2（honest-RED）**: 現状（レールが中央側 col2）で `rail.left(850) >= channel.right(1139)` が **False（gap=-289）= RED** を機構変更前に実証。
+- [x] **Step 3（実装 — 候補 A＋ガードレール）**: レール最外ドック化を本実装（`CentralWithRails` 廃止・`central_with_rails.py` 削除）。ガードレール全て:
+  - レールドック `setFeatures(NoDockWidgetFeatures)`＋`setTitleBarWidget(QWidget())`（薄い見た目）＋`setAllowedAreas(自辺)`。
+  - `objectName` 安定（`collapse_rail_{left,right,bottom}`）＋`saveState`/`restoreState` 互換（旧 blob 復元後に正規化）。
+  - `dockLocationChanged`→`_reassert_rails_after_move`→singleShot `_reassert_rail_now`→`_place_rail_outermost`（removeDockWidget＋再配置・可視保持）で最外順序を能動是正。
+  - `restoreState`/`_reset_layout` 後に `_normalize_rail_placement`（順序＋可視）＋`_apply_dock_corners`＋`_apply_default_dock_ratio`（reset 経路）を再適用。show 後の pre-show 罠は `_reconcile_rails_after_show` で是正。
+  - 空時 `rail_dock.setVisible(False)`（ゼロ幅）。
+- [x] **Step 4（Layer C — T-C1/T-C1b/T-C2）**: 新規 realgui 7 本 pass（実機スクショ＋矩形実測）:
+  - T-C1: 片方折りたたみで `rail.left() >= openDock.right()`（gap=5）・`widgetAt(レール中心)` がレール・File/Channel 両対称。
+  - T-C1b: 順序破れ（`splitDockWidget(rail, channel, H)` が実 `dockLocationChanged` 発火）→最外再アサート。save→restore 後にレール最外復元。
+  - T-C2: 両方折りたたみでレール画面端＋プロット全幅化・全展開レールゼロ幅・extent 復元（許容=レール実測幅+14px＝レールがドックとしてカラム幅を奪う分を吸収）。
+- [x] **Step 5（既存テスト移行）**: `central.width` reclaim assert を `centralWidget().width()`＋レール矩形 x 比較へ置換・`_central_with_rails`/`_collapse_rails[area]`/`rail._tabs`/`_rail_docks` 直参照を機構へ移行。`test_main_window_central.py` の central 判定も `centralWidget() is central_stack` へ戻す。既存 collapse 系全数無回帰（gui 105・full 1734 pass）。
+- [x] **Step 6（ゲート＋commit）**: green → `feat(gui): 折りたたみレールを画面端(開ドックの外側)へ — レール最外ドック化 (#17)`
 
 ---
 
