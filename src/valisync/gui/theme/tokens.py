@@ -105,9 +105,11 @@ class Colors:
     # LIGHT は明面 (chrome_window) で WCAG AA (≥4.5:1) を満たす濃色を実測選定。
     chrome_cursor_a: Color
     chrome_cursor_b: Color
-    # CSV 取込ダイアログの信号列ハイライト (半透明ティント・spec §1.2) — DARK は
+    # CSV 取込ダイアログの信号列ハイライト (spec §1.2) — 二層構造で使用: データセルは
+    # 低 alpha ティント (chrome_text の AA 可読性が最優先)、ヘッダセルは不透明背景
+    # +輝度ベース文字色 (列マーキング・非テキスト/AA いずれかで ≥3:1)。DARK は
     # drop_highlight と同値 (意図的・チップ性の共有)、LIGHT は明面 (chrome_base)
-    # で低 alpha 合成しても非テキスト 3:1 を満たすよう色相保持で暗くした別値。
+    # で低 alpha 合成しても両テーマの可読性契約を満たすよう色相保持で暗くした別値。
     chrome_signal_highlight: Color
     surface_readout_panel: (
         Color  # 読み値ペイン面 — chrome_alternate_base と同値の別役割
@@ -262,7 +264,8 @@ LIGHT = ThemeTokens(
         chrome_cursor_a=Color.from_hex("#8a6100"),
         chrome_cursor_b=Color.from_hex("#106a8f"),
         # drop_highlight (teal H≈170°) と色相を保ったまま暗くした値 (L 0.733→0.15)
-        # — 明面 (chrome_base #e6e9ef) で低 alpha 合成しても非テキスト 3:1 を満たす
+        # — 明面 (chrome_base #e6e9ef) で低 alpha 合成 (データセル) しても chrome_text
+        # の AA を保ち、不透明 (ヘッダセル) では白文字と高コントラストになる
         # (spec §1.2 — chrome_cursor_a の濃色化と同じ方針)。
         chrome_signal_highlight=Color.from_hex("#0b4138"),
         surface_readout_panel=Color.from_hex("#eff1f5"),

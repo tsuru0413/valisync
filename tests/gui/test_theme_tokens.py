@@ -270,33 +270,63 @@ def test_warning_info_do_not_collide_with_existing_tokens():
                 )
 
 
-def test_csv_highlight_tints_meet_3_to_1_when_composited_on_chrome_surfaces():
-    """CSV 取込ダイアログの列ハイライト (半透明ティント) は非テキスト UI 部品
+def _composite(fg: Color, alpha: int, bg: Color) -> Color:
+    a = alpha / 255.0
+    return Color(
+        round(fg.r * a + bg.r * (1 - a)),
+        round(fg.g * a + bg.g * (1 - a)),
+        round(fg.b * a + bg.b * (1 - a)),
+    )
 
-    (WCAG 1.4.11) — 塗り時に使う低 alpha (`_TINT_ALPHA`) で chrome_base/chrome_window
-    に合成した実効色が、両テーマで隣接 (非着色) セルに対し ≥3:1 (spec §1.2)。
+
+def test_csv_data_cell_tint_preserves_chrome_text_aa_contrast():
+    """CSV 取込ダイアログのデータセルティント — I1 是正のハード制約 (spec §1.2)。
+
+    データセルは `setForeground` せず文字色は既定 `chrome_text` のまま。低 alpha
+    (`_TINT_ALPHA`) で chrome_base/chrome_window に合成した実効セル背景に対し、
+    `chrome_text` が両テーマで AA (≥4.5:1) を保つこと (旧・非テキスト 3:1 契約を
+    supersede — 列識別はヘッダセル側の責務に分離したため、データセルは可読性のみ
+    を最優先する)。
+
+    supersede: `test_csv_highlight_tints_meet_3_to_1_when_composited_on_chrome_surfaces`
+    (Task 1 実装の alpha=210 は本テストで RED — sabotage 実証は task-1-report.md 参照)。
     """
     from valisync.gui.views.csv_format_dialog import _TINT_ALPHA
 
-    def _composite(fg: Color, alpha: int, bg: Color) -> Color:
-        a = alpha / 255.0
-        return Color(
-            round(fg.r * a + bg.r * (1 - a)),
-            round(fg.g * a + bg.g * (1 - a)),
-            round(fg.b * a + bg.b * (1 - a)),
-        )
-
     for theme_name, theme in (("DARK", DARK), ("LIGHT", LIGHT)):
+        text = theme.colors.chrome_text
         for token_name in ("chrome_cursor_a", "chrome_signal_highlight"):
             fg = getattr(theme.colors, token_name)
             for surface_name in ("chrome_base", "chrome_window"):
                 bg = getattr(theme.colors, surface_name)
                 composited = _composite(fg, _TINT_ALPHA, bg)
-                ratio = contrast_ratio(composited, bg)
-                assert ratio >= 3.0, (
-                    f"{theme_name}.{token_name}@alpha={_TINT_ALPHA} vs {surface_name}: "
-                    f"{ratio:.2f} < 3.0"
+                ratio = contrast_ratio(text, composited)
+                assert ratio >= 4.5, (
+                    f"{theme_name}.chrome_text vs {token_name}@alpha={_TINT_ALPHA} "
+                    f"composited on {surface_name}: {ratio:.2f} < 4.5"
                 )
+
+
+def test_csv_header_marking_meets_aa_contrast_against_header_background():
+    """CSV 取込ダイアログのヘッダセル列マーキング — 可読性契約 (spec §1.2)。
+
+    ヘッダセルは不透明背景 (`_opaque`) +輝度ベースで選んだ黒/白文字 (`_header_ink`)。
+    実効ヘッダ背景 (=不透明なのでトークン生色そのもの) に対しヘッダ文字が両テーマで
+    AA (≥4.5:1) を満たすこと (非テキスト 3:1 の上位互換で列マーキング契約を充足)。
+    """
+    from valisync.gui.views.csv_format_dialog import _header_ink, _opaque
+
+    for theme_name, theme in (("DARK", DARK), ("LIGHT", LIGHT)):
+        for token_name in ("chrome_cursor_a", "chrome_signal_highlight"):
+            token_color = getattr(theme.colors, token_name)
+            bg = _opaque(token_color)
+            fg = _header_ink(token_color)
+            bg_c = Color(bg.red(), bg.green(), bg.blue())
+            fg_c = Color(fg.red(), fg.green(), fg.blue())
+            ratio = contrast_ratio(fg_c, bg_c)
+            assert ratio >= 4.5, (
+                f"{theme_name}.{token_name} ヘッダ文字 vs ヘッダ背景: {ratio:.2f} < 4.5"
+            )
 
 
 def test_chrome_signal_highlight_is_distinct_role_from_drop_highlight():
