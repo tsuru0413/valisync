@@ -102,4 +102,11 @@ def test_add_to_panel_menu_appears_on_real_os_right_click(
         "no context menu on a real OS right-click; "
         f"got {captured.get('type')!r}. screenshot: {tmp_path / 'ch.png'}"
     )
-    assert captured.get("actions") == ["アクティブパネルへ追加"]
+    # #15 (commit 03e7f79): 右クリックした行が leaf のとき、位置ベースの
+    # 「信号プロパティを表示」がメニューへ追加される (build_context_menu の
+    # pos 引数 → indexAt(pos) の hit leaf)。この実右クリックは選択済みの leaf
+    # (index) をそのまま叩いているため hit leaf であり、2 項目とも出る。
+    assert captured.get("actions") == [
+        "アクティブパネルへ追加",
+        "信号プロパティを表示",
+    ]

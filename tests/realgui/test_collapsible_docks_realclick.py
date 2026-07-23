@@ -298,6 +298,58 @@ def test_broken_order_save_restore_restores_rail_outermost(
     assert _widget_at_center_in(rail2), f"復元レール非描画。screenshot: {shot}"
 
 
+def test_left_edge_rebuild_places_rail_outermost(qtbot: QtBot, tmp_path: Path) -> None:
+    """左辺へ D&D 相当で移した file/channel を片方畳むと、左レールが最外
+    (画面端=左端) へ来る (`_rebuild_left_edge_outermost`・Task 3 レビュー Minor 3)。
+
+    既定レイアウトに左ドックは無い希少経路 (ユーザーが左へ D&D したときのみ)
+    のため T-C1/T-C1b/T-C2 では未被覆だった。Right/Bottom は
+    ``addDockWidget(area, rail, orientation)`` の append で足りるのに対し、
+    Left は append が内側 (右) 着地のため `_rebuild_left_edge_outermost`
+    (rail 単独→splitDockWidget→残り縦積み) を使う — この専用経路をここで
+    1 点実機被覆する (headless は offscreen でドック位置の geometry が実
+    レイアウトを経ないと更新されない既知の罠のため Layer C 必須)。
+    """
+    skip_unless_real_display()
+    from PySide6.QtCore import Qt
+
+    mw = _shown_mw(qtbot)
+    file_dock = mw.file_dock
+    channel_dock = mw.channel_dock
+    left = Qt.DockWidgetArea.LeftDockWidgetArea
+
+    # D&D で両方を左辺へ移した状態を模擬 (実 OS タイトルバー D&D は不安定な
+    # ため、既存 T-C1b と同じ理由で実 QMainWindow API で決定的に配置する —
+    # 実クリックそのものは chevron 側で担保する)。removeDockWidget を先に
+    # 呼ぶと Qt がドックを hide してしまい (Qt の既知挙動)、実 D&D では
+    # 起きない見せかけの非表示状態になる (デバッグで実証済み) ため、
+    # addDockWidget/splitDockWidget だけで直接移す (Qt が内部で旧位置から
+    # 移動させる — 明示 remove 不要)。
+    mw.addDockWidget(left, file_dock)
+    mw.splitDockWidget(file_dock, channel_dock, Qt.Orientation.Vertical)
+    _settle(20)  # dockLocationChanged の singleShot 再アサートを汲む
+
+    assert mw.dockWidgetArea(file_dock) == left
+    assert mw.dockWidgetArea(channel_dock) == left
+
+    rail = _collapse_via_chevron(qtbot, mw, file_dock, "file_dock")
+
+    assert not channel_dock.isHidden(), "setup: channel_dock も畳まれてしまった"
+    rl, _rt, rr, _rb = _grect(rail)
+    cl, _ct, cr, _cb = _grect(channel_dock)
+    shot = _grab(tmp_path, "collapse_left_rail_outside.png")
+    print(f"[left-rebuild] rail L={rl} R={rr} | channel L={cl} R={cr} | shot={shot}")
+
+    assert rr <= cl, (
+        f"左レールが開いている channel の外側 (画面端=左) に無い "
+        f"(rail.right={rr} > channel.left={cl})。screenshot: {shot}"
+    )
+    assert _widget_at_center_in(rail), (
+        f"widgetAt(レール中心) がレールを指さない (z-order 沈下 or 非描画)。"
+        f"screenshot: {shot}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # T-C2: 両方折りたたみ(09 相当) / 全展開ゼロ幅 / extent 復元の無回帰
 # ---------------------------------------------------------------------------
@@ -332,6 +384,25 @@ def test_both_collapse_rail_at_edge_and_expand_restores_extent(
     # 片方 (file) — 縦積みのため中央幅はまだ増えない (兄弟がカラム幅を保持)。
     _collapse_via_chevron(qtbot, mw, file_dock, "file_dock")
     after_file_cwidth = central.width()
+    # spec §3/§6-#3: 片方畳みでは中央プロット幅がほぼ不変であるはず (レールは
+    # 兄弟カラムから幅を奪う想定)。ここを未 assert のまま捕捉・print だけに
+    # 留めると、`_pin_rail_thin` が壊れてレールが中央プロットから大きく幅を
+    # 奪う回帰が green で通過してしまう (レビュー Important 1)。
+    #
+    # 実測 (実ディスプレイ・決定的): `_pin_rail_thin` の `resizeDocks` は
+    # レール可視化直後の暫定サイズ (Qt がまず兄弟カラムから詰めた幅) を
+    # sizeHint へ確定させる際、その差分 (数 px) を中央側からも僅かに借りる
+    # (QMainWindow が central に高い stretch factor を与えるため — 兄弟
+    # カラムのみから奪う、という spec の想定より僅かに漏れる)。実測で
+    # ~24px・決定的 (同一ウィンドウ幅で再現) であり「ほぼ不変」の範囲。
+    # slop はこの実測 + 余裕を許容しつつ、`_pin_rail_thin` の等分バグ級の
+    # 大幅な取り分崩れ (100px 超) は確実に検出できる値に設定する。
+    plot_width_slop = 40
+    assert abs(after_file_cwidth - initial_cwidth) <= plot_width_slop, (
+        f"片方畳みで中央プロット幅が有意に動いてしまった "
+        f"(initial={initial_cwidth}, after_file={after_file_cwidth}, "
+        f"slop={plot_width_slop})。レールが中央から幅を奪っている疑い。"
+    )
 
     # 両方 (channel) — ここで右辺が空になり中央が広がる。
     _collapse_via_chevron(qtbot, mw, channel_dock, "channel_dock")

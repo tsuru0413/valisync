@@ -176,7 +176,10 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   接する辺で動的決定（左右=幅を詰めて全高の縦レール＋縦書きタブ・下=高さを詰めて全幅の
   横帯＋左寄せチップ）。畳んだドックは hide し、中央 widget を包む `CentralWithRails` の
   辺スロットに置いた `DockCollapseRail` へ content サイズのタブを出す（maxHeight クランプ
-  方式を差し替え）。上端配置は3ドックの `setAllowedAreas(Left|Right|Bottom)` で禁止。
+  方式を差し替え）。**`CentralWithRails` は雑メモ #17（レール最外ドック化・candidate A・
+  commit 486a94b）で廃止済み — レールは中央の縁でなく各辺の最外 `QDockWidget` に据える
+  （中央は `central_stack` を直接 `setCentralWidget`）。** 上端配置は3ドックの
+  `setAllowedAreas(Left|Right|Bottom)` で禁止。
   展開シェブロンは開く方向を指す（右=`chevron_left`・下=`chevron_up`、追加のみ）。出典:
   増分C（PR #131）の実機確認で「右ドックが横のまま薄くなるのは想定と違う」とユーザー指摘。
   付随して撮影スクリプトの QSettings 隔離バグ（`setDefaultFormat`+`setPath` は
