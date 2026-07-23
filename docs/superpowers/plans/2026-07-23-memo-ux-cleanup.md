@@ -88,11 +88,11 @@
 - Modify: `docs/design.md`・`CLAUDE.md`
 - Verify: `design_export/screenshots_catalog_{dark,light}`
 
-- [ ] **Step 1（realgui フル）**: `uv run pytest tests/realgui/ --realgui -q`（timeout 600000・バッチ可）。既知フレークは単体で切り分け。
-- [ ] **Step 2（凍結カタログ）**: 撮影 → `compare_screenshots.py`（両テーマ・`--crop-meta`）。**#14 の右ドック列幅 pin 要因を実測**（タイトルバー/ツリー律速ならプロット viewport 不変で T-B1 担保／ヘッダー律速なら 02-05 再ベースライン）。**#17 の 09_collapsed** はレール機構でプロット viewport 右端が動くか実測（動けば 09 も再ベースライン）。**新規 `10_collapse_one`**（片方折りたたみ）を追加してレール画面端配置を凍結被覆。per-state 差分限定を確認 → 昇格 → 決定性 exit 0。
-- [ ] **Step 3（docs）**: docs/design.md 決定履歴（#14/#15/#17・#17 は候補 A 機構＋縦積みプロット非拡大の訂正・敵対的レビュー要点）。CLAUDE.md の 横断 行へ雑メモ解消完了サマリ。カタログ（UX/UXG 別系統ゆえ該当なければ記載不要）。
-- [ ] **Step 4（プランのチェックボックス更新）**: 消化済みへ。
-- [ ] **Step 5（最終ゲート＋commit）**: `uv run pytest -q`・ruff・mypy green → `feat(gui): 雑メモ解消 realgui ①ゲート＋凍結検証＋docs`
+- [x] **Step 1（realgui フル）**: `uv run pytest tests/realgui/ --realgui -q`（timeout 600000・バッチ可）。既知フレークは単体で切り分け。**101 passed, 3 failed（フル一括実行）→ 3件とも単体では pass**（`test_hit_targets.py::test_chevron_already_meets_24px_height`・`test_hit_targets.py::test_tab_close_button_extended_hit_removes_tab`・`test_expansion_dialog_realinput.py::test_bottom_checkbox_reachable_by_real_wheel_then_ok` — D-3/E-0+E-2/F-0 で既に記録済みの「51ファイル一括実行でのみ発生する実行順依存フォント計量ドリフト」クラスタと同一・本タスクと無関係と確認）。
+- [x] **Step 2（凍結カタログ）**: merge-base（本ブランチ分岐直前の main tip・一時 `git worktree` で撮影しノイズ排除）と本ブランチを比較。**#14 の列幅 pin 要因はツリー（`tree.sizeHint()=256px`）と実測確定**（現行コード/旧テンプレ文言/旧コード忠実再現の3条件すべてで `channel_dock.width()=258px` 同一 → `--crop-meta` 完全一致＝T-B1 の担保どおり viewport 非実証・通常比較はヘッダーテキスト領域限定の差分のみ）。**#17 の 09_collapsed は viewport 実測で変化**（`{w:912,h:772}→{w:908,h:768}`・各辺 -4px）→ 再ベースライン。**新規 `10_collapse_one`**（`window._collapse_dock(window.channel_dock)` のみ）を `capture_ui_screenshots.py` に追加しレール画面端配置を凍結被覆（目視でレール=画面右端・開いている File ドックがその内側を確認）。per-state 差分が想定内に限定されることを確認 → `screenshots_catalog_{dark,light}` を昇格 → 再撮影 compare 決定性 exit 0（両テーマ・通常/`--crop-meta` とも）。
+- [x] **Step 3（docs）**: docs/design.md 決定履歴に 2026-07-24 エントリ追加（#14/#15/#17・#17 は候補 A 機構＋実測に基づく §3/§6 の訂正・follow-up `task_bd63c2f2` 言及）。spec 自体も §3/§5/§6 を Task 4 実測で再訂正（「片方でプロット幅不変」→「レール幅ぶん ~24px 縮む」・両方畳みも ~4px 縮む）。CLAUDE.md に新規行「横断 / 雑メモ解消」を追加（完了サマリ・spec ポインタ）。カタログ（UX/UXG）は別系統のため記載なし。
+- [x] **Step 4（プランのチェックボックス更新）**: 本ファイルを消化済みへ更新（このコミット）。
+- [x] **Step 5（最終ゲート＋commit）**: `uv run pytest -q`（1737 passed, 104 skipped）・`ruff check`（All checks passed）・`ruff format --check`（278 files already formatted）・`mypy src/`（Success, 85 files）green → commit。
 
 ## Self-Review 済み確認事項
 

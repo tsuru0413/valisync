@@ -278,6 +278,17 @@ def main() -> int:
         window._expand_dock(window.diagnostics_dock)
         settle()
 
+        # --- 10: 片方だけ折りたたみ (channel のみ) --------------------------------
+        # #17 (候補A・レール最外ドック化): 単独折りたたみでレールが「プロットと
+        # 開いているドックの間」でなく画面端 (開いているドックより外側) に来る
+        # ことを凍結カタログでも被覆する。realgui T-C1 が実 OS 入力での一次証拠
+        # (非重なり・widgetAt 実描画)、ここは撮影による二次のピクセル凍結。
+        window._collapse_dock(window.channel_dock)
+        settle()
+        grab("10_collapse_one")
+        window._expand_dock(window.channel_dock)
+        settle()
+
     window.close()
     return 0
 
