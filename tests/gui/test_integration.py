@@ -162,7 +162,7 @@ class TestAddToActivePanel:
             app_vm: object, initial: set[str], parent: object = None, **_kwargs: object
         ) -> None:
             # F-0/UX-28: main_window.export_csv は x_range/cursor_a/cursor_b/
-            # offset_active もキーワードで渡す — このテストの関心はそれらでは
+            # offset_for もキーワードで渡す — このテストの関心はそれらでは
             # なく initial のみなので **_kwargs で受け流す。
             captured["initial"] = set(initial)
             return None  # ダイアログキャンセル

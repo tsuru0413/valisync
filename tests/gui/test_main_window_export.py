@@ -111,35 +111,50 @@ def test_export_csv_snapshots_active_tab_x_range_and_cursor(
     assert captured["x_range"] == (2.0, 9.0)
     assert captured["cursor_a"] == 3.0
     assert captured["cursor_b"] == 6.0
-    assert captured["offset_active"] is False
+    # I2 fix (task-3-review.md #1): main_window no longer precomputes a bool —
+    # it hands the dialog a live resolver so the dialog can re-evaluate against
+    # whichever signals end up checked in-dialog (spec §2.1 is selection-driven,
+    # not an open-time snapshot like x_range/cursor above).
+    offset_for = captured["offset_for"]
+    assert callable(offset_for)
+    assert offset_for("csv_1::anything") == 0.0  # no offsets applied in this test
 
 
-def test_export_csv_snapshot_flags_offset_active_when_selected_signal_offset(
+def test_export_csv_offset_for_resolves_selected_signal_offset(
     qtbot: QtBot, monkeypatch
 ) -> None:
     mw = MainWindow(AppViewModel())
     qtbot.addWidget(mw)
     panel = mw.graph_area_vm.active_panel()
-    panel.add_signal("csv_1::speed")  # プロット中 = 初期選択 (I2 判定対象)
+    panel.add_signal("csv_1::speed")
     mw.app_vm.apply_offset("csv_1::speed", 1.0, "signal")
 
     captured = _capture_ask_kwargs(monkeypatch, mw_mod)
     mw.export_csv()
 
-    assert captured["offset_active"] is True
+    offset_for = captured["offset_for"]
+    assert callable(offset_for)
+    assert offset_for("csv_1::speed") == 1.0
 
 
-def test_export_csv_snapshot_offset_inactive_when_unselected_signal_offset(
+def test_export_csv_offset_for_is_app_global_not_scoped_to_initial_selection(
     qtbot: QtBot, monkeypatch
 ) -> None:
-    # オフセットが付いた信号がプロット中(=初期選択)でなければ判定対象外。
+    """I2 の穴の回帰テスト (task-3-review.md #1): 旧実装は `initial` (プロット中
+    =初期選択) だけを走査した bool を1回だけ渡していたため、`initial` に含まれ
+    ない (別ファイル/未プロットの) 信号のオフセットは main_window 層で握り
+    つぶされていた。修正後は resolver 自体を渡すので、`initial` 外の信号の
+    オフセットも (ダイアログ側で checked にされた瞬間) 解決できる。
+    """
     mw = MainWindow(AppViewModel())
     qtbot.addWidget(mw)
     panel = mw.graph_area_vm.active_panel()
-    panel.add_signal("csv_1::speed")
-    mw.app_vm.apply_offset("csv_1::other", 1.0, "signal")  # 別信号
+    panel.add_signal("csv_1::speed")  # 初期選択 (オフセット無し)
+    mw.app_vm.apply_offset("csv_1::other", 1.0, "signal")  # 初期選択に含まれない信号
 
     captured = _capture_ask_kwargs(monkeypatch, mw_mod)
     mw.export_csv()
 
-    assert captured["offset_active"] is False
+    offset_for = captured["offset_for"]
+    assert offset_for("csv_1::speed") == 0.0  # 初期選択自体にはオフセット無し
+    assert offset_for("csv_1::other") == 1.0  # 初期選択外でも resolver は解決できる

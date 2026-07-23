@@ -88,6 +88,15 @@
   （tooltip「オフセットをリセットすると範囲指定が使えます」）。`[全期間]` は常に有効。
   オフセット併用の範囲エクスポート（出力時刻もオフセット適用して表示座標で統一）は **follow-up** とする。
 - 判定: 選択信号キー集合に対し `AppViewModel` の signal/file offset が非ゼロのものが1つでもあるか。
+- **リアクティブ性（I2 fix・task-3-review.md #1）**: この判定は `[現在の表示範囲]`/`[カーソル A–B]`
+  の境界そのもの（x_range・cursor_a/cursor_b）とは**別性質の量**であり、同一のダイアログ表示中不変
+  スナップショット機構に押し込めてはならない。ダイアログのツリーは `loaded_file_keys` の**全ファイル・
+  全信号**を列挙する（§1.2）一方、オフセットは app-global（`scope="group"` はファイル群全体に付与）
+  なので、開いた瞬間に「初期選択（プロット中信号）」だけを走査した bool を1回計算して渡すと、
+  ダイアログ内で別ファイル/未プロットのオフセット信号を選択に追加した際にガードが追随しない
+  （表示由来2ラジオが enabled のまま残り、生タイムスタンプを表示座標窓で誤フィルタする）。
+  **この判定は「現在チェック中の選択集合」に対し毎回リアクティブに再評価しなければならない**
+  （x_range/cursor_a/cursor_b は §2.3 どおり開いた瞬間の外部状態スナップショットのままでよい）。
 
 ### §2.2 core（`CsvExportOptions` 拡張）
 `time_start: float | None`・`time_end: float | None`（既定 None=無制限）を**dataclass 末尾に既定付きで追加**
@@ -112,16 +121,24 @@
   - **[カーソル A–B]** → `active_tab().cursor_state` の `min/max(cursor_t, cursor_t_b)`。ラベルに実範囲併記
     （例「カーソル A–B（12.30 – 45.60 s）」）。**A/B 両設置でないとき disabled**（判定 `cursor_t is not None and
     cursor_t_b is not None`・`cursor_state` を唯一ソースとし B の None 化に依拠・マルチタブはアクティブタブ参照）。
-  - §2.1 のオフセット条件でも表示由来2ラジオを disabled。
+  - §2.1 のオフセット条件でも表示由来2ラジオを disabled。**この半分だけは非リアクティブなスナップショット
+    ではなく、`_checked_keys()` に対し選択変化のたびに再評価する**（tree `itemChanged`／すべて選択・解除
+    のたびに走る `_validate()` へ相乗り）。x_range/cursor_a/cursor_b 側のガード（None なら disabled）は
+    引き続き開いた瞬間のスナップショットのまま比較するだけでよい — 変わるのは「オフセットが選択集合の
+    どれかに掛かっているか」の判定対象が可変になる点のみ。選択変化でチェック済みラジオ自身が disabled
+    になった場合は `[全期間]` へ自動フォールバックし、`_current_range()` が無効化されたラジオの値を
+    読み続けないようにする。
 - **選択数フッター**: 「N 信号を選択中」を `QLabel` で常時表示。**N = 総選択数 `len(_checked_keys())`（フィルタ非依存・
   実エクスポート集合と一致）**。チェック変化・すべて選択/解除・フィルタ再構築で更新（`_validate`（[:231-237](../../../src/valisync/gui/views/export_csv_dialog.py)）相乗り）。
   - **すべて選択/解除のバッチ化（M）**: `_select_all`/`_select_none` は `blockSignals` でバッチ化し完了後に一度だけ
     再計算（per-child itemChanged→`_validate` O(n) カスケードを回避）。
 - **DI（既定 None・後方互換）**: 範囲取得は `ExportCsvDialog.__init__`/`.ask` の**末尾に既定 None のキーワード引数**
-  （x_range・cursor A/B・オフセット判定に必要な選択信号オフセット情報）として追加。注入なしでも `[全期間]` 既定で
-  従来動作（撮影 [capture:216] と既存テスト約9箇所の直接構築が TypeError にならない）。ダイアログは `GraphAreaVM` を
-  直接握らず、呼び出し側 `main_window.export_csv`（[main_window.py:713-739](../../../src/valisync/gui/views/main_window.py)）が現在の x_range・A/B・オフセットを
-  スナップショットして渡す（View 分離・ダイアログ表示中は不変スナップショット）。範囲は `_current_options()` で
+  として追加。x_range・cursor_a・cursor_b は値そのもの（開いた瞬間のスナップショット）。オフセットは値
+  （bool）ではなく **`offset_for: Callable[[str], float] | None`** という resolver を渡す（上記リアクティブ性の
+  要件どおり、main_window は `panel.offset_for` をそのまま渡し、ダイアログ側が `_checked_keys()` に対しその場で
+  評価する — panel の offset dict は app-global で broadcast されているため任意の namespaced key を解決できる）。
+  注入なしでも `[全期間]` 既定で従来動作（撮影 [capture:216] と既存テスト約9箇所の直接構築が TypeError にならない）。
+  ダイアログは `GraphAreaVM` を直接握らない（View 分離）。範囲は `_current_options()` で
   `CsvExportOptions.time_start/time_end` へ注入し `ExportRequest`/`export_csv`/`ExportController` の鎖を options 経由で通す。
 
 ## §3 プレビューラベル（UX-43）

@@ -225,15 +225,17 @@ def test_range_cursor_label_is_bare_when_not_both_set(qtbot: QtBot) -> None:
 
 
 def test_range_offset_active_disables_display_derived_radios(qtbot: QtBot) -> None:
-    # I2: 選択信号にオフセットがあると x_range/A-B が揃っていても disabled。
-    # [全期間] は常に有効のまま。
+    # I2: 選択(checked)信号にオフセットがあると x_range/A-B が揃っていても
+    # disabled。[全期間] は常に有効のまま。offset_for は checked 集合に対し
+    # リアクティブに評価される (task-3-review.md I2 fix) — ここは初期選択
+    # そのものにオフセットがある単純ケース。
     dlg = ExportCsvDialog(
         _app_vm(),
-        initial_selected=set(),
+        initial_selected={"csv_1::a"},
         x_range=(2.0, 9.0),
         cursor_a=3.0,
         cursor_b=6.0,
-        offset_active=True,
+        offset_for=lambda _k: 1.0,
     )
     qtbot.addWidget(dlg)
     assert dlg._range_all.isEnabled() is True
@@ -241,6 +243,92 @@ def test_range_offset_active_disables_display_derived_radios(qtbot: QtBot) -> No
     assert dlg._range_cursor.isEnabled() is False
     assert dlg._range_visible.toolTip() == S.EXPORT_RANGE_OFFSET_TOOLTIP
     assert dlg._range_cursor.toolTip() == S.EXPORT_RANGE_OFFSET_TOOLTIP
+
+
+def test_range_offset_reactive_to_checked_selection(qtbot: QtBot) -> None:
+    """I2 の穴の回帰テスト (task-3-review.md #1): オフセットガードは開いた瞬間の
+    静的スナップショットでなく "現在チェック中の選択集合" に対しリアクティブ —
+    初期選択にオフセットが無くても、in-dialog で別ファイルのオフセット信号を
+    追加チェックすると即座に disabled になり、外すと再度 enabled に戻る。
+    """
+    offsets = {"csv_2::speed": 1.0}
+    dlg = ExportCsvDialog(
+        _app_vm_two_files_same_bare(),
+        initial_selected={"csv_1::rpm"},  # オフセット無し信号のみ -> 初期は enabled
+        x_range=(2.0, 9.0),
+        cursor_a=3.0,
+        cursor_b=6.0,
+        offset_for=lambda k: offsets.get(k, 0.0),
+    )
+    qtbot.addWidget(dlg)
+    assert dlg._range_visible.isEnabled() is True
+    assert dlg._range_cursor.isEnabled() is True
+    assert dlg._range_visible.toolTip() == ""
+    assert dlg._range_cursor.toolTip() == ""
+
+    target = next(c for c in dlg._iter_children() if c.text(0) == "speed (csv_2)")
+    target.setCheckState(0, Qt.CheckState.Checked)  # in-dialog: 別ファイルの信号を追加
+    assert dlg._range_visible.isEnabled() is False
+    assert dlg._range_cursor.isEnabled() is False
+    assert dlg._range_visible.toolTip() == S.EXPORT_RANGE_OFFSET_TOOLTIP
+    assert dlg._range_cursor.toolTip() == S.EXPORT_RANGE_OFFSET_TOOLTIP
+
+    target.setCheckState(
+        0, Qt.CheckState.Unchecked
+    )  # 外すと再び enabled (リアクティブ)
+    assert dlg._range_visible.isEnabled() is True
+    assert dlg._range_cursor.isEnabled() is True
+    assert dlg._range_visible.toolTip() == ""
+    assert dlg._range_cursor.toolTip() == ""
+
+
+def test_range_offset_ignores_unchecked_signals_elsewhere(qtbot: QtBot) -> None:
+    """過保護でないことの検証: 他ファイルの信号がオフセットを持っていても、
+    それが checked でない限り表示由来ラジオは enabled のまま (Option B の
+    「オフセットが1つでも存在すれば無条件 disable」ではないこと)。
+    """
+    offsets = {"csv_2::speed": 1.0}
+    dlg = ExportCsvDialog(
+        _app_vm_two_files_same_bare(),
+        initial_selected={"csv_1::rpm"},
+        x_range=(2.0, 9.0),
+        cursor_a=3.0,
+        cursor_b=6.0,
+        offset_for=lambda k: offsets.get(k, 0.0),
+    )
+    qtbot.addWidget(dlg)
+    assert dlg._range_visible.isEnabled() is True
+    assert dlg._range_cursor.isEnabled() is True
+
+
+def test_range_offset_newly_checked_strands_selected_radio_to_all(
+    qtbot: QtBot,
+) -> None:
+    """[現在の表示範囲] が checked のまま、in-dialog でオフセット信号を追加
+    チェックして disabled になった場合、選択が [全期間] へフォールバックし
+    _current_range() が無効な (disabled な) ラジオの値を読み続けないこと。
+    """
+    offsets = {"csv_2::speed": 1.0}
+    dlg = ExportCsvDialog(
+        _app_vm_two_files_same_bare(),
+        initial_selected={"csv_1::rpm"},
+        x_range=(2.0, 9.0),
+        cursor_a=3.0,
+        cursor_b=6.0,
+        offset_for=lambda k: offsets.get(k, 0.0),
+    )
+    qtbot.addWidget(dlg)
+    dlg._range_visible.setChecked(True)
+
+    target = next(c for c in dlg._iter_children() if c.text(0) == "speed (csv_2)")
+    target.setCheckState(0, Qt.CheckState.Checked)
+
+    assert dlg._range_all.isChecked() is True
+    assert dlg._range_visible.isChecked() is False
+    opts = dlg._current_options()
+    assert opts is not None
+    assert opts.time_start is None
+    assert opts.time_end is None
 
 
 # --- F-0/UX-28: DI 後方互換 (既定 None で従来動作) --------------------------

@@ -70,7 +70,7 @@ class ExportCsvDialog(QDialog):
         x_range: tuple[float, float] | None = None,
         cursor_a: float | None = None,
         cursor_b: float | None = None,
-        offset_active: bool | None = None,
+        offset_for: Callable[[str], float] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("CSV エクスポート")
@@ -84,7 +84,16 @@ class ExportCsvDialog(QDialog):
         self._x_range = x_range
         self._cursor_a = cursor_a
         self._cursor_b = cursor_b
-        self._offset_active = bool(offset_active)
+        # I2 fix (task-3-review.md #1): unlike x_range/cursor_a/cursor_b above,
+        # offset activity is NOT a static open-time snapshot — offsets are
+        # app-global (spec §2.1) and the tree below lists every loaded file's
+        # signals, not just the initial (plotted) selection, so a signal added
+        # to the checked set in-dialog can carry an offset the initial snapshot
+        # never saw. offset_for is a live resolver (main_window passes
+        # GraphPanelVM.offset_for, which answers for ANY namespaced signal key
+        # via the app-global signal/file offset dicts) re-evaluated against the
+        # CURRENT checked set on every _validate() — see _update_range_radios().
+        self._offset_for = offset_for
 
         layout = QVBoxLayout(self)
 
@@ -144,15 +153,15 @@ class ExportCsvDialog(QDialog):
         form = QFormLayout()
 
         # 出力範囲 (F-0/UX-28・spec §2.3): [全期間] 既定 checked。表示由来2ラジオ
-        # ([現在の表示範囲]・[カーソル A-B]) は DI スナップショットに基づくガードで
-        # setEnabled する — ダイアログ内の選択変更やフィルタには反応しない
-        # (main_window.export_csv が開く瞬間のスナップショット・spec §2.3)。
+        # ([現在の表示範囲]・[カーソル A-B]) の x_range/cursor 側ガードは DI
+        # スナップショットに基づく(ダイアログ内の選択変更やフィルタには反応しない
+        # ・main_window.export_csv が開く瞬間のスナップショット・spec §2.3)。
+        # オフセット側ガードのみ選択集合に対しリアクティブ (I2 fix・spec §2.1) —
+        # setEnabled/tooltip の実適用は _update_range_radios() (_validate() から
+        # 毎回呼ばれる) に委譲する。
         self._range_all = QRadioButton(S.EXPORT_RANGE_ALL, self)
         self._range_all.setChecked(True)
         self._range_visible = QRadioButton(S.EXPORT_RANGE_VISIBLE, self)
-        self._range_visible.setEnabled(
-            self._x_range is not None and not self._offset_active
-        )
         cursor_label = (
             S.EXPORT_RANGE_CURSOR_TMPL.format(
                 lo=min(cursor_a, cursor_b), hi=max(cursor_a, cursor_b)
@@ -161,12 +170,6 @@ class ExportCsvDialog(QDialog):
             else S.EXPORT_RANGE_CURSOR
         )
         self._range_cursor = QRadioButton(cursor_label, self)
-        self._range_cursor.setEnabled(
-            cursor_a is not None and cursor_b is not None and not self._offset_active
-        )
-        if self._offset_active:
-            self._range_visible.setToolTip(S.EXPORT_RANGE_OFFSET_TOOLTIP)
-            self._range_cursor.setToolTip(S.EXPORT_RANGE_OFFSET_TOOLTIP)
         range_box = QVBoxLayout()
         range_box.addWidget(self._range_all)
         range_box.addWidget(self._range_visible)
@@ -308,7 +311,50 @@ class ExportCsvDialog(QDialog):
             self._error.setText(str(exc))
             return None
 
+    def _offset_active_for_checked(self) -> bool:
+        """True iff any *currently checked* signal carries a non-zero offset.
+
+        I2 fix (task-3-review.md #1): reactive over the checked set, not a
+        static open-time snapshot — the tree lists every loaded file/signal
+        (spec §1.2), and offsets are app-global (spec §2.1), so a signal added
+        to the selection in-dialog must be able to (re)trigger this guard.
+        ``offset_for is None`` means the caller injected nothing (back-compat
+        default) — treated as "no offsets exist" for every key.
+        """
+        if self._offset_for is None:
+            return False
+        return any(self._offset_for(k) != 0.0 for k in self._checked_keys())
+
+    def _update_range_radios(self) -> None:
+        """Re-apply [現在の表示範囲]/[カーソル A-B] enabled+tooltip state.
+
+        Called from _validate() so every path that can change the checked
+        selection (tree itemChanged, すべて選択/解除) re-evaluates the I2
+        offset guard against the CURRENT checked set. x_range/cursor_a/
+        cursor_b stay the fixed DI snapshot (spec §2.3) — only the offset
+        half of the guard is dynamic.
+        """
+        offset_active = self._offset_active_for_checked()
+        self._range_visible.setEnabled(self._x_range is not None and not offset_active)
+        self._range_cursor.setEnabled(
+            self._cursor_a is not None
+            and self._cursor_b is not None
+            and not offset_active
+        )
+        tooltip = S.EXPORT_RANGE_OFFSET_TOOLTIP if offset_active else ""
+        self._range_visible.setToolTip(tooltip)
+        self._range_cursor.setToolTip(tooltip)
+        # A radio that just became disabled must not stay the checked one, or
+        # _current_range() would keep reading a now-invalid selection (e.g. the
+        # user had [現在の表示範囲] checked, then checked an offset signal).
+        stranded = (
+            self._range_visible.isChecked() and not self._range_visible.isEnabled()
+        ) or (self._range_cursor.isChecked() and not self._range_cursor.isEnabled())
+        if stranded:
+            self._range_all.setChecked(True)
+
     def _validate(self) -> None:
+        self._update_range_radios()
         opts = self._current_options()
         keys = self._checked_keys()
         has_sel = bool(keys)
@@ -361,7 +407,7 @@ class ExportCsvDialog(QDialog):
         x_range: tuple[float, float] | None = None,
         cursor_a: float | None = None,
         cursor_b: float | None = None,
-        offset_active: bool | None = None,
+        offset_for: Callable[[str], float] | None = None,
     ) -> ExportRequest | None:
         dlg = cls(
             app_vm,
@@ -370,7 +416,7 @@ class ExportCsvDialog(QDialog):
             x_range=x_range,
             cursor_a=cursor_a,
             cursor_b=cursor_b,
-            offset_active=offset_active,
+            offset_for=offset_for,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
             return dlg._result
