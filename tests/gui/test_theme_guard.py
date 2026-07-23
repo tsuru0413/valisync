@@ -33,6 +33,17 @@ _ALLOWLIST: tuple[tuple[str, str, str], ...] = (
         "QColor(0, 0, 0)",
         "カーソル bitmap の黒線 — 同上",
     ),
+    (
+        "views/csv_format_dialog.py",
+        "QColor(0, 0, 0)",
+        "ヘッダセル文字色 — 背景輝度から WCAG 黒/白を計算選択する構造色 "
+        "(design token でなく _header_ink のアルゴリズム選択・spec §1.2)",
+    ),
+    (
+        "views/csv_format_dialog.py",
+        "QColor(255, 255, 255)",
+        "ヘッダセル文字色 — 同上 (白側)",
+    ),
 )
 
 _COLOR_STR = re.compile(r"#[0-9a-fA-F]{6}\b|rgba?\(|hsla?\(")

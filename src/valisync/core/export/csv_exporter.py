@@ -29,6 +29,12 @@ class CsvExportOptions:
     #: E-0 spec §1.2)。長さは signals と一致すること (export() 側では未検証 —
     #: 呼び出し元の契約)。
     header_names: tuple[str, ...] | None = None
+    #: 出力する時刻範囲 (生のタイムスタンプ座標・閉区間 [time_start, time_end])。
+    #: None は無制限。R14 時間オフセットは適用しない — エクスポートは常に base
+    #: 信号の生タイムスタンプ座標で書き出す (F-0 spec §2.1)。既定 None は既存
+    #: 構築コードの後方互換のため末尾に追加 (F-0 spec §2.2)。
+    time_start: float | None = None
+    time_end: float | None = None
 
     def __post_init__(self) -> None:
         # 空区切り/空小数点は CSV 構造を壊す(列が融合する)ため核でも拒否。
@@ -41,6 +47,19 @@ class CsvExportOptions:
             raise ValueError("区切り文字と小数点記号に同じ文字は使えません")
         if self.precision is not None and self.precision < 0:
             raise ValueError("小数点以下の桁数は 0 以上を指定してください")
+        if (
+            self.time_start is not None
+            and self.time_end is not None
+            and self.time_start > self.time_end
+        ):
+            raise ValueError("time_start must be <= time_end")
+
+
+def _in_range(t: float, opts: CsvExportOptions) -> bool:
+    """行時刻 t が opts の閉区間 [time_start, time_end] に含まれるか (None=無制限)。"""
+    return (opts.time_start is None or t >= opts.time_start) and (
+        opts.time_end is None or t <= opts.time_end
+    )
 
 
 def _fmt(value: float, options: CsvExportOptions) -> str:
@@ -98,7 +117,10 @@ class CsvExporter:
         lookups = [dict(zip(ts.tolist(), vs.tolist(), strict=True)) for ts, vs in views]
 
         lines = self._header_rows(signals, opts)
+        # 範囲フィルタはタイムライン解決 (union) 後に適用する (F-0 spec §2.2)。
         for ts in unified.tolist():
+            if not _in_range(ts, opts):
+                continue
             cells = [_fmt(ts, opts)]
             cells.extend(_fmt(lk[ts], opts) if ts in lk else "" for lk in lookups)
             lines.append(opts.delimiter.join(cells))
@@ -126,7 +148,10 @@ class CsvExporter:
         timestamps = base_ts
         sorted_values = [vs for _ts, vs in views]
         lines = self._header_rows(signals, opts)
+        # 範囲フィルタはタイムライン共有検証 (loud-fail) 後に適用する (F-0 spec §2.2)。
         for i in range(len(timestamps)):
+            if not _in_range(timestamps[i], opts):
+                continue
             cells = [_fmt(timestamps[i], opts)]
             cells.extend(_fmt(vs[i], opts) for vs in sorted_values)
             lines.append(opts.delimiter.join(cells))

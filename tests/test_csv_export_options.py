@@ -170,3 +170,175 @@ def test_header_names_applies_to_unit_row_column_alignment(tmp_path: Path) -> No
         [s], out, options=CsvExportOptions(unit_row=True, header_names=("speed",))
     )
     assert _read(out) == ["timestamp,speed", "s,km/h", "0.0,1.5"]
+
+
+# --- time range filter (F-0 増分, design spec §2.2, UX-28) -------------------
+#
+# エクスポートは常に base 信号の生タイムスタンプ座標(R14 時間オフセット非適用)
+# で行い、range フィルタも生座標の閉区間 [time_start, time_end] で適用する。
+
+
+def test_time_range_defaults_are_none_unbounded() -> None:
+    """既定 (time_start=time_end=None) = 無制限。既存構築の後方互換の要。"""
+    opts = CsvExportOptions()
+    assert opts.time_start is None
+    assert opts.time_end is None
+
+
+def test_time_range_filters_shared_timeline_rows(tmp_path: Path) -> None:
+    s = _sig("speed", [0.0, 1.0, 2.0, 3.0], [10.0, 20.0, 30.0, 40.0])
+    out = tmp_path / "d.csv"
+    CsvExporter().export(
+        [s], out, options=CsvExportOptions(time_start=1.0, time_end=2.0)
+    )
+    assert _read(out) == ["timestamp,speed", "1.0,20.0", "2.0,30.0"]
+
+
+def test_time_range_filters_unified_timeline_rows(tmp_path: Path) -> None:
+    a = _sig("a", [0.0, 1.0, 2.0, 3.0], [1.0, 2.0, 3.0, 4.0])
+    b = _sig("b", [0.0, 1.0, 2.0, 3.0], [5.0, 6.0, 7.0, 8.0])
+    out = tmp_path / "d.csv"
+    CsvExporter().export(
+        [a, b],
+        out,
+        use_unified_timeline=True,
+        options=CsvExportOptions(time_start=1.0, time_end=2.0),
+    )
+    assert _read(out) == ["timestamp,a,b", "1.0,2.0,6.0", "2.0,3.0,7.0"]
+
+
+def test_time_range_start_only_is_unbounded_above(tmp_path: Path) -> None:
+    s = _sig("speed", [0.0, 1.0, 2.0], [10.0, 20.0, 30.0])
+    out = tmp_path / "d.csv"
+    CsvExporter().export([s], out, options=CsvExportOptions(time_start=1.0))
+    assert _read(out) == ["timestamp,speed", "1.0,20.0", "2.0,30.0"]
+
+
+def test_time_range_end_only_is_unbounded_below(tmp_path: Path) -> None:
+    s = _sig("speed", [0.0, 1.0, 2.0], [10.0, 20.0, 30.0])
+    out = tmp_path / "d.csv"
+    CsvExporter().export([s], out, options=CsvExportOptions(time_end=1.0))
+    assert _read(out) == ["timestamp,speed", "0.0,10.0", "1.0,20.0"]
+
+
+def test_time_range_boundary_inclusive_both_endpoints(tmp_path: Path) -> None:
+    s = _sig("speed", [0.0, 1.0, 2.0, 3.0], [10.0, 20.0, 30.0, 40.0])
+    out = tmp_path / "d.csv"
+    CsvExporter().export(
+        [s], out, options=CsvExportOptions(time_start=1.0, time_end=2.0)
+    )
+    lines = _read(out)
+    assert lines[1].startswith("1.0,")  # t==start included
+    assert lines[-1].startswith("2.0,")  # t==end included
+    assert len(lines) == 3  # header + 2 data rows
+
+
+def test_time_start_equals_time_end_includes_exact_sample(tmp_path: Path) -> None:
+    s = _sig("speed", [0.0, 1.0, 2.0], [10.0, 20.0, 30.0])
+    out = tmp_path / "d.csv"
+    CsvExporter().export(
+        [s], out, options=CsvExportOptions(time_start=1.0, time_end=1.0)
+    )
+    assert _read(out) == ["timestamp,speed", "1.0,20.0"]
+
+
+def test_time_range_out_of_range_produces_header_only_file(tmp_path: Path) -> None:
+    s = _sig("speed", [0.0, 1.0, 2.0], [10.0, 20.0, 30.0])
+    out = tmp_path / "d.csv"
+    CsvExporter().export(
+        [s], out, options=CsvExportOptions(time_start=10.0, time_end=20.0)
+    )
+    assert _read(out) == ["timestamp,speed"]  # header-only, 0 data rows
+
+
+def test_time_range_header_and_unit_rows_unaffected_by_filter(tmp_path: Path) -> None:
+    s = _sig("speed", [0.0, 1.0, 2.0], [10.0, 20.0, 30.0], unit="km/h")
+    out = tmp_path / "d.csv"
+    CsvExporter().export(
+        [s],
+        out,
+        options=CsvExportOptions(unit_row=True, time_start=10.0, time_end=20.0),
+    )
+    assert _read(out) == ["timestamp,speed", "s,km/h"]  # header + unit, no data
+
+
+def test_time_start_greater_than_time_end_raises_valueerror() -> None:
+    with pytest.raises(ValueError):
+        CsvExportOptions(time_start=5.0, time_end=1.0)
+
+
+def test_time_range_applied_after_unified_timeline_union_resolution(
+    tmp_path: Path,
+) -> None:
+    """統合タイムライン(union)解決後に範囲フィルタを適用する — union に現れない
+    範囲外 timestamp が誤って復活しないことを確認。"""
+    a = _sig("a", [0.0, 2.0], [10.0, 12.0])
+    b = _sig("b", [1.0, 3.0], [21.0, 23.0])
+    out = tmp_path / "d.csv"
+    CsvExporter().export(
+        [a, b],
+        out,
+        use_unified_timeline=True,
+        options=CsvExportOptions(time_start=1.0, time_end=2.0),
+    )
+    assert _read(out) == ["timestamp,a,b", "1.0,,21.0", "2.0,12.0,"]
+
+
+def test_time_range_shared_timeline_mismatch_loud_fail_preserved(
+    tmp_path: Path,
+) -> None:
+    """範囲フィルタが shared-timeline mismatch の loud-fail を握りつぶさない。"""
+    a = _sig("a", [0.0, 1.0, 2.0], [1.0, 2.0, 3.0])
+    b = _sig("b", [0.0, 1.0], [4.0, 5.0])
+    out = tmp_path / "d.csv"
+    with pytest.raises(ValueError):
+        CsvExporter().export(
+            [a, b],
+            out,
+            use_unified_timeline=False,
+            options=CsvExportOptions(time_start=0.0, time_end=1.0),
+        )
+    assert not out.exists()
+
+
+def test_time_range_prod_scale_shared_timeline_row_count_correct(
+    tmp_path: Path,
+) -> None:
+    """prod スケール(330k 相当)で範囲フィルタの行数削減が正しいことを検証。"""
+    n = 330_000
+    ts = np.arange(n, dtype=np.float64)
+    vs = ts * 2.0
+    s = _sig("speed", ts.tolist(), vs.tolist())
+    out = tmp_path / "d.csv"
+    CsvExporter().export(
+        [s],
+        out,
+        options=CsvExportOptions(time_start=50_000.0, time_end=150_000.0),
+    )
+    lines = _read(out)
+    assert len(lines) == 1 + 100_001  # header + inclusive [50000, 150000]
+    assert lines[1] == "50000.0,100000.0"
+    assert lines[-1] == "150000.0,300000.0"
+
+
+def test_time_range_prod_scale_unified_timeline_row_count_correct(
+    tmp_path: Path,
+) -> None:
+    """統合タイムライン経路でも prod スケールで行数削減が正しい。"""
+    n = 330_000
+    ts_a = np.arange(0, n, 2, dtype=np.float64)  # 偶数のみ
+    ts_b = np.arange(1, n, 2, dtype=np.float64)  # 奇数のみ
+    a = _sig("a", ts_a.tolist(), (ts_a * 2.0).tolist())
+    b = _sig("b", ts_b.tolist(), (ts_b * 3.0).tolist())
+    out = tmp_path / "d.csv"
+    CsvExporter().export(
+        [a, b],
+        out,
+        use_unified_timeline=True,
+        options=CsvExportOptions(time_start=100_000.0, time_end=100_010.0),
+    )
+    lines = _read(out)
+    data_lines = lines[1:]
+    assert len(data_lines) == 11  # union covers 100000..100010 inclusive
+    assert data_lines[0].split(",")[0] == "100000.0"
+    assert data_lines[-1].split(",")[0] == "100010.0"

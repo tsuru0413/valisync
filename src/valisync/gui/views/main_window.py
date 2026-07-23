@@ -715,6 +715,17 @@ class MainWindow(QMainWindow):
 
         アクティブパネルのプロット中信号を初期選択に ExportCsvDialog を開き、
         確定したら既存の BusyOverlay パターンでオフスレッド書き出しする。
+        出力範囲 (F-0/UX-28) の x_range・カーソル A/B はここでアクティブタブから
+        一度だけスナップショットして DI 注入する — ダイアログは GraphAreaVM を
+        直接握らない (View 分離・spec §2.3)。表示中に選択が変わっても x_range/
+        カーソルは反映されない (意図的なスナップショット)。オフセット有無は対照的
+        にリアクティブでなければならない (I2 fix・task-3-review.md #1・spec §2.1):
+        ダイアログのツリーは全ファイル全信号を列挙するため、`initial` だけを見た
+        bool を1回渡すと、開いた後に別ファイルのオフセット信号をチェックしても
+        ガードが働かない穴になる。値でなく `panel.offset_for`
+        (Callable[[str], float] — app-global な signal/file offset dict を
+        任意の namespaced key に対し解決できる) をそのまま渡し、ダイアログ側で
+        checked 集合に対しその場で再評価させる。
         """
         panels = self.graph_area_vm.panels(self.graph_area_vm.active_tab_index)
         initial = (
@@ -722,7 +733,17 @@ class MainWindow(QMainWindow):
             if panels
             else set()
         )
-        req = ExportCsvDialog.ask(self.app_vm, initial, self)
+        panel = self.graph_area_vm.active_panel()
+        cursor_state = self.graph_area_vm.active_tab().cursor_state
+        req = ExportCsvDialog.ask(
+            self.app_vm,
+            initial,
+            self,
+            x_range=panel.x_range,
+            cursor_a=cursor_state.cursor_t,
+            cursor_b=cursor_state.cursor_t_b,
+            offset_for=panel.offset_for,
+        )
         if req is None:
             return
         session = self.app_vm.session

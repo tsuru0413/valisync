@@ -503,3 +503,74 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   [comparison-mode-toggle spec](superpowers/specs/2026-07-23-comparison-mode-toggle-design.md)。
   **claude.ai/design への再同期はマージ後に実施**（controller — トークン変更が
   ないため実質no-op）。
+- 2026-07-23: 増分F-0「安全な取込・範囲付き出力・プレビューラベル」（UX-05/UX-28/
+  UX-43・**新トークン `chrome_signal_highlight`**）。出典は UIUX 敵対的レビュー
+  catalog 推奨6「入口と出口の再設計」の先行実施分（F-1 セッション永続化・F-2
+  Welcome 再開ハブは今後検討へ defer）。3パート独立（別ダイアログ）だが「入口と
+  出口の安全化」として1増分にまとめた。**UX-05（データ破損直結）**: CSV 取込
+  ダイアログのプレビューヘッダが Qt 既定の1始まりでスピン（0始まり）と1ずれる
+  off-by-one を構造解消 — `_refresh()` で `setHorizontalHeaderLabels` を明示設定
+  し「{列番号(0始まり)}: {列名}」表記に統一（列名源は `has_header` のみ・
+  `header_row` という識別子は存在しない）。列ハイライトは**二層構造**（レビュー
+  Important 是正）: データセルは低 alpha（45）ティントで文字色を `chrome_text`
+  固定のまま保ち両テーマ AA（4.5:1以上）を維持、列マーキング（どの列が時間/信号
+  か）は不透明ヘッダセル＋輝度ベース黒/白文字（非テキスト/AA いずれも 3:1以上）
+  に分離——「データ可読性」と「列識別」を同一セルに同居させると alpha を上げる
+  ほど文字が埋没する（全4ケース 1.11〜1.96:1 で不可読だった）ため。**新トークン
+  `chrome_signal_highlight`**（DARK は `drop_highlight` と同値の別役割・LIGHT は
+  色相を保ったまま暗くした専用値 `#0b4138`）。塗り優先は信号範囲→時間列の順
+  （`ts_col ∈ 信号範囲` の過渡でも時間列が勝つ）。**UX-28**: `CsvExportOptions` に
+  `time_start`/`time_end`（既定 None・末尾追加で後方互換）を追加し行時刻の閉区間
+  `[start,end]` フィルタをタイムライン解決後に適用（`start>end` は
+  `__post_init__` で ValueError・範囲外はヘッダのみの空出力）。ダイアログに出力
+  範囲ラジオ3種（全期間/現在の表示範囲/カーソル A–B・既定=全期間）＋選択数
+  フッター「N 信号を選択中」（フィルタ非依存の総選択数）を追加。**座標系契約
+  （I2・最重要）**: エクスポートは常に base 信号の生タイムスタンプ座標で書き出す
+  （R14 時間オフセットは非適用）。表示範囲/カーソル A–B の境界は表示座標
+  （オフセット適用後）のため、選択信号のいずれかに非ゼロオフセットがあると
+  単一の生時間窓へ写像できず、表示由来2ラジオを disabled にする（`[全期間]` は
+  常に有効）。この判定は「現在チェック中の選択集合」に対しダイアログ内の選択
+  変更のたびリアクティブに再評価する必要がある（x_range/cursor_a/cursor_b は
+  開いた瞬間のスナップショットのままでよいが、オフセット活性だけは別性質の量
+  ——ツリーは全ファイル全信号を列挙するため、初期選択だけを見た bool 1回きりの
+  判定だと開いた後に別ファイルのオフセット信号を追加選択してもガードが働かない
+  穴になる）。DI は `offset_for: Callable[[str], float] | None` という resolver
+  を渡し、ダイアログ側が `_checked_keys()` に対しその場で評価する。**UX-43**:
+  `SignalPreviewWindow` のプレビュープロットに軸ラベルを追加
+  （bottom=`Time (s)`・left=`<display_name>(<unit>)`）。**`display_names.display_name()`
+  を使い生キー（`mf4_1::VehSpd`）を直接使わない**（E-0 の `::` 撤去規約を維持・
+  `SignalPreviewVM.axis_label_parts() -> tuple[str, str|None]` が公開アクセサ）。
+  ラベル色は明示せず `plot_foreground` を継承。**Task 5（本エントリ）realgui ①
+  ゲート**: 新設 `test_csv_import_dialog_realclick.py`（実 CSV→実スピンボタン
+  クリック〔`QStyle.subControlRect` で up/down 矢印の実座標を取得〕→0始まり
+  ヘッダ＋列ハイライトの実ピクセル確認・近傍探索 tolerance 方式——ヘッダ中心
+  1点の厳密一致は Fusion の黒文字アンチエイリアス縁に当たり誤 RED になることを
+  実測し `test_comparison_model_realclick.py` の `_find_pixel_near` と同型の
+  近傍探索へ是正）／`test_export_range_realclick.py`（2カーソル設置→実クリック
+  で [カーソル A–B] 選択→実 OK クリック→実ファイル書き出し→実読み直しで行の
+  時間範囲が閉区間に収まること・全期間との行数差・I2 オフセットガードの実
+  disabled 表示を実証）／`test_active_panel_flow.py::test_dblclick_opens_preview_window`
+  拡張（実ダブルクリックで開いたプレビューの `getAxis("bottom").labelText/labelUnits`
+  実測＋`::` 非露出を確認）。realgui フル 96/99 pass（3件は本増分と無関係の
+  既知フレーク `test_hit_targets.py::test_chevron_already_meets_24px_height`・
+  `test_hit_targets.py::test_tab_close_button_extended_hit_removes_tab`・
+  `test_expansion_dialog_realinput.py::test_bottom_checkbox_reachable_by_real_wheel_then_ok`
+  ——いずれも単体実行では 100% pass し、D-3/E-0+E-2 増分で既に記録済みの
+  「51ファイル一括実行でのみ発生する実行順依存フォント計量ドリフト」クラスタの
+  再現と確認）。エビデンス: `design_export/evidence_f0/`。**凍結カタログ**:
+  06（エクスポートダイアログ）は DI 新署名へ更新し既設置済みの決定的カーソル
+  （3.0/6.0・03_cursor 状態で使う値を再利用し値の重複を避けた）を注入して
+  [カーソル A–B] enabled＋実範囲ラベル状態を撮影——高さ 600→720px（範囲ラジオ
+  3行＋フッター追加）の想定内サイズ変化。07（CSV フォーマットダイアログ）は
+  0始まりヘッダ＋列ハイライトの想定差分。08（信号プレビュー）は軸ラベル追加で
+  プロット領域が縮小/再配置される想定差分——波形データ自体は新旧スクショの目視
+  比較で同一形状/値域（同一 sawtooth 波形・同一時間軸0–12s）を確認（08 は
+  spec §6 M により意図的に `--crop-meta` の比較対象外〔viewport.json を持たせ
+  ない〕——プロット面 02-05/09 への非波及証明とスコープを分離するため）。01-05/09
+  （main window 状態）は完全一致（`--crop-meta` exit 0・通常比較 exit 0 両テーマ）
+  でプロット面への非波及を実証。ベースラインを昇格し再撮影で決定性 exit 0
+  （両テーマ）を実証。設計は
+  [F-0 spec](superpowers/specs/2026-07-23-f0-safe-import-range-export-design.md)。
+  **claude.ai/design への再同期は新トークン `chrome_signal_highlight` を含めマージ後
+  に実施**（controller）。**次候補=F-1（.vsession セッション永続化）/F-2（Welcome
+  再開ハブ＋スナップショット共有）**——ユーザー決定で今後検討へ defer。

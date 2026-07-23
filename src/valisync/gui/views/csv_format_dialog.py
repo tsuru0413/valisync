@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -16,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from valisync.core.loaders.csv_format_detector import DetectedFormat, split_line
 from valisync.core.models.format_def import Delimiter, FormatDefinition
-from valisync.gui.theme import qss
+from valisync.gui.theme import qss, tokens
 
 _DELIM_LABEL = {
     Delimiter.COMMA: "カンマ (,)",
@@ -24,6 +25,58 @@ _DELIM_LABEL = {
     Delimiter.SEMICOLON: "セミコロン (;)",
     Delimiter.SPACE: "スペース",
 }
+
+# 列ハイライトは二層構造 (I1 修正・spec §1.2):
+#   - データセル = 薄いティント。文字色は既定 chrome_text のまま
+#     (setForeground しない) → ティント越しでも AA (≥4.5:1) を両テーマで保つのが
+#     ハード制約。alpha を上げるほどセル地の実効色が濃くなり chrome_text が埋没する
+#     ため、実測で全 4 ケース (時間/信号列 x DARK/LIGHT) が AA を満たす上限は
+#     alpha=55 (境界値) — 余裕を見て 45 を採用。
+#   - ヘッダセル = 列マーキングを担う。不透明背景 (chrome_cursor_a/
+#     chrome_signal_highlight の生色) +輝度ベースで選んだ黒/白文字。両方とも
+#     tests/gui/test_theme_tokens.py の値ベース機械検証で test-lock。
+_TINT_ALPHA = 45
+# alpha (色でなく不透明度パラメータ) — QColor(r,g,b,255) の 255 は AST 色ガード
+# (tests/gui/test_theme_guard.py) が Constant 引数として検出するため、他の alpha
+# 定数 (_TINT_ALPHA) と同様に Name 参照へ切り出す。
+_OPAQUE_ALPHA = 255
+
+
+def _tint(color: tokens.Color) -> QColor:
+    """データセルの薄いティント (chrome_text の AA 可読性が最優先・spec §1.2)。"""
+    return QColor(color.r, color.g, color.b, _TINT_ALPHA)
+
+
+def _opaque(color: tokens.Color) -> QColor:
+    """ヘッダセルの不透明背景 (列マーキング・spec §1.2)。"""
+    return QColor(color.r, color.g, color.b, _OPAQUE_ALPHA)
+
+
+def _relative_luminance(c: tokens.Color) -> float:
+    """WCAG 相対輝度 (sRGB 線形化込み・tests/gui/test_theme_tokens.py と同型)。"""
+
+    def _lin(v: int) -> float:
+        s = v / 255.0
+        return s / 12.92 if s <= 0.03928 else ((s + 0.055) / 1.055) ** 2.4
+
+    return 0.2126 * _lin(c.r) + 0.7152 * _lin(c.g) + 0.0722 * _lin(c.b)
+
+
+# WCAG: 黒 (輝度0) と白 (輝度1) のどちらを選んでも背景とのコントラスト比が釣り合う
+# 背景輝度のしきい値 ((1.05*0.05)**0.5 - 0.05 ≈ 0.179)。これより明るい背景には黒文字、
+# 暗い背景には白文字が高コントラストになる。
+_INK_LUMINANCE_THRESHOLD = (1.05 * 0.05) ** 0.5 - 0.05
+
+
+def _header_ink(bg: tokens.Color) -> QColor:
+    """ヘッダセルの文字色 — 背景輝度に基づき黒/白から高コントラストな方を選ぶ
+
+    (spec §1.2 列マーキング契約・chrome_cursor_a/chrome_signal_highlight の
+    両テーマで AA ≥4.5:1 を実測済み)。
+    """
+    if _relative_luminance(bg) > _INK_LUMINANCE_THRESHOLD:
+        return QColor(0, 0, 0)
+    return QColor(255, 255, 255)
 
 
 class CsvFormatDialog(QDialog):
@@ -93,12 +146,16 @@ class CsvFormatDialog(QDialog):
         self._buttons.rejected.connect(self.reject)
         layout.addWidget(self._buttons)
 
+        # 0 始まりヘッダ・列ハイライトは _refresh() 本体に含まれる (spec §1) ため、
+        # 表示に影響するフィールドは全て _refresh へ接続 (_refresh が末尾で
+        # _validate も呼ぶので検証漏れなし)。has_unit_row はプレビュー表示に
+        # 影響しないため _validate のみで足りる。
         self._delim.currentIndexChanged.connect(self._refresh)
-        self._header.stateChanged.connect(self._validate)
+        self._header.stateChanged.connect(self._refresh)
         self._unit_row.stateChanged.connect(self._validate)
-        self._ts_col.valueChanged.connect(self._validate)
-        self._sig_start.valueChanged.connect(self._validate)
-        self._sig_end.valueChanged.connect(self._validate)
+        self._ts_col.valueChanged.connect(self._refresh)
+        self._sig_start.valueChanged.connect(self._refresh)
+        self._sig_end.valueChanged.connect(self._refresh)
 
         self._refresh()
 
@@ -107,7 +164,7 @@ class CsvFormatDialog(QDialog):
         return data if isinstance(data, Delimiter) else Delimiter.COMMA
 
     def _refresh(self) -> None:
-        """プレビューを現在の区切りで再分割し、検証を更新する。"""
+        """プレビューを現在の区切りで再分割し、ヘッダ/列ハイライト/検証を更新する。"""
         rows = [
             split_line(line, self._current_delim())
             for line in self._detected.preview_lines
@@ -119,6 +176,53 @@ class CsvFormatDialog(QDialog):
             for ci in range(n_cols):
                 text = row[ci] if ci < len(row) else ""
                 self._preview.setItem(ri, ci, QTableWidgetItem(text))
+
+        has_header = self._header.isChecked()
+        colors = tokens.active().colors
+        sig_start, sig_end = self._sig_start.value(), self._sig_end.value()
+        ts_col = self._ts_col.value()
+
+        # データセルの薄いティント (面色・ライブ連動・spec §1)。文字色は既定
+        # chrome_text のまま (setForeground しない) — AA 可読性がハード制約 (I1)。
+        sig_data_tint = _tint(colors.chrome_signal_highlight)
+        ts_data_tint = _tint(colors.chrome_cursor_a)
+        # ヘッダセルの列マーキング (不透明背景+輝度ベース高コントラスト文字・
+        # spec §1.2)。データセルの薄いティントだけでは非テキスト 3:1 を満たせない
+        # ため、列識別はヘッダセル側に集約する。
+        sig_header_bg = _opaque(colors.chrome_signal_highlight)
+        sig_header_fg = _header_ink(colors.chrome_signal_highlight)
+        ts_header_bg = _opaque(colors.chrome_cursor_a)
+        ts_header_fg = _header_ink(colors.chrome_cursor_a)
+
+        # 0 始まりヘッダ (off-by-one 構造解消・UX-05・spec §1) + 列マーキング。
+        # 列名源は has_header 時のみプレビュー先頭行 — ragged 行 (rows[0] が短い)
+        # でも IndexError しない。塗り優先はデータセルと同じ規則 (信号→時間の順で
+        # 塗るので ts_col ∈ 信号範囲の過渡でも ts_col が勝つ)。
+        for ci in range(n_cols):
+            name = rows[0][ci] if (has_header and rows and ci < len(rows[0])) else None
+            label = f"{ci}: {name}" if name else str(ci)
+            header_item = QTableWidgetItem(label)
+            if sig_start <= ci <= sig_end:
+                header_item.setBackground(sig_header_bg)
+                header_item.setForeground(sig_header_fg)
+            if ci == ts_col:
+                header_item.setBackground(ts_header_bg)
+                header_item.setForeground(ts_header_fg)
+            self._preview.setHorizontalHeaderItem(ci, header_item)
+
+        # データセルのティント塗り。信号範囲を先に塗り→時間列を後で塗ることで、
+        # スピン調整の過渡 (ts_col ∈ 信号範囲) でも ts_col が勝つ (ヘッダと同順)。
+        for ri in range(len(rows)):
+            for ci in range(sig_start, sig_end + 1):
+                if 0 <= ci < n_cols:
+                    item = self._preview.item(ri, ci)
+                    if item is not None:
+                        item.setBackground(sig_data_tint)
+            if 0 <= ts_col < n_cols:
+                item = self._preview.item(ri, ts_col)
+                if item is not None:
+                    item.setBackground(ts_data_tint)
+
         self._validate()
 
     def _current_format(self) -> FormatDefinition | None:
