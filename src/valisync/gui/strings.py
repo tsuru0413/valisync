@@ -156,6 +156,16 @@ OVERLAY_CLAUSE_AMBIGUOUS_TMPL: Final = "曖昧 {n}"
 STATUS_OVERLAY_ALL_DONE: Final = "すべて重ね済みです"
 STATUS_OVERLAY_NO_REFERENCE_SIGNALS: Final = "基準の信号がプロットされていません"
 
+# ── 比較モード切替 (Analyze メニュー・comparison-mode-toggle spec §2/§5) ─────
+# 兄弟の葉項目 (カーソル A/B・カーソルを消す) と同様ニーモニクス非付与 (spec §2 M5)。
+ACTION_COMPARISON_MODE: Final = "比較モード"
+TOOLTIP_COMPARISON_NEEDS_TWO: Final = (
+    "設定は保持されます・2 つ以上のファイルを読み込むと再適用されます"
+)
+STATUS_COMPARISON_REFERENCE_TMPL: Final = (
+    "比較モード: 基準ファイル={name}（右クリックで変更）"
+)
+
 # ── チャンネルブラウザ (channel_browser_view・G-16/G-18/FB-05等) ─────────────
 FILTER_PLACEHOLDER: Final = "信号名でフィルタ…"  # G-16 — export_csv_dialog.py と共有
 CHANNEL_PLACEHOLDER_NONE_SELECTED: Final = (

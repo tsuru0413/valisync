@@ -368,6 +368,15 @@ class MainWindow(QMainWindow):
             interp_menu.addAction(act)
         analyze_menu.addSeparator()
         analyze_menu.addAction(self._analysis_actions.step_hint)
+        # 比較モードトグル (comparison-mode-toggle spec §2 M4): AnalysisActions
+        # (panel-scoped) には載せない — app_vm 由来の状態を同期できないため、
+        # MainWindow 所有の独立 QAction とし checked/enabled は
+        # _sync_analysis_actions 内で app_vm を直読して同期する。
+        analyze_menu.addSeparator()
+        self._comparison_mode_action = QAction(S.ACTION_COMPARISON_MODE, self)
+        self._comparison_mode_action.setCheckable(True)
+        self._comparison_mode_action.triggered.connect(self._on_toggle_comparison_mode)
+        analyze_menu.addAction(self._comparison_mode_action)
         analyze_menu.setToolTipsVisible(True)
         # aboutToShow の setChecked 同期は toggled は発火させても triggered は発火
         # させない (Qt 仕様) ため、ここで無条件に同期してもハンドラは起動しない。
@@ -661,8 +670,29 @@ class MainWindow(QMainWindow):
         仕様)、ここで無条件に呼んでも共有 QAction の VM 変異ハンドラ (triggered
         配線) は起動しない — 「メニューを開いただけでカーソルが動く」事故の構造的
         防止 (spec §2.2 blocker)。
+
+        比較モード項目 (comparison-mode-toggle spec §2 M4) は panel VM でなく
+        app_vm を直読する — checked は生フラグ `comparison_enabled`
+        (`is_comparison_mode()` の AND ≥2 述語ではない・取り違えは「1 ファイル+ON」で
+        checked が誤って False になる退行)。
         """
         sync_analysis_actions(self._analysis_actions, self._active_panel_vm())
+        self._comparison_mode_action.setChecked(self.app_vm.comparison_enabled)
+        enabled = len(self.app_vm.loaded_file_keys) >= 2
+        self._comparison_mode_action.setEnabled(enabled)
+        if not enabled:
+            self._comparison_mode_action.setToolTip(S.TOOLTIP_COMPARISON_NEEDS_TWO)
+
+    def _on_toggle_comparison_mode(self, checked: bool) -> None:
+        """比較モードトグルのハンドラ。ON 時は基準ファイルを開示する (spec §3 M8) —
+        `register_loaded` が無条件に最初のロードを基準へ設定済みだが単一モードでは
+        不可視のため、「いつの間にか基準が決まっている」唐突さを避ける。"""
+        self.app_vm.set_comparison_mode(checked)
+        if checked and self.app_vm.reference_file_key is not None:
+            name = self.app_vm.session.source_name(self.app_vm.reference_file_key)
+            self.set_status_message(
+                S.STATUS_COMPARISON_REFERENCE_TMPL.format(name=name)
+            )
 
     # ─── Actions ────────────────────────────────────────────────────────────────
 
