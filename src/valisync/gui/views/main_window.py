@@ -715,6 +715,10 @@ class MainWindow(QMainWindow):
 
         アクティブパネルのプロット中信号を初期選択に ExportCsvDialog を開き、
         確定したら既存の BusyOverlay パターンでオフスレッド書き出しする。
+        出力範囲 (F-0/UX-28) の x_range・カーソル A/B・オフセット有無はここで
+        アクティブタブから一度だけスナップショットして DI 注入する — ダイアログは
+        GraphAreaVM/AppViewModel を直接握らない (View 分離・spec §2.3)。表示中に
+        選択やオフセットが変わっても反映されない (意図的なスナップショット)。
         """
         panels = self.graph_area_vm.panels(self.graph_area_vm.active_tab_index)
         initial = (
@@ -722,7 +726,20 @@ class MainWindow(QMainWindow):
             if panels
             else set()
         )
-        req = ExportCsvDialog.ask(self.app_vm, initial, self)
+        panel = self.graph_area_vm.active_panel()
+        cursor_state = self.graph_area_vm.active_tab().cursor_state
+        # I2: 選択信号 (初期選択=プロット中) のいずれかに非ゼロオフセットがあれば
+        # 表示由来2ラジオを disabled にする根拠として渡す。
+        offset_active = any(panel.offset_for(key) != 0.0 for key in initial)
+        req = ExportCsvDialog.ask(
+            self.app_vm,
+            initial,
+            self,
+            x_range=panel.x_range,
+            cursor_a=cursor_state.cursor_t,
+            cursor_b=cursor_state.cursor_t_b,
+            offset_active=offset_active,
+        )
         if req is None:
             return
         session = self.app_vm.session

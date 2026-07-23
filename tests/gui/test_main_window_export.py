@@ -71,3 +71,75 @@ def test_export_csv_cancel_does_nothing(qtbot: QtBot, monkeypatch) -> None:
     )
     mw.export_csv()
     assert called == []
+
+
+# --- F-0/UX-28: 出力範囲 DI スナップショット (main_window.export_csv) --------
+
+
+def _capture_ask_kwargs(monkeypatch, mw_module) -> dict[str, object]:
+    captured: dict[str, object] = {}
+
+    def _fake_ask(cls, app_vm, initial_selected, parent=None, **kwargs):
+        captured.update(kwargs)
+        return None
+
+    monkeypatch.setattr(mw_module.ExportCsvDialog, "ask", classmethod(_fake_ask))
+    return captured
+
+
+def test_export_csv_snapshots_active_tab_x_range_and_cursor(
+    qtbot: QtBot, monkeypatch
+) -> None:
+    mw = MainWindow(AppViewModel())
+    qtbot.addWidget(mw)
+    # タブ0のパネルへ紛らわしい別レンジ/カーソルを仕込み、アクティブタブ(1)側が
+    # 使われることを検証する (マルチタブ回帰・spec §2.3)。
+    panel0 = mw.graph_area_vm.panels(0)[0]
+    panel0.set_x_range(100.0, 200.0)
+    panel0.set_cursor(150.0)
+    panel0.set_cursor_b(180.0)
+
+    mw.graph_area_vm.add_tab()  # active_tab_index はタブ1へ移る
+    panel1 = mw.graph_area_vm.active_panel()
+    panel1.set_x_range(2.0, 9.0)
+    panel1.set_cursor(3.0)
+    panel1.set_cursor_b(6.0)
+
+    captured = _capture_ask_kwargs(monkeypatch, mw_mod)
+    mw.export_csv()
+
+    assert captured["x_range"] == (2.0, 9.0)
+    assert captured["cursor_a"] == 3.0
+    assert captured["cursor_b"] == 6.0
+    assert captured["offset_active"] is False
+
+
+def test_export_csv_snapshot_flags_offset_active_when_selected_signal_offset(
+    qtbot: QtBot, monkeypatch
+) -> None:
+    mw = MainWindow(AppViewModel())
+    qtbot.addWidget(mw)
+    panel = mw.graph_area_vm.active_panel()
+    panel.add_signal("csv_1::speed")  # プロット中 = 初期選択 (I2 判定対象)
+    mw.app_vm.apply_offset("csv_1::speed", 1.0, "signal")
+
+    captured = _capture_ask_kwargs(monkeypatch, mw_mod)
+    mw.export_csv()
+
+    assert captured["offset_active"] is True
+
+
+def test_export_csv_snapshot_offset_inactive_when_unselected_signal_offset(
+    qtbot: QtBot, monkeypatch
+) -> None:
+    # オフセットが付いた信号がプロット中(=初期選択)でなければ判定対象外。
+    mw = MainWindow(AppViewModel())
+    qtbot.addWidget(mw)
+    panel = mw.graph_area_vm.active_panel()
+    panel.add_signal("csv_1::speed")
+    mw.app_vm.apply_offset("csv_1::other", 1.0, "signal")  # 別信号
+
+    captured = _capture_ask_kwargs(monkeypatch, mw_mod)
+    mw.export_csv()
+
+    assert captured["offset_active"] is False

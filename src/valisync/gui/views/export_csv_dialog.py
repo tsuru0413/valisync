@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QRadioButton,
     QSpinBox,
     QTreeWidget,
     QTreeWidgetItem,
@@ -65,6 +66,11 @@ class ExportCsvDialog(QDialog):
         app_vm: AppViewModel,
         initial_selected: set[str],
         parent: QWidget | None = None,
+        *,
+        x_range: tuple[float, float] | None = None,
+        cursor_a: float | None = None,
+        cursor_b: float | None = None,
+        offset_active: bool | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("CSV エクスポート")
@@ -72,6 +78,13 @@ class ExportCsvDialog(QDialog):
         self._result: ExportRequest | None = None
         # 保存先取得フック(テストで差し替え可能)。空文字はキャンセル。
         self._save_path_provider: Callable[[], str] = self._default_save_path
+        # F-0/UX-28: 出力範囲 DI — 呼び出し側 (main_window.export_csv) がダイアログ
+        # 表示中不変のスナップショットとして注入する (View 分離・spec §2.3)。
+        # ExportCsvDialog 自身は GraphAreaVM/AppViewModel のオフセットを直接読まない。
+        self._x_range = x_range
+        self._cursor_a = cursor_a
+        self._cursor_b = cursor_b
+        self._offset_active = bool(offset_active)
 
         layout = QVBoxLayout(self)
 
@@ -121,8 +134,45 @@ class ExportCsvDialog(QDialog):
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
 
+        # 選択数フッター (F-0/UX-28): 総選択数 (フィルタ非依存・実出力集合と一致)。
+        # 初期値は _validate() の相乗り更新で確定するので、ここではプレース
+        # ホルダのみ設定する。
+        self._selection_label = QLabel(self)
+        layout.addWidget(self._selection_label)
+
         # 形式オプション
         form = QFormLayout()
+
+        # 出力範囲 (F-0/UX-28・spec §2.3): [全期間] 既定 checked。表示由来2ラジオ
+        # ([現在の表示範囲]・[カーソル A-B]) は DI スナップショットに基づくガードで
+        # setEnabled する — ダイアログ内の選択変更やフィルタには反応しない
+        # (main_window.export_csv が開く瞬間のスナップショット・spec §2.3)。
+        self._range_all = QRadioButton(S.EXPORT_RANGE_ALL, self)
+        self._range_all.setChecked(True)
+        self._range_visible = QRadioButton(S.EXPORT_RANGE_VISIBLE, self)
+        self._range_visible.setEnabled(
+            self._x_range is not None and not self._offset_active
+        )
+        cursor_label = (
+            S.EXPORT_RANGE_CURSOR_TMPL.format(
+                lo=min(cursor_a, cursor_b), hi=max(cursor_a, cursor_b)
+            )
+            if cursor_a is not None and cursor_b is not None
+            else S.EXPORT_RANGE_CURSOR
+        )
+        self._range_cursor = QRadioButton(cursor_label, self)
+        self._range_cursor.setEnabled(
+            cursor_a is not None and cursor_b is not None and not self._offset_active
+        )
+        if self._offset_active:
+            self._range_visible.setToolTip(S.EXPORT_RANGE_OFFSET_TOOLTIP)
+            self._range_cursor.setToolTip(S.EXPORT_RANGE_OFFSET_TOOLTIP)
+        range_box = QVBoxLayout()
+        range_box.addWidget(self._range_all)
+        range_box.addWidget(self._range_visible)
+        range_box.addWidget(self._range_cursor)
+        form.addRow(S.EXPORT_RANGE_LABEL, range_box)
+
         self._unified = QCheckBox(self)
         # 既定 ON (安全側): 共有信号では union が同一 timestamps ゆえ出力バイト
         # 不変。マルチレート信号(独立ラスタ)では unified だけが安全な経路
@@ -194,12 +244,20 @@ class ExportCsvDialog(QDialog):
         ]
 
     def _select_all(self) -> None:
+        # blockSignals でバッチ化: per-child itemChanged→_validate の O(n) カスケード
+        # を避け、完了後に一度だけ再計算する (spec §2.3 M)。
+        self._tree.blockSignals(True)
         for c in self._iter_children():
             c.setCheckState(0, Qt.CheckState.Checked)
+        self._tree.blockSignals(False)
+        self._validate()
 
     def _select_none(self) -> None:
+        self._tree.blockSignals(True)
         for c in self._iter_children():
             c.setCheckState(0, Qt.CheckState.Unchecked)
+        self._tree.blockSignals(False)
+        self._validate()
 
     def _apply_filter(self, text: str) -> None:
         # E-0: フィルタは表示テキスト(裸名)照合 — UserRole の raw key ではない
@@ -215,14 +273,36 @@ class ExportCsvDialog(QDialog):
     def _set_decimal(self, ch: str) -> None:
         self._decimal.setCurrentIndex(self._decimal.findData(ch))
 
+    def _current_range(self) -> tuple[float | None, float | None]:
+        """Selected range radio -> (time_start, time_end) in raw/display seconds.
+
+        [全期間] (or an unavailable radio somehow left checked) -> (None, None).
+        Coordinates are the DI snapshot as-is (spec §2.1: no offset applied here
+        — offset presence instead disables the two display-derived radios).
+        """
+        if self._range_visible.isChecked() and self._x_range is not None:
+            return self._x_range
+        if (
+            self._range_cursor.isChecked()
+            and self._cursor_a is not None
+            and self._cursor_b is not None
+        ):
+            return min(self._cursor_a, self._cursor_b), max(
+                self._cursor_a, self._cursor_b
+            )
+        return None, None
+
     def _current_options(self) -> CsvExportOptions | None:
         precision = None if self._round_trip.isChecked() else self._precision.value()
+        time_start, time_end = self._current_range()
         try:
             return CsvExportOptions(
                 delimiter=self._delim.currentData(),
                 decimal=self._decimal.currentData(),
                 unit_row=self._unit_row.isChecked(),
                 precision=precision,
+                time_start=time_start,
+                time_end=time_end,
             )
         except ValueError as exc:
             self._error.setText(str(exc))
@@ -230,11 +310,16 @@ class ExportCsvDialog(QDialog):
 
     def _validate(self) -> None:
         opts = self._current_options()
-        has_sel = bool(self._checked_keys())
+        keys = self._checked_keys()
+        has_sel = bool(keys)
         if opts is not None:
             self._error.setText("" if has_sel else S.EXPORT_NO_SELECTION_ERROR)
         ok = opts is not None and has_sel
         self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(ok)
+        # F-0/UX-28: N = 総選択数 (フィルタ非依存) — _checked_keys() は非表示
+        # (フィルタで隠れた) 行も含めて全 UserRole チェック状態を数えるので、
+        # 実出力集合 (_on_accept の keys) と常に一致する。
+        self._selection_label.setText(S.EXPORT_SELECTION_COUNT_TMPL.format(n=len(keys)))
 
     # --- 確定 ---------------------------------------------------------
     def _default_save_path(self) -> str:
@@ -272,8 +357,21 @@ class ExportCsvDialog(QDialog):
         app_vm: AppViewModel,
         initial_selected: set[str],
         parent: QWidget | None = None,
+        *,
+        x_range: tuple[float, float] | None = None,
+        cursor_a: float | None = None,
+        cursor_b: float | None = None,
+        offset_active: bool | None = None,
     ) -> ExportRequest | None:
-        dlg = cls(app_vm, initial_selected, parent)
+        dlg = cls(
+            app_vm,
+            initial_selected,
+            parent,
+            x_range=x_range,
+            cursor_a=cursor_a,
+            cursor_b=cursor_b,
+            offset_active=offset_active,
+        )
         if dlg.exec() == QDialog.DialogCode.Accepted:
             return dlg._result
         return None

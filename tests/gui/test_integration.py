@@ -158,7 +158,12 @@ class TestAddToActivePanel:
         vm.panels(0)[1].add_signal(_KEY)
         captured: dict[str, set[str]] = {}
 
-        def fake_ask(app_vm: object, initial: set[str], parent: object) -> None:
+        def fake_ask(
+            app_vm: object, initial: set[str], parent: object = None, **_kwargs: object
+        ) -> None:
+            # F-0/UX-28: main_window.export_csv は x_range/cursor_a/cursor_b/
+            # offset_active もキーワードで渡す — このテストの関心はそれらでは
+            # なく initial のみなので **_kwargs で受け流す。
             captured["initial"] = set(initial)
             return None  # ダイアログキャンセル
 
