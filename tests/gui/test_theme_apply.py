@@ -117,8 +117,10 @@ def test_build_palette_role_mapping_with_distinct_values():
     chrome_fields = [
         f.name for f in dataclasses.fields(DARK.colors) if f.name.startswith("chrome_")
     ]
-    # chrome_frame / chrome_cursor_a / chrome_cursor_b は QSS 専用 (palette 非写像)
-    assert len(chrome_fields) == 16
+    # chrome_frame / chrome_cursor_a / chrome_cursor_b / chrome_signal_highlight は
+    # QSS 専用 (palette 非写像 — chrome_signal_highlight は CSV 取込ダイアログの
+    # 列ハイライトで直接 QColor 化・spec 2026-07-23 §1.2)
+    assert len(chrome_fields) == 17
     repl = {
         name: Color(i + 1, (i * 7 + 3) % 256, (i * 13 + 5) % 256)
         for i, name in enumerate(chrome_fields)

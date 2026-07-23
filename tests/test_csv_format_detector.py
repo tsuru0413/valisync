@@ -69,3 +69,21 @@ def test_undetectable_empty_file(tmp_path: Path) -> None:
 def test_split_line_helper() -> None:
     assert split_line("a,b,c", Delimiter.COMMA) == ["a", "b", "c"]
     assert split_line("a\tb", Delimiter.TAB) == ["a", "b"]
+
+
+def test_detected_format_columns_are_zero_based_invariant_ux05(tmp_path: Path) -> None:
+    """T-A4 (spec §5) — CsvFormatDetector/DetectedFormat の列インデックスは 0 始まり
+
+    のまま (core 非改変)。ダイアログ側の 0 始まりヘッダ表示 (UX-05) はこの契約に
+    ライブで追従するのみで、検出器の列番号モデル自体は本タスクで変更しない。
+    """
+    d = CsvFormatDetector().detect(
+        _w(tmp_path, "t,speed,rpm\n0.0,1.0,10\n1.0,2.0,20\n")
+    )
+    assert d.format is not None
+    # 先頭列 (プレビュー上 "0: t") は timestamp_column == 0 と一致。
+    assert d.timestamp_column == 0
+    assert d.format.timestamp_column == 0
+    # 2 列目/3 列目 (プレビュー上 "1: speed"/"2: rpm") は 1/2 と一致。
+    assert d.signal_start_column == 1 and d.signal_end_column == 2
+    assert d.format.signal_start_column == 1 and d.format.signal_end_column == 2

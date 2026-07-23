@@ -148,6 +148,7 @@ def test_dark_values_frozen_snapshot():
         # ステータス即値 (計測 IA・spec §2.4) — DARK は cursor_a/cursor_b と同値
         "chrome_cursor_a": Color.from_hex("#f9e2af"),
         "chrome_cursor_b": Color.from_hex("#74c7ec"),
+        "chrome_signal_highlight": Color.from_hex("#94e2d5"),
         "surface_readout_panel": Color.from_hex("#1e1e2e"),
         "delta_negative": Color.from_hex("#f38ba8"),
         "delta_positive": Color.from_hex("#a6e3a1"),
@@ -269,6 +270,59 @@ def test_warning_info_do_not_collide_with_existing_tokens():
                 )
 
 
+def test_csv_highlight_tints_meet_3_to_1_when_composited_on_chrome_surfaces():
+    """CSV 取込ダイアログの列ハイライト (半透明ティント) は非テキスト UI 部品
+
+    (WCAG 1.4.11) — 塗り時に使う低 alpha (`_TINT_ALPHA`) で chrome_base/chrome_window
+    に合成した実効色が、両テーマで隣接 (非着色) セルに対し ≥3:1 (spec §1.2)。
+    """
+    from valisync.gui.views.csv_format_dialog import _TINT_ALPHA
+
+    def _composite(fg: Color, alpha: int, bg: Color) -> Color:
+        a = alpha / 255.0
+        return Color(
+            round(fg.r * a + bg.r * (1 - a)),
+            round(fg.g * a + bg.g * (1 - a)),
+            round(fg.b * a + bg.b * (1 - a)),
+        )
+
+    for theme_name, theme in (("DARK", DARK), ("LIGHT", LIGHT)):
+        for token_name in ("chrome_cursor_a", "chrome_signal_highlight"):
+            fg = getattr(theme.colors, token_name)
+            for surface_name in ("chrome_base", "chrome_window"):
+                bg = getattr(theme.colors, surface_name)
+                composited = _composite(fg, _TINT_ALPHA, bg)
+                ratio = contrast_ratio(composited, bg)
+                assert ratio >= 3.0, (
+                    f"{theme_name}.{token_name}@alpha={_TINT_ALPHA} vs {surface_name}: "
+                    f"{ratio:.2f} < 3.0"
+                )
+
+
+def test_chrome_signal_highlight_is_distinct_role_from_drop_highlight():
+    """chrome_signal_highlight は DARK では drop_highlight と同値 (意図的・チップ性の
+
+    共有) だが LIGHT では色相を保ったまま暗くした別値 — 値分岐で別役割を実証
+    (spec §1.2・[[gui_freeze_tokenization_verification_pattern]] と同型)。
+    """
+    assert DARK.colors.chrome_signal_highlight == DARK.colors.drop_highlight
+    assert LIGHT.colors.chrome_signal_highlight != LIGHT.colors.drop_highlight
+    # 色相保持 (H) — teal のまま暗く (L 低下) しているだけであることを確認。
+    import colorsys
+
+    def _hue(c: Color) -> float:
+        h, _l, _s = colorsys.rgb_to_hls(c.r / 255, c.g / 255, c.b / 255)
+        return h * 360
+
+    assert (
+        abs(
+            _hue(LIGHT.colors.chrome_signal_highlight)
+            - _hue(DARK.colors.drop_highlight)
+        )
+        < 2.0
+    )
+
+
 def test_light_values_frozen_snapshot():
     """LIGHT 全テーマ化トークンの意図的 test-lock (Latte 初期値・再デザイン反復で更新)。"""
     c = LIGHT.colors
@@ -300,6 +354,7 @@ def test_light_values_frozen_snapshot():
         # ステータス即値 (計測 IA・spec §2.4) — LIGHT は明面 AA 濃色 (実測選定)
         "chrome_cursor_a": Color.from_hex("#8a6100"),
         "chrome_cursor_b": Color.from_hex("#106a8f"),
+        "chrome_signal_highlight": Color.from_hex("#0b4138"),
         "surface_readout_panel": Color.from_hex("#eff1f5"),
         "delta_negative": Color.from_hex("#d20f39"),
         "delta_positive": Color.from_hex("#40a02b"),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -16,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from valisync.core.loaders.csv_format_detector import DetectedFormat, split_line
 from valisync.core.models.format_def import Delimiter, FormatDefinition
-from valisync.gui.theme import qss
+from valisync.gui.theme import qss, tokens
 
 _DELIM_LABEL = {
     Delimiter.COMMA: "カンマ (,)",
@@ -24,6 +25,16 @@ _DELIM_LABEL = {
     Delimiter.SEMICOLON: "セミコロン (;)",
     Delimiter.SPACE: "スペース",
 }
+
+# 列ハイライトの塗り alpha (0-255)。chrome_cursor_a/chrome_signal_highlight は他所で
+# 不透明 (テキスト等) にも使うため、ここで低 alpha の QColor を派生させる。両テーマで
+# chrome_base/chrome_window に合成しても非テキスト 3:1 を満たす値 (spec §1.2・
+# tests/gui/test_theme_tokens.py の値ベース機械検証で test-lock)。
+_TINT_ALPHA = 210
+
+
+def _tint(color: tokens.Color) -> QColor:
+    return QColor(color.r, color.g, color.b, _TINT_ALPHA)
 
 
 class CsvFormatDialog(QDialog):
@@ -93,12 +104,16 @@ class CsvFormatDialog(QDialog):
         self._buttons.rejected.connect(self.reject)
         layout.addWidget(self._buttons)
 
+        # 0 始まりヘッダ・列ハイライトは _refresh() 本体に含まれる (spec §1) ため、
+        # 表示に影響するフィールドは全て _refresh へ接続 (_refresh が末尾で
+        # _validate も呼ぶので検証漏れなし)。has_unit_row はプレビュー表示に
+        # 影響しないため _validate のみで足りる。
         self._delim.currentIndexChanged.connect(self._refresh)
-        self._header.stateChanged.connect(self._validate)
+        self._header.stateChanged.connect(self._refresh)
         self._unit_row.stateChanged.connect(self._validate)
-        self._ts_col.valueChanged.connect(self._validate)
-        self._sig_start.valueChanged.connect(self._validate)
-        self._sig_end.valueChanged.connect(self._validate)
+        self._ts_col.valueChanged.connect(self._refresh)
+        self._sig_start.valueChanged.connect(self._refresh)
+        self._sig_end.valueChanged.connect(self._refresh)
 
         self._refresh()
 
@@ -107,7 +122,7 @@ class CsvFormatDialog(QDialog):
         return data if isinstance(data, Delimiter) else Delimiter.COMMA
 
     def _refresh(self) -> None:
-        """プレビューを現在の区切りで再分割し、検証を更新する。"""
+        """プレビューを現在の区切りで再分割し、ヘッダ/列ハイライト/検証を更新する。"""
         rows = [
             split_line(line, self._current_delim())
             for line in self._detected.preview_lines
@@ -119,6 +134,34 @@ class CsvFormatDialog(QDialog):
             for ci in range(n_cols):
                 text = row[ci] if ci < len(row) else ""
                 self._preview.setItem(ri, ci, QTableWidgetItem(text))
+
+        # 0 始まりヘッダ (off-by-one 構造解消・UX-05・spec §1)。列名源は has_header
+        # 時のみプレビュー先頭行 — ragged 行 (rows[0] が短い) でも IndexError しない。
+        has_header = self._header.isChecked()
+        labels = []
+        for ci in range(n_cols):
+            name = rows[0][ci] if (has_header and rows and ci < len(rows[0])) else None
+            labels.append(f"{ci}: {name}" if name else str(ci))
+        self._preview.setHorizontalHeaderLabels(labels)
+
+        # 列ハイライト (面色・ライブ連動・spec §1)。信号範囲を先に塗り→時間列を
+        # 後で塗ることで、スピン調整の過渡 (ts_col ∈ 信号範囲) でも ts_col が勝つ。
+        colors = tokens.active().colors
+        sig_tint = _tint(colors.chrome_signal_highlight)
+        ts_tint = _tint(colors.chrome_cursor_a)
+        sig_start, sig_end = self._sig_start.value(), self._sig_end.value()
+        ts_col = self._ts_col.value()
+        for ri in range(len(rows)):
+            for ci in range(sig_start, sig_end + 1):
+                if 0 <= ci < n_cols:
+                    item = self._preview.item(ri, ci)
+                    if item is not None:
+                        item.setBackground(sig_tint)
+            if 0 <= ts_col < n_cols:
+                item = self._preview.item(ri, ts_col)
+                if item is not None:
+                    item.setBackground(ts_tint)
+
         self._validate()
 
     def _current_format(self) -> FormatDefinition | None:
