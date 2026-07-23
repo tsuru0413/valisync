@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from PySide6.QtCore import QItemSelectionModel, QModelIndex, QPoint, Qt
 from pytestqt.qtbot import QtBot
 
@@ -790,3 +791,123 @@ def test_sampling_reflects_real_leaf_units_once_group_materialized(
     after_samples = view._sample_unit_values(50)
     assert long_unit in after_samples
     assert view.tree.columnWidth(1) > width_before
+
+
+# ─── Shrinkable tree / lower minimum dock width (Task 5 -- #14 拡張) ──────────
+# spec §1.5: Task 4 実測で channel_dock の既定構築幅の律速はヘッダーでなく
+# ツリー本体 sizeHint(256px) と判明 (実測: QTreeView.sizeHint() は
+# QAbstractScrollArea の汎用既定値 QSize(256, 192) をそのまま返し、内容・
+# 列幅・resizeMode に一切依存しない -- 列を Interactive にしても
+# resizeSection で詰めても sizeHint は 256 のまま、実測で確認済み)。ツリーの
+# 実 minimumSizeHint はそもそも遥かに小さい (offscreen で 70px 級) ため、
+# 真の「ドラッグでどこまで詰められるか」の床は元々 CollapsibleDockTitleBar
+# 側だった。本増分は sizeHint の width 成分だけを差し替え、既定構築幅を
+# その床に近づける。
+
+
+def test_tree_sizehint_width_below_qt_scrollarea_default(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """tree.sizeHint().width() が Qt の汎用既定 256px を下回ること。
+
+    256 は QAbstractScrollArea のハードコード既定値 (フォント/DPI 非依存 --
+    素の QTreeView で実測済み) なので、この比較は環境非依存で決定的。"""
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    view = _make_view(qtbot, vm)
+    assert view.tree.sizeHint().width() < 256
+
+
+def test_channel_dock_default_width_below_tree_sizehint_pin(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """実 MainWindow で channel_dock の既定構築幅 (何もドラッグしない状態)
+    が 258px (= 256px ツリー既定 sizeHint + 枠 2px) より有意に小さいこと。
+
+    258px という基準値はテキスト内容やフォントに一切依存しない (Qt の
+    ハードコード既定 256 由来) ので、offscreen (CI) でも実機と同じ数値で
+    決定的に再現する -- 本テストの honest-RED/GREEN はここで担保する。
+    実際にタイトルバー律速の ~181px 近傍まで詰められるかはフォント依存の
+    絶対値になるため、その確認は realgui (Step 4) に委ねる。
+    """
+    from valisync.gui.viewmodels.app_viewmodel import AppViewModel as _AppVM
+    from valisync.gui.views.main_window import MainWindow
+
+    app_vm, key = _setup_app(tmp_path)
+    app_vm.set_active_file(key)
+    assert isinstance(app_vm, _AppVM)
+
+    mw = MainWindow(app_vm)
+    qtbot.addWidget(mw)
+    mw._workbench_started = True
+    mw._update_central()
+    mw.resize(1400, 900)
+    mw.show()
+    qtbot.wait(100)
+
+    assert mw.channel_dock.width() < 258
+
+
+def test_tree_elide_mode_explicit_right(qtbot: QtBot, tmp_path: Path) -> None:
+    """setTextElideMode(ElideRight) が明示されていること (spec §1.5 の
+    「長い名前は…で省略」)。Qt の既定も ElideRight だが、undocumented な
+    既定への暗黙依存にしない (brief 明記の要求)。"""
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    view = _make_view(qtbot, vm)
+    assert view.tree.textElideMode() == Qt.TextElideMode.ElideRight
+
+
+def test_tree_minimum_section_size_explicit_and_small(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """header().minimumSectionSize() が明示的な小さい固定値であること
+    (spec §1.5「header().setMinimumSectionSize(小)」)。Qt の既定はフォント/
+    DPI 依存 (16-23px 級) なので、明示固定は環境非依存性のための保険。"""
+    from valisync.gui.views.channel_browser_view import _TREE_MIN_SECTION_SIZE
+
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    view = _make_view(qtbot, vm)
+    assert view.tree.header().minimumSectionSize() == _TREE_MIN_SECTION_SIZE
+    assert _TREE_MIN_SECTION_SIZE < 32  # 明示的に「小さい」ことも担保
+
+
+def test_tree_sizehint_sabotage_reverts_to_qt_default_256(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """sabotage: _ChannelTree.sizeHint の差し替えを無効化 (素の QTreeView の
+    実装を素通しする) と Qt の汎用既定 256px へ戻ること — 「詰められる」の
+    正体が本当にこの sizeHint override であることの証明 (修正を無かった
+    ことにすると honest-RED の 256px 側へ戻る)。"""
+    from PySide6.QtCore import QSize as _QSize
+    from PySide6.QtWidgets import QTreeView as _QTreeView
+
+    from valisync.gui.views.channel_browser_view import _ChannelTree
+
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    view = _make_view(qtbot, vm)
+    assert view.tree.sizeHint().width() < 256  # sanity: fix is active
+
+    monkeypatch.setattr(_ChannelTree, "sizeHint", _QTreeView.sizeHint)
+    assert view.tree.sizeHint() == _QSize(256, 192)
+
+
+def test_file_browser_list_view_also_needed_the_same_fix(qtbot: QtBot) -> None:
+    """cross-file finding (Task 5 Step 1 実測): channel_dock と file_dock は
+    同一カラムに縦積みのため、file_dock 側の QListView が Qt 既定 256px の
+    ままだとカラムの既定幅がそちらに引っ張られ、channel 側だけ直しても
+    channel_dock.width() は下がらなかった (実測で確認・honest-RED を経て
+    file_browser_view.py も対で修正 — spec §1.5 のスコープを実測に基づき
+    拡張)。file_browser_view.list_view 単体でも Qt 既定 256px を下回る
+    ことを回帰ガードする。"""
+    from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+    from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
+    from valisync.gui.views.file_browser_view import FileBrowserView
+
+    app_vm = AppViewModel()
+    vm = FileBrowserVM(app_vm)
+    view = FileBrowserView(vm)
+    qtbot.addWidget(view)
+    assert view.list_view.sizeHint().width() < 256
