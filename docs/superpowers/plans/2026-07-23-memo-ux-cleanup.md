@@ -94,6 +94,23 @@
 - [x] **Step 4（プランのチェックボックス更新）**: 本ファイルを消化済みへ更新（このコミット）。
 - [x] **Step 5（最終ゲート＋commit）**: `uv run pytest -q`（1737 passed, 104 skipped）・`ruff check`（All checks passed）・`ruff format --check`（278 files already formatted）・`mypy src/`（Success, 85 files）green → commit。
 
+## Task 5: #14 拡張 — ツリーを縮小可能にして最小ドック幅を下げる
+
+**背景**: Task 4 実測で最小ドック幅の律速はヘッダーでなく**ツリー sizeHint（256px）**と判明。§1.5 に従いツリーを縮小可能にして最小幅を目標 ~181px（タイトルバー律速・ユーザー承認済み「約半分で十分」）まで下げる。
+
+**Files:**
+- Modify: `src/valisync/gui/views/channel_browser_view.py`（ツリーの列 resize/minimumSectionSize・tree の minimumWidth/sizeHint 方針・名前列 elide）
+- Test: `tests/gui/test_channel_browser_view*.py`＋realgui（実ドラッグで細くできる実証）
+
+- [ ] **Step 1（現状測定 → RED）**: 実 `MainWindow` で `channel_dock` を最小まで詰めた実幅（or `minimumSizeHint().width()`）が現状 ~258px であることを測り、目標「258px より有意に小さい（~181px 近傍）」の assert が現状 RED になることを実証（honest-RED）。
+- [ ] **Step 2（実装）**: ツリー（`ChannelBrowserView.tree`）を縮小可能に — `header().setMinimumSectionSize(小)`／名前列 `resizeMode` を Interactive 等にして詰められるように・elide（`setTextElideMode(ElideRight)`）で長い名前を「…」省略。ツリー/ビューの `minimumWidth`/`sizeHint` を下げてドックを 258px より細くドラッグ可に。**タイトルバー ~181px より下は狙わない**（スコープ外）。
+- [ ] **Step 3（GREEN＋実測報告）**: Step 1 の assert が GREEN（最小幅が 258→~181px 近傍へ低下）。実 window で**実際の下限を実測して報告**（推定 181px との乖離があれば原因特定）。**sabotage**: 列縮小を無効化（minimumSectionSize を元に戻す）→ 最小幅が 258px へ戻り assert RED。
+- [ ] **Step 4（realgui — 実ドラッグ）**: 実 OS でドック境界（or splitter）を実ドラッグして `channel_dock` が現状より細くなる（~181px 近傍まで到達）ことを実測・スクショ。名前列が elide されること・列ヘッダドラッグで再拡大可を確認。既存ソート/フィルタ/D&D/選択が列幅変更で無回帰。
+- [ ] **Step 5（凍結カタログ確認）**: ツリー縮小は最小幅を下げるだけで**既定幅は不変**（カタログは既定/保存幅で描画）→ 02-05 等が無回帰であることを撮影 compare で確認（差分ゼロ期待・出れば原因特定）。
+- [ ] **Step 6（ゲート＋commit）**: green → `feat(gui): チャンネルブラウザのツリーを縮小可能にし最小ドック幅を下げる (#14 拡張)`
+
+---
+
 ## Self-Review 済み確認事項
 
 - spec §1-§7 の全要素がタスクに 1:1（#14 header/word-wrap/未選択strings・#15 位置ベース/sabotage・#17 候補A スパイク/ガードレール/非重なり/extent/既存移行・realgui/カタログ/docs）。
