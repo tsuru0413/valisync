@@ -176,7 +176,10 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   接する辺で動的決定（左右=幅を詰めて全高の縦レール＋縦書きタブ・下=高さを詰めて全幅の
   横帯＋左寄せチップ）。畳んだドックは hide し、中央 widget を包む `CentralWithRails` の
   辺スロットに置いた `DockCollapseRail` へ content サイズのタブを出す（maxHeight クランプ
-  方式を差し替え）。上端配置は3ドックの `setAllowedAreas(Left|Right|Bottom)` で禁止。
+  方式を差し替え）。**`CentralWithRails` は雑メモ #17（レール最外ドック化・candidate A・
+  commit 486a94b）で廃止済み — レールは中央の縁でなく各辺の最外 `QDockWidget` に据える
+  （中央は `central_stack` を直接 `setCentralWidget`）。** 上端配置は3ドックの
+  `setAllowedAreas(Left|Right|Bottom)` で禁止。
   展開シェブロンは開く方向を指す（右=`chevron_left`・下=`chevron_up`、追加のみ）。出典:
   増分C（PR #131）の実機確認で「右ドックが横のまま薄くなるのは想定と違う」とユーザー指摘。
   付随して撮影スクリプトの QSettings 隔離バグ（`setDefaultFormat`+`setPath` は
@@ -574,3 +577,84 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   **claude.ai/design への再同期は新トークン `chrome_signal_highlight` を含めマージ後
   に実施**（controller）。**次候補=F-1（.vsession セッション永続化）/F-2（Welcome
   再開ハブ＋スナップショット共有）**——ユーザー決定で今後検討へ defer。
+- 2026-07-24: 雑メモ解消（#14/#15/#17・トークン変更なし・ユーザー直接要望 —
+  UIUX 敵対的レビュー catalog の UX/UXG とは別系統）。ブランチ `feature/memo-ux-cleanup`。
+  **#14**: チャンネルブラウザのヘッダーから選択中ファイル名を除去し件数のみ表示
+  （`CHANNEL_HEADER_NO_FILE`/`CHANNEL_HEADER_EMPTY_TMPL`/`CHANNEL_HEADER_COUNT_TMPL`
+  改訂・未選択分岐も strings.py 化）＋ `header_label.setWordWrap(True)`（最小幅の
+  保険）。コミット `ba1e087`。**#15**: 右クリックメニューに「信号プロパティを表示」
+  を追加（`ACTION_SHOW_SIGNAL_PROPERTIES`）。**位置ベース**（`indexAt(pos)` の
+  hit leaf key・ダブルクリックの `_emit_preview` と同型）を採用し選択ベース
+  （`selected_signal_keys()`）は不採用 — 敵対的レビューで確認した2バグ
+  （右クリックが選択を変えないため既存選択行が誤って開く／parent+leaf 同時選択で
+  誤有効化）を構造的に回避する（sabotage 2種で実証）。コミット `03e7f79`。
+  **#17**: 折りたたみレールが「プロットと開いているドックの間」に挟まる不整合
+  （片方だけ折りたたんだとき）を、レールを常に画面端側（開いているドックの外側）
+  へ解消。**機構は候補 A「レール最外ドック化」で確定**（敵対的レビューで候補 B・C
+  を不適格と判定 — 候補 C は QMainWindow の私有レイアウトで外部ラップ不能、
+  候補 B は絶対配置オーバーレイでレイアウト空間を予約できず全高の開ドックを押せ
+  ない＋z-order 沈下 false-green の罠）。各辺の最外に常駐する薄い `QDockWidget`
+  レール（`NoDockWidgetFeatures`＋タイトルバー無し）へ折りたたみタブを集約し、
+  `dockLocationChanged` で最外順序を能動是正・`restoreState`/`_reset_layout` 後に
+  順序＋corner＋1:4 比率を再適用・空時は `setVisible(False)` でゼロ幅（`CentralWithRails`
+  は廃止・`central_stack` を直接 `setCentralWidget`）。realgui T-C1（非重なり
+  `rail.left()>=openDock.right()`＋`widgetAt` 実描画）/T-C1b（D&D 順序破れの能動
+  是正・save→restore 復元）/T-C2（両畳み・extent 復元）で実 OS 実証。コミット
+  `486a94b`＋レビュー反映 `edb87db`（実バグ0・#15 realgui 更新漏れ1件を追加是正）。
+  **§3 訂正（Task 4 実測で確定）**: 当初「片方折りたたみはプロット幅不変」と記述
+  したが厳密には不正確（wrapper 幅測定に隠れていた）— 実際は片方折りたたみで
+  プロットがレール幅ぶん（実測 ~24px）僅かに縮み、両方折りたたみでも viewport が
+  ~4px 縮む（候補 A のレールは空でも `QDockWidget` として splitter/frame 分の実
+  幅を要求するため。旧 `CentralWithRails` の中央オーバーレイは占有ゼロだった —
+  新規の退行ではなく候補 A 採用に伴う pre-existing コストの顕在化）。真の
+  central 幅完全維持（central と rail の joint リサイズ）は本増分のスコープ外の
+  follow-up として起票済み（`task_bd63c2f2`）。
+  **凍結カタログ（Task 4）**: merge-base（本ブランチ分岐直前の main tip・一時
+  `git worktree` で撮影しノイズを排除）と比較し、per-state 差分が想定内に限定
+  されることを実測で確認 — **#14 の列幅 pin 要因はツリー（`tree.sizeHint()=256px`）
+  と確定**（ヘッダー/タイトルバーいずれも下回るため実 `channel_dock.width()` は
+  現行コード/旧テンプレ文言/旧コード忠実再現〔文言＋wordWrap 無し〕の3条件で
+  すべて 258px と同一。よって 02-05 は `--crop-meta` 完全一致＝T-B1 の担保どおり
+  viewport 非実証、通常比較はヘッダーテキスト領域限定の差分のみ）。**#17 の
+  09_collapsed は viewport 実測で変化**（`{w:912,h:772}→{w:908,h:768}`・
+  `--crop-meta` 相違）— 上記コスト顕在化のため 09 を再ベースライン。**新規状態
+  `10_collapse_one`**（`window._collapse_dock(window.channel_dock)` のみ）を
+  `capture_ui_screenshots.py` へ追加し、レールが画面右端・開いている File ドック
+  がその内側に描画されることを目視確認（realgui T-C1 の非重なり実測と整合する
+  二次のピクセル凍結）。**凍結ベースライン更新済み**（`screenshots_catalog_dark/light`
+  両テーマを本ブランチ撮影へ全面差し替え・02-05 はヘッダー文言差分のみ／09 は
+  ~4px viewport 縮小のみ／01・06・07・08・10（新規）は完全一致 or 想定内・再撮影で
+  決定性 exit 0 実証、通常比較/`--crop-meta` とも両テーマ）。realgui フル
+  101 passed（+3 は単体では pass する既知の一括実行限定フレーク
+  `test_hit_targets.py::test_chevron_already_meets_24px_height`・
+  `test_hit_targets.py::test_tab_close_button_extended_hit_removes_tab`・
+  `test_expansion_dialog_realinput.py::test_bottom_checkbox_reachable_by_real_wheel_then_ok`
+  — D-3/E-0+E-2/F-0 で既に記録済みの「51ファイル一括実行でのみ発生する実行順
+  依存フォント計量ドリフト」クラスタと同一・本増分と無関係）。**claude.ai/design
+  への同期は対象外**（トークン変更なし）。設計は
+  [memo-ux-cleanup spec](superpowers/specs/2026-07-23-memo-ux-cleanup-design.md)。
+  **follow-up**: `task_bd63c2f2`（片方折りたたみの central-width ~24px drift の
+  真の解決＝central と rail の joint リサイズ調査）。
+  **Task 5（#14 拡張）**: Task 4 実測で確定した真因（列幅 pin はツリー
+  `tree.sizeHint()` が Qt `QAbstractScrollArea` のハードコード既定
+  `QSize(256,192)` を返すことに由来 — ヘッダー/タイトルバーいずれも非律速。
+  Task 1 のヘッダーからのファイル名除去だけでは最小幅は不変）を受け、
+  ツリー/リストを縮小可能化。`_ChannelTree`/`_FileList`
+  （`channel_browser_view.py`/`file_browser_view.py` の薄い `QTreeView`/
+  `QListView` 派生）で `sizeHint()` の width 成分のみ差し替え＋
+  `header().setMinimumSectionSize(20)`＋名前列 `setTextElideMode(ElideRight)`
+  を明示。**file_browser 側も対で必須**と実測発覚（cross-file 必然 — file_dock
+  と channel_dock は同一カラムに縦積みのため、片方だけ直しても他方の Qt
+  既定 256px が列幅を pin し効果が相殺される。brief のファイルスコープ外
+  だったがユーザー追認済み）。既定構築幅は当初 258→181px（真の床＝
+  `CollapsibleDockTitleBar` 律速・元々ドラッグ到達可能）まで詰め切ったが、
+  ユーザー決定で追調整コミットにて中間値 **258→200px**（最小 181px は維持・
+  長い信号名が過度に省略されないバランス）へ調整。コミット `01c7447`
+  （縮小可能化）＋`241335d`（既定幅を中間値へ調整）。**凍結カタログ 01-05**
+  （File/Channel ブラウザ幅の変化に伴うプロット viewport 縮小）を両テーマ
+  再ベースライン（06-10 は列幅の影響を受けず完全一致・不変）。realgui は
+  実マウスドラッグが既知のハングリスク（[[gui_realgui_drag_qtimer_hang]]
+  と同種の共有機ハングを実際に発生・安全のため断念）のため `resizeDocks`
+  （実ドラッグと同一 `QDockAreaLayout` エンジンを駆動する正規 API）で
+  既定幅/床/再拡大を real display 実測で代替担保。**follow-up**: #17 の
+  ~24px プロット drift（`task_bd63c2f2`）は本タスク後も継続 open。

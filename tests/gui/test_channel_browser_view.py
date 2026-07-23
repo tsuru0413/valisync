@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt
+import pytest
+from PySide6.QtCore import QItemSelectionModel, QModelIndex, QPoint, Qt
 from pytestqt.qtbot import QtBot
 
 from valisync.core.models import Delimiter, FormatDefinition
@@ -290,14 +291,60 @@ class TestActiveFileSync:
 # ─── Header / Empty-State Tests (FB-05/08/09) ────────────────────────────────
 
 
-def test_header_label_shows_active_file_and_counts(
+def test_header_label_shows_counts_without_filename(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
+    """#14: ヘッダーは件数のみ・ファイル名は表示しない (どのファイルかは右上
+    ファイルブラウザの選択で判別 — spec §1)。"""
     app_vm, vm, key = _loaded_vm(tmp_path)
     app_vm.set_active_file(key)
     view = _make_view(qtbot, vm)
-    assert "d.csv" in view.header_label.text()
+    assert "d.csv" not in view.header_label.text()
     assert "2 信号中 2 件を表示" in view.header_label.text()
+
+
+def test_header_label_word_wrap_enabled(qtbot: QtBot, tmp_path: Path) -> None:
+    """#14: 長い件数文言でヘッダーが2行化してもレイアウトが破綻しない保険
+    (spec §1)。narrow width では wide width より必要な高さが増える (実際に
+    折り返しが機能していることの担保 — QLabel.heightForWidth で確認)。"""
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    view = _make_view(qtbot, vm)
+    assert view.header_label.wordWrap() is True
+
+    long_text = S.CHANNEL_HEADER_COUNT_TMPL.format(total=1234567, shown=1234567)
+    view.header_label.setText(long_text)
+    narrow_height = view.header_label.heightForWidth(80)
+    wide_height = view.header_label.heightForWidth(600)
+    assert narrow_height > wide_height
+
+
+def test_min_width_smaller_without_filename_header(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """#14: 相対比較 — ヘッダーからファイル名を除去 (かつ word-wrap 化) した現行
+    実装は、同一ウィジェットが「ファイル名込み・nowrap」(旧挙動) だった場合より
+    view.minimumSizeHint().width() が小さい方向にある。絶対 px は環境
+    (フォント/DPI) 依存のため比較対象にしない — 相対の大小関係のみを検証する。
+    実機で channel_dock 自体の最小幅の床を最終的に決めるのは
+    CollapsibleDockTitleBar (~181px・spec §1「最小幅の床」) であり、本テストは
+    ヘッダー自身がその床を超えて幅を押し上げなくなったことのみを担保する。"""
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    view = _make_view(qtbot, vm)
+
+    new_width = view.minimumSizeHint().width()
+
+    # Same widget instance, simulating the pre-fix rendering (filename
+    # prefix + no wrap) to get an honest "what it used to require" baseline
+    # instead of duplicating the old template string.
+    view.header_label.setWordWrap(False)
+    view.header_label.setText(
+        f"{app_vm.session.source_name(key)} — 2 信号中 2 件を表示"
+    )
+    old_width = view.minimumSizeHint().width()
+
+    assert new_width < old_width
 
 
 def test_placeholder_when_none_selected(qtbot: QtBot, tmp_path: Path) -> None:
@@ -403,6 +450,114 @@ def test_context_menu_add_still_emits(qtbot: QtBot, tmp_path: Path) -> None:
     add_action = next(
         a for a in menu.actions() if a.text() == S.ACTION_ADD_TO_ACTIVE_PANEL
     )
+    with qtbot.waitSignal(view.add_to_panel_requested, timeout=1000):
+        add_action.trigger()
+
+
+# ─── Context menu: 信号プロパティを表示 (#15 — position-based) ───────────────
+# spec §2 / task-2-brief: 右クリックの対象は selected_signal_keys() (選択ベース)
+# ではなく indexAt(pos) の hit leaf (位置ベース) -- 右クリックは選択を変えない
+# ため、選択ベースだと「右クリックした行」でなく「既存選択行」がプレビューされる、
+# という 2 つの実バグを構造回避する (sabotage 2 種で下に実証)。
+
+
+def test_show_properties_uses_click_position_not_existing_selection(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """#15 Step 1: leaf 位置で右クリック -> 有効 -> triggered でその行の key が
+    preview_requested で発火する。別行 (Arr[1]) を選択中でも、右クリックした
+    Scalar 行の key が使われる (選択でなく位置が真実)。"""
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+
+    # Select a DIFFERENT leaf than the one we are about to right-click, so a
+    # selection-based implementation and a position-based one disagree.
+    parent = view.model.index(0, 0, QModelIndex())  # array parent (Arr)
+    other_leaf = view.model.index(1, 0, parent)  # Arr[1]
+    view.tree.selectionModel().select(
+        other_leaf,
+        QItemSelectionModel.SelectionFlag.Select
+        | QItemSelectionModel.SelectionFlag.Rows,
+    )
+
+    scalar_index = view.model.index(1, 0, QModelIndex())  # top-level "Scalar" leaf
+    pos = view.tree.visualRect(scalar_index).center()
+
+    menu = view.build_context_menu(pos)
+    show_props = next(
+        a for a in menu.actions() if a.text() == S.ACTION_SHOW_SIGNAL_PROPERTIES
+    )
+    assert show_props.isEnabled()
+    with qtbot.waitSignal(view.preview_requested, timeout=1000) as spy:
+        show_props.trigger()
+    assert spy.args[0].endswith("::Scalar")  # the CLICKED row, not the selected one
+
+
+def test_show_properties_absent_for_parent_click_position(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """#15: parent(array) ノード上で右クリック -> 非表示 (無効化条件)。"""
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+    parent_index = view.model.index(0, 0, QModelIndex())  # array parent, non-leaf
+    pos = view.tree.visualRect(parent_index).center()
+
+    menu = view.build_context_menu(pos)
+    assert not any(a.text() == S.ACTION_SHOW_SIGNAL_PROPERTIES for a in menu.actions())
+
+
+def test_show_properties_absent_for_blank_area(qtbot: QtBot, tmp_path: Path) -> None:
+    """#15: 空白部 (どの行にも当たらない) で右クリック -> 非表示。"""
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+    blank_pos = QPoint(5, 100_000)  # far below any row
+
+    menu = view.build_context_menu(blank_pos)
+    assert not any(a.text() == S.ACTION_SHOW_SIGNAL_PROPERTIES for a in menu.actions())
+
+
+def test_show_properties_absent_when_selection_based_would_misfire(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """#15 sabotage-2 guard: parent + leaf を同時選択していても、右クリック位置
+    が leaf でなければ (空白部) 無効のまま -- selected_signal_keys() は parent
+    を None 除外するため、選択ベースの有効化判定だと「選択数 == 1」に見えて
+    誤って有効化してしまう罠を、位置ベース判定で構造的に避ける。"""
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+    parent = view.model.index(0, 0, QModelIndex())
+    leaf_child = view.model.index(0, 0, parent)  # Arr[0]
+
+    selection_model = view.tree.selectionModel()
+    flags = (
+        QItemSelectionModel.SelectionFlag.Select
+        | QItemSelectionModel.SelectionFlag.Rows
+    )
+    selection_model.select(parent, flags)
+    selection_model.select(leaf_child, flags)
+    assert len(view.selected_signal_keys()) == 1  # parent excluded -> looks like 1
+
+    blank_pos = QPoint(5, 100_000)  # right-click somewhere with no item
+    menu = view.build_context_menu(blank_pos)
+    assert not any(a.text() == S.ACTION_SHOW_SIGNAL_PROPERTIES for a in menu.actions())
+
+
+def test_context_menu_add_still_emits_regardless_of_click_position(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """Regression: 「アクティブパネルへ追加」は選択ベース(複数選択前提)のまま
+    -- #15 の位置ベース化は「信号プロパティを表示」のみに閉じており、click
+    position が空白でも既存の Add 項目は選択に基づき有効のまま発火する。"""
+    _app_vm, view, _key = _make_view_with_arrays(qtbot, tmp_path)
+    parent = view.model.index(0, 0, QModelIndex())
+    child = view.model.index(0, 0, parent)
+    view.tree.selectionModel().select(
+        child,
+        QItemSelectionModel.SelectionFlag.Select
+        | QItemSelectionModel.SelectionFlag.Rows,
+    )
+    blank_pos = QPoint(5, 100_000)
+    menu = view.build_context_menu(blank_pos)
+    add_action = next(
+        a for a in menu.actions() if a.text() == S.ACTION_ADD_TO_ACTIVE_PANEL
+    )
+    assert add_action.isEnabled()
     with qtbot.waitSignal(view.add_to_panel_requested, timeout=1000):
         add_action.trigger()
 
@@ -636,3 +791,164 @@ def test_sampling_reflects_real_leaf_units_once_group_materialized(
     after_samples = view._sample_unit_values(50)
     assert long_unit in after_samples
     assert view.tree.columnWidth(1) > width_before
+
+
+# ─── Shrinkable tree / lower minimum dock width (Task 5 -- #14 拡張) ──────────
+# spec §1.5: Task 4 実測で channel_dock の既定構築幅の律速はヘッダーでなく
+# ツリー本体 sizeHint(256px) と判明 (実測: QTreeView.sizeHint() は
+# QAbstractScrollArea の汎用既定値 QSize(256, 192) をそのまま返し、内容・
+# 列幅・resizeMode に一切依存しない -- 列を Interactive にしても
+# resizeSection で詰めても sizeHint は 256 のまま、実測で確認済み)。ツリーの
+# 実 minimumSizeHint はそもそも遥かに小さい (offscreen で 70px 級) ため、
+# 真の「ドラッグでどこまで詰められるか」の床は元々 CollapsibleDockTitleBar
+# 側だった。本増分は sizeHint の width 成分だけを差し替え、既定構築幅を
+# その床に近づける。
+
+
+def test_tree_sizehint_width_below_qt_scrollarea_default(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """tree.sizeHint().width() が Qt の汎用既定 256px を下回ること。
+
+    256 は QAbstractScrollArea のハードコード既定値 (フォント/DPI 非依存 --
+    素の QTreeView で実測済み) なので、この比較は環境非依存で決定的。"""
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    view = _make_view(qtbot, vm)
+    assert view.tree.sizeHint().width() < 256
+
+
+def test_channel_dock_default_width_below_tree_sizehint_pin(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """実 MainWindow で channel_dock の既定構築幅 (何もドラッグしない状態)
+    が 258px (= 256px ツリー既定 sizeHint + 枠 2px) より有意に小さいこと。
+
+    258px という基準値はテキスト内容やフォントに一切依存しない (Qt の
+    ハードコード既定 256 由来) ので、offscreen (CI) でも実機と同じ数値で
+    決定的に再現する -- 本テストの honest-RED/GREEN はここで担保する。
+    実際にタイトルバー律速の ~181px 近傍まで詰められるかはフォント依存の
+    絶対値になるため、その確認は realgui (Step 4) に委ねる。
+    """
+    from valisync.gui.viewmodels.app_viewmodel import AppViewModel as _AppVM
+    from valisync.gui.views.main_window import MainWindow
+
+    app_vm, key = _setup_app(tmp_path)
+    app_vm.set_active_file(key)
+    assert isinstance(app_vm, _AppVM)
+
+    mw = MainWindow(app_vm)
+    qtbot.addWidget(mw)
+    mw._workbench_started = True
+    mw._update_central()
+    mw.resize(1400, 900)
+    mw.show()
+    qtbot.wait(100)
+
+    assert mw.channel_dock.width() < 258
+
+
+def test_tree_elide_mode_explicit_right(qtbot: QtBot, tmp_path: Path) -> None:
+    """setTextElideMode(ElideRight) が明示されていること (spec §1.5 の
+    「長い名前は…で省略」)。Qt の既定も ElideRight だが、undocumented な
+    既定への暗黙依存にしない (brief 明記の要求)。"""
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    view = _make_view(qtbot, vm)
+    assert view.tree.textElideMode() == Qt.TextElideMode.ElideRight
+
+
+def test_tree_minimum_section_size_explicit_and_small(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """header().minimumSectionSize() が明示的な小さい固定値であること
+    (spec §1.5「header().setMinimumSectionSize(小)」)。Qt の既定はフォント/
+    DPI 依存 (16-23px 級) なので、明示固定は環境非依存性のための保険。"""
+    from valisync.gui.views.channel_browser_view import _TREE_MIN_SECTION_SIZE
+
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    view = _make_view(qtbot, vm)
+    assert view.tree.header().minimumSectionSize() == _TREE_MIN_SECTION_SIZE
+    assert _TREE_MIN_SECTION_SIZE < 32  # 明示的に「小さい」ことも担保
+
+
+def test_tree_sizehint_sabotage_reverts_to_qt_default_256(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """sabotage: _ChannelTree.sizeHint の差し替えを無効化 (素の QTreeView の
+    実装を素通しする) と Qt の汎用既定 256px へ戻ること — 「詰められる」の
+    正体が本当にこの sizeHint override であることの証明 (修正を無かった
+    ことにすると honest-RED の 256px 側へ戻る)。"""
+    from PySide6.QtCore import QSize as _QSize
+    from PySide6.QtWidgets import QTreeView as _QTreeView
+
+    from valisync.gui.views.channel_browser_view import _ChannelTree
+
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    view = _make_view(qtbot, vm)
+    assert view.tree.sizeHint().width() < 256  # sanity: fix is active
+
+    monkeypatch.setattr(_ChannelTree, "sizeHint", _QTreeView.sizeHint)
+    assert view.tree.sizeHint() == _QSize(256, 192)
+
+
+# ─── Mid-point default width (Task 5 追調整・ユーザー決定) ────────────────────
+# ユーザー決定: 既定構築幅は「ドラッグで詰められる真の最小 (~181px)」まで
+# 詰め切らず、中間の ~200px にする (長い信号名が過度に省略されないバランス)。
+# minimumSizeHint 側 (真の最小・タイトルバー律速) は変更していない --
+# CollapsibleDockTitleBar 側の変更を要する話ではないため、ここで直接は
+# 検証しない (真の最小到達は上記 test_channel_dock_default_width_below_tree_
+# sizehint_pin および realgui 側の resizeDocks 実測に委ねる)。
+
+
+def test_tree_sizehint_width_widened_from_tight_minimum() -> None:
+    """回帰ガード: _TREE_SIZEHINT_WIDTH が当初タイトな値 (120) へ巻き戻って
+    いないこと。この定数を大きくしたこと自体が本追調整の変更点。"""
+    from valisync.gui.views.channel_browser_view import _TREE_SIZEHINT_WIDTH
+
+    assert _TREE_SIZEHINT_WIDTH > 150  # 旧タイトな値(120)より明確に大きい
+    assert _TREE_SIZEHINT_WIDTH < 256  # Qt 既定 256px へ逆戻りしていない
+
+
+def test_file_list_sizehint_width_widened_from_tight_minimum() -> None:
+    """file_dock 側 (_FILE_LIST_SIZEHINT_WIDTH) も同じ回帰ガード -- 両ファイル
+    は同一カラムに縦積みのため対で動かす必要がある (Task 5 のクロスファイル
+    ブロッカーと同型)。"""
+    from valisync.gui.views.file_browser_view import _FILE_LIST_SIZEHINT_WIDTH
+
+    assert _FILE_LIST_SIZEHINT_WIDTH > 150
+    assert _FILE_LIST_SIZEHINT_WIDTH < 256
+
+
+# NOTE: 「_TREE_SIZEHINT_WIDTH を動かすと channel_dock の既定構築幅が連動して
+# 動く」ことの直接実証は offscreen (QT_QPA_PLATFORM=offscreen) では書けない --
+# 実測したところ offscreen は "This plugin does not support
+# propagateSizeHints()" という Qt 自身の警告どおり、sizeHint を 120/198/400
+# のどれに変えても channel_dock.width() が常に同じ値 (230) に張り付き、
+# 変化を一切反映しない (offscreen プラットフォームプラグインの構造的制約 --
+# memory gui_dock_toggle_width_change_needs_real_display_and_layout と同根)。
+# そのため、この因果関係の直接証明は realgui 側 (real display・resizeDocks
+# 駆動・マウス操作なし) に置く --
+# tests/realgui/test_channel_dock_min_width_realclick.py の
+# test_channel_dock_default_width_tracks_sizehint_widening 参照。
+
+
+def test_file_browser_list_view_also_needed_the_same_fix(qtbot: QtBot) -> None:
+    """cross-file finding (Task 5 Step 1 実測): channel_dock と file_dock は
+    同一カラムに縦積みのため、file_dock 側の QListView が Qt 既定 256px の
+    ままだとカラムの既定幅がそちらに引っ張られ、channel 側だけ直しても
+    channel_dock.width() は下がらなかった (実測で確認・honest-RED を経て
+    file_browser_view.py も対で修正 — spec §1.5 のスコープを実測に基づき
+    拡張)。file_browser_view.list_view 単体でも Qt 既定 256px を下回る
+    ことを回帰ガードする。"""
+    from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+    from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
+    from valisync.gui.views.file_browser_view import FileBrowserView
+
+    app_vm = AppViewModel()
+    vm = FileBrowserVM(app_vm)
+    view = FileBrowserView(vm)
+    qtbot.addWidget(view)
+    assert view.list_view.sizeHint().width() < 256

@@ -41,10 +41,9 @@ def _write_csv(dir_path: Path) -> Path:
 def test_starts_on_welcome(qtbot: QtBot, tmp_path: Path) -> None:
     mw = _mw(qtbot, tmp_path)
     assert mw.showing_welcome() is True
-    # central_stack は CentralWithRails (辺レール枠) に包まれ中央に据わる
-    # (edge-aware-dock-collapse Task 1)。旧「centralWidget() is central_stack」を
-    # 「stack が central widget の子」へ更新。
-    assert mw.central_stack.parentWidget() is mw.centralWidget()
+    # candidate A (#17): 折りたたみレールを最外ドック化したため中央ラッパ
+    # (CentralWithRails) は廃止。central_stack を直接 central widget に据える。
+    assert mw.centralWidget() is mw.central_stack
 
 
 def test_first_load_swaps_to_graph_and_unload_keeps_it(

@@ -306,18 +306,22 @@ def _loaded_vm(tmp_path: Path) -> tuple[AppViewModel, ChannelBrowserVM, str]:
 
 
 def test_header_none_selected(tmp_path: Path) -> None:
+    """#14: 未選択分岐も strings 経由 (S.CHANNEL_HEADER_NO_FILE) — 旧直書き
+    "ファイル未選択" からの是正 (D-1 の非対称を解消)。"""
     app_vm, vm, _key = _loaded_vm(tmp_path)
     app_vm.set_active_file(None)
-    assert vm.header_text() == "ファイル未選択"
+    assert vm.header_text() == S.CHANNEL_HEADER_NO_FILE
     assert vm.empty_state() == "none_selected"
 
 
 def test_header_counts_and_has_rows(tmp_path: Path) -> None:
+    """#14: ヘッダーはファイル名を含まず件数のみ。どのファイルかは右上
+    ファイルブラウザの選択で判別 (spec §1)。"""
     app_vm, vm, key = _loaded_vm(tmp_path)
     app_vm.set_active_file(key)
-    assert vm.header_text() == S.CHANNEL_HEADER_COUNT_TMPL.format(
-        name="d.csv", total=2, shown=2
-    )
+    header = vm.header_text()
+    assert header == S.CHANNEL_HEADER_COUNT_TMPL.format(total=2, shown=2)
+    assert "d.csv" not in header
     assert vm.empty_state() == "has_rows"
 
 
@@ -327,9 +331,9 @@ def test_no_match_state_and_query(tmp_path: Path) -> None:
     vm.set_filter("xyz123")
     assert vm.empty_state() == "no_match"
     assert vm.filter_query() == "xyz123"
-    assert vm.header_text() == S.CHANNEL_HEADER_COUNT_TMPL.format(
-        name="d.csv", total=2, shown=0
-    )
+    header = vm.header_text()
+    assert header == S.CHANNEL_HEADER_COUNT_TMPL.format(total=2, shown=0)
+    assert "d.csv" not in header
 
 
 def test_no_channels_state(tmp_path: Path, monkeypatch) -> None:
@@ -340,7 +344,9 @@ def test_no_channels_state(tmp_path: Path, monkeypatch) -> None:
     # session 面で直接再現する(spec §4.2)。
     monkeypatch.setattr(app_vm.session, "group_signals", lambda _key: [])
     assert vm.empty_state() == "no_channels"
-    assert vm.header_text() == S.CHANNEL_HEADER_EMPTY_TMPL.format(name="d.csv")
+    header = vm.header_text()
+    assert header == S.CHANNEL_HEADER_EMPTY_TMPL
+    assert "d.csv" not in header
 
 
 # ─── FU-11 Performance: Precompute + Memo Tests ──────────────────────────────

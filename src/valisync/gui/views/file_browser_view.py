@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QPoint, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QLabel,
     QListView,
@@ -25,6 +25,30 @@ from valisync.gui.views.file_row_spinner import ReleasingSpinnerDelegate
 
 if TYPE_CHECKING:
     from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
+
+# gui-memo-ux-cleanup Task 5 (#14 拡張・spec §1.5) 実測で判明: QListView も
+# QTreeView と同じ QAbstractScrollArea 経由で sizeHint() が中身非依存の
+# QSize(256, 192) 固定値を返す (実測で確認済み)。file_dock と channel_dock は
+# 同一カラムに縦積みのため、どちらか一方でもこの既定値が残っていると
+# カラムの既定構築幅がそちらに引っ張られて 258px に張り付く — channel 側
+# だけを直しても file 側がそのままでは効果が相殺される (Task 5 実測で発覚
+# したブロッカー・当初のタスク範囲は channel_browser_view.py のみだったが
+# 根本解決のため対で修正)。
+#
+# Task 5 追調整 (ユーザー決定): 既定構築幅は中間の ~200px にする (181px は
+# minimumSizeHint 経由の真の最小幅として維持・ドラッグで到達可能なまま)。
+# _ChannelTree と同じ 198 (実測: 198 -> file_dock.width()==200)。
+_FILE_LIST_SIZEHINT_WIDTH = 198  # px -- _ChannelTree の同値と揃える
+
+
+class _FileList(QListView):
+    """sizeHint() の width 成分だけを差し替える薄い QListView 派生 (Task 5)。
+
+    channel_browser_view._ChannelTree と同型の修正 -- height は super() の
+    まま、width だけ Qt の汎用既定 256px から詰めた値へ差し替える。"""
+
+    def sizeHint(self) -> QSize:
+        return QSize(_FILE_LIST_SIZEHINT_WIDTH, super().sizeHint().height())
 
 
 class FileBrowserView(QWidget):
@@ -55,7 +79,7 @@ class FileBrowserView(QWidget):
         self.model = FileListModel(vm, self)
 
         # UI Setup
-        self.list_view = QListView()
+        self.list_view = _FileList()
         self.list_view.setModel(self.model)
         # CustomContextMenu so a real right-click on the list emits
         # customContextMenuRequested (handled by _show_context_menu). Overriding

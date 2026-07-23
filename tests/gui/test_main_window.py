@@ -1338,3 +1338,59 @@ def test_immediate_label_b_uses_chrome_cursor_b_not_cursor_b(qtbot):
         assert DARK.colors.cursor_b.hex not in sheet
     finally:
         set_active(DARK)
+
+
+# ---------------------------------------------------------------------------
+# レール最外ドックの宣言的ガードレール (candidate A・#17・Task 3 レビュー Minor 2)
+#
+# T-C1/T-C1b/T-C2 (realgui) は実レイアウト効果 (最外配置・is_empty 等) を検証
+# するが、レールドック自体の宣言的設定 (非移動/非クローズ/非フロート・
+# objectName 安定) は headless で安価に施錠できるのにテストが無かった。
+# ここは Qt ウィジェットの属性読み取りのみで実ペイントを要さないため Layer B
+# で十分 — 将来 `_rail_docks` 構築のどこかが誤って features/allowedAreas/
+# objectName を崩す退行を機械的に検出する。
+# ---------------------------------------------------------------------------
+
+
+def test_rail_docks_are_non_movable_non_closable_non_floatable(qtbot):
+    from PySide6.QtWidgets import QDockWidget
+
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    for edge, rail_dock in win._rail_docks.items():
+        assert (
+            rail_dock.features() == QDockWidget.DockWidgetFeature.NoDockWidgetFeatures
+        ), f"edge={edge}: レールドックが移動/クローズ/フロート可能になっている"
+
+
+def test_rail_docks_have_stable_object_names(qtbot):
+    from PySide6.QtCore import Qt
+
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    expected = {
+        Qt.DockWidgetArea.LeftDockWidgetArea: "collapse_rail_left",
+        Qt.DockWidgetArea.RightDockWidgetArea: "collapse_rail_right",
+        Qt.DockWidgetArea.BottomDockWidgetArea: "collapse_rail_bottom",
+    }
+    for edge, rail_dock in win._rail_docks.items():
+        assert rail_dock.objectName() == expected[edge], (
+            f"edge={edge}: objectName が saveState/restoreState 互換の既定値から"
+            f"ずれている (got={rail_dock.objectName()!r})"
+        )
+
+
+def test_rail_docks_allowed_areas_pinned_to_own_edge(qtbot):
+    from valisync.gui.app import build_main_window
+
+    win = build_main_window()
+    qtbot.addWidget(win)
+    for edge, rail_dock in win._rail_docks.items():
+        assert rail_dock.allowedAreas() == edge, (
+            f"edge={edge}: レールドックが自辺以外への迷子移動を許容している"
+            f"(allowedAreas={rail_dock.allowedAreas()!r})"
+        )
