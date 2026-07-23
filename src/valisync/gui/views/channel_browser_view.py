@@ -107,6 +107,10 @@ class ChannelBrowserView(QWidget):
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
         self.header_label = QLabel(self)
+        # #14: no filename prefix anymore, but keep this as a low-cost
+        # insurance so an unusually long count message can wrap instead of
+        # pinning the dock's minimum width (spec §1).
+        self.header_label.setWordWrap(True)
         self.placeholder_label = QLabel(self)
         self.placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.placeholder_label.setWordWrap(True)

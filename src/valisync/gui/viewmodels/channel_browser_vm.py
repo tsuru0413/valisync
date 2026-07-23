@@ -172,36 +172,43 @@ class ChannelBrowserVM(Observable):
 
     # ─── Header / empty-state (FB-05/09) ────────────────────────────────────
 
-    def _group_total(self) -> tuple[str, int] | None:
-        """Return (basename, total channel count) for the active file, or None."""
+    def _group_total(self) -> int | None:
+        """Return the active file's total channel count, or None (no file active,
+        or its key was already dropped from the session — FU-22 B).
+
+        #14: this no longer resolves the file's display name — the header
+        (the only former consumer of it) dropped the filename prefix, and
+        which file is active is now shown by the FileBrowser's own selection
+        highlight instead.
+        """
         active_key = self._app_vm.active_file_key
         if not active_key:
             return None
         try:
             self._ensure_prep()  # prep hit なら追加 fetch なし
-            name = self._app_vm.session.source_name(active_key)
         except KeyError:
             return None
-        return name, len(self._prep)
+        return len(self._prep)
 
     def header_text(self) -> str:
-        """One-line context header: which file, how many shown of how many."""
-        info = self._group_total()
-        if info is None:
-            return "ファイル未選択"
-        name, total = info
+        """One-line context header: how many signals are shown of how many.
+
+        #14: the header no longer names the active file — which file is
+        active is shown by the FileBrowser's own selection highlight instead.
+        """
+        total = self._group_total()
+        if total is None:
+            return S.CHANNEL_HEADER_NO_FILE
         if total == 0:
-            return S.CHANNEL_HEADER_EMPTY_TMPL.format(name=name)
-        return S.CHANNEL_HEADER_COUNT_TMPL.format(
-            name=name, total=total, shown=self.shown_count()
-        )
+            return S.CHANNEL_HEADER_EMPTY_TMPL
+        return S.CHANNEL_HEADER_COUNT_TMPL.format(total=total, shown=self.shown_count())
 
     def empty_state(self) -> str:
         """Why the list is empty: none_selected / no_channels / no_match / has_rows."""
-        info = self._group_total()
-        if info is None:
+        total = self._group_total()
+        if total is None:
             return "none_selected"
-        if info[1] == 0:
+        if total == 0:
             return "no_channels"
         if self.shown_count() == 0:
             return "no_match"

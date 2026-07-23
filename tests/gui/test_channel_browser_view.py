@@ -290,14 +290,60 @@ class TestActiveFileSync:
 # ─── Header / Empty-State Tests (FB-05/08/09) ────────────────────────────────
 
 
-def test_header_label_shows_active_file_and_counts(
+def test_header_label_shows_counts_without_filename(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
+    """#14: ヘッダーは件数のみ・ファイル名は表示しない (どのファイルかは右上
+    ファイルブラウザの選択で判別 — spec §1)。"""
     app_vm, vm, key = _loaded_vm(tmp_path)
     app_vm.set_active_file(key)
     view = _make_view(qtbot, vm)
-    assert "d.csv" in view.header_label.text()
+    assert "d.csv" not in view.header_label.text()
     assert "2 信号中 2 件を表示" in view.header_label.text()
+
+
+def test_header_label_word_wrap_enabled(qtbot: QtBot, tmp_path: Path) -> None:
+    """#14: 長い件数文言でヘッダーが2行化してもレイアウトが破綻しない保険
+    (spec §1)。narrow width では wide width より必要な高さが増える (実際に
+    折り返しが機能していることの担保 — QLabel.heightForWidth で確認)。"""
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    view = _make_view(qtbot, vm)
+    assert view.header_label.wordWrap() is True
+
+    long_text = S.CHANNEL_HEADER_COUNT_TMPL.format(total=1234567, shown=1234567)
+    view.header_label.setText(long_text)
+    narrow_height = view.header_label.heightForWidth(80)
+    wide_height = view.header_label.heightForWidth(600)
+    assert narrow_height > wide_height
+
+
+def test_min_width_smaller_without_filename_header(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """#14: 相対比較 — ヘッダーからファイル名を除去 (かつ word-wrap 化) した現行
+    実装は、同一ウィジェットが「ファイル名込み・nowrap」(旧挙動) だった場合より
+    view.minimumSizeHint().width() が小さい方向にある。絶対 px は環境
+    (フォント/DPI) 依存のため比較対象にしない — 相対の大小関係のみを検証する。
+    実機で channel_dock 自体の最小幅の床を最終的に決めるのは
+    CollapsibleDockTitleBar (~181px・spec §1「最小幅の床」) であり、本テストは
+    ヘッダー自身がその床を超えて幅を押し上げなくなったことのみを担保する。"""
+    app_vm, vm, key = _loaded_vm(tmp_path)
+    app_vm.set_active_file(key)
+    view = _make_view(qtbot, vm)
+
+    new_width = view.minimumSizeHint().width()
+
+    # Same widget instance, simulating the pre-fix rendering (filename
+    # prefix + no wrap) to get an honest "what it used to require" baseline
+    # instead of duplicating the old template string.
+    view.header_label.setWordWrap(False)
+    view.header_label.setText(
+        f"{app_vm.session.source_name(key)} — 2 信号中 2 件を表示"
+    )
+    old_width = view.minimumSizeHint().width()
+
+    assert new_width < old_width
 
 
 def test_placeholder_when_none_selected(qtbot: QtBot, tmp_path: Path) -> None:

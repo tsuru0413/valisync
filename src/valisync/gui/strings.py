@@ -225,5 +225,9 @@ SIGNAL_TREE_COL_NAME: Final = "名前"
 SIGNAL_TREE_COL_UNIT: Final = "単位"
 
 # ── VM: チャンネルブラウザヘッダ (channel_browser_vm・G-42/R-07) ─────────────
-CHANNEL_HEADER_EMPTY_TMPL: Final = "{name} — 0 信号"
-CHANNEL_HEADER_COUNT_TMPL: Final = "{name} — {total} 信号中 {shown} 件を表示"
+# #14 (雑メモ解消): ファイル名プレフィックスは廃止 (件数のみ)。どのファイルかは
+# 右上ファイルブラウザの選択で判別する (docs/superpowers/specs/2026-07-23-
+# memo-ux-cleanup-design.md §1)。
+CHANNEL_HEADER_NO_FILE: Final = "ファイル未選択"
+CHANNEL_HEADER_EMPTY_TMPL: Final = "0 信号"
+CHANNEL_HEADER_COUNT_TMPL: Final = "{total} 信号中 {shown} 件を表示"
