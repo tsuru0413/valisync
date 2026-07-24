@@ -275,11 +275,16 @@ def test_sample_read_error_degrades_without_crash(qtbot: QtBot, tmp_path: Path) 
         f"失敗信号の追加後に健全曲線まで消えた。{shot_bad}"
     )
 
-    # (4) 応答性: 追加後もパネル1を実クリックで活性化でき、状態が変わる
-    panel1 = _panel_widget(window, 0, 0)
-    px, py = _phys_center(panel1, QPoint(panel1.width() // 2, 16))
+    # (4) 応答性: 追加後も実クリックが届き、状態が**変わる**
+    #     現在アクティブなのはパネル1 (index 0)。同じパネルを押しても
+    #     set_active_panel は no-op で assert が押下前から真になる (恒真) ため、
+    #     必ず**別**のパネル (index 1) を押して index の遷移を観測する。
+    before = vm.active_panel_index(0)
+    assert before == 0, "前提: 失敗信号を追加したパネル1がアクティブのはず"
+    px, py = _phys_center(panel2, QPoint(panel2.width() // 2, 16))
     _real_click(px, py)
-    qtbot.waitUntil(lambda: vm.active_panel_index(0) == 0, timeout=2000)
-    assert vm.active_panel_index(0) == 0, (
-        f"失敗信号の追加後にパネル実クリックが効かない (イベントループ停止の疑い)。{shot_bad}"
+    qtbot.waitUntil(lambda: vm.active_panel_index(0) == 1, timeout=2000)
+    assert vm.active_panel_index(0) == 1, (
+        f"失敗信号の追加後にパネル実クリックが効かない (イベントループ停止の疑い)。"
+        f"クリック前 {before} → 現在 {vm.active_panel_index(0)}。{shot_bad}"
     )

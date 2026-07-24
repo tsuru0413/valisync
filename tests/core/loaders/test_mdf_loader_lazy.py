@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -22,18 +23,62 @@ def test_load_leaves_all_signals_unmaterialized() -> None:
 
 
 def test_lazy_values_equal_eager_select_for_sample_signals() -> None:
+    """遅延読みした値が現行 eager 意味論の select と厳密一致する (増分の中核契約).
+
+    ``LazyMdfValues.array()`` の select オプションが一つでもずれると値が無言で
+    壊れる — 特に ``raw=True`` は数値変換 (factor/offset) を捨てた生カウントを返し、
+    quick_demo の線形変換チャンネル (group 3/4・conversion_type==1) では 100 倍
+    ずれる。よってこのテストは**変換つきチャンネルを必ず含む**こと自体を
+    assert する (変換なしチャンネルだけでは同じ flip に対して盲目になる)。
+
+    アドレス (base 名/gi/ci/selector) は production が信号に持たせた
+    ``LazyMdfValues`` から取り、**値の読み方**だけを eager select と突き合わせる。
+    """
     result = MdfLoader().load(DEMO, confirm_expansion=None)
     sg = result.signal_group
     assert sg is not None
+
+    # 仮想グループごとに代表を拾う — 先頭 N 本だけだと group 0 に偏り、変換つき
+    # チャンネル (group 3/4) を一本も踏まない。
+    by_group: dict[int, list[Any]] = {}
+    for s in sg.signals:
+        by_group.setdefault(s._values_source._gi, []).append(s)  # type: ignore[union-attr]
+    sampled = [s for sigs in by_group.values() for s in sigs[:4]]
+    assert len(sampled) >= 20, f"代表サンプルが少なすぎる ({len(sampled)} 本)"
+
     m = MDF(str(DEMO))
+    converted = 0
     try:
-        for s in sg.signals[:20]:  # 代表 20 本
-            # s.name は base 名 (namespace 前)。ローカライズ位置は metadata 経由で持つ想定だが
-            # ここでは値の一致のみ検証: 展開して有限一致
-            got = s.values
-            assert got.dtype.kind in "iufb"
+        for s in sampled:
+            src = s._values_source
+            base_name, gi, ci = src._name, src._gi, src._ci
+            selector = src._selector
+            # アドレスが信号名に対応していること (曖昧化 [idx]・展開 [i] を許容)
+            assert s.name == base_name or s.name.startswith(f"{base_name}[")
+
+            asig = m.select(
+                [(base_name, gi, ci)],
+                raw=False,
+                ignore_value2text_conversions=True,
+                copy_master=False,
+            )[0]
+            expected = (
+                dict(_flatten(base_name, asig.samples))[selector[-1]]
+                if selector is not None
+                else asig.samples
+            )
+            np.testing.assert_array_equal(
+                s.values, expected, err_msg=f"遅延値が eager select と不一致: {s.name}"
+            )
+            if m.groups[gi].channels[ci].conversion is not None:
+                converted += 1
     finally:
         m.close()
+
+    assert converted > 0, (
+        "変換つきチャンネルを一本も検証していない — raw=True 化による "
+        "値スケール破壊に対してこのテストが盲目になる"
+    )
 
 
 def test_group_master_equals_get_master() -> None:

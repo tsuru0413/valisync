@@ -5,39 +5,14 @@ from pathlib import Path
 
 import numpy as np
 
+from tests.lazy_stubs import CountingLazy
 from valisync.core.models import Signal, SignalGroup
 from valisync.gui.workers.teardown_service import TeardownService
 
 
-class _CountingLazy:
-    """array() が呼ばれたら記録する遅延ソース (テスト用)."""
-
-    def __init__(self, n: int) -> None:
-        self._n = n
-        self.reads = 0
-        self._cache: np.ndarray | None = None
-
-    @property
-    def is_materialized(self) -> bool:
-        return self._cache is not None
-
-    @property
-    def length(self) -> int:
-        return self._n
-
-    @property
-    def nbytes_if_materialized(self) -> int:
-        return 0 if self._cache is None else self._cache.nbytes
-
-    def array(self) -> np.ndarray:
-        self.reads += 1
-        self._cache = np.zeros(self._n, dtype=np.float64)
-        return self._cache
-
-
-def _lazy_group(n_signals: int, length: int) -> tuple[SignalGroup, list[_CountingLazy]]:
+def _lazy_group(n_signals: int, length: int) -> tuple[SignalGroup, list[CountingLazy]]:
     ts = np.arange(length, dtype=np.float64)
-    srcs = [_CountingLazy(length) for _ in range(n_signals)]
+    srcs = [CountingLazy(length) for _ in range(n_signals)]
     sigs = tuple(
         Signal(
             name=f"s{i}",
