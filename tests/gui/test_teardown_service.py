@@ -110,13 +110,30 @@ class _CountingArr:
         return self._n
 
 
+class _CountingSource:
+    """values_source-like whose .nbytes_if_materialized read is counted.
+
+    Accounting now goes through SampleSource (lazy-load), not sig.values, so
+    the spy must expose the same surface the real teardown code reads.
+    """
+
+    def __init__(self, nbytes: int, counter: list[int]) -> None:
+        self._n = nbytes
+        self._c = counter
+
+    @property
+    def nbytes_if_materialized(self) -> int:
+        self._c[0] += 1
+        return self._n
+
+
 class _SpySignal:
-    """Signal-like carrying counting arrays; not a real Signal (SignalGroup does
+    """Signal-like carrying counting sources; not a real Signal (SignalGroup does
     not type-check its members, so this rides through unmodified)."""
 
     def __init__(self, nbytes: int, counter: list[int]) -> None:
         self.timestamps = _CountingArr(nbytes // 2, counter)
-        self.values = _CountingArr(nbytes // 2, counter)
+        self._values_source = _CountingSource(nbytes // 2, counter)
 
 
 def test_enqueue_is_o1_defers_byte_access_to_drain(qtbot) -> None:

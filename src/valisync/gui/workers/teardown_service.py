@@ -57,7 +57,7 @@ class TeardownService(QObject):
         # enqueue, so enqueue stays O(1). O(remaining) per call -- fine for the
         # small groups in tests; the prod drain-wait polls pending_signals().
         return sum(
-            s.timestamps.nbytes + s.values.nbytes
+            s.timestamps.nbytes + _materialized_value_bytes(s)
             for _key, sigs in self._groups
             for s in sigs
         )
@@ -81,7 +81,7 @@ class TeardownService(QObject):
             key, sigs = self._groups[0]
             while sigs and freed < self._budget:
                 sig = sigs.pop()
-                freed += sig.timestamps.nbytes + sig.values.nbytes
+                freed += sig.timestamps.nbytes + _materialized_value_bytes(sig)
                 self._pending_signals -= 1
                 del sig  # drop the last strong ref -> the arrays free here
             if not sigs:
@@ -90,3 +90,21 @@ class TeardownService(QObject):
                     self._on_finished(key)
         if not self._groups:
             self._timer.stop()
+
+
+def _materialized_value_bytes(sig: Signal) -> int:
+    """未展開の値は 0。展開済み値+Signal 上の派生キャッシュ (float64 昇格等) を計上.
+
+    未展開信号の sig.values を絶対に読まない (読むと遅延ロードを再誘発する)."""
+    total = sig._values_source.nbytes_if_materialized
+    seen: set[int] = set()
+    sv = getattr(sig, "_sorted_view_cache", None)
+    fv = getattr(sig, "_finite_view_cache", None)
+    for pair in (sv, fv):
+        if pair is None:
+            continue
+        for arr in pair:  # (timestamps, values) タプル
+            if id(arr) not in seen:
+                seen.add(id(arr))
+                total += int(arr.nbytes)
+    return total
