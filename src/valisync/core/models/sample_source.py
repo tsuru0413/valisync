@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from valisync.core.loaders.mdf_handle import MdfHandle
 
 
 class SampleReadError(Exception):
@@ -64,3 +67,76 @@ class EagerValues:
 
     def array(self) -> np.ndarray:
         return self._array
+
+
+class LazyMdfValues:
+    """MDF から値配列をオンデマンド読みする SampleSource。
+
+    初回 array() で現行 eager と同一意味論の単一チャンネル select を lock 下で実行し、
+    LD-14 selector があれば該当リーフ列を抽出、native dtype 凍結してキャッシュする。"""
+
+    __slots__ = ("_cache", "_ci", "_gi", "_handle", "_length", "_name", "_selector")
+
+    def __init__(
+        self,
+        handle: MdfHandle,
+        name: str,
+        gi: int,
+        ci: int,
+        length: int,
+        selector: tuple[str, ...] | None = None,
+    ) -> None:
+        self._handle = handle
+        self._name = name
+        self._gi = gi
+        self._ci = ci
+        self._length = length
+        self._selector = selector
+        self._cache: np.ndarray | None = None
+
+    @property
+    def is_materialized(self) -> bool:
+        return self._cache is not None
+
+    @property
+    def length(self) -> int:
+        return self._length
+
+    @property
+    def nbytes_if_materialized(self) -> int:
+        return 0 if self._cache is None else int(self._cache.nbytes)
+
+    def array(self) -> np.ndarray:
+        # 遅延 import: sample_source(model) -> loaders の循環を避ける
+        from valisync.core.loaders.mdf_loader import _flatten
+
+        with self._handle.lock:
+            if self._cache is not None:
+                return self._cache
+            if self._handle.is_closed:
+                raise SampleReadError(
+                    f"信号 '{self._name}' のファイルは既に閉じられています"
+                )
+            try:
+                asig = self._handle.mdf.select(
+                    [(self._name, self._gi, self._ci)],
+                    raw=False,
+                    ignore_value2text_conversions=True,
+                    copy_master=False,
+                )[0]
+                samples = asig.samples
+                if self._selector is not None:
+                    # LD-14: 展開リーフ列を名前一致で取り出す
+                    leaf = dict(_flatten(self._name, samples))
+                    col = leaf[self._selector[-1]]
+                else:
+                    col = np.ascontiguousarray(samples)
+            except SampleReadError:
+                raise
+            except Exception as exc:  # I/O・破損・閉鎖後アクセス等
+                raise SampleReadError(
+                    f"信号 '{self._name}' のサンプル読み取りに失敗しました: {exc}"
+                ) from exc
+            col = _freeze(col)
+            self._cache = col
+            return col
