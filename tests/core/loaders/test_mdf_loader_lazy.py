@@ -36,6 +36,55 @@ def test_lazy_values_equal_eager_select_for_sample_signals() -> None:
         m.close()
 
 
+def test_group_master_equals_get_master() -> None:
+    """遅延ローダーの master が ``MDF.get_master(gi)`` と厳密一致する.
+
+    master は ``get_master`` が開いたハンドルにグループの生レコードブロック全体を
+    キャッシュする (prod_demo で +1,296MB) ため select 経由で読むよう変えた —
+    取得経路を変えても値/長さ/dtype が寸分違わないことをここで固定する。診断
+    (非有限・非単調・重複) も長さ (``LazyMdfValues.length``) もこの配列が土台。
+
+    仮想グループごとに、そのグループ由来の信号が持つ timestamps (グループ内で
+    共有される同一オブジェクト) を ``get_master(gi)`` と突き合わせる。
+    """
+    loader = MdfLoader()
+    result = loader.load(DEMO, confirm_expansion=None)
+    sg = result.signal_group
+    assert sg is not None
+
+    m = MDF(str(DEMO), time_from_zero=False)
+    try:
+        # 信号名 → 属する仮想グループ。ローダーと同じ entries 走査で対応付ける
+        # (曖昧化 [idx]・展開 [i] があるため base 名の前方一致で解決する)。
+        checked = 0
+        for gi in m.virtual_groups:
+            entries = loader._group_entries(m, gi)
+            if not entries:
+                continue
+            base_names = {name for name, _g, _c in entries}
+            produced = next(
+                (
+                    s
+                    for s in sg.signals
+                    if any(
+                        s.name == b or s.name.startswith(f"{b}[") for b in base_names
+                    )
+                ),
+                None,
+            )
+            if produced is None:
+                continue  # 全チャンネルが skip された (非数値/展開上限超) グループ
+            expected = m.get_master(gi)
+            got = produced.timestamps
+            assert got.dtype == np.float64
+            assert len(got) == len(expected)
+            np.testing.assert_array_equal(got, expected)
+            checked += 1
+        assert checked > 0, "検証できた仮想グループが 0 (テストが空回りしている)"
+    finally:
+        m.close()
+
+
 def test_load_failure_path_closes_handle(tmp_path: Path) -> None:
     bad = tmp_path / "broken.mf4"
     bad.write_bytes(b"not an mdf file")

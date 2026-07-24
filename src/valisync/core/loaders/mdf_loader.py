@@ -196,6 +196,14 @@ class MdfLoader:
         "ignore_value2text_conversions": True,
         "copy_master": False,
     }
+    # master 読み専用 (_load_group): 遅延読みと同じ正準オプションで 1 チャンネル
+    # だけ select し timestamps を取る。get_master(gi) と違い開いたハンドルに
+    # 生レコードブロックを残さない (詳細は _load_group のコメント)。
+    _MASTER_OPTIONS: ClassVar[dict[str, Any]] = {
+        "raw": False,
+        "ignore_value2text_conversions": True,
+        "copy_master": False,
+    }
     # LD-02: MDF 3.x/4.x を版横断で受理。版判定は asammdf の内容自動判別に委任。
     # 非MDF/破損 (誤ラベルの .dat 等) は load() の try/except で error 診断化する。
     _SUPPORTED_SUFFIXES: ClassVar[frozenset[str]] = frozenset({".mf4", ".mdf", ".dat"})
@@ -415,10 +423,23 @@ class MdfLoader:
             raise LoadCancelled(f"load cancelled: {resolved_path.name}")
 
         # master を仮想グループ単位で単体読みする (値は読まない)。診断・同一性・
-        # 長さの土台であり、get_master(gi) は旧「先頭チャンネルの select
-        # timestamps」と同一列を返す (freshな writeable 配列・freeze しても
-        # 以降の遅延 select に影響しないことを実測確認)。
-        master = mdf.get_master(gi).astype(np.float64, copy=False)
+        # 長さの土台。
+        #
+        # get_master(gi) は使えない: 遅延読みのためハンドルを開いたままにする本
+        # ローダーでは、get_master がグループの生レコードブロック全体を開いた
+        # ハンドル上にキャッシュし、ハンドルが生きている限り解放されない
+        # (prod_demo.mf4 1.36GB で +1,296MB 保持・master 実体は全グループ計
+        # 0.20MB)。select はフラグメントをストリームし何も保持しない
+        # (同条件で +197MB) — 得られる master 列は get_master と完全一致する
+        # (実測・tests/core/loaders/test_mdf_loader_lazy.py で固定)。
+        #
+        # entries[0] はこのグループの実チャンネル (マスタは included_channels が
+        # 除外済み)。オプションは LazyMdfValues.array() と同じ正準セット。
+        # timestamps は copy_master=False で asammdf 内部を指しうるため、
+        # 参照を残さないよう必ずコピーしてから凍結する。
+        asig = mdf.select([entries[0]], **self._MASTER_OPTIONS)[0]
+        master = np.array(asig.timestamps, dtype=np.float64, copy=True)
+        del asig  # 値サンプルを即時に解放 (master だけを持ち越す)
         if len(master) > 0 and not np.all(np.isfinite(master)):
             # 文言は現行と同一 (チャンネルごとに emit — 既存テスト互換)。
             for base_name, _g, _c in entries:
