@@ -39,13 +39,13 @@ _NAME = st.text(
 def _make_group(names: list[str], fmt: str) -> SignalGroup:
     sigs = tuple(
         Signal(
-            n,
-            np.array([0.0, 1.0], dtype=np.float64),
-            np.array([0.0, 1.0], dtype=np.float64),
-            fmt,
-            "",
-            "",
-            {},
+            name=n,
+            timestamps=np.array([0.0, 1.0], dtype=np.float64),
+            values=np.array([0.0, 1.0], dtype=np.float64),
+            file_format=fmt,
+            bus_type="",
+            source_file="",
+            metadata={},
         )
         for n in names
     )
