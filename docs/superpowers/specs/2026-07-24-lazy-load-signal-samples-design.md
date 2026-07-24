@@ -6,6 +6,27 @@
 > ラッパーのソース共有（`values=sig.values` は全展開）③長さ検証の非展開化④共有ハンドルの
 > スレッド安全⑤offset の遅延ソース共有⑥`SampleReadError` の集中 degrade⑦`get_master` コストの
 > 正直化⑧テスト健全性・メモリ目標の現実化。
+>
+> **実装時の改訂（増分A Task 3b・実測による設計反転）**: 上記⑦で「コストを正直に述べる」
+> としていた `mdf.get_master(gi)` は、**ハンドルを開いたまま保持する本設計では使用禁止**と
+> 判明した。asammdf はグループの**生レコードブロック全体**を開いたハンドル上にキャッシュ
+> して master を供給し、ハンドルが生きている限り解放しない。`prod_demo.mf4`（1.36 GB /
+> 264k 信号 / 5 仮想グループ・ハンドル保持）実測:
+>
+> | master 取得経路 | 時間 | 保持 RSS |
+> |---|---|---|
+> | `get_master(gi)` 全グループ（旧設計） | 1.31 s | **+1,296 MB** |
+> | `select([entry])[0].timestamps` 全グループ（現行） | 0.56 s | **+197 MB** |
+>
+> master 実体は全グループ計 0.20 MB — 差分 ~1.1 GB は純粋な生ブロックキャッシュで、
+> 遅延ロード増分がメモリ目標を外していた主因だった。実 GUI の定常 RSS は
+> **1,897 MB → 868 MB**。値は完全一致する（`test_group_master_equals_get_master` で固定）。
+> 本 spec 内の master 読みの記述はすべて select 経由へ訂正済み（§探索 #1/#5・§ローダー変更 2・
+> §設計判断）。**保持の回帰ガード**は
+> [`tests/core/loaders/test_mdf_loader_master_retention.py`](../../../tests/core/loaders/test_mdf_loader_master_retention.py)
+> だが、**二重 gate（環境変数 `VALISYNC_MEMTEST=1` ＋ 1.36 GB の `demo_data/prod_demo.mf4`
+> 存在・psutil は importorskip）ゆえ CI では決して走らない** — この回帰は**ローカルで
+> 意図的に走らせない限り検出されない**。
 
 ## 背景と目的
 
@@ -29,11 +50,11 @@ valisync は**ファイルを開いた瞬間に全信号のサンプルを圧縮
 
 ## 探索で確定した実現性（消費者マップ）
 
-1. **asammdf 8.8.22 は MDF4 を memory-mapped で開く** — 素の `MDF()` 構築は working set ~0（実測 0.0MB / 0.038s）。**ただしオープン=メタのみは値ブロックに限る話**で、後述のグループ master 読み（`get_master`）は録画 master だとデータブロックを解凍する（レビュー I7・§設計判断参照）。
+1. **asammdf 8.8.22 は MDF4 を memory-mapped で開く** — 素の `MDF()` 構築は working set ~0（実測 0.0MB / 0.038s）。**ただしオープン=メタのみは値ブロックに限る話**で、グループ master 読みは録画 master だとデータブロックを解凍する（レビュー I7・§設計判断参照）。**解凍したものを保持するかどうかは取得経路で決まる** — `get_master` は生ブロックを開いたハンドルにキャッシュし続け、`select` はフラグメントをストリームして何も残さない（Task 3b 実測・改訂履歴の表）。
 2. **レンダーは O(プロット中) で O(loaded) ではない**（確定）— プロットしていない信号は値サンプルに触れない。
 3. **全ロード信号の値サンプルを舐める消費者は無い**（確定）— カーソル/統計＝アクティブパネルのプロット中のみ、エクスポート＝ユーザー選択分のみ、プレビュー＝1 信号のみ。
 4. メタデータ面で唯一「値」を触るのは `len(sig.timestamps)`（サンプル数）だが、本設計は **timestamps（master）を eager 保持**するため無変更で動く。
-5. **オンデマンド値読みの正しいプリミティブ（レビュー C1 反映）**: `mdf.get(..., raw=True)` は**数値変換（factor/offset）を捨て生カウントを返す**ため使用禁止（VehSpd factor 0.01 が 100倍ずれる等・大半の CAN/XCP 信号が無言破損）。`mdf.get(raw=False)` も禁止（`get` に `ignore_value2text_conversions` が無く enum を文字列配列化 → `iufb` フィルタで無言消失）。**正: 現行 eager と同一意味論の単一チャンネル select** — `handle.mdf.select([(name, gi, ci)], raw=False, ignore_value2text_conversions=True, copy_master=False)[0].samples`（既存 `_SELECT_OPTIONS` を再利用）。名前→位置は `mdf.channels_db[name]`（`(gi,ci)` で曖昧化）、master は `mdf.get_master(gi)`、形状プローブは変換非依存ゆえ `raw=True` 可。
+5. **オンデマンド値読みの正しいプリミティブ（レビュー C1 反映）**: `mdf.get(..., raw=True)` は**数値変換（factor/offset）を捨て生カウントを返す**ため使用禁止（VehSpd factor 0.01 が 100倍ずれる等・大半の CAN/XCP 信号が無言破損）。`mdf.get(raw=False)` も禁止（`get` に `ignore_value2text_conversions` が無く enum を文字列配列化 → `iufb` フィルタで無言消失）。**正: 現行 eager と同一意味論の単一チャンネル select** — `handle.mdf.select([(name, gi, ci)], raw=False, ignore_value2text_conversions=True, copy_master=False)[0].samples`（既存 `_SELECT_OPTIONS` を再利用）。名前→位置は `mdf.channels_db[name]`（`(gi,ci)` で曖昧化）、**master は同じ正準オプションの単一チャンネル select の `.timestamps`**（`mdf.get_master(gi)` は使用禁止 — 改訂履歴の +1,296 MB 保持）、形状プローブは変換非依存ゆえ `raw=True` 可。
 
 ## アーキテクチャ
 
@@ -72,7 +93,7 @@ valisync は**ファイルを開いた瞬間に全信号のサンプルを圧縮
 `mdf.select`（全チャンネルの値ブロック一括読み）を廃止し、グループごとに:
 
 1. **1 レコードプローブ**（既存 `_scan_oversized` の probe を全チャンネルへ拡張・`raw=True` 可）で各チャンネルの形状＝LD-14 展開の列構造（リーフ名 + selector）を確定。値の全読みは発生しない。
-2. `master = mdf.get_master(gi)`（float64・グループ共有・**同一性**）。finiteness 検証で LD-03 診断（master_bad → グループ全信号スキップ・従来どおり）、非単調/重複 diff で警告（従来どおり）。すべて master のみ。
+2. **master をグループの 1 チャンネル select から取る**（`mdf.select([entries[0]], raw=False, ignore_value2text_conversions=True, copy_master=False)[0].timestamps` を float64 コピー → 凍結。値サンプルは即 `del` で捨てる）。float64・グループ共有・**同一性**。finiteness 検証で LD-03 診断（master_bad → グループ全信号スキップ・従来どおり）、非単調/重複 diff で警告（従来どおり）。すべて master のみ。**`mdf.get_master(gi)` は禁止** — 開いたままのハンドルに生レコードブロック全体を残す（改訂履歴: +1,296 MB vs +197 MB）。`copy_master=False` は asammdf 内部を指しうるため、参照を残さないよう必ずコピーしてから凍結する。
 3. 各リーフ列に `LazyMdfValues(handle, name, gi, ci, selector, length=len(master))` を持つ Signal シェルを構築（`timestamps=master` を identity 共有）。value_labels / conversion / unit / comment / source（bus_type）は従来どおりロード時にメタデータ抽出。
 4. **成功経路のみ `mdf.close()` を省略**し `MdfHandle` に包んで `SignalGroup` へ所有権移譲。**エラー/キャンセル経路（`LoadCancelled` 再送出・broad except の `signal_group=None` return）では所有権移譲が起きないため、明示的に `MdfHandle`/`mdf` を close してから re-raise/return する**（決定的なハンドル/ロック解放・レビュー M3）。
 
@@ -128,7 +149,14 @@ reset freeze の原因は VM 構築（264k で ~675ms のみ）でなく **QTree
 - **既知の制限（ファイルロック・レビュー M2）**: mmap＋ファイルハンドルを保持するため、**64-bit Windows で対象ファイルはセッション中ロックされ、上書き/切詰め/リネーム/移動/削除が全てブロック**される（asammdf GUI 自身も同様のセッション長 mmap）。これは「安全機能」ではなく**アーキの受容トレードオフ**。緩和は増分B の `unload_file` がハンドルを閉じてロック解除する（ユーザーは上書き/アーカイブ前に unload）。copy-to-temp は却下案（ディスク倍増・mmap WS~0 の利点喪失）。将来「ファイルを解放」導線は YAGNI。
 - **CSV は eager 維持**・**Derived / 数式信号は lazy 対象外**（再読み元なし・`EagerValues`）。
 - **float64 昇格は当面許容**（初回 `sorted_view` で materialized 信号のみ一時倍化・native-dtype 描画高速路は非スコープ）。
-- **master eager のコスト（正直化・レビュー I7）**: `get_master(gi)` は**録画（非仮想）master だとデータブロックを解凍**する（CANape XCP/CAN ラスタ・デモは録画 master）。よってオープンは「値の 264k 展開/float64/flatten/Signal 構築（13s の主因）」を省く一方、**各グループのデータブロックを 1 回は解凍/ページイン**する。オープン後の master 常駐は **Σ(virtual_groups の master バイト)**（prod_demo で ~6MB だが高レート kHz ラスタでは数百MB に達し得る）。writing-plans で**新ローダーの `get_master` ループの実測（wall/RSS・prod_demo 録画 master）**を取り「ほぼ即時」を裏取りしてから記す。master 遅延化の発動条件は「病的に巨大」でなく **Σ(master バイト) が常駐目標を超える**具体条件（将来増分・現時点 YAGNI）。
+- **master eager のコスト（実測で確定・レビュー I7 を Task 3b が反転）**: master 読みは**録画（非仮想）master だとデータブロックを解凍**する（CANape XCP/CAN ラスタ・デモは録画 master）。よってオープンは「値の 264k 展開/float64/flatten/Signal 構築（13s の主因）」を省く一方、**各グループのデータブロックを 1 回は解凍/ページイン**する。**問題は解凍コストではなく「解凍したものを保持するか」だった**（prod_demo・ハンドル保持で実測）:
+
+  | 経路 | 時間 | 保持 RSS |
+  |---|---|---|
+  | `get_master(gi)`（旧設計・**禁止**） | 1.31 s | +1,296 MB |
+  | 1 チャンネル `select` の `.timestamps`（現行） | 0.56 s | +197 MB |
+
+  master 実体は全グループ計 0.20 MB なので、旧設計の差分 ~1.1 GB は**丸ごと生レコードブロックのキャッシュ**（開いたハンドルが生きる限り解放されない）。select はフラグメントをストリームし何も残さないため、現行では**オープン後の master 常駐は Σ(virtual_groups の master バイト) のみ**（prod_demo で ~6MB だが高レート kHz ラスタでは数百MB に達し得る）。実 GUI 定常 RSS は 1,897 MB → 868 MB。**この保持の回帰は CI では検出できない**（ガード `tests/core/loaders/test_mdf_loader_master_retention.py` は `VALISYNC_MEMTEST=1` ＋ 1.36 GB `prod_demo.mf4` ＋ psutil の二重 gate で CI 非実行）— master 取得経路を触る変更は**ローカルで意図的に走らせること**。master 遅延化の発動条件は「病的に巨大」でなく **Σ(master バイト) が常駐目標を超える**具体条件（将来増分・現時点 YAGNI）。
 
 ## テスト方針（レビュー I8/I9 反映・実経路駆動）
 
@@ -159,6 +187,15 @@ perf/メモリ変更ゆえ実測ベース。GUI 増分（C/D）は writing-plans
 ## グローバル制約
 
 - 既存の品質ゲート（`uv run pytest` / `ruff check` / `ruff format` / `mypy src/`）を全通過。
-- **既存の公開挙動を完全保存**（sorted_view/finite_view/range_stat_index/time_range/is_monotonic の返り値・**数値変換適用済みの値**・診断文言・LD-14 展開規約・重複名 `[idx]`・オフセット意味論・インスタンス書込保護）。
+- **既存の公開挙動を完全保存**（sorted_view/finite_view/range_stat_index/time_range/is_monotonic の返り値・**数値変換適用済みの値**・診断文言・LD-14 展開規約・重複名 `[idx]`・オフセット意味論・インスタンス書込保護）。**ただし下記 1 件は意図的な逸脱として受け入れる**。
+
+  **受け入れた逸脱: 破損 master グループで落ちたチャンネルが `[idx]` 曖昧化カウンタを進めない**（増分A で確定・両リビジョンで再現実証）。旧実装は曖昧化採番 `name_seen[base] += 1` をチャンネルごとのループ内・master 破損 `continue` の**前**で行っていたため、落ちたチャンネルも番号を消費した。新実装は master 検証をループ前の early return にまとめた（グループ単位で master を 1 回だけ読むため）ので、落ちたチャンネルは番号を消費しない。可観測な差は**同名チャンネルが「破損グループ」と「健全グループ」にまたがる場合のみ**生じる:
+
+  | | 破損グループの `Dup` | 生き残る `Dup` |
+  |---|---|---|
+  | 旧 | スキップ（診断 error） | `Dup[1]` |
+  | 新 | スキップ（診断 error・**文言同一**） | `Dup[0]` |
+
+  **新採番を正**とする（穴が空かない・番号が生存信号の並び順と一致する方が説明可能）。衝突は起き得ず（落ちたチャンネルは信号を produce しない）、データ・診断・`name_deduplicated` メタは不変。番号が載る唯一の永続面である `.vsession` は F-1 へ defer 済みなので移行問題も無い。**この選択を test-lock する**のは follow-up（`write_mdf4_non_finite_ts` の重複名バリアント・増分B）。
 - GUI 変更は Layer A/B（CI）必須・Layer C（ローカル `--realgui`）で ①gate。
 - src/ 構造変更（新規ファイル）はユーザー承認済み方針に従う。

@@ -4,7 +4,9 @@
 
 **Goal:** ファイルオープン時に全信号の**値**を eager 展開するのをやめ、`Signal.values` をサンプルソース抽象の背後でオンデマンド展開にする（メモリ 2GB/ファイル・ロード 13s の根治）。
 
-**Architecture:** `Signal.values` を `SampleSource` プロトコル（`EagerValues`＝配列直持ち / `LazyMdfValues`＝`mdf` からオンデマンド読み）の背後に置くプロパティにする。`timestamps`（グループ master）は eager 保持。ローダーは `mdf.select`（全値一括読み）を `get_master`＋メタデータ列挙＋1レコード形状プローブに置換し、MDF ハンドルを `SignalGroup` に保持。既存の全 Signal 構築サイトは `values=<array>`（→`EagerValues` に自動包装）のまま無変更で、遅延サイト（mdf_loader）と共有サイト（namespaced/offset）だけ `values_source=` を使う。
+**Architecture:** `Signal.values` を `SampleSource` プロトコル（`EagerValues`＝配列直持ち / `LazyMdfValues`＝`mdf` からオンデマンド読み）の背後に置くプロパティにする。`timestamps`（グループ master）は eager 保持。ローダーは `mdf.select`（全値一括読み）を **1 チャンネル select 経由の master 読み**＋メタデータ列挙＋1レコード形状プローブに置換し、MDF ハンドルを `SignalGroup` に保持。既存の全 Signal 構築サイトは `values=<array>`（→`EagerValues` に自動包装）のまま無変更で、遅延サイト（mdf_loader）と共有サイト（namespaced/offset）だけ `values_source=` を使う。
+
+> **⚠ 実装中の設計反転（Task 3b・本プランの記述を訂正）**: 当初 master は `mdf.get_master(gi)` で読む計画だったが、**ハンドルを開いたまま保持する本設計では使用禁止**と実測で判明した（生レコードブロック全体を開いたハンドルにキャッシュし解放しない — `prod_demo.mf4` で **+1,296 MB** 保持 / select 経由なら **+197 MB**・実 GUI 定常 RSS 1,897 MB → 868 MB）。本プラン中の `get_master` 記述はすべて select 経由へ訂正済み（Task 3 Step 4）。回帰ガード `tests/core/loaders/test_mdf_loader_master_retention.py` は **`VALISYNC_MEMTEST=1` ＋ 1.36 GB `prod_demo.mf4` ＋ psutil の二重 gate で CI 非実行**。詳細は設計 spec の改訂履歴・§設計判断。
 
 **Tech Stack:** Python 3.13 / numpy / asammdf 8.8.22 / PySide6（teardown のみ）/ pytest。
 
@@ -13,7 +15,7 @@
 ## Global Constraints
 
 - 品質ゲート全通過: `uv run pytest` / `uv run ruff check` / `uv run ruff format --check` / `uv run mypy src/`。
-- **既存の公開挙動を完全保存**: `sorted_view`/`finite_view`/`range_stat_index`/`time_range`/`is_monotonic` の返り値・**数値変換適用済みの値**・診断文言・LD-14 展開規約・重複名 `[idx]`・オフセット意味論・インスタンス書込保護。
+- **既存の公開挙動を完全保存**: `sorted_view`/`finite_view`/`range_stat_index`/`time_range`/`is_monotonic` の返り値・**数値変換適用済みの値**・診断文言・LD-14 展開規約・重複名 `[idx]`・オフセット意味論・インスタンス書込保護。**例外 1 件（実装後に確定・意図的に受け入れた逸脱）**: master 破損グループで落ちたチャンネルが `[idx]` 曖昧化カウンタを進めなくなり、同名信号が別グループで生き残る場合に `Dup[1]` → `Dup[0]` と採番が変わる（衝突なし・診断/データ不変・両リビジョンで再現実証）。理由と採用判断は設計 spec の§グローバル制約を参照。
 - 遅延読みプリミティブは **`mdf.get(raw=True)` 禁止**（変換喪失）・**`mdf.get(raw=False)` 禁止**（enum 文字列化）。**正**: `handle.mdf.select([(name, gi, ci)], raw=False, ignore_value2text_conversions=True, copy_master=False)[0].samples`。
 - 共有 MDF ハンドルへの全遅延読みは `threading.Lock` で直列化（asammdf `select`/`get` は単一 `self._file` を seek+read するためスレッド非安全）。
 - コメントは WHY を書く。DRY / YAGNI / TDD / 頻繁なコミット。
@@ -27,7 +29,7 @@
 | `src/valisync/core/loaders/mdf_handle.py` | 開いたままの `MDF`＋`threading.Lock` を包む `MdfHandle` | 新規 |
 | `src/valisync/core/models/signal.py` | `values` をソース背後のプロパティ化・`length` 検証・書込保護・`is_monotonic` を master のみ・値検証遅延 | 変更 |
 | `src/valisync/core/models/signal_group.py` | `MdfHandle` を任意保持 | 変更 |
-| `src/valisync/core/loaders/mdf_loader.py` | `mdf.select` 全読み → `get_master`＋メタ＋形状プローブ＋`LazyMdfValues` シェル・ハンドル保持・エラー/キャンセルで明示 close | 変更 |
+| `src/valisync/core/loaders/mdf_loader.py` | `mdf.select` 全読み → **1 チャンネル select の master 読み**＋メタ＋形状プローブ＋`LazyMdfValues` シェル・ハンドル保持・エラー/キャンセルで明示 close | 変更 |
 | `src/valisync/core/loaders/signal_group_manager.py` | namespaced ラッパーが元の `_values_source` を共有 | 変更 |
 | `src/valisync/core/sync/synchronizer.py` | offset Signal が元の遅延ソースを共有 | 変更 |
 | `src/valisync/gui/workers/teardown_service.py` | nbytes 会計を is_materialized ガード | 変更 |
@@ -660,9 +662,11 @@ git commit -m "feat(core): MdfHandle・LazyMdfValues (変換保存の単一selec
 
 ---
 
-## Task 3: ローダーを遅延化（get_master＋メタ＋形状プローブ・ハンドル保持）
+## Task 3: ローダーを遅延化（master の単体 select＋メタ＋形状プローブ・ハンドル保持）
 
-`mdf_loader._load_group` を、`mdf.select` 全読みから「1レコード形状プローブ＋`get_master`＋`LazyMdfValues` シェル」に置換。MDF ハンドルを `MdfHandle` に包んで `SignalGroup` に保持。成功経路のみ close 省略・エラー/キャンセルで明示 close。
+`mdf_loader._load_group` を、`mdf.select` 全読みから「1レコード形状プローブ＋**1 チャンネル select 経由の master 読み**＋`LazyMdfValues` シェル」に置換。MDF ハンドルを `MdfHandle` に包んで `SignalGroup` に保持。成功経路のみ close 省略・エラー/キャンセルで明示 close。
+
+> **訂正（Task 3b）**: 本タスクは当初 `mdf.get_master(gi)` で書かれていたが、ハンドル保持下では生レコードブロックを丸ごと残す（+1,296 MB）と実測され select 経由へ反転した。以下の Step 4 は訂正後の内容。
 
 **Files:**
 - Modify: `src/valisync/core/models/signal_group.py`（`handle: MdfHandle | None = None` フィールド追加）
@@ -756,7 +760,8 @@ class SignalGroup:
 1. `from valisync.core.loaders.mdf_handle import MdfHandle` と `from valisync.core.models.sample_source import LazyMdfValues` を import。
 2. `load()`: `mdf` を `MdfHandle(mdf)` に包み、成功時は `SignalGroup(..., handle=handle)` で返す。`finally: mdf.close()` を削除し、**エラー/キャンセル経路（`except LoadCancelled`／`except Exception`）で `handle.close()` を明示呼び出し**してから raise/return する。
 3. `_load_group()`: `asigs = mdf.select(entries, **self._SELECT_OPTIONS)` を廃止。代わりに:
-   - `master = mdf.get_master(gi)` を取り、finiteness/diff 診断（現行 `master`/`master_diffs_warn` ロジックを master 単体に適用）。
+   - master をグループの先頭 entry の単体 select から取り（`mdf.select([entries[0]], raw=False, ignore_value2text_conversions=True, copy_master=False)[0].timestamps`）、finiteness/diff 診断（現行 `master`/`master_diffs_warn` ロジックを master 単体に適用）。**`mdf.get_master(gi)` は禁止**（ハンドル保持下で生ブロック +1,296 MB）。
+   - master 読みのオプションは `_MASTER_OPTIONS = {"raw": False, "ignore_value2text_conversions": True, "copy_master": False}`（`LazyMdfValues.array()` と同じ正準セット）を ClassVar で定義して使う。
    - 形状は既存 `_PROBE_OPTIONS`（record_count=1）で `probes = mdf.select(entries, **self._PROBE_OPTIONS)` を 1 回だけ取り、各チャンネルの `probe.samples` から `_flatten` でリーフ構造（列名＝selector）を得る。
    - 各リーフ列に `LazyMdfValues(handle, base_name, gi, ci, length=len(master), selector=<leaf_name_tuple or None>)` を作り `Signal(..., values_source=...)` を構築。単一 1D は `selector=None`。
    - value_labels/conversion/unit/comment/source は現行どおり `_extract_metadata` で（probe の asig もしくは生チャンネルから）。
@@ -772,8 +777,13 @@ class SignalGroup:
         if cancel is not None and cancel():
             raise LoadCancelled(f"load cancelled: {resolved_path.name}")
 
-        # master を単体で読む (値は読まない)。診断・同一性・長さの土台。
-        master = mdf.get_master(gi).astype(np.float64, copy=False)
+        # master を仮想グループ単位で単体読みする (値は読まない)。診断・同一性・
+        # 長さの土台。get_master(gi) は禁止 — ハンドルを開いたまま保持する本
+        # ローダーでは生レコードブロック全体がハンドル上に残る (+1,296MB)。
+        # copy_master=False は asammdf 内部を指しうるため必ずコピーして凍結する。
+        asig = mdf.select([entries[0]], **self._MASTER_OPTIONS)[0]
+        master = np.array(asig.timestamps, dtype=np.float64, copy=True)
+        del asig  # 値サンプルを即時に解放 (master だけを持ち越す)
         if len(master) > 0 and not np.all(np.isfinite(master)):
             for base_name, _g, _c in entries:
                 diagnostics.append(Diagnostic(
@@ -855,7 +865,7 @@ Expected: PASS（新規遅延テスト＋既存 LD-01〜14 テストが全通過
 
 ```bash
 git add src/valisync/core/models/signal_group.py src/valisync/core/loaders/mdf_loader.py tests/core/loaders/test_mdf_loader_lazy.py
-git commit -m "feat(core): MDFローダーを遅延化 (get_master+形状プローブ+LazyMdfValues・ハンドル保持)"
+git commit -m "feat(core): MDFローダーを遅延化 (master単体select+形状プローブ+LazyMdfValues・ハンドル保持)"
 ```
 
 ---

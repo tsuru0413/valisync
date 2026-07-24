@@ -169,8 +169,14 @@ def _extract_metadata(asammdf_sig: Any, raw_conversion: Any = None) -> dict[str,
         meta["channel_group_name"] = getattr(source, "path", "") or ""
         meta["source_bus_type"] = getattr(source, "bus_type", 0)
         meta["source_name"] = getattr(source, "name", "") or ""
-    # select() の戻り Signal は conversion が常に None のため、互換キー
-    # conversion_info も生チャンネル側 (raw_conversion) から生成する (spec §3.3)
+    # conversion_info は spec §3.3 の互換キー。呼び出し元の形状プローブは
+    # raw=True で引くため asammdf_sig.conversion には**そのチャンネルの
+    # ChannelConversion** が入る (raw=False の戻りは None — 実測)。raw_conversion
+    # フォールバックは非 raw 経路/生チャンネル渡しのために残す (消すと
+    # conversion_info が欠ける)。
+    # 既知の副作用 (増分B で是正予定): 展開リーフでは raw_conversion を意図的に
+    # None にして継承を止めているが、raw=True プローブ側が非 None のため
+    # conversion_info だけはリーフにも載る。現状 src 内に読み手はゼロ。
     conversion = getattr(asammdf_sig, "conversion", None) or raw_conversion
     if conversion is not None:
         meta["conversion_info"] = str(conversion)
@@ -495,9 +501,11 @@ class MdfLoader:
 
             # value_labels (value2text) は 1D 通常チャンネルのみ継承する —
             # value2text はスカラー enum の概念で、展開後の列 (2D/構造化の
-            # 各成分) には意味を持たない (LD-07 spec 注記)。select() の戻り
-            # probe.conversion は常に None (Task 2 実測) なので生チャンネル
-            # (mdf.groups[gi].channels[ci]) から取得する。
+            # 各成分) には意味を持たない (LD-07 spec 注記)。取得元を生チャンネル
+            # (mdf.groups[gi].channels[ci]) にしているのは、展開時に None を
+            # 渡して継承を止められる唯一の口だから — probe は raw=True なので
+            # probe.conversion にも同じ ChannelConversion が入っており
+            # (raw=False なら None・実測)、そちらではリーフ単位に殺せない。
             raw_conversion = (
                 None if exploded else mdf.groups[_g].channels[_c].conversion
             )
