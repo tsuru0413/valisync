@@ -42,7 +42,7 @@ class TimeSynchronizer:
         return Signal(
             name=signal.name,
             timestamps=signal.timestamps + total,
-            values=signal.values,
+            values_source=signal._values_source,
             file_format=signal.file_format,
             bus_type=signal.bus_type,
             source_file=signal.source_file,
