@@ -91,7 +91,11 @@ _APP = "ValiSync"
 # する実機退行を防ぐ (candidate A のレールドック導入で顕在化)。restoreState(state,
 # version) は version 不一致で False を返し適用しない。合わせて _restore_state 側で
 # stateVersion キーを突合し、不一致なら永続状態を破棄して既定レイアウトで起動する。
-_STATE_VERSION = 1
+# v2: 空レールドックを QDockAreaLayout の常在メンバにしない非互換変更 (レールを
+# member→非member 化)。v1 の member 入り blob を restore すると show() 前の緩和経路
+# (normalize の removeDockWidget) に載るが、非再現の native crash は決定的排除が正解
+# ゆえ bump して v1 blob を discard する (代償=直近 dev レイアウトの一度きりリセット)。
+_STATE_VERSION = 2
 
 # spec §2.3: 辺 (Qt.DockWidgetArea) → dock_panel_* アイコン意味名の接尾辞。
 # 上/なしは対象外 (allowedAreas で禁止済み)。フォールバック "left" は理論上の
