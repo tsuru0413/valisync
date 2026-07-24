@@ -808,6 +808,103 @@ def test_loader_skips_non_numeric_channel_with_warning(tmp_path: Path) -> None:
     )
 
 
+# ─── MdfLoader: 遅延ロード契約 (増分A Task 3・demo 非依存で CI 実行) ──────────
+
+
+def test_load_leaves_signals_unmaterialized_and_keeps_handle(tmp_path: Path) -> None:
+    """ロード直後は全信号が未展開で、SignalGroup が開いたハンドルを保持する.
+
+    合成ファイルなので demo mf4 の有無に依らず CI で遅延契約を担保する
+    (demo 依存テストは skip されるため)。値は初回 .values まで読まれない。
+    """
+    path = write_mdf4(
+        tmp_path / "lazy.mf4",
+        [
+            {"name": "a", "timestamps": [0.0, 1.0], "values": [1.0, 2.0]},
+            {"name": "b", "timestamps": [0.0, 1.0], "values": [3.0, 4.0]},
+        ],
+    )
+    result = MdfLoader().load(path)
+    sg = result.signal_group
+    assert sg is not None
+    assert len(sg.signals) == 2
+    assert all(s._values_source.is_materialized is False for s in sg.signals)
+    assert sg.handle is not None and sg.handle.is_closed is False
+    # 初回 .values で展開される (遅延の実効)。
+    first = sg.signals[0]
+    _ = first.values
+    assert first._values_source.is_materialized is True
+
+
+def test_lazy_selector_column_matches_eager_flatten_synthetic(tmp_path: Path) -> None:
+    """LD-14 selector 分岐の CI 実行カバレッジ (Task 2 review folded-in).
+
+    write_mdf4_2d の "Mat" (4x3 uint8) は Mat[0..2] に展開され、各信号は
+    selector 付き LazyMdfValues を背負う。materialize した Mat[1] の値が、
+    現行 eager 意味論 (select(raw=False, ignore_value2text_conversions=True,
+    copy_master=False)+_flatten) の該当リーフと厳密一致することを確認する。
+    """
+    from asammdf import MDF
+
+    from valisync.core.loaders.mdf_loader import _flatten
+
+    path = write_mdf4_2d(tmp_path)
+    result = MdfLoader().load(path)
+    sg = result.signal_group
+    assert sg is not None
+    mat1 = next(s for s in sg.signals if s.name == "Mat[1]")
+    assert mat1._values_source.is_materialized is False  # 未展開で待機
+
+    got = mat1.values  # 遅延展開 (selector リーフ抽出)
+    assert got.dtype == np.uint8  # native dtype 保持 (selector 経路でも)
+    assert got.flags.writeable is False
+
+    m = MDF(str(path))
+    try:
+        asig = m.select(
+            ["Mat"], raw=False, ignore_value2text_conversions=True, copy_master=False
+        )[0]
+        expected = dict(_flatten("Mat", asig.samples))["Mat[1]"]
+    finally:
+        m.close()
+    np.testing.assert_array_equal(got, expected)
+    # write_mdf4_2d の列 1 は [1, 11, 21, 31]。
+    np.testing.assert_array_equal(got, [1, 11, 21, 31])
+
+
+def test_load_error_path_closes_handle_no_leak(tmp_path: Path) -> None:
+    """チャンネル読み取り失敗時にハンドルが閉じられる (リークしない・M3).
+
+    ``included_channels`` を patch して本読みループで例外を起こし、broad except
+    経路 (signal_group=None) が handle.close() を経ることを検証する。MDF()
+    自体は成功するため、ハンドルが生成された後の失敗経路を確実に通る。
+    """
+    from unittest.mock import patch
+
+    from valisync.core.loaders.mdf_handle import MdfHandle
+
+    path = write_mdf4(
+        tmp_path / "boom.mf4",
+        [{"name": "a", "timestamps": [0.0, 1.0], "values": [1.0, 2.0]}],
+    )
+    closed: list[bool] = []
+    real_close = MdfHandle.close
+
+    def spy_close(self: MdfHandle) -> None:
+        closed.append(True)
+        real_close(self)
+
+    # _count_names 通過後、本読みの _group_entries で例外を起こす。
+    with (
+        patch.object(MdfHandle, "close", spy_close),
+        patch.object(MdfLoader, "_load_group", side_effect=RuntimeError("boom")),
+    ):
+        result = MdfLoader().load(path)
+    assert result.signal_group is None
+    assert any(d.level == "error" for d in result.diagnostics)
+    assert closed, "エラー経路で handle.close() が呼ばれていない (リーク)"
+
+
 # ─── core 診断・例外文言の同一性 (文言OS G-34・Task 6) ───────────────────────
 
 
