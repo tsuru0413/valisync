@@ -85,6 +85,14 @@ from valisync.gui.workers.teardown_service import TeardownService
 _ORG = "ValiSync"
 _APP = "ValiSync"
 
+# QMainWindow の saveState/restoreState 用スキーマバージョン。ドック構造を非互換に
+# 変えたら bump する。旧版で保存された windowState blob を新コードが restoreState で
+# 適用すると、食い違うドック配置が show() 描画時にネイティブクラッシュ (0xC0000005)
+# する実機退行を防ぐ (candidate A のレールドック導入で顕在化)。restoreState(state,
+# version) は version 不一致で False を返し適用しない。合わせて _restore_state 側で
+# stateVersion キーを突合し、不一致なら永続状態を破棄して既定レイアウトで起動する。
+_STATE_VERSION = 1
+
 # spec §2.3: 辺 (Qt.DockWidgetArea) → dock_panel_* アイコン意味名の接尾辞。
 # 上/なしは対象外 (allowedAreas で禁止済み)。フォールバック "left" は理論上の
 # 防御 — dockWidgetArea() はフロート中/非表示中も実領域を返し NoDockWidgetArea
@@ -475,7 +483,7 @@ class MainWindow(QMainWindow):
 
         self._rebuild_recent_menu()
         # SH-11: 永続状態で上書きされる前の既定配置を捕捉 (Reset Layout 用)。
-        self._default_state = self.saveState()
+        self._default_state = self.saveState(_STATE_VERSION)
         self._state_restored = self._restore_state()
         # restoreState resets dock corner config to Qt defaults, so re-apply FU-10
         # after the startup restore (and after Reset Layout -- see _reset_layout).
@@ -920,8 +928,9 @@ class MainWindow(QMainWindow):
     def save_state(self) -> None:
         """Persist window geometry and dock arrangement to QSettings."""
         settings = QSettings(_ORG, _APP)
+        settings.setValue("stateVersion", _STATE_VERSION)
         settings.setValue("geometry", self.saveGeometry())
-        settings.setValue("windowState", self.saveState())
+        settings.setValue("windowState", self.saveState(_STATE_VERSION))
         settings.setValue("dockCollapsed", self._dock_collapsed_map())
 
     def closeEvent(self, event: QCloseEvent) -> None:
@@ -988,13 +997,24 @@ class MainWindow(QMainWindow):
         ratio: a user's own saved layout must not be clobbered.
         """
         settings = QSettings(_ORG, _APP)
+        # スキーマバージョン突合: 旧版で保存された互換性のないレイアウト状態を新コードが
+        # 適用すると show() 描画でネイティブクラッシュする実機退行を防ぐ。不一致 (旧キー
+        # 欠落=0 含む) なら永続レイアウトを破棄して既定で起動する (geometry/windowState/
+        # dockCollapsed をまとめて除去。次回 close 時に現行版で保存し直される)。
+        saved_version = settings.value("stateVersion", 0, type=int)
+        if saved_version != _STATE_VERSION:
+            settings.remove("geometry")
+            settings.remove("windowState")
+            settings.remove("dockCollapsed")
+            self._normalize_rail_placement()
+            return False
         geometry = settings.value("geometry")
         state = settings.value("windowState")
         if geometry:
             self.restoreGeometry(geometry)
         restored = False
         if state:
-            restored = self.restoreState(state)
+            restored = self.restoreState(state, _STATE_VERSION)
         # candidate A: restoreState 後にレール順序/可視を正規化してから畳みを再適用
         # (旧 blob はレールドックを含まず最外順序が保証されない・guardrail 4)。
         self._normalize_rail_placement()
@@ -1341,7 +1361,7 @@ class MainWindow(QMainWindow):
         for dock in list(self._collapsible_bars_docks()):
             if dock.objectName() in self._collapsed_docks:
                 self._expand_dock(dock)
-        self.restoreState(self._default_state)
+        self.restoreState(self._default_state, _STATE_VERSION)
         self._apply_dock_corners()  # restoreState reset the FU-10 corner; re-apply
         # candidate A: レールドックが 3 番目の参加者になるため、順序/可視を最外へ
         # 正規化してから 1:4 を再適用する (guardrail 4)。_default_state は
