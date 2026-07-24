@@ -83,7 +83,7 @@ class SignalGroupManager:
             ns_sig = Signal(
                 name=f"{key}{KEY_SEPARATOR}{sig.name}",
                 timestamps=sig.timestamps,
-                values=sig.values,
+                values_source=sig._values_source,
                 file_format=sig.file_format,
                 bus_type=sig.bus_type,
                 source_file=sig.source_file,
