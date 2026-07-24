@@ -16,6 +16,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -23,8 +24,11 @@ import numpy as np
 from valisync.core.interpolation import InterpolationMethod
 from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
 from valisync.core.models import Signal
+from valisync.core.models.load_result import Diagnostic
+from valisync.core.models.sample_source import SampleReadError
 from valisync.core.session import Session
 from valisync.core.statistics.range_stats import StatisticsResult
+from valisync.gui import strings as S
 from valisync.gui.color_variants import hue_variant
 from valisync.gui.display_names import display_names as _resolve_display_names
 from valisync.gui.theme import tokens
@@ -195,10 +199,19 @@ class GraphPanelVM(Observable):
         session: Session,
         cursor_state: CursorState | None = None,
         hue_resolver: Callable[[str], int | None] | None = None,
+        diagnostic_sink: Callable[[str, Diagnostic], None] | None = None,
     ) -> None:
         super().__init__()
         self._session = session
         self._hue_resolver = hue_resolver
+        # 遅延サンプル読み取り失敗 (Task 7) を診断へ落とす sink。None は未配線 (bare
+        # ハーネス/単独構成) — 診断は出ないが degrade (空カーブ) は sink 非依存で
+        # 常に働く。実運用は GraphAreaVM 経由で MainWindow の DiagnosticsViewModel へ。
+        self._diagnostic_sink = diagnostic_sink
+        # 既に SampleReadError を報告済みの signal_key。render は毎フレーム走るので、
+        # dedup しないと同一の壊れた信号が診断を溢れさせる (「1 信号 1 診断」契約)。
+        # refresh() (= 再ロード等でデータが変わりうる機会) でのみクリアする。
+        self._read_error_reported: set[str] = set()
         self._plotted: list[_PlottedEntry] = []
         self._next_entry_id: int = 0  # monotonic id issued on each add
         self.x_range: tuple[float, float] | None = None
@@ -640,6 +653,10 @@ class GraphPanelVM(Observable):
         cached an empty curve under an unchanged key; invalidating lets the now
         present data render (review finding ⑥).
         """
+        # Task 7: 再ロード等でデータが変わりうる機会。壊れていた信号が復旧している
+        # かもしれないので、SampleReadError の報告済みマークを解除して次の render で
+        # 再評価させる (復旧すれば普通に描画、まだ壊れていれば再び 1 回だけ報告)。
+        self._read_error_reported.clear()
         self._invalidate_cache()
         self._notify("signals")
 
@@ -1027,7 +1044,25 @@ class GraphPanelVM(Observable):
                 )
                 continue
 
-            ts, vs = sig.sorted_view()
+            # Task 7: 遅延サンプル読み取りが失敗したら (ネットワークドライブ切断等)、
+            # 例外を render 経由で貫通させずに当該カーブだけ空 degrade する。値アクセス
+            # (sorted_view -> Signal.values -> SampleSource.array) が唯一の失敗点なので
+            # ここだけ守れば十分。診断は 1 信号 1 回だけ落とす (_report_read_error)。
+            try:
+                ts, vs = sig.sorted_view()
+            except SampleReadError:
+                self._report_read_error(entry.signal_key, sig)
+                curves.append(
+                    RenderCurve(
+                        name=entry.signal_key,
+                        color=entry.color,
+                        timestamps=np.empty(0, dtype=np.float64),
+                        values=np.empty(0, dtype=np.float64),
+                        axis_index=entry.axis_index,
+                        entry_id=entry.entry_id,
+                    )
+                )
+                continue
 
             # Determine visible x-window
             if self.x_range is not None:
@@ -1623,3 +1658,33 @@ class GraphPanelVM(Observable):
     def _invalidate_cache(self) -> None:
         """Clear the render cache so the next render_data call recomputes."""
         self._cache.clear()
+
+    def _report_read_error(self, signal_key: str, sig: Signal) -> None:
+        """Record ONE diagnostic for *signal_key*'s failed lazy read (Task 7).
+
+        Deduped per signal_key: render runs every frame, so without this a
+        broken signal would flood the Diagnostics dock. No-op after the first
+        report until :meth:`refresh` clears the mark (a reload may fix it).
+        The sink (injected by GraphAreaVM → MainWindow's DiagnosticsViewModel)
+        being absent still leaves the empty-curve degrade intact — only the
+        diagnostic is skipped.
+        """
+        if signal_key in self._read_error_reported:
+            return
+        self._read_error_reported.add(signal_key)
+        if self._diagnostic_sink is None:
+            return
+        name = signal_key.split(KEY_SEPARATOR, 1)[-1]
+        source = (
+            Path(sig.source_file).name
+            if sig.source_file
+            else signal_key.split(KEY_SEPARATOR, 1)[0]
+        )
+        self._diagnostic_sink(
+            source,
+            Diagnostic(
+                level="error",
+                message=S.SAMPLE_READ_ERROR_TMPL.format(name=name),
+                signal_name=name,
+            ),
+        )

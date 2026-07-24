@@ -16,9 +16,12 @@ collaborators and connects their signals.
 from __future__ import annotations
 
 import itertools
+import sys
 import threading
+import weakref
 from collections.abc import Callable
 from pathlib import Path
+from types import TracebackType
 from typing import ClassVar, cast
 
 from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
@@ -45,6 +48,8 @@ from PySide6.QtWidgets import (
 
 from valisync.core.loaders.csv_format_detector import CsvFormatDetector
 from valisync.core.models.format_def import FormatDefinition
+from valisync.core.models.load_result import Diagnostic
+from valisync.core.models.sample_source import SampleReadError
 from valisync.core.session import LoadOutcome
 from valisync.gui import reference_overlay
 from valisync.gui import strings as S
@@ -164,8 +169,16 @@ class MainWindow(QMainWindow):
         # ── Shared ViewModels (one Session) ──────────────────────────────────
         self.file_browser_vm = FileBrowserVM(app_vm)
         self.channel_browser_vm = ChannelBrowserVM(app_vm)
-        self.graph_area_vm = GraphAreaVM(app_vm)
+        # Task 7: diagnostics_vm は graph_area_vm より先に作る — GraphAreaVM は
+        # __init__ で最初のパネル VM を生成し、そこへ遅延読みエラー用 sink を配線
+        # するため、sink の宛先 (diagnostics_vm) が先に存在している必要がある。
         self.diagnostics_vm = DiagnosticsViewModel()
+        self.graph_area_vm = GraphAreaVM(
+            app_vm, diagnostic_sink=self._record_read_error_diagnostic
+        )
+        # 遅延サンプル読み取りが render 境界外 (auto-fit / cursor-step / formula 等) で
+        # 失敗しても実イベントループでプロセスを落とさないための最後の砦 (spec §Task 7)。
+        self._install_sample_read_error_guard()
 
         # spec §2.2: Analyze メニューと各パネルの空白右クリックメニューが共有する
         # 解析系 QAction 群。trigger 時の配送先は固定 dispatch ではなく、メニューを
@@ -502,6 +515,82 @@ class MainWindow(QMainWindow):
         # 罠を踏むため、実際の適用は showEvent 後まで遅延する。
         self._default_dock_ratio_applied = False
 
+    # ─── SampleReadError の集中 degrade (Task 7) ────────────────────────────────
+
+    def _record_read_error_diagnostic(
+        self, source: str, diagnostic: Diagnostic
+    ) -> None:
+        """render 境界 (GraphPanelVM) から届く遅延読みエラー診断を DiagnosticsVM へ流す。
+
+        GraphAreaVM 経由で全パネル VM へ注入される sink の宛先 (spec §Task 7・
+        render 境界の局所 degrade が「1 信号 1 診断」で呼ぶ)。
+        """
+        self.diagnostics_vm.add(source, [diagnostic])
+
+    def _install_sample_read_error_guard(self) -> None:
+        """render 境界の外で起きた SampleReadError を実イベントループで握る最後の砦。
+
+        PySide6 は Qt スロット/仮想メソッド内の未処理 Python 例外を ``sys.excepthook``
+        へルーティングする (実測: signal→slot も C++ 仮想オーバーライドも同経路)。
+        ここで SampleReadError を捕まえ、ダイアログでなく診断+ステータスへ落として
+        握る (従来フックへ委譲しない = そのまま継続。それ以外の型は従来フックへ委譲)。
+        auto-fit / cursor-step / formula 等、render 境界の局所 degrade が届かない
+        初回展開経路の保険 (spec §Task 7)。
+
+        self は weakref 経由で参照する: ウィンドウ破棄後もフックが sys.excepthook に
+        残った (テストで close されなかった) 場合でも、死んだ self を触らず単なる
+        pass-through になる (shiboken の "already deleted" を回避)。
+        """
+        self_ref = weakref.ref(self)
+        prev_hook = sys.excepthook
+
+        def _hook(
+            exc_type: type[BaseException],
+            exc_value: BaseException,
+            exc_tb: TracebackType | None,
+        ) -> None:
+            win = self_ref()
+            if win is not None and isinstance(exc_value, SampleReadError):
+                win._handle_sample_read_error(exc_value)
+                return  # 握った — 継続 (プロセスを落とさない)
+            prev_hook(exc_type, exc_value, exc_tb)
+
+        sys.excepthook = _hook
+        # None を代入して uninstall するため Optional で宣言する。
+        self._sample_read_error_hook: (
+            Callable[[type[BaseException], BaseException, TracebackType | None], None]
+            | None
+        ) = _hook
+        self._prev_excepthook = prev_hook
+
+    def _uninstall_sample_read_error_guard(self) -> None:
+        """自分が設置したフックが現行なら従来フックへ戻す (close 時・leak 防止)。
+
+        後から別ウィンドウがフックを重ねていれば触らない — その weakref フックは
+        自 self 破棄後に pass-through 化するので放置して安全。
+        """
+        if getattr(self, "_sample_read_error_hook", None) is None:
+            return
+        if sys.excepthook is self._sample_read_error_hook:
+            sys.excepthook = self._prev_excepthook
+        self._sample_read_error_hook = None
+
+    def _handle_sample_read_error(self, exc: BaseException) -> None:
+        """実イベントループで捕捉した SampleReadError を診断+ステータスへ落とす。
+
+        ダイアログは出さない (spec §Task 7 — excepthook 内モーダルの再入回避)。例外
+        自身のメッセージ (LazyMdfValues 由来は信号名を含む) をそのまま使う。診断記録・
+        ステータス更新のどちらかが失敗しても excepthook 内で二次例外を投げない。
+        """
+        msg = str(exc) or S.SAMPLE_READ_ERROR_TMPL.format(name="")
+        try:
+            self.diagnostics_vm.add(
+                S.SAMPLE_READ_ERROR_SOURCE, [Diagnostic(level="error", message=msg)]
+            )
+            self.set_status_message(S.STATUS_SAMPLE_READ_ERROR_TMPL.format(msg=msg))
+        except Exception:
+            pass  # excepthook 内 — 二次例外で握り経路を壊さない
+
     # ─── Load pipeline ─────────────────────────────────────────────────────────
 
     def _load_file(self, path: str | Path) -> None:
@@ -574,8 +663,6 @@ class MainWindow(QMainWindow):
         if diags:
             self.diagnostics_vm.add(source, diags)
         else:
-            from valisync.core.models.load_result import Diagnostic
-
             self.diagnostics_vm.add(
                 source, [Diagnostic(level="error", message="; ".join(messages))]
             )
@@ -940,6 +1027,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         """Persist window state on close so it can be restored next launch (R2.3)."""
         self.save_state()
+        # Task 7: 設置した sys.excepthook を従来フックへ戻す (プロセス寿命をまたぐ leak
+        # 防止)。実運用は単一ウィンドウで無害だが、テストの多数ウィンドウ生成で確実に。
+        self._uninstall_sample_read_error_guard()
         super().closeEvent(event)
 
     def showEvent(self, event: QShowEvent) -> None:

@@ -83,6 +83,14 @@ BUSY_EXPORTING_TMPL: Final = "{label} をエクスポート中…"
 STATUS_DIAG_ALERT_TMPL: Final = f" ・ ⚠ 警告/エラー {{n}} 件（{REF_DIAGNOSTICS}）"
 STATUS_DIAG_INFO_TMPL: Final = f" ・ ℹ 情報 {{n}} 件（{REF_DIAGNOSTICS}）"
 
+# ── 遅延サンプル読み取り失敗 (graph_panel_vm render 境界 / main_window app フック・遅延ロード) ─
+# render 境界の局所 degrade が付与する診断メッセージ (信号名を埋める)。app レベル
+# フックが catch する SampleReadError は自身のメッセージ (LazyMdfValues 由来で信号名
+# を含む) をそのまま出すため、SAMPLE_READ_ERROR_SOURCE のみ共有する。
+SAMPLE_READ_ERROR_TMPL: Final = "信号「{name}」のサンプル読み取りに失敗しました"
+SAMPLE_READ_ERROR_SOURCE: Final = "サンプル読み取り"
+STATUS_SAMPLE_READ_ERROR_TMPL: Final = "⛔ {msg}"
+
 # ── ダイアログ: CSV エクスポート (export_csv_dialog・G-19/G-38/E-1/R-07) ─────
 EXPORT_DESELECT_ALL: Final = "すべて解除"
 EXPORT_UNIFIED_TIMELINE_TOOLTIP: Final = "全信号を共通時間列に整列して 1 表で出力します"
