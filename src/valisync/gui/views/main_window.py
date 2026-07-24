@@ -91,7 +91,11 @@ _APP = "ValiSync"
 # する実機退行を防ぐ (candidate A のレールドック導入で顕在化)。restoreState(state,
 # version) は version 不一致で False を返し適用しない。合わせて _restore_state 側で
 # stateVersion キーを突合し、不一致なら永続状態を破棄して既定レイアウトで起動する。
-_STATE_VERSION = 1
+# v2: 空レールドックを QDockAreaLayout の常在メンバにしない非互換変更 (レールを
+# member→非member 化)。v1 の member 入り blob を restore すると show() 前の緩和経路
+# (normalize の removeDockWidget) に載るが、非再現の native crash は決定的排除が正解
+# ゆえ bump して v1 blob を discard する (代償=直近 dev レイアウトの一度きりリセット)。
+_STATE_VERSION = 2
 
 # spec §2.3: 辺 (Qt.DockWidgetArea) → dock_panel_* アイコン意味名の接尾辞。
 # 上/なしは対象外 (allowedAreas で禁止済み)。フォールバック "left" は理論上の
@@ -280,12 +284,12 @@ class MainWindow(QMainWindow):
             rail_dock.setAllowedAreas(edge)
             self._collapse_rails[edge] = rail
             self._rail_docks[edge] = rail_dock
-        # file/channel/diag は上で配置済みなので、レールドックを各辺の最外側へ据える
-        # (Right/Bottom は addDockWidget append=最外・Left は rebuild で最外化)。
-        self._place_all_rails_outermost()
-        # 空なので隠す (ゼロ幅・guardrail「空時 setVisible(False)」)。
-        for _rail_dock in self._rail_docks.values():
-            _rail_dock.setVisible(False)
+        # #17 (native crash 根治): レールドックは生成のみで「レイアウト非メンバ」
+        # として開始する。空のレールを QDockAreaLayout の常在メンバに残すと、
+        # setCorner との不整合な dock-area ツリーを作り window.show() の初回同期
+        # relayout (Qt6Widgets) が 0xC0000005 で落ちる実機クラッシュの真因になる。
+        # 折りたたんだ時だけ _place_rail_outermost で追加し、空になったら
+        # removeDockWidget で完全除去する (_collapse_dock/_expand_dock)。
         # 実ドックの移動 (D&D/restoreState) でレールの最外順序が崩れたら能動是正する
         # (guardrail 3)。レールドック自身は接続しない (自分の再配置で再入しないため)。
         for _real_dock in self._collapsible_bars_docks():
@@ -957,22 +961,25 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._reconcile_rails_after_show)
 
     def _reconcile_rails_after_show(self) -> None:
-        """レールドックの可視/最外を rail の中身 (タブ有無) と一致させる (show 後)。
+        """レールドックの配置/可視を rail の中身 (タブ有無) と一致させる (show 後)。
 
-        非空レールが隠れている / 空レールが見えている「不整合」時のみ据え直すので、
-        通常 show (un-minimize 等) は no-op で余計な再配置フリッカを起こさない。
+        #17: 判定はメンバか (dockWidgetArea != NoDockWidgetArea) と rail の空判定で
+        行う。非空レールが未配置 or 不可視なら最外へ追加して表示、空レールが配置済み
+        ならレイアウトから除去する。整合済みは触らないので通常 show (un-minimize 等)
+        は no-op で余計な再配置フリッカを起こさない。
         """
         for edge, rail in self._collapse_rails.items():
             rail_dock = self._rail_docks[edge]
-            should_be_visible = not rail.is_empty()
-            if rail_dock.isHidden() != should_be_visible:
-                continue  # 既に整合 (isHidden==not should_visible)
-            if should_be_visible:
-                self._place_rail_outermost(edge)
-                rail_dock.setVisible(True)
-                self._pin_rail_thin(edge)
-            else:
-                rail_dock.setVisible(False)
+            is_member = (
+                self.dockWidgetArea(rail_dock) != Qt.DockWidgetArea.NoDockWidgetArea
+            )
+            if not rail.is_empty():
+                if not is_member or rail_dock.isHidden():
+                    self._place_rail_outermost(edge)
+                    rail_dock.setVisible(True)
+                    self._pin_rail_thin(edge)
+            elif is_member:
+                self.removeDockWidget(rail_dock)
 
     def _apply_default_dock_ratio(self) -> None:
         """初期ドック比率 File:Channel≈1:4 (UX-21 応急・spec §1.5-12)。
@@ -1082,10 +1089,13 @@ class MainWindow(QMainWindow):
             "channel_dock": S.DOCK_CHANNEL_BROWSER,
             "diagnostics_dock": S.DOCK_DIAGNOSTICS,
         }[name]
+        # #17: 空→非空の最初のタブでのみレールドックをレイアウトへ追加する (空の
+        # 間は非メンバ)。was_empty は add_tab より前に捕捉する。既に非空
+        # (2つ目以降) なら配置済みなので追加せず表示 + pin のみ。
+        was_empty = rail.is_empty()
         rail.add_tab(dock, title, self._dock_rail_order.get(name, 0))
-        # candidate A: レール widget でなくレール「ドック」を可視化する。空→非空の
-        # 遷移でここが唯一の表示点。最外順序は構築時に確立済みで hide/show では
-        # 崩れないため毎回 place し直さない (D&D/restore の崩れは別途能動是正)。
+        if was_empty:
+            self._place_rail_outermost(area)  # 最外へ追加 (可視は下で明示)
         rail_dock.setVisible(True)
         self._pin_rail_thin(area)
         self._collapsed_docks.add(name)
@@ -1100,9 +1110,10 @@ class MainWindow(QMainWindow):
         name = dock.objectName()
         for edge, rail in self._collapse_rails.items():
             rail.remove_tab(dock)
-            # 空になったレールはドックごと隠す (ゼロ幅回収)。
+            # #17: 空になったレールはレイアウトから完全除去する (メンバに残さない)。
+            # removeDockWidget はドックを hide もするためゼロ幅回収と非可視化を兼ねる。
             if rail.is_empty():
-                self._rail_docks[edge].setVisible(False)
+                self.removeDockWidget(self._rail_docks[edge])
         try:
             self._suppress_dock_reconcile = True
             dock.show()
@@ -1125,11 +1136,6 @@ class MainWindow(QMainWindow):
         self._sync_dock_action(dock)
 
     # ─── レール最外ドックの配置/維持 (candidate A・#17) ─────────────────────────
-
-    def _place_all_rails_outermost(self) -> None:
-        """全レールドックを各辺の最外側へ据え直す (構築時/正規化時)。"""
-        for edge in self._rail_docks:
-            self._place_rail_outermost(edge)
 
     def _place_rail_outermost(self, edge: Qt.DockWidgetArea) -> None:
         """1 辺のレールドックを最外側 (画面端側) へ配置する。
@@ -1234,22 +1240,30 @@ class MainWindow(QMainWindow):
         """
         if self._suppress_rail_reassert:
             return
+        # #17: 空レールは配置しない (メンバに残さない)。移動で最外を保つのは非空時のみ。
+        if self._collapse_rails[edge].is_empty():
+            return
         self._place_rail_outermost(edge)
-        if not self._collapse_rails[edge].is_empty():
-            self._pin_rail_thin(edge)
+        self._pin_rail_thin(edge)
 
     def _normalize_rail_placement(self) -> None:
         """restoreState/_reset_layout 後にレール順序・可視性を正規化する (guardrail 4)。
 
-        旧 saveState blob はレールドックを含まないため Qt が最外順序を保証しない。
-        全レールを最外へ据え直し、空レールは隠す (畳み済み分は続く
-        _apply_saved_collapse が再表示する)。
+        #17: 非空レールのみ最外へ据え直して表示し、空レールはレイアウトから除去する
+        (空ドックをメンバに残さない)。畳み済み分は続く _apply_saved_collapse が
+        _collapse_dock 経由で再追加する。両呼び出し元は事前に展開/リセットするため
+        通常このメソッド時点で全レールは空 (非空分岐は保険)。
         """
         self._suppress_rail_reassert = True
         try:
-            self._place_all_rails_outermost()
             for edge, rail in self._collapse_rails.items():
-                self._rail_docks[edge].setVisible(not rail.is_empty())
+                rail_dock = self._rail_docks[edge]
+                if rail.is_empty():
+                    self.removeDockWidget(rail_dock)
+                else:
+                    self._place_rail_outermost(edge)
+                    rail_dock.setVisible(True)
+                    self._pin_rail_thin(edge)
         finally:
             self._suppress_rail_reassert = False
 
@@ -1363,9 +1377,9 @@ class MainWindow(QMainWindow):
                 self._expand_dock(dock)
         self.restoreState(self._default_state, _STATE_VERSION)
         self._apply_dock_corners()  # restoreState reset the FU-10 corner; re-apply
-        # candidate A: レールドックが 3 番目の参加者になるため、順序/可視を最外へ
-        # 正規化してから 1:4 を再適用する (guardrail 4)。_default_state は
-        # レールドック生成後に採取済み (レール込み) だが冪等な保険として据え直す。
+        # #17: 冒頭で全展開したのでこの時点でレールは全空。_default_state は
+        # レールドック非メンバ時に採取済み (レールを含まない) ため restoreState では
+        # レールは入らない。空レールをレイアウトから除去して正規化する (guardrail 4)。
         self._normalize_rail_placement()
         # spec §1.5-12c: _default_state was captured before the 1:4 ratio is ever
         # applied (it's saved at the top of __init__), so without this the
