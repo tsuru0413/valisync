@@ -201,6 +201,13 @@ class Session:
 
         Cached at the SignalGroupManager level and rebuilt only on load/unload
         (FU-08) — callers on the autofit hot path avoid re-walking every signal.
+
+        **非対称 Mapping** (意図的逸脱): ルックアップ (``[]``/``get``/``in``) は
+        列キーを解決器経由で鋳造しうるが、列挙 (``__iter__``/``len``) は**物理キー
+        のみ**を返す。``dict(session.signal_map())``・``.items()``・``.values()``
+        による全キー列挙は**してはならない** — 330k 列を鋳造して ~390 MB を再導入
+        する (この増分で取り除いた回帰そのもの)。詳細は
+        ``SignalGroupManager.signal_map()`` / ``_ResolvingMap`` を参照。
         """
         return self._groups.signal_map()
 
