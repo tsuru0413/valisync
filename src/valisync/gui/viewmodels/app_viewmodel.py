@@ -11,7 +11,7 @@ import contextlib
 from collections.abc import Callable
 from pathlib import Path
 
-from valisync.core.models import FormatDefinition, Signal
+from valisync.core.models import FormatDefinition
 from valisync.core.session import Session
 from valisync.gui.theme import tokens
 from valisync.gui.viewmodels.observable import Observable
@@ -326,12 +326,6 @@ class AppViewModel(Observable):
             return self._file_hue_index.get(group_key)
 
         return _resolve
-
-    # ─── Signals proxy ───────────────────────────────────────────────────────
-
-    def signals(self) -> list[Signal]:
-        """Return the full namespaced signal list from the underlying Session."""
-        return self._session.signals()
 
     # ─── Data sources ────────────────────────────────────────────────────────
 

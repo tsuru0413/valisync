@@ -1,10 +1,16 @@
 """Tests for ChannelBrowserVM refactored for master-detail (Task 2.1).
 
 Tests verify:
-- signals returns a flat list of SignalItem for the active file
-- SignalItem includes name and unit
+- tree_groups()/shown_count() reflect the active file's signals (base-grouped)
+- unit/tooltip data reaches the tree via tree_groups() leaf tuples
 - VM updates when AppViewModel.active_file_key changes
-- set_filter() narrows the flat list
+- set_filter() narrows what tree_groups()/shown_count() report
+
+Note (Task 0, deferred-column-expansion plan): the flat `ChannelBrowserVM.signals`
+property and its `SignalItem` element type were production-dead (only
+SignalTreeModel, driven by tree_groups(), backs the real channel-browser tree)
+and have been deleted. Tests that used to enumerate `vm.signals` now assert
+"which signals are shown" via `tree_groups()` instead.
 """
 
 from __future__ import annotations
@@ -54,8 +60,8 @@ def _cb_vm_with_signal(
     """Build a ChannelBrowserVM with one fake Signal active under "test_key".
 
     Follows the existing group_signals-injection pattern used elsewhere in
-    this module (see test_signal_item_contains_unit): tooltip_for only needs
-    Signal fields, so a real loaded file is unnecessary.
+    this module: tooltip_for only needs Signal fields, so a real loaded file
+    is unnecessary.
     """
     import numpy as np
 
@@ -77,13 +83,23 @@ def _cb_vm_with_signal(
     return vm
 
 
+def _leaf_key(vm: ChannelBrowserVM, orig: str) -> str:
+    """Look up a leaf's namespaced key from tree_groups() by its original name."""
+    for _base, leaves in vm.tree_groups():
+        for o, _unit, key in leaves:
+            if o == orig:
+                return key
+    raise AssertionError(f"leaf {orig!r} not found in tree_groups()")
+
+
 # ─── Tests ──────────────────────────────────────────────────────────────────
 
 
-def test_initial_signals_is_empty() -> None:
+def test_initial_tree_groups_is_empty() -> None:
     app_vm = AppViewModel()
     vm = ChannelBrowserVM(app_vm)
-    assert vm.signals == []
+    assert vm.tree_groups() == []
+    assert vm.shown_count() == 0
 
 
 def test_signals_populated_when_file_active(tmp_path: Path) -> None:
@@ -91,12 +107,12 @@ def test_signals_populated_when_file_active(tmp_path: Path) -> None:
 
     app_vm.set_active_file(key)
 
-    assert len(vm.signals) == 2
-    names = {s.name for s in vm.signals}
-    assert names == {"sig_a", "sig_b"}
+    assert vm.shown_count() == 2
+    bases = {b for b, _ in vm.tree_groups()}
+    assert bases == {"sig_a", "sig_b"}
 
 
-def test_signal_item_contains_unit(tmp_path: Path) -> None:
+def test_tree_groups_includes_unit(tmp_path: Path) -> None:
     # We can't easily set unit in CSV yet via request_load without core changes,
     # but we can mock or use a fake signal in the session.
     app_vm = AppViewModel()
@@ -118,9 +134,11 @@ def test_signal_item_contains_unit(tmp_path: Path) -> None:
     app_vm.session.group_signals = lambda key: [sig]
     app_vm.set_active_file("test_key")
 
-    assert len(vm.signals) == 1
-    assert vm.signals[0].name == "speed"
-    assert vm.signals[0].unit == "km/h"
+    groups = vm.tree_groups()
+    assert len(groups) == 1
+    base, leaves = groups[0]
+    assert base == "speed"
+    assert leaves == [("speed", "km/h", "test_key::speed")]
 
 
 def test_tooltip_for_lists_value_labels(tmp_path: Path) -> None:
@@ -143,8 +161,8 @@ def test_tooltip_for_lists_value_labels(tmp_path: Path) -> None:
     app_vm.session.group_signals = lambda key: [sig]
     app_vm.set_active_file("test_key")
 
-    item = next(i for i in vm.signals if i.name == "TurnSig")
-    assert "ラベル: 0=OFF, 1=LEFT, 2=RIGHT" in vm.tooltip_for(item.key)
+    key = _leaf_key(vm, "TurnSig")
+    assert "ラベル: 0=OFF, 1=LEFT, 2=RIGHT" in vm.tooltip_for(key)
 
 
 def test_tooltip_for_truncates_after_8(tmp_path: Path) -> None:
@@ -168,8 +186,8 @@ def test_tooltip_for_truncates_after_8(tmp_path: Path) -> None:
     app_vm.session.group_signals = lambda key: [sig]
     app_vm.set_active_file("test_key")
 
-    item = next(i for i in vm.signals if i.name == "Many")
-    tip = vm.tooltip_for(item.key)
+    key = _leaf_key(vm, "Many")
+    tip = vm.tooltip_for(key)
     assert tip.endswith("… (全 10 件)")
     assert "8=S8" not in tip.split("…")[0]
 
@@ -179,7 +197,9 @@ def test_tooltip_for_omits_labels_without_value_labels(tmp_path: Path) -> None:
     vm, app_vm, key = _setup_vm(tmp_path)
     app_vm.set_active_file(key)
 
-    assert all("ラベル:" not in vm.tooltip_for(item.key) for item in vm.signals)
+    keys = [k for _b, leaves in vm.tree_groups() for _o, _u, k in leaves]
+    assert keys  # sanity: the file actually has signals
+    assert all("ラベル:" not in vm.tooltip_for(k) for k in keys)
 
 
 def test_tooltip_for_full_metadata(tmp_path: Path) -> None:
@@ -197,7 +217,7 @@ def test_tooltip_for_full_metadata(tmp_path: Path) -> None:
         bus_type="CAN",
         n_samples=1234,
     )
-    key = vm.signals[0].key
+    key = _leaf_key(vm, "gear")
     tip = vm.tooltip_for(key)
     assert "単位: -" in tip
     assert "サンプル数: 1234" in tip
@@ -215,7 +235,7 @@ def test_tooltip_for_csv_omits_absent_rows(tmp_path: Path) -> None:
         bus_type="",
         n_samples=50,
     )
-    key = vm.signals[0].key
+    key = _leaf_key(vm, "speed")
     tip = vm.tooltip_for(key)
     assert "単位: km/h" in tip
     assert "サンプル数: 50" in tip
@@ -232,10 +252,11 @@ def test_tooltip_for_unknown_key_empty(tmp_path: Path) -> None:
 def test_signals_clears_when_active_file_unset(tmp_path: Path) -> None:
     vm, app_vm, key = _setup_vm(tmp_path)
     app_vm.set_active_file(key)
-    assert len(vm.signals) == 2
+    assert vm.shown_count() == 2
 
     app_vm.set_active_file(None)
-    assert vm.signals == []
+    assert vm.shown_count() == 0
+    assert vm.tree_groups() == []
 
 
 def test_filter_narrows_flat_list(tmp_path: Path) -> None:
@@ -243,8 +264,8 @@ def test_filter_narrows_flat_list(tmp_path: Path) -> None:
     app_vm.set_active_file(key)
 
     vm.set_filter("sig_a")
-    assert len(vm.signals) == 1
-    assert vm.signals[0].name == "sig_a"
+    assert vm.shown_count() == 1
+    assert [b for b, _ in vm.tree_groups()] == ["sig_a"]
 
 
 def test_active_file_switch_fetches_only_active_group_no_full_scan(
@@ -278,9 +299,11 @@ def test_active_file_switch_fetches_only_active_group_no_full_scan(
     session.group_signals = spy_group_signals  # type: ignore[method-assign]
 
     app_vm.set_active_file(key)
-    items = vm.signals  # the master-detail update the view consumes
+    bases = {
+        b for b, _ in vm.tree_groups()
+    }  # the master-detail update the view consumes
 
-    assert {s.name for s in items} == {"sig_a", "sig_b"}
+    assert bases == {"sig_a", "sig_b"}
     assert group_calls == [key]  # only the active group was fetched
     assert full_scan_calls == 0  # the full Session was never scanned
 
@@ -371,7 +394,7 @@ def test_one_keystroke_fetches_group_at_most_once(tmp_path: Path) -> None:
     calls.clear()
     # 1 打鍵目: View/Model 相当の 3 消費
     vm.set_filter("s")
-    _ = list(vm.signals)  # SignalTableModel._on_vm_change
+    vm.tree_groups()  # SignalTreeModel._on_vm_change
     vm.header_text()  # _refresh_state 1
     vm.empty_state()  # _refresh_state 2
     assert len(calls) == 1  # prep を 1 度だけ構築し全消費で共有
@@ -379,7 +402,7 @@ def test_one_keystroke_fetches_group_at_most_once(tmp_path: Path) -> None:
     calls.clear()
     # 2 打鍵目: 同一 active_file → prep/memo で完全充足
     vm.set_filter("si")
-    _ = list(vm.signals)
+    vm.tree_groups()
     vm.header_text()
     vm.empty_state()
     assert calls == []
@@ -398,10 +421,13 @@ def test_active_file_switch_invalidates_prep_no_leak(tmp_path: Path) -> None:
     vm = ChannelBrowserVM(app_vm)
 
     app_vm.set_active_file(ka)
-    assert {s.name for s in vm.signals} == {"alpha", "gamma"}
+    assert {b for b, _ in vm.tree_groups()} == {"alpha", "gamma"}
 
     app_vm.set_active_file(kb)
-    assert {s.name for s in vm.signals} == {"beta", "delta"}  # alpha/gamma を漏らさない
+    assert {b for b, _ in vm.tree_groups()} == {
+        "beta",
+        "delta",
+    }  # alpha/gamma を漏らさない
 
 
 def test_tree_groups_buckets_arrays_under_base(tmp_path: Path) -> None:
@@ -490,8 +516,9 @@ def test_tree_groups_honors_filter(tmp_path: Path) -> None:
     assert vm.tree_groups() == []
 
 
-def test_shown_count_matches_signals_without_building_items(tmp_path: Path) -> None:
-    """FU-22 B: shown_count は len(signals) と一致するが SignalItem を構築しない。"""
+def test_shown_count_matches_tree_groups_leaf_total(tmp_path: Path) -> None:
+    """FU-22 B: shown_count は tree_groups() の全リーフ数と一致するが、
+    tree_groups() 自身が持つのと同じ (orig, unit, key) 以上の要素は構築しない。"""
     app_vm = AppViewModel()
     vm = ChannelBrowserVM(app_vm)
 
@@ -511,10 +538,13 @@ def test_shown_count_matches_signals_without_building_items(tmp_path: Path) -> N
     app_vm.session.group_signals = lambda k: [_sig("g::a"), _sig("g::b"), _sig("g::ab")]
     app_vm.set_active_file("g")
 
+    def _leaf_total() -> int:
+        return sum(len(leaves) for _b, leaves in vm.tree_groups())
+
     assert vm.shown_count() == 3  # no filter -> total
-    assert vm.shown_count() == len(vm.signals)
+    assert vm.shown_count() == _leaf_total()
     vm.set_filter("a")
     assert vm.shown_count() == 2  # "a", "ab"
-    assert vm.shown_count() == len(vm.signals)
+    assert vm.shown_count() == _leaf_total()
     vm.set_filter("zzz")
     assert vm.shown_count() == 0

@@ -62,13 +62,13 @@ def test_request_load_fires_loaded_notification(tmp_path: Path) -> None:
 
 
 def test_signals_exposes_namespaced_signal_after_load(tmp_path: Path) -> None:
-    """signals() returns a Signal with a namespaced name after load."""
+    """session.signals() returns a Signal with a namespaced name after load."""
     vm = AppViewModel()
     csv_file = _write_csv(tmp_path / "data.csv")
 
     key = vm.request_load(csv_file, _csv_format())
 
-    names = [s.name for s in vm.signals()]
+    names = [s.name for s in vm.session.signals()]
     assert any(name.startswith(f"{key}::") for name in names)
 
 
@@ -238,7 +238,7 @@ def test_unload_file_removes_group_clears_active_and_notifies(tmp_path: Path) ->
 
     assert key not in vm.loaded_file_keys
     assert vm.active_file_key is None
-    assert vm.signals() == []
+    assert vm.session.signals() == []
     assert "unloaded" in notifications
     assert "active_file" in notifications
 

@@ -85,7 +85,7 @@ class TestLoadRefresh:
         key = window.app_vm.loaded_file_keys[0]  # type: ignore[attr-defined]
         window.app_vm.set_active_file(key)  # type: ignore[attr-defined]
 
-        assert len(window.channel_browser_vm.signals) == 1  # type: ignore[attr-defined]
+        assert window.channel_browser_vm.shown_count() == 1  # type: ignore[attr-defined]
 
     def test_load_refreshes_panel_with_preadded_signal(
         self, qtbot: QtBot, tmp_path: Path
@@ -233,5 +233,6 @@ class TestUnload:
 
         assert window.app_vm.loaded_file_keys == []
         assert window.app_vm.active_file_key is None
-        assert window.channel_browser_vm.signals == []
+        assert window.channel_browser_vm.shown_count() == 0
+        assert window.channel_browser_vm.tree_groups() == []
         assert [p["signal_key"] for p in panel.inspect()["plotted_signals"]] == []

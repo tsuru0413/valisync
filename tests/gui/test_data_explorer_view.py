@@ -135,7 +135,7 @@ class TestActivation:
         view.load_path(mf4)  # type: ignore[attr-defined]
 
         assert len(app_vm.inspect()["loaded_keys"]) == 1
-        assert any(s.name.endswith("::speed") for s in app_vm.signals())
+        assert any(s.name.endswith("::speed") for s in app_vm.session.signals())
 
     def test_double_click_handler_loads_file(
         self, qtbot: QtBot, tmp_path: Path

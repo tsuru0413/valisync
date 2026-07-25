@@ -30,7 +30,7 @@ def _app_with_csv() -> tuple[AppViewModel, str]:
             has_header=True,
         ),
     )
-    signal_key = sorted(s.name for s in app.signals())[0]
+    signal_key = sorted(s.name for s in app.session.signals())[0]
     return app, signal_key
 
 

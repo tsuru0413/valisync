@@ -326,32 +326,6 @@ class Session:
     ) -> None:
         self._exporter.export(signals, output_path, use_unified_timeline, options)
 
-    def unified_timeline_signals(
-        self,
-        file_offsets: dict[str, float] | None = None,
-        signal_offsets: dict[str, float] | None = None,
-    ) -> list[Signal]:
-        """Place every loaded signal on the Unified_Timeline (Req 8.1, 8.3).
-
-        Applies a per-file offset (keyed by group key) and a per-signal offset
-        (keyed by namespaced signal name) to each signal. No reordering or
-        resampling is done, so inter-signal relative order is preserved (8.3) and
-        sample counts are unchanged (8.4).
-        """
-        file_offsets = file_offsets or {}
-        signal_offsets = signal_offsets or {}
-        placed: list[Signal] = []
-        for sig in self._groups.signals():
-            key = sig.name.split(KEY_SEPARATOR, 1)[0]
-            placed.append(
-                self._synchronizer.apply_offset(
-                    sig,
-                    file_offset=file_offsets.get(key, 0.0),
-                    signal_offset=signal_offsets.get(sig.name, 0.0),
-                )
-            )
-        return placed
-
     # ─── Calcbar operations (Req 26 / 15) ─────────────────────────────────────
 
     def moving_average(self, signal: Signal, window: int) -> Signal:

@@ -1028,7 +1028,7 @@ def test_unload_preserves_panel_proportions(qtbot: QtBot, tmp_path: Path) -> Non
     def _load_one(name: str) -> tuple[str, str]:
         path = _write_csv(tmp_path / name, 50, 1)
         file_key = app.request_load(path, _csv_format(1))
-        sig_key = (set(s.name for s in app.signals()) - seen).pop()
+        sig_key = (set(s.name for s in app.session.signals()) - seen).pop()
         seen.add(sig_key)
         return file_key, sig_key
 

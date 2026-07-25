@@ -125,7 +125,7 @@ def test_remove_file_preserves_graph_panel_proportions(
 
         def _load(name: str) -> tuple[str, str]:
             key = app.request_load(_write_csv(tmp_path / name), _fmt())
-            sig = (set(s.name for s in app.signals()) - seen).pop()
+            sig = (set(s.name for s in app.session.signals()) - seen).pop()
             seen.add(sig)
             return key, sig
 

@@ -255,32 +255,6 @@ def test_export_csv_delegates_to_core(tmp_path):
     assert out.read_text(encoding="utf-8").splitlines()[0] == "timestamp,speed"
 
 
-def test_unified_timeline_applies_offsets_preserving_count_and_order(tmp_path):
-    csv = tmp_path / "a.csv"
-    # two signals sharing one timestamp axis
-    csv.write_text("t,a,b\n0.0,1.0,4.0\n1.0,2.0,5.0\n", encoding="utf-8")
-    fmt = FormatDefinition(
-        name="t2",
-        delimiter=Delimiter.COMMA,
-        timestamp_column=0,
-        timestamp_unit="sec",
-        signal_start_column=1,
-        signal_end_column=2,
-        has_header=True,
-    )
-    session = Session()
-    session.load(csv, format_def=fmt)
-
-    placed = session.unified_timeline_signals(file_offsets={"csv_1": 2.0})
-
-    assert [s.name for s in placed] == ["csv_1::a", "csv_1::b"]  # order preserved (8.3)
-    for s in placed:
-        np.testing.assert_array_equal(
-            s.timestamps, np.array([2.0, 3.0])
-        )  # offset (8.1)
-        assert len(s.timestamps) == 2  # sample count unchanged (8.4)
-
-
 # ─── LoadOutcome / diagnostics (FB-02 foundation) ─────────────────────────────
 
 
