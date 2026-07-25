@@ -59,6 +59,22 @@ def test_struct_of_array_composes() -> None:
     assert list(leaf_names("S", spec)) == ["S.v[0]", "S.v[1]"]
 
 
+def test_zero_width_axis_expands_to_no_leaves() -> None:
+    # 0 幅の非サンプル軸は展開不能列 (LD-14) — _flatten は range(0) が空で
+    # 自然に [] を返す。spec_from_probe は arr[:, 0] で IndexError にならず
+    # 同じく空を返さなければならない。
+    spec = spec_from_probe(np.zeros((1, 0), dtype=np.float64))
+    assert list(leaf_names("Z", spec)) == []
+    assert leaf_count(spec) == 0
+
+
+def test_zero_width_axis_inside_struct_field_expands_to_no_leaves() -> None:
+    arr = np.zeros(1, dtype=[("ok", "<f8"), ("empty", "<f8", (0,))])
+    spec = spec_from_probe(arr)
+    assert list(leaf_names("S", spec)) == ["S.ok"]
+    assert leaf_count(spec) == 1
+
+
 def _numeric_flatten_names(base: str, arr: np.ndarray) -> list[str]:
     # _flatten は dtype 盲目なので、比較のため数値リーフだけに絞る
     return [n for n, col in _flatten(base, arr) if col.dtype.kind in "iufb"]
@@ -73,6 +89,7 @@ def test_leaf_names_order_matches_flatten() -> None:
         np.zeros(1, dtype=[("v", "<f8", (2,))]),
         np.zeros(1, dtype=[("ok", "<f8"), ("txt", "S4")]),
         np.zeros(1, dtype=[("Radar.ObjList", "<u1"), ("Radar.ObjList.dx", "<f8")]),
+        np.zeros((1, 0), dtype=np.float64),
     ]
     for arr in cases:
         spec = spec_from_probe(arr)

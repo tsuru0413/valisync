@@ -1,9 +1,12 @@
-"""LD-14 の列名文法の単一の真実 (ColumnSpec とその上の生成/逆変換).
+"""LD-14 の列名文法の単一の真実 (ColumnSpec とその上の生成).
 
 従来は mdf_loader の ``_flatten`` と ``_leaf_column_count`` が同じ規則を 2 箇所で
 手写ししており、共有コードも突合 assert も無かった。列展開を遅延化すると
 「名前を生成する側」と「名前から列を引く側」が分離するため、乖離はサイレントに
 誤った列を返す。本モジュールを唯一の実装とし、順序は _flatten と一致させる。
+
+現時点では生成 (``spec_from_probe`` / ``leaf_names`` / ``leaf_count``) のみを
+提供する。名前→列の逆変換 (``parse_leaf``) は後続タスクで追加する。
 """
 
 from __future__ import annotations
@@ -39,8 +42,17 @@ def spec_from_probe(arr: np.ndarray) -> ColumnSpec:
         )
     if arr.ndim <= 1:
         return ColumnSpec(kind="leaf", dtype_kind=arr.dtype.kind)
+    axis_len = int(arr.shape[1])
+    if axis_len == 0:
+        # 0 幅軸は実サンプルを 1 つも持たないため arr[:, 0] が IndexError になる。
+        # _flatten は range(0) が空になり自然に [] を返す (展開不能列は空リスト・LD-14)。
+        # leaf_names/leaf_count も axis_len==0 で child を実際には辿らないが、
+        # dtype/残り軸の形だけは実データ無しで分かるため空プローブで正しく構造化する。
+        child_probe = np.empty((0, *arr.shape[2:]), dtype=arr.dtype)
+    else:
+        child_probe = arr[:, 0]
     return ColumnSpec(
-        kind="array", axis_len=int(arr.shape[1]), child=spec_from_probe(arr[:, 0])
+        kind="array", axis_len=axis_len, child=spec_from_probe(child_probe)
     )
 
 
