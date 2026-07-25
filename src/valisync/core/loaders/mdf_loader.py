@@ -9,6 +9,7 @@ from typing import Any, ClassVar
 import numpy as np
 from asammdf import MDF
 
+from valisync.core.loaders.column_names import ColumnSpec, spec_from_probe
 from valisync.core.loaders.mdf_handle import MdfHandle
 from valisync.core.models import Diagnostic, LoadResult, Signal, SignalGroup
 from valisync.core.models.load_result import LoadCancelled
@@ -77,15 +78,20 @@ def _flatten(name: str, arr: np.ndarray) -> list[tuple[str, np.ndarray]]:
 def _leaf_column_count(arr: np.ndarray) -> int:
     """arr を _flatten したときのリーフ列数 (1 レコードの samples でも可・LD-14).
 
-    ``_flatten`` と同じ規則: 構造化はフィールド再帰合算、多次元は非サンプル軸
-    (shape[1:]) の積。プローブ (record_count=1) と本読みで shape[1:] は一致する
-    ため 1 レコードから正確な展開列数が得られる。
+    1024 ガードの母数なので **dtype 非依存に全リーフを数える** (数値のみを数える
+    column_names.leaf_count とは意図的に別物)。構造は column_names の ColumnSpec に
+    委譲し、規則の二重実装を避ける。
     """
-    if arr.dtype.names:
-        return sum(_leaf_column_count(arr[f]) for f in arr.dtype.names)
-    if arr.ndim <= 1:
-        return 1
-    return int(np.prod(arr.shape[1:]))
+    return _all_leaf_count(spec_from_probe(arr))
+
+
+def _all_leaf_count(spec: ColumnSpec) -> int:
+    if spec.kind == "struct":
+        return sum(_all_leaf_count(sub) for _n, sub in spec.fields)
+    if spec.kind == "array":
+        assert spec.child is not None
+        return spec.axis_len * _all_leaf_count(spec.child)
+    return 1
 
 
 def _explode_samples(
