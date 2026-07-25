@@ -217,6 +217,38 @@ def test_remove_group_refused_has_no_removed_group(tmp_path: Path) -> None:
     result = session.remove_group(key)
     assert result.removed is False
     assert result.removed_group is None
+    assert result.removed_columns == ()
+
+
+def test_resolve_signal_delegates_to_group_manager(tmp_path: Path) -> None:
+    """Session は列キー解決の唯一の入口 (E-1)。既存キーは map から、未ロードは None。"""
+    csv = tmp_path / "a.csv"
+    _write_csv(csv, "t,speed", ["0.0,10.0", "1.0,20.0"])
+    session = Session()
+    key = session.load(csv, format_def=_FMT).key
+
+    got = session.resolve_signal(f"{key}::speed")
+    assert got is not None
+    assert got.name == f"{key}::speed"
+    assert session.resolve_signal("csv_9::speed") is None  # 未ロードグループ
+
+
+def test_remove_group_reports_minted_columns(tmp_path: Path) -> None:
+    """鋳造済み列 Signal は SignalGroup.signals の外に居るため、削除時に
+    RemovalResult 経由で呼び出し側 (GUI teardown) へ渡らないと会計から漏れる。"""
+    csv = tmp_path / "a.csv"
+    _write_csv(csv, "t,speed", ["0.0,10.0", "1.0,20.0"])
+    session = Session()
+    key = session.load(csv, format_def=_FMT).key
+    # E-1 ではローダーがまだ列を展開するため鋳造経路は走らない。副テーブルへ
+    # 直接置いて、remove_group の受け渡し配線だけを検証する。
+    column = _derived(f"{key}::speed[7]", [0.0], [1.0])
+    session._groups._resolved_by_key.setdefault(key, {})[column.name] = column
+
+    result = session.remove_group(key)
+
+    assert result.removed is True
+    assert result.removed_columns == (column,)
 
 
 # ─── Pure-computation pass-throughs ───────────────────────────────────────────

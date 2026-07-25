@@ -26,6 +26,11 @@ class SignalGroupManager:
         self._namespaced_list: list[Signal] | None = None
         self._namespaced_map: dict[str, Signal] | None = None
         self._namespaced_by_key: dict[str, list[Signal]] = {}
+        # 鋳造した列 Signal (E-1)。**_invalidate_namespaced() に相乗りさせない** —
+        # 相乗りすると 2 ファイル目のロードごとに全プロット列がフルチャンネル再読み
+        # (実測 0.73-1.18 s/列) になる純粋な回帰。remove(key) でだけ切り離す。
+        self._resolved_by_key: dict[str, dict[str, Signal]] = {}
+        self.mint_count = 0
 
     def add(self, group: SignalGroup) -> str:
         """Register a Signal_Group and return its assigned key.
@@ -41,8 +46,11 @@ class SignalGroupManager:
         self._invalidate_namespaced()
         return key
 
-    def remove(self, key: str) -> SignalGroup:
-        """Remove and return the Signal_Group registered under ``key``.
+    def remove(self, key: str) -> tuple[SignalGroup, tuple[Signal, ...]]:
+        """グループと、そのグループで鋳造済みの列 Signal を取り出して返す。
+
+        列 Signal は SignalGroup.signals の外に居るため、ここで返さないと
+        TeardownService の会計・解放から漏れる。
 
         Dependency checking against Derived_Signals (Req 4.5) is the Session's
         responsibility; this method removes unconditionally.
@@ -51,8 +59,9 @@ class SignalGroupManager:
             group = self._groups.pop(key)
         except KeyError:
             raise KeyError(f"no Signal_Group registered under key: {key!r}") from None
+        columns = tuple(self._resolved_by_key.pop(key, {}).values())
         self._invalidate_namespaced()
-        return group
+        return group, columns
 
     @property
     def keys(self) -> list[str]:
@@ -105,6 +114,9 @@ class SignalGroupManager:
         self._namespaced_list = None
         self._namespaced_map = None
         self._namespaced_by_key = {}
+        # NOTE: _resolved_by_key はここで**捨てない** (Critical 1)。捨てると 2 ファイル目の
+        # ロードごとに全プロット列が新オブジェクト (空キャッシュ) となり、次の render で
+        # フルチャンネル再読み (実測 0.73-1.18 s/列) が走る。切り離しは remove(key) のみ。
 
     def _ensure_namespaced(self) -> None:
         """Build and cache the namespaced signal list/map once (idempotent).
@@ -155,3 +167,44 @@ class SignalGroupManager:
         self._ensure_namespaced()
         assert self._namespaced_map is not None
         return MappingProxyType(self._namespaced_map)
+
+    def resolve(self, key: str) -> Signal | None:
+        """名前空間つきキーを Signal へ解決する (無ければ列として鋳造を試みる)。
+
+        グループ未ロードなら None (正当な不在)。ローダーが列を展開している間は
+        全キーが既存 map で解決でき、鋳造経路はテストからのみ exercise される。
+        """
+        self._ensure_namespaced()
+        assert self._namespaced_map is not None
+        hit = self._namespaced_map.get(key)
+        if hit is not None:
+            return hit
+        group_key = key.split(KEY_SEPARATOR, 1)[0]
+        if group_key not in self._groups:
+            return None
+        table = self._resolved_by_key.setdefault(group_key, {})
+        cached = table.get(key)
+        if cached is not None:
+            return cached
+        minted = self._mint_column(group_key, key)
+        if minted is None:
+            return None
+        table[key] = minted
+        self.mint_count += 1
+        return minted
+
+    def resolved_keys(self, group_key: str) -> frozenset[str]:
+        """鋳造済み列キーの集合 (鋳造を誘発しない introspection)."""
+        return frozenset(self._resolved_by_key.get(group_key, {}))
+
+    def _mint_column(self, group_key: str, key: str) -> Signal | None:
+        """列キーから Signal を鋳造する。E-1 では ColumnSpec 未配線のため None。
+
+        E-3 でローダーが per-channel Signal + ColumnSpec を発行したら、ここで
+        parse_leaf → LazyMdfValues(selector) → Signal 構築を行う。
+
+        鋳造した Signal は列キーの**正典**であり (resolve は同じキーに同じオブジェクトを
+        返す)、namespaced ラッパーと違って別の元 Signal を持たない —
+        ``_sorted_view_delegate`` は不要。
+        """
+        return None

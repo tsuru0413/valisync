@@ -80,11 +80,15 @@ class RemovalResult:
     forced; ``dependent_signals`` then names the blocking Derived_Signals.
     ``removed_group`` carries the popped Signal_Group on success so the GUI can
     defer its dealloc off the UI thread (FU-16); None when removal was refused.
+    ``removed_columns`` carries the group's minted column Signals (E-1), which
+    live outside ``SignalGroup.signals`` and would otherwise escape the teardown
+    accounting.
     """
 
     removed: bool
     dependent_signals: tuple[str, ...] = ()
     removed_group: SignalGroup | None = None
+    removed_columns: tuple[Signal, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -225,6 +229,10 @@ class Session:
         """
         return self._groups.group_signals(key)
 
+    def resolve_signal(self, key: str) -> Signal | None:
+        """名前空間つきキーを Signal へ解決する (列キーは要求時に鋳造・E-1)."""
+        return self._groups.resolve(key)
+
     def source_info(self, key: str) -> SourceInfo:
         """Return read-only metadata for the group under *key* (KeyError if unknown)."""
         group = self._groups.group(key)
@@ -289,9 +297,12 @@ class Session:
         # the caller hands `removed_group` to the GUI teardown service (FU-16).
         # This bookkeeping is the term most likely to grow toward the sync-close
         # budget at very high channel counts.
-        group = self._groups.remove(key)
+        group, columns = self._groups.remove(key)
         return RemovalResult(
-            removed=True, dependent_signals=dependents, removed_group=group
+            removed=True,
+            dependent_signals=dependents,
+            removed_group=group,
+            removed_columns=columns,
         )
 
     # ─── Pure-computation pass-throughs (Session is the only gateway) ──────────
