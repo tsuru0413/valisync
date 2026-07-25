@@ -5,13 +5,13 @@
 「名前を生成する側」と「名前から列を引く側」が分離するため、乖離はサイレントに
 誤った列を返す。本モジュールを唯一の実装とし、順序は _flatten と一致させる。
 
-現時点では生成 (``spec_from_probe`` / ``leaf_names`` / ``leaf_count``) のみを
-提供する。名前→列の逆変換 (``parse_leaf``) は後続タスクで追加する。
+生成 (``spec_from_probe`` / ``leaf_names`` / ``leaf_count``) と逆変換
+(``parse_leaf``) を対で持つ。
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -77,3 +77,54 @@ def leaf_count(spec: ColumnSpec) -> int:
         assert spec.child is not None
         return spec.axis_len * leaf_count(spec.child)
     return 1 if spec.dtype_kind in _NUMERIC_KINDS else 0
+
+
+def parse_leaf(
+    display_key: str, specs: Mapping[str, ColumnSpec]
+) -> tuple[str, ColumnSpec] | None:
+    """列キーを (物理表示名, リーフの ColumnSpec) へ復元する。解決不能なら None。
+
+    **'.' で split しない** — asammdf のフィールド名はチャンネル名そのもので '.' を
+    合法に含む (例 dtype.names == ('Radar.ObjList', 'Radar.ObjList.dx'))。逆変換は
+    既知集合への最長一致で行う: (1) 物理表示名の最長プレフィクスで base を確定
+    (最長優先 = Mat[0] 衝突時は実チャンネルが勝つ)、(2) 残余を ColumnSpec が持つ
+    実フィールド名と [i] トークンで消費する。曖昧・消費しきれない場合は None を返し、
+    決して別の列を返さない。
+    """
+    for base in sorted(
+        (n for n in specs if display_key.startswith(n)), key=len, reverse=True
+    ):
+        leaf = _consume(display_key[len(base) :], specs[base])
+        if leaf is not None:
+            return (base, leaf)
+    return None
+
+
+def _consume(rest: str, spec: ColumnSpec) -> ColumnSpec | None:
+    """spec を辿って rest を消費する。消費しきってリーフに達したらそのリーフを返す。"""
+    if spec.kind == "struct":
+        # フィールド名は '.' を含みうるので、既知フィールドの最長一致で消費する
+        for name, sub in sorted(spec.fields, key=lambda p: len(p[0]), reverse=True):
+            token = f".{name}"
+            if rest.startswith(token):
+                got = _consume(rest[len(token) :], sub)
+                if got is not None:
+                    return got
+        return None
+    if spec.kind == "array":
+        assert spec.child is not None
+        if not rest.startswith("["):
+            return None
+        end = rest.find("]")
+        if end < 0:
+            return None
+        index_text = rest[1:end]
+        if not index_text.isdigit():
+            return None
+        if not (0 <= int(index_text) < spec.axis_len):
+            return None
+        return _consume(rest[end + 1 :], spec.child)
+    # leaf: 残余が空で、かつ数値リーフのときだけ成立
+    if rest:
+        return None
+    return spec if spec.dtype_kind in _NUMERIC_KINDS else None

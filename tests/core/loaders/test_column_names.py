@@ -3,8 +3,10 @@ from __future__ import annotations
 import numpy as np
 
 from valisync.core.loaders.column_names import (
+    ColumnSpec,
     leaf_count,
     leaf_names,
+    parse_leaf,
     spec_from_probe,
 )
 from valisync.core.loaders.mdf_loader import _flatten
@@ -95,3 +97,50 @@ def test_leaf_names_order_matches_flatten() -> None:
         spec = spec_from_probe(arr)
         assert list(leaf_names("B", spec)) == _numeric_flatten_names("B", arr)
         assert leaf_count(spec) == len(_numeric_flatten_names("B", arr))
+
+
+def _specs(*pairs: tuple[str, np.ndarray]) -> dict[str, ColumnSpec]:
+    return {name: spec_from_probe(arr) for name, arr in pairs}
+
+
+def test_parse_leaf_round_trips_every_generated_name() -> None:
+    cases = {
+        "Spd": np.zeros(1, dtype=np.float64),
+        "Mat": np.zeros((1, 3), dtype=np.uint8),
+        "M": np.zeros((1, 2, 2), dtype=np.int16),
+        "P": np.zeros(1, dtype=[("x", "<f8"), ("y", "<f8")]),
+        "Radar.ObjList": np.zeros(
+            1, dtype=[("Radar.ObjList", "<u1"), ("Radar.ObjList.dx", "<f8")]
+        ),
+    }
+    specs = {n: spec_from_probe(a) for n, a in cases.items()}
+    for base, spec in specs.items():
+        for name in leaf_names(base, spec):
+            got = parse_leaf(name, specs)
+            assert got is not None, name
+            assert got[0] == base, name
+
+
+def test_parse_leaf_prefers_the_real_channel_on_collision() -> None:
+    # 2D の Mat の第0列と、"Mat[0]" という名前の 1D チャンネルが衝突する
+    specs = _specs(
+        ("Mat", np.zeros((1, 2), dtype=np.uint8)),
+        ("Mat[0]", np.zeros(1, dtype=np.float64)),
+    )
+    got = parse_leaf("Mat[0]", specs)
+    assert got is not None
+    assert got[0] == "Mat[0]"  # 最長一致 = 実チャンネルが勝つ
+
+
+def test_parse_leaf_returns_none_for_unknown_base_or_bad_index() -> None:
+    specs = _specs(("Mat", np.zeros((1, 2), dtype=np.uint8)))
+    assert parse_leaf("Nope[0]", specs) is None
+    assert parse_leaf("Mat[9]", specs) is None  # 範囲外
+    assert parse_leaf("Mat", specs) is None  # 親そのものは列ではない
+    assert parse_leaf("Mat[0]x", specs) is None  # 残余を消費しきれない
+
+
+def test_parse_leaf_rejects_non_numeric_leaf() -> None:
+    specs = _specs(("C", np.zeros(1, dtype=[("ok", "<f8"), ("txt", "S4")])))
+    assert parse_leaf("C.ok", specs) is not None
+    assert parse_leaf("C.txt", specs) is None  # 非数値は列キー空間に無い
