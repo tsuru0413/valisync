@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from types import MappingProxyType
+from collections.abc import Callable, Iterator, Mapping
 
 from valisync.core.models import Signal, SignalGroup
 
@@ -158,15 +157,19 @@ class SignalGroupManager:
         return list(self._namespaced_list)
 
     def signal_map(self) -> Mapping[str, Signal]:
-        """Read-only ``{namespaced_name: Signal}`` view, cached (FU-08).
+        """読み取り専用 ``{namespaced_name: Signal}`` ビュー (FU-08 でキャッシュ)。
 
-        Last-wins on duplicate namespaced names (same as building a dict from
-        ``signals()``). Returned as a ``MappingProxyType`` so callers cannot
-        mutate — and corrupt — the shared cache.
+        重複した名前空間つき名は last-wins (``signals()`` から dict を作るのと同じ)。
+        読み取り専用なので呼び出し側は共有キャッシュを壊せない。
+
+        **非対称 Mapping** (E-1・意図的逸脱): ``[]``/``get``/``in`` は列キーを解決器
+        経由で鋳造しうるが、``__iter__``/``len`` は既存 (物理) キーのみを返す。全論理
+        キーの列挙は 330k 列を鋳造して ~390 MB を再導入するため提供しない —
+        ``dict(signal_map())`` は使ってはならない。
         """
         self._ensure_namespaced()
         assert self._namespaced_map is not None
-        return MappingProxyType(self._namespaced_map)
+        return _ResolvingMap(self._namespaced_map, self.resolve)
 
     def resolve(self, key: str) -> Signal | None:
         """名前空間つきキーを Signal へ解決する (無ければ列として鋳造を試みる)。
@@ -208,3 +211,51 @@ class SignalGroupManager:
         ``_sorted_view_delegate`` は不要。
         """
         return None
+
+
+class _ResolvingMap(Mapping[str, Signal]):
+    """既存マップ + 未知キーの解決器フォールバック (列挙は既存キーのみ)。
+
+    ``Mapping`` の契約からの**意図的逸脱**: ``key in m`` が True でも ``iter(m)`` が
+    その key を返さないことがある。全論理キーを列挙可能にすると 330k 列を鋳造して
+    ~390 MB を再導入する — それが E-1 で取り除いているコストそのもの。読み取り専用
+    (``__setitem__`` 無し) なので base の共有キャッシュは外から壊せない。
+    """
+
+    __slots__ = ("_base", "_resolve")
+
+    def __init__(
+        self, base: dict[str, Signal], resolve: Callable[[str], Signal | None]
+    ) -> None:
+        self._base = base
+        self._resolve = resolve
+
+    def __getitem__(self, key: str) -> Signal:
+        hit = self._base.get(key)
+        if hit is not None:
+            return hit
+        got = self._resolve(key)
+        if got is None:
+            raise KeyError(key)
+        return got
+
+    def get(self, key: str, default: Signal | None = None) -> Signal | None:  # type: ignore[override]
+        # Mapping 既定の get は __getitem__ の KeyError を捕まえるので挙動は同じだが、
+        # 呼出側 (約20箇所の sig_map.get) のホットパスから例外の送出/捕捉を外す。
+        hit = self._base.get(key)
+        if hit is not None:
+            return hit
+        got = self._resolve(key)
+        return default if got is None else got
+
+    def __contains__(self, key: object) -> bool:
+        if not isinstance(key, str):
+            return False
+        # 既存キーは解決器を通さない (鋳造を誘発しない)。
+        return key in self._base or self._resolve(key) is not None
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._base)  # 物理キーのみ — 鋳造しない (クラス docstring 参照)
+
+    def __len__(self) -> int:
+        return len(self._base)  # 物理キー数のみ — 鋳造しない

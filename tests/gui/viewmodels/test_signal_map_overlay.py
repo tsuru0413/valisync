@@ -9,11 +9,14 @@ dict を作り直していた (prod 264k エントリ)。列キーを遅延解�
 
 from __future__ import annotations
 
+import datetime
 from collections.abc import Iterator, Mapping
+from pathlib import Path
 
 import numpy as np
 
-from valisync.core.models import Signal
+from valisync.core.loaders.signal_group_manager import SignalGroupManager
+from valisync.core.models import Signal, SignalGroup
 
 
 class _CountingMap(Mapping[str, Signal]):
@@ -159,3 +162,75 @@ def test_signal_map_fast_path_returns_base_object_when_no_offsets() -> None:
 
     assert vm._signal_map() is base  # type: ignore[attr-defined]
     assert base.full_scans == 0
+
+
+# ─── 遅延解決 base map (_ResolvingMap) との合成 (Task 6) ────────────────────────
+
+
+class _MintingManager(SignalGroupManager):
+    """テスト専用: E-3 でローダーが per-channel Signal を出す状態を先取りする。
+
+    E-1 本体の `_mint_column` は常に None を返すため、overlay 越しに鋳造経路が
+    通っていることは鋳造可能なサブクラスでしか観測できない。
+    """
+
+    def _mint_column(self, group_key: str, key: str) -> Signal:
+        return _sig(key)
+
+
+def _manager_with(*names: str) -> tuple[_MintingManager, str]:
+    mgr = _MintingManager()
+    key = mgr.add(
+        SignalGroup(
+            signals=tuple(_sig(n) for n in names),
+            source_path=Path("/x.mf4").resolve(),
+            file_format="MDF4",
+            loaded_at=datetime.datetime.now(),
+        )
+    )
+    return mgr, key
+
+
+def test_overlay_over_resolving_base_enumerates_physical_keys_only() -> None:
+    """`len()`/`iter()` は overlay 越しでも「物理キー」のままで鋳造しない。
+
+    overlay は列挙を base へ委譲する。base が遅延解決 Mapping になった今、その委譲が
+    「全論理キーの列挙」に化けると 330k 列を鋳造して ~390 MB を再導入する。
+    """
+    mgr, key = _manager_with("Mat[0]")
+    vm, _session = _vm(mgr.signal_map(), {key: 1.0}, {})
+    sm = vm._signal_map()  # type: ignore[attr-defined]
+
+    before = mgr.mint_count
+    assert len(sm) == 1
+    assert list(sm) == [f"{key}::Mat[0]"]
+    assert mgr.mint_count == before  # 列挙は鋳造しない
+
+    # 鋳造済みの列があっても列挙は物理キーのみ
+    assert sm[f"{key}::Mat[7]"] is not None
+    assert mgr.mint_count == before + 1
+    assert len(sm) == 1
+    assert list(sm) == [f"{key}::Mat[0]"]
+
+
+def test_overlay_over_resolving_base_applies_offset_to_minted_column() -> None:
+    """overlay 越しのルックアップは列を解決し、その列にもオフセットを適用する。"""
+    mgr, key = _manager_with("Mat[0]")
+    vm, session = _vm(mgr.signal_map(), {key: 1.0}, {})
+    sm = vm._signal_map()  # type: ignore[attr-defined]
+
+    col_key = f"{key}::Mat[7]"
+    col = sm.get(col_key)
+    assert col is not None  # 解決器へフォールスルーした
+    np.testing.assert_allclose(col.timestamps, np.arange(3, dtype=np.float64) + 1.0)
+    assert session.offset_calls == [(col_key, 1.0, 0.0)]
+
+
+def test_overlay_over_resolving_base_returns_none_for_unresolvable_key() -> None:
+    """解決不能キーは overlay 越しでも None (KeyError を漏らさない)。"""
+    mgr, key = _manager_with("Mat[0]")
+    vm, _session = _vm(mgr.signal_map(), {key: 1.0}, {})
+    sm = vm._signal_map()  # type: ignore[attr-defined]
+
+    assert sm.get("mf4_9::Nope") is None  # 未ロードグループ
+    assert "mf4_9::Nope" not in sm

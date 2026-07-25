@@ -1,6 +1,6 @@
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
-from types import MappingProxyType
 
 import numpy as np
 import pytest
@@ -60,7 +60,10 @@ def test_signal_map_is_read_only() -> None:
     m = SignalGroupManager()
     key = m.add(_group([_sig("a", [1.0])]))
     sm = m.signal_map()
-    assert isinstance(sm, MappingProxyType)
+    # E-1 で戻り値が MappingProxyType から遅延解決 Mapping (_ResolvingMap) へ変わった。
+    # 守るべき不変条件は具体型ではなく「共有キャッシュを外から変異させられない」こと。
+    assert isinstance(sm, Mapping)
+    assert not hasattr(sm, "__setitem__")
     with pytest.raises(TypeError):
         sm[f"{key}::a"] = _sig("x", [0.0])  # type: ignore[index]
 
