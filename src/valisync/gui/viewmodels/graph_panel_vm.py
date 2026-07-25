@@ -14,7 +14,7 @@ LOD pipeline (render_data):
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -1589,26 +1589,20 @@ class GraphPanelVM(Observable):
         """Return {signal.name: signal} with stored time offsets applied (R14).
 
         Fast path (no offsets, the norm): return the Session's cached read-only
-        map unchanged — no per-call rebuild of the 264k-entry map (FU-08). Only
-        when an offset is set do we shallow-overlay the affected signals via the
-        pure Session.apply_offset; a zero total leaves the base wrapper in place.
-        Group key is the prefix before '::' (same convention as Session).
+        map unchanged — no per-call rebuild of the 264k-entry map (FU-08). With
+        an offset set, wrap it in an overlay that applies the pure
+        Session.apply_offset ON LOOKUP for the affected keys only: copying the
+        whole base map here was O(loaded) per call, and it is also structurally
+        incompatible with a lazily-resolving base map (E-1) — the walk would
+        mint every column key. Group key is the prefix before '::' (same
+        convention as Session).
         """
         base = self._session.signal_map()
         if not self._file_offsets and not self._signal_offsets:
             return base
-        result: dict[str, Signal] = {}
-        for name, sig in base.items():
-            group_key = name.split("::", 1)[0]
-            file_off = self._file_offsets.get(group_key, 0.0)
-            sig_off = self._signal_offsets.get(name, 0.0)
-            if file_off or sig_off:
-                result[name] = self._session.apply_offset(
-                    sig, file_offset=file_off, signal_offset=sig_off
-                )
-            else:
-                result[name] = sig
-        return result
+        return _OffsetOverlay(
+            base, dict(self._file_offsets), dict(self._signal_offsets), self._session
+        )
 
     def _auto_fit_ranges(self) -> None:
         """Fit x_range and y_range to all plotted signals if not yet set.
@@ -1688,3 +1682,55 @@ class GraphPanelVM(Observable):
                 signal_name=name,
             ),
         )
+
+
+class _OffsetOverlay(Mapping[str, Signal]):
+    """base map の上に時間オフセットをルックアップ時適用する読み取り専用ビュー.
+
+    base を丸ごとコピーしないので O(offset信号)。列キーを遅延解決する base map
+    (E-1) とも両立する — 列挙は base に委譲し、鋳造を誘発しない。
+    """
+
+    __slots__ = ("_base", "_cache", "_file_offsets", "_session", "_signal_offsets")
+
+    def __init__(
+        self,
+        base: Mapping[str, Signal],
+        file_offsets: dict[str, float],
+        signal_offsets: dict[str, float],
+        session: Session,
+    ) -> None:
+        self._base = base
+        self._file_offsets = file_offsets
+        self._signal_offsets = signal_offsets
+        self._session = session
+        # 同一 overlay 内での再ルックアップを償却する (render→autofit→cursor が
+        # 同じキーを何度も引く)。offset 変更は set_offsets 経由で新しい overlay を
+        # 生むため、ここに stale は溜まらない。
+        self._cache: dict[str, Signal] = {}
+
+    def _offset_for(self, key: str) -> tuple[float, float]:
+        group_key = key.split(KEY_SEPARATOR, 1)[0]
+        return (
+            self._file_offsets.get(group_key, 0.0),
+            self._signal_offsets.get(key, 0.0),
+        )
+
+    def __getitem__(self, key: str) -> Signal:
+        hit = self._cache.get(key)
+        if hit is not None:
+            return hit
+        sig = self._base[key]
+        file_off, sig_off = self._offset_for(key)
+        if file_off or sig_off:
+            sig = self._session.apply_offset(
+                sig, file_offset=file_off, signal_offset=sig_off
+            )
+        self._cache[key] = sig
+        return sig
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._base)
+
+    def __len__(self) -> int:
+        return len(self._base)
