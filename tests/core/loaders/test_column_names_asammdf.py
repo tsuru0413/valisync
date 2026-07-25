@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 from asammdf import MDF
@@ -30,16 +29,14 @@ from valisync.core.loaders.column_names import (
     parse_leaf,
     spec_from_probe,
 )
+from valisync.core.loaders.mdf_loader import MdfLoader
 
 _CHANNEL = "Radar.ObjList"
 _AXIS_LEN = 3
 
-_PROBE_OPTIONS: dict[str, Any] = {
-    "record_count": 1,
-    "raw": True,
-    "ignore_value2text_conversions": True,
-    "copy_master": False,
-}
+# 本番と同じ probe オプション定義を再利用する — 手写しコピーだと production の
+# _PROBE_OPTIONS が変わってもこのフィクスチャは追随せず実挙動から乖離しうる。
+_PROBE_OPTIONS = MdfLoader._PROBE_OPTIONS
 
 
 def _write_array_mf4(tmp_path: Path) -> Path:
@@ -91,8 +88,9 @@ def test_asammdf_array_channel_really_has_dotted_field_names(tmp_path: Path) -> 
     assert field_names == [_CHANNEL, f"{_CHANNEL}.dx"], field_names
     # '.' を含むフィールド名が実在すること = 合成 dtype では再現しない性質
     assert any("." in f for f in field_names), field_names
-    # 実フィールドは 2 本だが、'.' split では 3 セグメントに見える
-    assert len(f"{_CHANNEL}.dx".split(".")) == 3
+    # 実フィールドは 2 本だが、'.' split では観測されたフィールド名自体が
+    # 3 セグメントに見える (合成文字列でなく実データで固定する)
+    assert len(field_names[1].split(".")) == 3, field_names
 
 
 def test_dotted_field_names_round_trip(tmp_path: Path) -> None:
@@ -101,6 +99,7 @@ def test_dotted_field_names_round_trip(tmp_path: Path) -> None:
     names = list(leaf_names(_CHANNEL, spec))
     assert names, "structured channel produced no leaves"
     assert f"{_CHANNEL}.{_CHANNEL}.dx[0]" in names, names
+    assert len(set(names)) == len(names), names  # generator must not alias two columns
     for name in names:
         got = parse_leaf(name, specs)
         assert got is not None, f"could not parse {name!r}"

@@ -90,13 +90,27 @@ def parse_leaf(
     (最長優先 = Mat[0] 衝突時は実チャンネルが勝つ)、(2) 残余を ColumnSpec が持つ
     実フィールド名と [i] トークンで消費する。曖昧・消費しきれない場合は None を返し、
     決して別の列を返さない。
+
+    **precondition — specs のキー空間**: ``specs`` は生チャンネル名 (mdf_loader の
+    ``base_name``) をキーとする Mapping でなければならない。LD-08 の ``[idx]``
+    曖昧化済み表示名 (``signal_name``) をキーにしてはいけない — mdf_loader の
+    セレクタ (``sel_leaves = _flatten(base_name, samples)``) は生名からリーフを
+    引くため、この2つのキー空間はそれぞれ内部一貫だが混ぜてはならない。
+    健全性の限界: 2 つの物理チャンネルが同じ生名を共有する場合
+    (``name_total[base_name] > 1`` の LD-08 重複ケース)、生名キーの単純な
+    ``Mapping`` はその2チャンネルをサイレントに衝突させ、構造の異なる方の
+    チャンネルの spec を誤って返しうる。これは呼び出し側の前提条件であり
+    ``parse_leaf`` 自身では検出できない — 呼び出し側は生名の一意性を保証するか、
+    (gi, ci) ごとに解決した spec を渡す必要がある。
+
+    ルックアップは O(len(key)) (specs 全体の O(number of channels) 走査ではない)。
     """
-    for base in sorted(
-        (n for n in specs if display_key.startswith(n)), key=len, reverse=True
-    ):
-        leaf = _consume(display_key[len(base) :], specs[base])
-        if leaf is not None:
-            return (base, leaf)
+    for i in range(len(display_key), 0, -1):
+        spec = specs.get(display_key[:i])
+        if spec is not None:
+            leaf = _consume(display_key[i:], spec)
+            if leaf is not None:
+                return (display_key[:i], leaf)
     return None
 
 
@@ -119,9 +133,13 @@ def _consume(rest: str, spec: ColumnSpec) -> ColumnSpec | None:
         if end < 0:
             return None
         index_text = rest[1:end]
-        if not index_text.isdigit():
+        # isdigit() 単独は上付き数字 ('²' 等) にも True を返すが int() はそれを
+        # ValueError で拒否する — isascii() を併せて非 ASCII 数字を弾く
+        # (解決失敗は必ず None・例外を投げてはならない契約)。
+        if not (index_text.isascii() and index_text.isdigit()):
             return None
-        if not (0 <= int(index_text) < spec.axis_len):
+        # isdigit() は '-' を含まない (常に >= 0) ため上限のみ確認すればよい。
+        if not (int(index_text) < spec.axis_len):
             return None
         return _consume(rest[end + 1 :], spec.child)
     # leaf: 残余が空で、かつ数値リーフのときだけ成立

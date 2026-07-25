@@ -115,7 +115,10 @@ def test_parse_leaf_round_trips_every_generated_name() -> None:
     }
     specs = {n: spec_from_probe(a) for n, a in cases.items()}
     for base, spec in specs.items():
-        for name in leaf_names(base, spec):
+        names = list(leaf_names(base, spec))
+        # generator must not alias two columns
+        assert len(set(names)) == len(names), names
+        for name in names:
             got = parse_leaf(name, specs)
             assert got is not None, name
             assert got[0] == base, name
@@ -138,6 +141,13 @@ def test_parse_leaf_returns_none_for_unknown_base_or_bad_index() -> None:
     assert parse_leaf("Mat[9]", specs) is None  # 範囲外
     assert parse_leaf("Mat", specs) is None  # 親そのものは列ではない
     assert parse_leaf("Mat[0]x", specs) is None  # 残余を消費しきれない
+
+
+def test_parse_leaf_rejects_non_ascii_digit_index_instead_of_raising() -> None:
+    # '²' (上付き2) は str.isdigit() で True だが int() は ValueError を投げる。
+    # 解決失敗は必ず None を返す契約 (例外を漏らしてはならない)。
+    specs = _specs(("Mat", np.zeros((1, 2), dtype=np.uint8)))
+    assert parse_leaf("Mat[²]", specs) is None
 
 
 def test_parse_leaf_rejects_non_numeric_leaf() -> None:
