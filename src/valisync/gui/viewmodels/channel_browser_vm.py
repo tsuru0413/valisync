@@ -35,6 +35,17 @@ def _orig_of(ns_name: str) -> str:
     return ns_name.split(KEY_SEPARATOR, 1)[1] if KEY_SEPARATOR in ns_name else ns_name
 
 
+def _matches(orig: str, fl: str) -> bool:
+    """Substring match predicate: an empty filter matches everything, otherwise
+    case-insensitive substring containment.
+
+    The single place with this logic -- ``_filtered_rows()`` and
+    ``column_names_for()`` both route through it so the header's matched-count
+    and the tree's child rows can never diverge (C3).
+    """
+    return not fl or fl in orig.lower()
+
+
 def _labels_tooltip(metadata: dict[str, Any] | None) -> str:
     """Render enum value_labels as a tooltip line, e.g. '0=OFF, 1=LEFT, 2=RIGHT'.
 
@@ -154,9 +165,9 @@ class ChannelBrowserVM(Observable):
     def _filtered_rows(self) -> tuple[list[_TreeRow], int]:
         """現在のフィルタでの (生存行, 一致列総数) を 1 パスで求める。
 
-        フィルタの述語 ``fl in orig.lower()`` を持つ唯一の場所 — tree_groups()・
-        shown_count()・column_names_for() が同じ述語を通ることで「ヘッダーの件数」と
-        「木に出る子行」が乖離できない構造にする (C3)。
+        述語自体はモジュール関数 _matches() に一本化 — tree_groups()・shown_count()
+        (共に本メソッド経由)・column_names_for() が同じ _matches() を通ることで
+        「ヘッダーの件数」と「木に出る子行」が乖離できない構造にする (C3)。
         """
         self._ensure_prep()
         fl = self._filter_text.lower()
@@ -176,7 +187,7 @@ class ChannelBrowserVM(Observable):
             for start, stop in spans:
                 for sig in self._group_sigs[start:stop]:
                     orig = _orig_of(sig.name)
-                    if fl not in orig.lower():
+                    if not _matches(orig, fl):
                         continue
                     hits += 1
                     if hits == 1:
@@ -228,10 +239,18 @@ class ChannelBrowserVM(Observable):
 
         走査はその行の span (最大でそのチャンネルの列数) だけ — group_signals 全走査
         (prod 264,004) を展開のたびに走らせない (O(n^2) 回避)。返すのは **現在の
-        フィルタに一致する列だけ** (フィルタ空なら全列) で、述語は _filtered_rows と
-        同一 — 件数と子行が乖離できない構造にする (C3)。
+        フィルタに一致する列だけ** (フィルタ空なら全列) で、述語は _matches() に
+        一本化 — 件数と子行が乖離できない構造にする (C3)。
         """
-        self._ensure_prep()
+        try:
+            self._ensure_prep()
+        except KeyError:
+            # Mirrors tree_groups(): reached from _materialize() -> index()/
+            # rowCount() inside Qt virtuals (SignalTreeModel), so a notify can
+            # still be in flight for a key the session already dropped. An
+            # exception escaping into the C++ event loop here is worse than an
+            # empty result (FU-22 A/B).
+            return []
         row = self._row_by_base_key.get(base_key)
         if row is None:
             return []
@@ -241,7 +260,7 @@ class ChannelBrowserVM(Observable):
             for sig in self._group_sigs[start:stop]:
                 ns_name = sig.name
                 orig = _orig_of(ns_name)
-                if fl and fl not in orig.lower():
+                if not _matches(orig, fl):
                     continue
                 out.append((orig, str((sig.metadata or {}).get("unit", "")), ns_name))
         return out

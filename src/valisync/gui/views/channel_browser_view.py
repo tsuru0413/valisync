@@ -1,9 +1,12 @@
 """Channel_Browser view — refactored for master-detail (Task 2.3).
 
-A search box atop a hierarchical QTreeView. Array bases (LD-14 Name[i]/.field)
-collapse under a parent node; scalars stay top-level leaves (FU-22 B). User
-gestures are forwarded to the VM. Displays signals for the currently active
-file in AppViewModel.
+A search box atop a hierarchical QTreeView. Rows are grouped by physical
+channel (metadata['physical_channel'], E-2): a channel presenting several
+columns (LD-14 Name[i]/.field) collapses under a parent node, while one
+presenting a single column -- including a channel the filter has narrowed
+down to one surviving column (Mono[0], P.x) -- is itself a top-level leaf
+(FU-22 B). User gestures are forwarded to the VM. Displays signals for the
+currently active file in AppViewModel.
 """
 
 from __future__ import annotations

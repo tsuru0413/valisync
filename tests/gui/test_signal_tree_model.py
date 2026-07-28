@@ -202,6 +202,31 @@ def test_sort_preserved_across_filter(qtbot: QtBot) -> None:
     assert names == sorted(names, key=str.lower, reverse=True)
 
 
+def test_filter_narrows_row_to_single_column_stays_draggable_leaf(
+    qtbot: QtBot,
+) -> None:
+    """C1 model half: a row the filter narrows down to exactly one matching
+    column must stay a leaf carrying that column's real identity, not collapse
+    to a non-draggable parent.
+
+    Without a filter, ``single is not None`` and ``_count == 1`` coincide (every
+    unfiltered test is blind to the difference). Filtering "arr[1]" against the
+    Arr[0]/Arr[1]/Arr[2] fixture keeps the real column count at 3 while exactly
+    one column (Arr[1]) survives -- the only way to tell the two conditions
+    apart. Sabotage: branch _rebuild()'s leaf/parent decision on ``_count == 1``
+    instead of ``single is not None`` and this goes RED (see
+    .superpowers/sdd/e2-task-3-report.md for the recorded RED/GREEN pair).
+    """
+    m = _model(qtbot)
+    m._vm.set_filter("arr[1]")  # only Arr[1] matches; Arr[0]/Arr[2]/Scalar don't
+    assert m.rowCount(QModelIndex()) == 1
+    row = m.index(0, 0, QModelIndex())
+    assert m.hasChildren(row) is False
+    assert m.signal_key_at(row) == "g::Arr[1]"
+    assert m.data(row, Qt.ItemDataRole.DisplayRole) == "Arr[1]"
+    assert m.flags(row) & Qt.ItemFlag.ItemIsDragEnabled
+
+
 # ─── E-2: 1 行 = 1 物理チャンネル / 子は要求時合成 ─────────────────────────────
 # 実 mf4 経由 (合成 Signal では physical_channel の実 fallback を踏めない)。
 

@@ -112,11 +112,14 @@ class SignalTreeModel(QAbstractItemModel):
     def _materialize(self, node: _Node) -> None:
         """Synthesize *node*'s children on first demand (expansion), never before."""
         if node.children is None:
-            columns = (
-                self._vm.column_names_for(node.base_key)
-                if node.base_key is not None
-                else []
-            )
+            # A node reaching here is a parent (hasChildren()==True implies
+            # key is None, and rowCount()/hasIndex() keep leaves from ever
+            # reaching _materialize -- see hasChildren()/rowCount() above), so
+            # it must carry a grouping handle. Fail loudly instead of
+            # silently building a childless expandable row (a leaf wrongly
+            # treated as a parent would previously vanish into `else []`).
+            assert node.base_key is not None
+            columns = self._vm.column_names_for(node.base_key)
             # Children are always leaves: base_key None (nothing to expand).
             node.children = [
                 _Node(orig, unit, key, None, node, r)
