@@ -24,6 +24,22 @@ from pathlib import Path
 _N_SAMPLES = 240  # 12s @ 20Hz — 波形の形が視認できる決定的データ
 
 
+def _park_cursor() -> None:
+    """物理マウスを画面隅へ退避 (hover 効果を撮影状態から排除・spec §7-2)。
+
+    Windows の「既定のボタンにポインターを自動的に移動する」設定
+    (`HKCU\\Control Panel\\Mouse\\SnapToDefaultButton`) が有効な環境では、
+    OS がダイアログ表示のたびに物理ポインタを既定ボタン中心へ跳ばし直す
+    (`show()` 呼び出し内で同期的に発生 — 詳細調査:
+    `.superpowers/sdd/e2-catalog-07-investigation.md`)。Qt Fusion はその状態を
+    `State_MouseOver` で描画するため、撮影ごとの塗りが撮影マシンの OS 設定に
+    左右されてしまう。`main()` 冒頭の 1 回だけでは各ダイアログの `show()` で
+    再び上書きされるため、**`show()` の直後・`grab()` の直前** の両方で
+    呼び直して退避を効かせ続ける。
+    """
+    ctypes.windll.user32.SetCursorPos(5, 5)
+
+
 def _write_fixture_csv(path: Path) -> None:
     """決定的な内蔵データ (毎回同一バイト → 凍結比較の前提を満たす)。"""
     rows = ["t,EngineSpeed,VehSpd"]
@@ -58,8 +74,10 @@ def main() -> int:
         print("offscreen では撮影不可 (文字が□になる)。", file=sys.stderr)
         return 2
     os.environ["QT_QPA_PLATFORM"] = "windows"
-    # 物理マウスを画面隅へ退避 — hover 効果を撮影状態から排除 (spec §7-2)
-    ctypes.windll.user32.SetCursorPos(5, 5)
+    # 物理マウスを画面隅へ退避 — hover 効果を撮影状態から排除 (spec §7-2)。
+    # この 1 回だけでは各ダイアログの show() で SnapToDefaultButton に
+    # 上書きされる (_park_cursor 参照) — show() のたびに呼び直すこと。
+    _park_cursor()
 
     from PySide6.QtCore import QCoreApplication, QEvent, QSettings
     from PySide6.QtWidgets import QApplication
@@ -101,6 +119,7 @@ def main() -> int:
     screen = app.primaryScreen().availableGeometry()
     window.setGeometry(screen.x() + 60, screen.y() + 60, 1120, 760)
     window.show()
+    _park_cursor()  # show() 直後の SnapToDefaultButton 上書きを退け直す
     window.raise_()
     window.activateWindow()
 
@@ -148,6 +167,7 @@ def main() -> int:
         }
 
     def grab(name: str) -> None:
+        _park_cursor()  # grab 直前にも退避 (settle 中の再アクティブ化を保険)
         settle()
         window.grab().save(str(args.out / f"{name}.png"))
         rect = panel_viewport_rect()
@@ -232,7 +252,9 @@ def main() -> int:
         )
         dlg._validate()  # 撮影ツールとしての private 利用: エラー行を可視化
         dlg.show()
+        _park_cursor()  # show() 直後の SnapToDefaultButton 上書きを退け直す
         settle()
+        _park_cursor()  # grab 直前にも退避 (settle 中の再アクティブ化を保険)
         dlg.grab().save(str(args.out / "06_export_dialog_error.png"))
         print("captured 06_export_dialog_error.png")
         dlg.close()
@@ -244,7 +266,9 @@ def main() -> int:
         detected = CsvFormatDetector().detect(csv)
         fmt_dlg = CsvFormatDialog(detected)
         fmt_dlg.show()
+        _park_cursor()  # show() 直後の SnapToDefaultButton 上書きを退け直す
         settle()
+        _park_cursor()  # grab 直前にも退避 (settle 中の再アクティブ化を保険)
         fmt_dlg.grab().save(str(args.out / "07_csv_format_dialog.png"))
         print("captured 07_csv_format_dialog.png")
         fmt_dlg.close()
@@ -258,8 +282,10 @@ def main() -> int:
         # design_export/screenshots_f0_{dark,light} と旧
         # screenshots_catalog_{dark,light} の 08 をフル画像比較+目視で個別確認する
         # (design.md 決定履歴・Task 5 report に記録)。
-        window.signal_preview_window.show_signal(keys[0])
+        window.signal_preview_window.show_signal(keys[0])  # 内部で show() を呼ぶ
+        _park_cursor()  # show() 直後の SnapToDefaultButton 上書きを退け直す
         settle()
+        _park_cursor()  # grab 直前にも退避 (settle 中の再アクティブ化を保険)
         window.signal_preview_window.grab().save(
             str(args.out / "08_signal_preview.png")
         )
