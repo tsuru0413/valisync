@@ -169,3 +169,103 @@ def test_every_exposed_key_resolves(tmp_path: Path) -> None:
             assert sig_map.get(single[1]) is not None
         for _orig, _unit, key in vm.column_names_for(base_key):
             assert sig_map.get(key) is not None
+
+
+# ─── 件数表示 (ch 単位) とフィルタメモ (Task 4) ────────────────────────────────
+
+
+def test_header_counts_columns_in_ch_units(tmp_path: Path) -> None:
+    vm = _vm(tmp_path)  # Mat 3 列 + Clean 1 列 = 2 行 / 4 列
+    assert vm.header_text() == "4 ch 中 4 ch を表示"
+
+
+def test_header_total_is_columns_not_rows(tmp_path: Path) -> None:
+    """C2: total も shown も「列」。行数を total にすると shown > total になる。"""
+    vm = _vm(tmp_path)
+    rows = vm.tree_groups()
+    total_cols = sum(r[3] for r in rows)  # r[3] = column_count
+    assert total_cols > len(rows)  # fixture が配列を含むことの担保
+    assert vm.header_text() == f"{total_cols} ch 中 {total_cols} ch を表示"
+    for q in ("", "mat", "mat[1", "zzz"):
+        vm.set_filter(q)
+        assert 0 <= vm.shown_count() <= total_cols
+
+
+def test_filter_matches_column_names_and_keeps_parent(tmp_path: Path) -> None:
+    vm = _vm(tmp_path)
+    vm.set_filter("mat")
+    rows = vm.tree_groups()
+    assert [r[0] for r in rows] == ["Mat"]  # Clean は落ちる
+    assert vm.shown_count() == 3
+    assert vm.header_text() == "4 ch 中 3 ch を表示"
+
+
+def test_column_names_for_honors_filter(tmp_path: Path) -> None:
+    """C3: 絞り込んだ親を展開しても **一致列だけ** が出る
+    (test_channel_browser_vm.py:504-508 の子レベル assert の等価移送先)。"""
+    vm = _vm(tmp_path)
+    vm.set_filter("mat[1")
+    mat = next(r for r in vm.tree_groups() if r[0] == "Mat")
+    assert [c[0] for c in vm.column_names_for(mat[2])] == ["Mat[1]"]
+    assert vm.shown_count() == 1  # ヘッダーと木が同じ基準
+    assert vm.header_text() == "4 ch 中 1 ch を表示"
+
+
+def test_row_filtered_down_to_one_column_becomes_a_real_leaf(tmp_path: Path) -> None:
+    """コントローラ決定 3: 絞って 1 列に落ちた行は今日どおり葉 (実キーでドラッグ可)。
+
+    column_count は実列数 (3) のまま = _group_total の単位が壊れない。
+    """
+    vm, app_vm = _vm_for(write_mdf4_2d(tmp_path))
+    vm.set_filter("mat[1")
+    mat = next(r for r in vm.tree_groups() if r[0] == "Mat")
+    assert mat[3] == 3  # column_count はフィルタ非依存
+    assert mat[4] is not None  # single_column = 提示している唯一の列
+    orig, ns_name = mat[4]
+    assert orig == "Mat[1]"
+    assert app_vm.session.signal_map().get(ns_name) is not None
+
+
+def test_filter_matching_nothing_yields_no_rows(tmp_path: Path) -> None:
+    vm = _vm(tmp_path)
+    vm.set_filter("zzz")
+    assert vm.tree_groups() == []
+    assert vm.shown_count() == 0
+    assert vm.empty_state() == "no_match"
+
+
+def test_one_filter_application_scans_columns_once(tmp_path: Path) -> None:
+    """I3/I2-4: 入力停止 1 回で走る 3 パス (tree_groups / header_text / empty_state) が
+    列名走査を 1 回に畳めていること。これが崩れると受け入れの perf 前提が壊れる。"""
+    vm = _vm(tmp_path)
+    vm.set_filter("mat")
+    before = vm.inspect()["filter_scans"]
+    vm.tree_groups()
+    vm.header_text()
+    vm.empty_state()
+    assert vm.inspect()["filter_scans"] == before + 1
+    vm.tree_groups()  # 同じフィルタの再問い合わせは 0 回
+    assert vm.inspect()["filter_scans"] == before + 1
+    vm.set_filter("mat[1")
+    vm.tree_groups()
+    assert vm.inspect()["filter_scans"] == before + 2
+
+
+def test_filter_memo_does_not_hold_per_column_names(tmp_path: Path) -> None:
+    """メモは行数ぶんしか持たない (名前キャッシュ 33 MB の再導入を構造で禁じる)。"""
+    vm = _vm(tmp_path)
+    vm.set_filter("mat")
+    rows = vm.tree_groups()
+    assert len(rows) == 1 and rows[0][3] == 3  # 1 行 / 実列数 3
+    memo = vm._filter_memo
+    assert memo is not None
+    assert len(memo[1]) == len(rows)  # 保持は行単位 — 列単位ではない
+
+
+def test_filter_memo_dropped_on_prep_lifecycle(tmp_path: Path) -> None:
+    vm, _app_vm = _vm_for(write_mdf4_2d(tmp_path))
+    vm.set_filter("mat")
+    vm.tree_groups()
+    assert vm._filter_memo is not None
+    vm.refresh()
+    assert vm._filter_memo is None

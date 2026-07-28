@@ -39,7 +39,8 @@ def _matches(orig: str, fl: str) -> bool:
     """Substring match predicate: an empty filter matches everything, otherwise
     case-insensitive substring containment.
 
-    The single place with this logic -- ``_filtered_rows()`` and
+    The single place with this logic -- ``_scan_filter()`` (feeding both
+    ``tree_groups()`` and ``shown_count()`` through the memo) and
     ``column_names_for()`` both route through it so the header's matched-count
     and the tree's child rows can never diverge (C3).
     """
@@ -96,9 +97,23 @@ class ChannelBrowserVM(Observable):
         self._group_sigs: list[Signal] = []
         self._row_by_base_key: dict[str, int] = {}
         # フィルタ 1 パス分の結果メモ (フィルタ文字列, 生存行, 一致列総数)。
-        # 中身を詰めるのは後続増分だが、無効化は prep のライフサイクルと不可分なので
-        # 構築側 (_ensure_prep) と同じ場所で宣言しておく。
+        # 無効化は prep のライフサイクルと不可分 (_invalidate_prep)。
         self._filter_memo: tuple[str, list[_TreeRow], int] | None = None
+        # 列名走査を実際に走らせた回数 (inspect() から観測する perf 前提の pin)。
+        self._filter_scans: int = 0
+
+    def _invalidate_prep(self) -> None:
+        """prep とフィルタメモをまとめて捨てる (両者は不可分)。
+
+        メモは prep が指す列 Signal 列の上でしか意味を持たない。_ensure_prep も
+        再構築時にメモを落とすので**現状はどちらか一方でも結果は正しい**が、
+        それは「_ensure_filter_memo が必ず _ensure_prep の後にメモを読む」という
+        順序への暗黙依存で、順序が変われば静かに stale を配り始める。無効化点
+        (refresh / active_file 切替) を単一の入口に寄せ、「_prep_valid が False
+        なのにメモが生きている」中間状態自体を作らない。
+        """
+        self._prep_valid = False
+        self._filter_memo = None
 
     def _ensure_prep(self) -> None:
         """物理チャンネル単位の (name, unit, base_key, column_count, first_column,
@@ -108,7 +123,7 @@ class ChannelBrowserVM(Observable):
         ACC.Speed (チャンネル名) と P.x (構造化フィールド) を区別できないため。
         E-2 時点ではローダーがまだ列を展開するので、ここで列を物理チャンネルへ畳む。
         小文字化した列名は **持たない** (旧 _prep の 68 MB の本体) — フィルタは
-        _filtered_rows が 1 パスで解決する。
+        _ensure_filter_memo が 1 パスで解決しメモする。
 
         session.group_signals は遅延アクセス時に読むので、monkeypatch した session
         (テスト) も初回アクセスで尊重される。
@@ -162,15 +177,39 @@ class ChannelBrowserVM(Observable):
         self._prep_key = active_key
         self._prep_valid = True
 
-    def _filtered_rows(self) -> tuple[list[_TreeRow], int]:
-        """現在のフィルタでの (生存行, 一致列総数) を 1 パスで求める。
+    def _ensure_filter_memo(self) -> tuple[list[_TreeRow], int]:
+        """現在のフィルタでの (生存行, 一致列総数) を 1 パスで求め、フィルタ文字列を
+        キーにメモする。
 
         述語自体はモジュール関数 _matches() に一本化 — tree_groups()・shown_count()
         (共に本メソッド経由)・column_names_for() が同じ _matches() を通ることで
         「ヘッダーの件数」と「木に出る子行」が乖離できない構造にする (C3)。
+
+        メモが要る理由: _notify("filter") は 3 消費者へ fan-out するが全員が同じ問い
+        を聞く — SignalTreeModel._on_vm_change -> _rebuild -> tree_groups() /
+        _refresh_state -> header_text() -> shown_count() / 同 -> empty_state() ->
+        shown_count() (signal_tree_model.py:78-85・channel_browser_view.py:207-218)。
+        走るのは打鍵ごとではなく **入力停止ごと** (200 ms シングルショット debounce・
+        channel_browser_view.py:41,107-110,220-222) だが、その 1 回で同じ列名走査が
+        3 回走っていた (prod 264k 列で実測 3.00 パス)。間に結果を変えるものは無いので
+        フィルタ文字列キーのメモ 1 個で 3 -> 1 に畳める。
+
+        追加メモリは実質ゼロ: 保持するのは生存行のタプル (prod 4,324 行) と int だけで、
+        **列ごとの小文字名は持たない** (それが旧 _prep の 68 MB / 名前キャッシュ案の
+        ≈33 MB の本体)。子行は column_names_for がその行の span を展開時に再走査して
+        賄うので名前キャッシュは要らない。
         """
         self._ensure_prep()
         fl = self._filter_text.lower()
+        memo = self._filter_memo
+        if memo is not None and memo[0] == fl:
+            return memo[1], memo[2]
+        rows, total = self._scan_filter(fl)
+        self._filter_memo = (fl, rows, total)
+        return rows, total
+
+    def _scan_filter(self, fl: str) -> tuple[list[_TreeRow], int]:
+        """メモが無いときの実走査 (生存行, 一致列総数)。fl は小文字化済み。"""
         rows: list[_TreeRow] = []
         if not fl:
             # フィルタ空 = 実列数がそのまま提示列数。prep だけで完結する (列走査ゼロ)。
@@ -179,6 +218,9 @@ class ChannelBrowserVM(Observable):
                 for name, unit, base_key, n, first, _spans in self._prep
             ]
             return rows, sum(row[3] for row in self._prep)
+        # ここから先だけが列名走査 (prod 264k 列で ~170ms)。メモが効いていれば
+        # 入力停止 1 回につき 1 度しか増えない — テストはこの数を見る。
+        self._filter_scans += 1
         matched_total = 0
         for name, unit, base_key, n, _first, spans in self._prep:
             hits = 0
@@ -214,7 +256,7 @@ class ChannelBrowserVM(Observable):
         揃える。header_text/empty_state は件数しか要らないので、per-signal
         オブジェクトはここでも作らない (FU-22 B の残 ~263ms の再発防止)。
         """
-        return self._filtered_rows()[1]
+        return self._ensure_filter_memo()[1]
 
     def tree_groups(self) -> list[_TreeRow]:
         """active file の行を物理チャンネル単位で返す (1 行 = 1 物理チャンネル)。
@@ -232,7 +274,7 @@ class ChannelBrowserVM(Observable):
             # production-reachable once ChannelBrowserView switched to
             # SignalTreeModel, whose _on_vm_change calls tree_groups() directly).
             return []
-        return self._filtered_rows()[0]
+        return self._ensure_filter_memo()[0]
 
     def column_names_for(self, base_key: str) -> list[tuple[str, str, str]]:
         """base_key の物理チャンネルの列を (orig, unit, key) で返す。
@@ -322,7 +364,9 @@ class ChannelBrowserVM(Observable):
 
     def refresh(self) -> None:
         """Manually trigger a refresh notification."""
-        self._prep_valid = False  # FU-11: manually clear cache on explicit refresh
+        # FU-11: manually clear cache on explicit refresh. メモも同じ入口で落とす
+        # (_invalidate_prep の docstring — prep を捨てた瞬間にメモも無効)。
+        self._invalidate_prep()
         self._notify("signals")
 
     # ─── Filter ──────────────────────────────────────────────────────────────
@@ -330,6 +374,11 @@ class ChannelBrowserVM(Observable):
     def set_filter(self, text: str) -> None:
         """Set the incremental substring filter and notify subscribers."""
         self._filter_text = text
+        # メモは **フィルタ文字列をキー** に持つので、ここで明示的に捨てる必要は
+        # ない (キーが変われば _ensure_filter_memo が自動で走査し直す)。捨てると
+        # 「b を打って backspace で a に戻る」ような往復で prod ~170ms の再走査を
+        # 無駄に払うことになる。stale になり得るのは prep が変わったときだけで、
+        # そちらは _invalidate_prep が一括で面倒を見る。
         self._notify("filter")
 
     # ─── Selection ───────────────────────────────────────────────────────────
@@ -397,7 +446,7 @@ class ChannelBrowserVM(Observable):
     def _on_app_change(self, change: str) -> None:
         """Handle notifications from AppViewModel."""
         if change == "active_file":
-            self._prep_valid = False  # FU-11: 別ファイルの prep を捨てる
+            self._invalidate_prep()  # FU-11: 別ファイルの prep とメモを捨てる
             self._notify("signals")
 
     # ─── Introspection ───────────────────────────────────────────────────────
@@ -408,10 +457,21 @@ class ChannelBrowserVM(Observable):
         ``signal_count`` is ``shown_count()`` — i.e. matched **columns**, which
         is what the header counts (E-2; today 1 Signal = 1 column so the value
         itself is unchanged, only its stated unit).
+
+        ``filter_scans`` is the number of column-name scans performed so far,
+        snapshotted **on entry** so it excludes the one this very call's
+        ``shown_count()`` may trigger. That is what lets a test bracket a
+        filter fan-out with two ``inspect()`` calls and count the scans in
+        between; taking it after would fold this call's own scan into the
+        "before" reading and make the bracket unusable. Reading it into a local
+        (rather than relying on dict-literal evaluation order) keeps that
+        property when the keys are reordered.
         """
+        scans = self._filter_scans
         return {
             "active_file": self._app_vm.active_file_key,
             "filter_text": self._filter_text,
             "selection": list(self._selection),
             "signal_count": self.shown_count(),
+            "filter_scans": scans,
         }

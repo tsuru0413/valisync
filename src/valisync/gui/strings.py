@@ -237,6 +237,12 @@ SIGNAL_TREE_COL_UNIT: Final = "単位"
 # #14 (雑メモ解消): ファイル名プレフィックスは廃止 (件数のみ)。どのファイルかは
 # 右上ファイルブラウザの選択で判別する (docs/superpowers/specs/2026-07-23-
 # memo-ux-cleanup-design.md §1)。
+# E-2 (列展開の遅延化): 数える単位が「信号」から **展開列** に変わったため助数詞を
+# 「ch」へ (ユーザー決定 4)。1 行 = 1 物理チャンネルになった木に対し、件数だけが
+# 「N 信号」のままだと行数と桁が合わず読者が数えられない。R-07 の単一パターン
+# 「{n} 信号中 {m} 件を表示」と「ch は技術メタ情報に限定」を **当該箇所に限り
+# 意図的に supersede** する (docs/design.md R-07・対訳表 G-42 に記録済み —
+# 無記録だと次の文言スイープで「信号」へ差し戻される)。桁区切りは付けない。
 CHANNEL_HEADER_NO_FILE: Final = "ファイル未選択"
-CHANNEL_HEADER_EMPTY_TMPL: Final = "0 信号"
-CHANNEL_HEADER_COUNT_TMPL: Final = "{total} 信号中 {shown} 件を表示"
+CHANNEL_HEADER_EMPTY_TMPL: Final = "0 ch"
+CHANNEL_HEADER_COUNT_TMPL: Final = "{total} ch 中 {shown} ch を表示"
