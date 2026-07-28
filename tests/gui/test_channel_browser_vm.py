@@ -1,10 +1,12 @@
 """Tests for ChannelBrowserVM refactored for master-detail (Task 2.1).
 
 Tests verify:
-- tree_groups()/shown_count() reflect the active file's signals (base-grouped)
-- unit/tooltip data reaches the tree via tree_groups() leaf tuples
+- tree_groups() reports one row per **physical channel** (E-2) and shown_count()
+  counts the *columns* those rows present
+- unit/tooltip data reaches the tree via column_names_for() (rows no longer
+  carry their leaves — the tree model synthesizes children on demand)
 - VM updates when AppViewModel.active_file_key changes
-- set_filter() narrows what tree_groups()/shown_count() report
+- set_filter() narrows what tree_groups()/shown_count()/column_names_for() report
 
 Note (Task 0, deferred-column-expansion plan): the flat `ChannelBrowserVM.signals`
 property and its `SignalItem` element type were production-dead (only
@@ -84,12 +86,17 @@ def _cb_vm_with_signal(
 
 
 def _leaf_key(vm: ChannelBrowserVM, orig: str) -> str:
-    """Look up a leaf's namespaced key from tree_groups() by its original name."""
-    for _base, leaves in vm.tree_groups():
-        for o, _unit, key in leaves:
+    """Look up a column's namespaced key by its original name.
+
+    E-2: tree_groups() rows are physical channels and no longer carry their
+    leaves, so the columns come from column_names_for() — the same API the
+    tree model synthesizes children from.
+    """
+    for _name, _unit, base_key, _count, _single in vm.tree_groups():
+        for o, _u, key in vm.column_names_for(base_key):
             if o == orig:
                 return key
-    raise AssertionError(f"leaf {orig!r} not found in tree_groups()")
+    raise AssertionError(f"column {orig!r} not found in tree_groups()")
 
 
 # ─── Tests ──────────────────────────────────────────────────────────────────
@@ -108,7 +115,7 @@ def test_signals_populated_when_file_active(tmp_path: Path) -> None:
     app_vm.set_active_file(key)
 
     assert vm.shown_count() == 2
-    bases = {b for b, _ in vm.tree_groups()}
+    bases = {name for name, *_rest in vm.tree_groups()}
     assert bases == {"sig_a", "sig_b"}
 
 
@@ -134,11 +141,15 @@ def test_tree_groups_includes_unit(tmp_path: Path) -> None:
     app_vm.session.group_signals = lambda key: [sig]
     app_vm.set_active_file("test_key")
 
-    groups = vm.tree_groups()
-    assert len(groups) == 1
-    base, leaves = groups[0]
-    assert base == "speed"
-    assert leaves == [("speed", "km/h", "test_key::speed")]
+    rows = vm.tree_groups()
+    assert len(rows) == 1
+    name, unit, base_key, count, single = rows[0]
+    assert name == "speed"
+    assert unit == "km/h"
+    assert count == 1
+    # 1 列の行は実列の identity を持つ (合成 base_key ではない)
+    assert single == ("speed", "test_key::speed")
+    assert vm.column_names_for(base_key) == [("speed", "km/h", "test_key::speed")]
 
 
 def test_tooltip_for_lists_value_labels(tmp_path: Path) -> None:
@@ -197,7 +208,11 @@ def test_tooltip_for_omits_labels_without_value_labels(tmp_path: Path) -> None:
     vm, app_vm, key = _setup_vm(tmp_path)
     app_vm.set_active_file(key)
 
-    keys = [k for _b, leaves in vm.tree_groups() for _o, _u, k in leaves]
+    keys = [
+        k
+        for _n, _u, base_key, _c, _s in vm.tree_groups()
+        for _o, _unit, k in vm.column_names_for(base_key)
+    ]
     assert keys  # sanity: the file actually has signals
     assert all("ラベル:" not in vm.tooltip_for(k) for k in keys)
 
@@ -265,7 +280,7 @@ def test_filter_narrows_flat_list(tmp_path: Path) -> None:
 
     vm.set_filter("sig_a")
     assert vm.shown_count() == 1
-    assert [b for b, _ in vm.tree_groups()] == ["sig_a"]
+    assert [name for name, *_rest in vm.tree_groups()] == ["sig_a"]
 
 
 def test_active_file_switch_fetches_only_active_group_no_full_scan(
@@ -300,7 +315,7 @@ def test_active_file_switch_fetches_only_active_group_no_full_scan(
 
     app_vm.set_active_file(key)
     bases = {
-        b for b, _ in vm.tree_groups()
+        name for name, *_rest in vm.tree_groups()
     }  # the master-detail update the view consumes
 
     assert bases == {"sig_a", "sig_b"}
@@ -421,130 +436,184 @@ def test_active_file_switch_invalidates_prep_no_leak(tmp_path: Path) -> None:
     vm = ChannelBrowserVM(app_vm)
 
     app_vm.set_active_file(ka)
-    assert {b for b, _ in vm.tree_groups()} == {"alpha", "gamma"}
+    assert {name for name, *_rest in vm.tree_groups()} == {"alpha", "gamma"}
 
     app_vm.set_active_file(kb)
-    assert {b for b, _ in vm.tree_groups()} == {
+    assert {name for name, *_rest in vm.tree_groups()} == {
         "beta",
         "delta",
     }  # alpha/gamma を漏らさない
 
 
-def test_tree_groups_buckets_arrays_under_base(tmp_path: Path) -> None:
-    """FU-22 B: LD-14 名を base(最初の [ or . 以前)でグルーピング。配列は複数リーフ・スカラーは単一。"""
+def _synth_sig(name: str, phys: str | None = None) -> Signal:
+    """合成 Signal 1 本。
+
+    E-2: 展開列はローダーが metadata['physical_channel'] を付けるので、合成
+    フィクスチャでも *親を立てたいときは* phys を明示する。付けないと fallback
+    (physical_channel 欠落 = 1 列 1 物理チャンネル) で各列が自分自身の物理
+    チャンネルになり、親が 1 つも生まれず assert が vacuous 化する。
+    """
     import numpy as np
 
+    metadata: dict[str, object] = {"unit": "V"}
+    if phys is not None:
+        metadata["physical_channel"] = phys
+    return Signal(
+        name=name,
+        timestamps=np.array([0.0]),
+        values=np.array([1.0]),
+        file_format="MDF4",
+        bus_type="",
+        source_file="",
+        metadata=metadata,
+    )
+
+
+def test_tree_groups_buckets_arrays_under_base(tmp_path: Path) -> None:
+    """E-2: 列を metadata['physical_channel'] でグルーピング (1 行 = 1 物理チャンネル)。
+
+    配列は 1 行 + 複数列 (子は column_names_for で要求時合成)・単一列は実列の
+    identity を持つ葉。FU-22 B の base(最初の [ or . 以前)文字列解析からの
+    意図的 supersede — ACC.Speed と P.x が文字列では区別できないため。
+    """
     app_vm = AppViewModel()
     vm = ChannelBrowserVM(app_vm)
 
-    def _sig(name: str) -> Signal:
-        return Signal(
-            name=name,
-            timestamps=np.array([0.0]),
-            values=np.array([1.0]),
-            file_format="MDF4",
-            bus_type="",
-            source_file="",
-            metadata={"unit": "V"},
-        )
-
     app_vm.session.group_signals = lambda key: [
-        _sig("g::Arr[0]"),
-        _sig("g::Arr[1]"),
-        _sig("g::Arr[2]"),
-        _sig("g::Scalar"),
-        _sig("g::Struct.field"),
+        _synth_sig("g::Arr[0]", phys="Arr"),
+        _synth_sig("g::Arr[1]", phys="Arr"),
+        _synth_sig("g::Arr[2]", phys="Arr"),
+        _synth_sig("g::Scalar", phys="Scalar"),
+        _synth_sig("g::Struct.field", phys="Struct"),
     ]
     app_vm.set_active_file("g")
 
-    groups = vm.tree_groups()
-    as_dict = {base: leaves for base, leaves in groups}
-    assert [b for b, _ in groups] == ["Arr", "Scalar", "Struct"]  # first-seen order
-    assert len(as_dict["Arr"]) == 3
-    assert as_dict["Arr"][0] == ("Arr[0]", "V", "g::Arr[0]")  # (orig, unit, key)
-    assert len(as_dict["Scalar"]) == 1
-    assert as_dict["Struct"][0] == ("Struct.field", "V", "g::Struct.field")
+    rows = vm.tree_groups()
+    assert [r[0] for r in rows] == ["Arr", "Scalar", "Struct"]  # first-seen order
+    by_name = {r[0]: r for r in rows}
+
+    arr = by_name["Arr"]
+    assert arr[3] == 3  # column_count
+    assert arr[4] is None  # 複数列 -> 親
+    assert vm.column_names_for(arr[2]) == [  # (orig, unit, key)
+        ("Arr[0]", "V", "g::Arr[0]"),
+        ("Arr[1]", "V", "g::Arr[1]"),
+        ("Arr[2]", "V", "g::Arr[2]"),
+    ]
+
+    scalar = by_name["Scalar"]
+    assert scalar[3] == 1
+    assert scalar[4] == ("Scalar", "g::Scalar")
+    assert vm.column_names_for(scalar[2]) == [("Scalar", "V", "g::Scalar")]
+
+    # 単一フィールド構造化は「展開したのに 1 列」— 実列の identity を持つ葉 (C1)
+    struct = by_name["Struct"]
+    assert struct[3] == 1
+    assert struct[4] == ("Struct.field", "g::Struct.field")
+    assert vm.column_names_for(struct[2]) == [("Struct.field", "V", "g::Struct.field")]
 
 
 def test_tree_groups_honors_filter(tmp_path: Path) -> None:
-    """FU-22 B 増分2: tree_groups は fl in leaf名 でリーフを絞り base で再グルーピング。"""
-    import numpy as np
+    """E-2: フィルタは **列名** にマッチし、一致列 0 の行は出ない。
 
+    子レベルの検証 (絞り込んだ親を展開したら一致列だけ) は tree_groups() が葉を
+    返さなくなったため column_names_for() 経由へ等価移送 (弱めていない)。
+    """
     app_vm = AppViewModel()
     vm = ChannelBrowserVM(app_vm)
 
-    def _sig(name: str) -> Signal:
-        return Signal(
-            name=name,
-            timestamps=np.array([0.0]),
-            values=np.array([1.0]),
-            file_format="MDF4",
-            bus_type="",
-            source_file="",
-            metadata={"unit": "V"},
-        )
-
     app_vm.session.group_signals = lambda k: [
-        _sig("g::Arr[0]"),
-        _sig("g::Arr[1]"),
-        _sig("g::Speed"),
-        _sig("g::Brake"),
+        _synth_sig("g::Arr[0]", phys="Arr"),
+        _synth_sig("g::Arr[1]", phys="Arr"),
+        _synth_sig("g::Speed", phys="Speed"),
+        _synth_sig("g::Brake", phys="Brake"),
     ]
     app_vm.set_active_file("g")
 
-    # no filter -> all bases
-    assert [b for b, _ in vm.tree_groups()] == ["Arr", "Speed", "Brake"]
+    # no filter -> all rows
+    assert [r[0] for r in vm.tree_groups()] == ["Arr", "Speed", "Brake"]
 
-    # filter matches a base name (prefix of its leaves) -> that base with all children
+    # filter matches a channel name (prefix of its columns) -> that row, all columns
     vm.set_filter("arr")
-    groups = vm.tree_groups()
-    assert [b for b, _ in groups] == ["Arr"]
-    assert len(groups[0][1]) == 2  # both Arr[0], Arr[1]
+    rows = vm.tree_groups()
+    assert [r[0] for r in rows] == ["Arr"]
+    assert [o for o, _u, _k in vm.column_names_for(rows[0][2])] == ["Arr[0]", "Arr[1]"]
+    assert rows[0][4] is None  # 2 列を提示 -> 親のまま
 
-    # filter matches a specific leaf -> only that base, only matching leaves
+    # filter matches a specific column -> only that row, only matching columns
     vm.set_filter("arr[1]")
-    groups = vm.tree_groups()
-    assert [b for b, _ in groups] == ["Arr"]
-    assert [orig for orig, _u, _k in groups[0][1]] == ["Arr[1]"]
+    rows = vm.tree_groups()
+    assert [r[0] for r in rows] == ["Arr"]
+    assert [o for o, _u, _k in vm.column_names_for(rows[0][2])] == ["Arr[1]"]
+    # 1 列に落ちた行は今日どおり葉 — 実列キーでドラッグできる
+    assert rows[0][4] == ("Arr[1]", "g::Arr[1]")
+    assert rows[0][3] == 2  # column_count はフィルタ非依存の実列数のまま
 
     # filter matches a scalar
     vm.set_filter("speed")
-    assert [b for b, _ in vm.tree_groups()] == ["Speed"]
+    assert [r[0] for r in vm.tree_groups()] == ["Speed"]
 
     # no match -> empty
     vm.set_filter("zzz")
     assert vm.tree_groups() == []
 
 
-def test_shown_count_matches_tree_groups_leaf_total(tmp_path: Path) -> None:
-    """FU-22 B: shown_count は tree_groups() の全リーフ数と一致するが、
-    tree_groups() 自身が持つのと同じ (orig, unit, key) 以上の要素は構築しない。"""
+def test_non_contiguous_columns_stay_in_their_own_row(tmp_path: Path) -> None:
+    """m1: 1 物理チャンネルの列が **非隣接** でも span が実測どおり分かれる。
+
+    実 mf4 は今のところ列を連続で並べるが、連続性を仮定した実装 (span を常に
+    伸ばす) はここで割り込んだ別チャンネルを巻き込む。
+    sabotage: _ensure_prep の span 分岐を `spans[-1] = (last_start, i + 1)` 固定に
+    すると X が Y を飲み込んで RED。
+    """
     app_vm = AppViewModel()
     vm = ChannelBrowserVM(app_vm)
 
-    import numpy as np
-
-    def _sig(name: str) -> Signal:
-        return Signal(
-            name=name,
-            timestamps=np.array([0.0]),
-            values=np.array([1.0]),
-            file_format="MDF4",
-            bus_type="",
-            source_file="",
-            metadata={"unit": "V"},
-        )
-
-    app_vm.session.group_signals = lambda k: [_sig("g::a"), _sig("g::b"), _sig("g::ab")]
+    app_vm.session.group_signals = lambda k: [
+        _synth_sig("g::X[0]", phys="X"),
+        _synth_sig("g::Y", phys="Y"),  # 割り込み
+        _synth_sig("g::X[1]", phys="X"),
+    ]
     app_vm.set_active_file("g")
 
-    def _leaf_total() -> int:
-        return sum(len(leaves) for _b, leaves in vm.tree_groups())
+    rows = {r[0]: r for r in vm.tree_groups()}
+    assert set(rows) == {"X", "Y"}
+    assert rows["X"][3] == 2  # column_count は 2 (Y を数えない)
+    assert [o for o, _u, _k in vm.column_names_for(rows["X"][2])] == ["X[0]", "X[1]"]
+    assert [o for o, _u, _k in vm.column_names_for(rows["Y"][2])] == ["Y"]
+    assert vm.shown_count() == 3
 
+
+def test_shown_count_matches_matched_column_total(tmp_path: Path) -> None:
+    """E-2 (C2/C3): shown_count は **一致列の総数** で、木に出る子行の総数と一致する。
+
+    「tree_groups() の全リーフ数」という概念が消えたので (行は葉を持たない)、
+    総数側は _group_total() = sum(column_count) と突き合わせ、
+    0 <= shown_count() <= _group_total() の不変条件を検証する。
+    """
+    app_vm = AppViewModel()
+    vm = ChannelBrowserVM(app_vm)
+
+    app_vm.session.group_signals = lambda k: [
+        _synth_sig("g::a"),
+        _synth_sig("g::b"),
+        _synth_sig("g::ab"),
+    ]
+    app_vm.set_active_file("g")
+
+    def _matched_columns() -> int:
+        return sum(
+            len(vm.column_names_for(base_key))
+            for _n, _u, base_key, _c, _s in vm.tree_groups()
+        )
+
+    assert vm._group_total() == 3  # フィルタ非依存の総列数
     assert vm.shown_count() == 3  # no filter -> total
-    assert vm.shown_count() == _leaf_total()
+    assert vm.shown_count() == _matched_columns()
     vm.set_filter("a")
     assert vm.shown_count() == 2  # "a", "ab"
-    assert vm.shown_count() == _leaf_total()
+    assert vm.shown_count() == _matched_columns()
+    assert vm._group_total() == 3  # total はフィルタで動かない
     vm.set_filter("zzz")
     assert vm.shown_count() == 0
+    assert vm.shown_count() == _matched_columns()

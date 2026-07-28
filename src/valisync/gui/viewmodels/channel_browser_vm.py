@@ -1,12 +1,13 @@
-"""ChannelBrowserVM — flat signal browser for the active file.
+"""ChannelBrowserVM — physical-channel browser for the active file.
 
-Presents a flat list of signals for the currently selected file in AppViewModel.
-Supports incremental substring filtering and selection state.
+Presents the currently selected file as one row per **physical channel** (E-2):
+the loader still explodes arrays/structs into per-column Signals, so the columns
+are folded back here and synthesized on demand by the tree model. Supports
+incremental substring filtering (matched against *column* names) and selection.
 """
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING, Any
 
 from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
@@ -14,15 +15,24 @@ from valisync.gui import strings as S
 from valisync.gui.viewmodels.observable import Observable
 
 if TYPE_CHECKING:
+    from valisync.core.models import Signal
     from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 
-_BASE_RE = re.compile(r"[\[.]")
+# (physical_name, unit, base_key, column_count, first_column, spans) — filter
+# independent. spans index into _group_sigs; first_column is the real identity
+# (orig, namespaced key) of the first column seen, never the synthetic base_key.
+_PrepRow = tuple[str, str, str, int, tuple[str, str], list[tuple[int, int]]]
+
+# (physical_name, unit, base_key, column_count, single_column) — what the tree
+# model consumes. column_count stays the *real* column count (filter
+# independent); single_column is non-None only while the row presents exactly
+# one column, and then carries that column's real identity.
+_TreeRow = tuple[str, str, str, int, tuple[str, str] | None]
 
 
-def _base_of(orig: str) -> str:
-    """Base channel name = orig up to the first LD-14 suffix marker ('[' or '.')."""
-    m = _BASE_RE.search(orig)
-    return orig[: m.start()] if m else orig
+def _orig_of(ns_name: str) -> str:
+    """Strip the ``filekey::`` namespace prefix from a Signal name."""
+    return ns_name.split(KEY_SEPARATOR, 1)[1] if KEY_SEPARATOR in ns_name else ns_name
 
 
 def _labels_tooltip(metadata: dict[str, Any] | None) -> str:
@@ -59,7 +69,7 @@ class ChannelBrowserVM(Observable):
         # Subscribe to AppViewModel events to react to file selection changes
         self._unsubscribe = self._app_vm.subscribe(self._on_app_change)
 
-        # FU-11: active_key ごと 1 度だけ作る (orig, lower, unit, key) タプル列。
+        # FU-11: active_key ごと 1 度だけ作る物理チャンネル単位のタプル列。
         # 生存キーは counter 非減で不変信号集合に対応するため stale 化しない。
         # 無効化は _on_app_change("active_file") で行う。
         #
@@ -70,51 +80,138 @@ class ChannelBrowserVM(Observable):
         # テストを SignalItem 経由から直接呼びへ書き換えた際に判明)。
         self._prep_key: str | None = None
         self._prep_valid: bool = False
-        self._prep: list[tuple[str, str, str, str]] = []
+        self._prep: list[_PrepRow] = []
+        # _prep と同じ寿命で掴む列 Signal 列 (防御コピーを展開のたびに取り直さない)。
+        self._group_sigs: list[Signal] = []
+        self._row_by_base_key: dict[str, int] = {}
+        # フィルタ 1 パス分の結果メモ (フィルタ文字列, 生存行, 一致列総数)。
+        # 中身を詰めるのは後続増分だが、無効化は prep のライフサイクルと不可分なので
+        # 構築側 (_ensure_prep) と同じ場所で宣言しておく。
+        self._filter_memo: tuple[str, list[_TreeRow], int] | None = None
 
     def _ensure_prep(self) -> None:
-        """Build the filter-independent (orig, lower, unit, key) tuples once per
-        active file (FU-11). Reads session.group_signals dynamically so a
-        monkeypatched session (tests) is honoured on the first lazy access."""
+        """物理チャンネル単位の (name, unit, base_key, column_count, first_column,
+        spans) を active file ごとに 1 度だけ作る。
+
+        グループ化キーはローダー由来の metadata['physical_channel'] — 文字列解析では
+        ACC.Speed (チャンネル名) と P.x (構造化フィールド) を区別できないため。
+        E-2 時点ではローダーがまだ列を展開するので、ここで列を物理チャンネルへ畳む。
+        小文字化した列名は **持たない** (旧 _prep の 68 MB の本体) — フィルタは
+        _filtered_rows が 1 パスで解決する。
+
+        session.group_signals は遅延アクセス時に読むので、monkeypatch した session
+        (テスト) も初回アクセスで尊重される。
+        """
         active_key = self._app_vm.active_file_key
         if self._prep_valid and self._prep_key == active_key:
             return
+        self._filter_memo = None  # prep が変われば絞り込み結果も無効
         if not active_key:
             self._prep = []
+            self._group_sigs = []
+            self._row_by_base_key = {}
             self._prep_key = active_key
             self._prep_valid = True
             return
-        group_sigs = self._app_vm.session.group_signals(active_key)  # Part A: cached
-        prep: list[tuple[str, str, str, str]] = []
-        for sig in group_sigs:
-            orig = (
-                sig.name.split(KEY_SEPARATOR, 1)[1]
-                if KEY_SEPARATOR in sig.name
-                else sig.name
-            )
-            unit = str(sig.metadata.get("unit", "")) if sig.metadata else ""
-            prep.append((orig, orig.lower(), unit, sig.name))
+        # 防御コピー list(cached) は prod で ~2 ms / 2.1 MB (264k ポインタ・Signal 実体
+        # は共有)。column_names_for が展開のたびに再取得しないよう _prep と同寿命で持つ。
+        group_sigs = self._app_vm.session.group_signals(active_key)
+        prep: list[_PrepRow] = []
+        row_by_base_key: dict[str, int] = {}
+        for i, sig in enumerate(group_sigs):
+            ns_name = sig.name
+            orig = _orig_of(ns_name)
+            md = sig.metadata or {}
+            # CSV/Derived は physical_channel を持たない = 1 列 1 物理チャンネル
+            # (意図的逸脱・コントローラ決定 2)。直接添字は CSV で KeyError になる。
+            phys = str(md.get("physical_channel") or orig)
+            # base_key は「親をグループ化するための合成ハンドル」であって Signal キー
+            # ではない (Mono / P / Q は実在しない)。葉の key には決して使わない。
+            base_key = f"{active_key}{KEY_SEPARATOR}{phys}"
+            row = row_by_base_key.get(base_key)
+            if row is None:
+                row_by_base_key[base_key] = len(prep)
+                unit = str(md.get("unit", ""))
+                prep.append((phys, unit, base_key, 1, (orig, ns_name), [(i, i + 1)]))
+            else:
+                name, unit, bk, n, first, spans = prep[row]
+                last_start, last_stop = spans[-1]
+                # 連続なら区間を伸ばし、そうでなければ新区間 (連続性は仮定でなく実測 —
+                # LD-08 や配列/スカラー interleave で非隣接ブロックになりうる)
+                if last_stop == i:
+                    spans[-1] = (last_start, i + 1)
+                else:
+                    spans.append((i, i + 1))
+                # unit は「最初に見た列」のもの。集約しない — 親行の Unit は空
+                # (UX-29: 親は空・実体は子。混在単位の P.x=m / P.t=s で誤表示になる)。
+                prep[row] = (name, unit, bk, n + 1, first, spans)
         self._prep = prep
+        self._group_sigs = group_sigs
+        self._row_by_base_key = row_by_base_key
         self._prep_key = active_key
         self._prep_valid = True
 
-    def shown_count(self) -> int:
-        """Number of signals shown after the current filter.
+    def _filtered_rows(self) -> tuple[list[_TreeRow], int]:
+        """現在のフィルタでの (生存行, 一致列総数) を 1 パスで求める。
 
-        header_text/empty_state need only the count; materializing per-signal
-        objects here was the residual ~263ms of the FU-22 B freeze."""
+        フィルタの述語 ``fl in orig.lower()`` を持つ唯一の場所 — tree_groups()・
+        shown_count()・column_names_for() が同じ述語を通ることで「ヘッダーの件数」と
+        「木に出る子行」が乖離できない構造にする (C3)。
+        """
         self._ensure_prep()
         fl = self._filter_text.lower()
+        rows: list[_TreeRow] = []
         if not fl:
-            return len(self._prep)
-        return sum(1 for _n, lo, _u, _k in self._prep if fl in lo)
+            # フィルタ空 = 実列数がそのまま提示列数。prep だけで完結する (列走査ゼロ)。
+            rows = [
+                (name, unit, base_key, n, first if n == 1 else None)
+                for name, unit, base_key, n, first, _spans in self._prep
+            ]
+            return rows, sum(row[3] for row in self._prep)
+        matched_total = 0
+        for name, unit, base_key, n, _first, spans in self._prep:
+            hits = 0
+            single: tuple[str, str] | None = None
+            single_unit = ""
+            for start, stop in spans:
+                for sig in self._group_sigs[start:stop]:
+                    orig = _orig_of(sig.name)
+                    if fl not in orig.lower():
+                        continue
+                    hits += 1
+                    if hits == 1:
+                        single = (orig, sig.name)
+                        # 提示列が 1 本に落ちた行は葉として描かれるので、Unit も
+                        # その列のもの (先頭列のではない) でなければ嘘になる。
+                        single_unit = str((sig.metadata or {}).get("unit", ""))
+            if hits == 0:
+                continue  # 一致列 0 の行は出さない
+            matched_total += hits
+            # column_count は **フィルタ非依存の実列数** のまま (_group_total の供給元)。
+            # 葉/親の判定に使わないこと — 使うと「絞って 1 列に落ちた行」がドラッグ
+            # 不能な親のままになり、今日できる「絞って→ドラッグ」を壊す。
+            if hits == 1:
+                rows.append((name, single_unit, base_key, n, single))
+            else:
+                rows.append((name, unit, base_key, n, None))
+        return rows, matched_total
 
-    def tree_groups(self) -> list[tuple[str, list[tuple[str, str, str]]]]:
-        """Group the active file's signals by base channel for the tree browser.
+    def shown_count(self) -> int:
+        """現在のフィルタに一致した **列** の総数 (行数ではない)。
 
-        Returns [(base, [(orig, unit, key), ...]), ...] in base first-seen order.
-        Filtered by the current substring filter (fl in leaf name); a base appears
-        only if at least one of its leaves matches. Empty filter -> all signals."""
+        件数表示が列基準 (ユーザー決定 2) なので total (_group_total) と単位を
+        揃える。header_text/empty_state は件数しか要らないので、per-signal
+        オブジェクトはここでも作らない (FU-22 B の残 ~263ms の再発防止)。
+        """
+        return self._filtered_rows()[1]
+
+    def tree_groups(self) -> list[_TreeRow]:
+        """active file の行を物理チャンネル単位で返す (1 行 = 1 物理チャンネル)。
+
+        [(physical_name, unit, base_key, column_count, single_column), ...] を
+        ローダー出現順で返す。**葉のリストは返さない** — 子は SignalTreeModel が
+        column_names_for() で要求時に合成する。フィルタで一致列 0 の行は返さない。
+        """
         try:
             self._ensure_prep()
         except KeyError:
@@ -124,25 +221,37 @@ class ChannelBrowserVM(Observable):
             # production-reachable once ChannelBrowserView switched to
             # SignalTreeModel, whose _on_vm_change calls tree_groups() directly).
             return []
+        return self._filtered_rows()[0]
+
+    def column_names_for(self, base_key: str) -> list[tuple[str, str, str]]:
+        """base_key の物理チャンネルの列を (orig, unit, key) で返す。
+
+        走査はその行の span (最大でそのチャンネルの列数) だけ — group_signals 全走査
+        (prod 264,004) を展開のたびに走らせない (O(n^2) 回避)。返すのは **現在の
+        フィルタに一致する列だけ** (フィルタ空なら全列) で、述語は _filtered_rows と
+        同一 — 件数と子行が乖離できない構造にする (C3)。
+        """
+        self._ensure_prep()
+        row = self._row_by_base_key.get(base_key)
+        if row is None:
+            return []
         fl = self._filter_text.lower()
-        groups: dict[str, list[tuple[str, str, str]]] = {}
-        order: list[str] = []
-        for orig, lower, unit, key in self._prep:
-            if fl and fl not in lower:
-                continue
-            base = _base_of(orig)
-            bucket = groups.get(base)
-            if bucket is None:
-                bucket = groups[base] = []
-                order.append(base)
-            bucket.append((orig, unit, key))
-        return [(b, groups[b]) for b in order]
+        out: list[tuple[str, str, str]] = []
+        for start, stop in self._prep[row][5]:
+            for sig in self._group_sigs[start:stop]:
+                ns_name = sig.name
+                orig = _orig_of(ns_name)
+                if fl and fl not in orig.lower():
+                    continue
+                out.append((orig, str((sig.metadata or {}).get("unit", "")), ns_name))
+        return out
 
     # ─── Header / empty-state (FB-05/09) ────────────────────────────────────
 
     def _group_total(self) -> int | None:
-        """Return the active file's total channel count, or None (no file active,
-        or its key was already dropped from the session — FU-22 B).
+        """Return the active file's filter-independent total **column** count, or
+        None (no file active, or its key was already dropped from the session —
+        FU-22 B).
 
         #14: this no longer resolves the file's display name — the header
         (the only former consumer of it) dropped the filename prefix, and
@@ -156,7 +265,11 @@ class ChannelBrowserVM(Observable):
             self._ensure_prep()  # prep hit なら追加 fetch なし
         except KeyError:
             return None
-        return len(self._prep)
+        # shown_count() が列を数える以上 total も列で数える (C2)。行数のままだと
+        # prod で「4,324 ch 中 264,004 ch を表示」= shown > total の自己矛盾になる
+        # (ユーザー決定 2)。empty_state() の total == 0 分岐は変更不要 —
+        # チャンネルは必ず 1 列以上持つので「列 0」と「チャンネル 0」は同値。
+        return sum(row[3] for row in self._prep)
 
     def header_text(self) -> str:
         """One-line context header: how many signals are shown of how many.
@@ -271,7 +384,12 @@ class ChannelBrowserVM(Observable):
     # ─── Introspection ───────────────────────────────────────────────────────
 
     def inspect(self) -> dict[str, Any]:
-        """Return a structured snapshot of ViewModel state."""
+        """Return a structured snapshot of ViewModel state.
+
+        ``signal_count`` is ``shown_count()`` — i.e. matched **columns**, which
+        is what the header counts (E-2; today 1 Signal = 1 column so the value
+        itself is unchanged, only its stated unit).
+        """
         return {
             "active_file": self._app_vm.active_file_key,
             "filter_text": self._filter_text,

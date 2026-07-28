@@ -245,6 +245,85 @@ def write_mdf4_wide_2d(tmp_path: Path, cols: int = 1025) -> Path:
     return path
 
 
+def write_mdf4_single_column_shapes(tmp_path: Path) -> Path:
+    """「展開したのに列が 1 本」になる 3 形状 + スカラー — C1 の RED fixture.
+
+    ローダー実測: Mono[0] (形状 (N,1) の 2D) / P.x (単一数値フィールド構造化) /
+    Q.x (数値+文字列の混在構造化 — 非数値リーフは dtype ゲートで落ちる) / Clean。
+    いずれも column_count == 1 かつ orig != physical_channel なので、合成した
+    base_key (g::Mono / g::P / g::Q) を葉キーにすると「見えるのに永久に
+    描かれない行」になる (実 Signal として存在しない)。
+    """
+    ts = np.array([0.0, 0.1, 0.2, 0.3])
+    mdf = MDF()
+    try:
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.arange(4, dtype=np.uint8).reshape(4, 1),
+                    timestamps=ts,
+                    name="Mono",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array(
+                        [(1.0,), (2.0,), (3.0,), (4.0,)], dtype=[("x", "<f8")]
+                    ),
+                    timestamps=ts,
+                    name="P",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array(
+                        [(1.0, b"ab"), (2.0, b"cd"), (3.0, b"ef"), (4.0, b"gh")],
+                        dtype=[("x", "<f8"), ("tag", "S2")],
+                    ),
+                    timestamps=ts,
+                    name="Q",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([1.0, 2.0, 3.0, 4.0]), timestamps=ts, name="Clean"
+                )
+            ]
+        )
+        path = tmp_path / "single_cols.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
+def write_mdf4_interleaved_arrays(tmp_path: Path) -> Path:
+    """配列 / スカラー / 配列 の順 — 列 span が連続性に依存しないことの pin.
+
+    ローダー実測: A[0], A[1], S, B[0], B[1]。
+    """
+    ts = np.array([0.0, 0.1, 0.2, 0.3])
+    mdf = MDF()
+    try:
+        for name, samples in (
+            ("A", np.array([[0, 1], [2, 3], [4, 5], [6, 7]], dtype=np.uint8)),
+            ("S", np.array([1.0, 2.0, 3.0, 4.0])),
+            ("B", np.array([[8, 9], [10, 11], [12, 13], [14, 15]], dtype=np.uint8)),
+        ):
+            mdf.append([ASignal(samples=samples, timestamps=ts, name=name)])
+        path = tmp_path / "interleaved.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
 def write_mdf4_structured(tmp_path: Path) -> Path:
     """構造化 dtype (x,y) チャンネル — フィールド展開検証用."""
     ts = np.array([0.0, 0.1, 0.2])
