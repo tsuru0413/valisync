@@ -1,10 +1,13 @@
-"""SignalTreeModel (FU-22 B): a lazy hierarchical QAbstractItemModel over the
-active file's signals, grouped by base channel. Array variables (LD-14
-Name[i]/.field) are collapsible parent nodes; scalars are leaves. Only the
-top-level (base) nodes are built eagerly; each array's children are materialized
-on the first rowCount/index for that parent. Fixes the 264k flat-reset freeze
+"""SignalTreeModel (FU-22 B / E-2): a lazy hierarchical QAbstractItemModel over
+the active file's signals, one top-level row per **physical channel**. A channel
+the loader exploded into several columns (LD-14 Name[i]/.field) is a collapsible
+parent node; a channel presenting a single column is a leaf. Only the top-level
+nodes are built eagerly; a parent's children are *synthesized* from
+ChannelBrowserVM.column_names_for() on the first rowCount/index for that parent
+-- never during _rebuild, which at prod scale (4,324 rows / 264,004 columns)
+would be O(n^2) and undo the increment. Fixes the 264k flat-reset freeze
 (QTreeView builds one internal viewItem per row on reset -- collapsed the top
-level is ~4,264 rows, not 264k)."""
+level is ~4,324 rows, not 264k)."""
 
 from __future__ import annotations
 
@@ -36,21 +39,24 @@ class _Node:
     """A tree node OWNED by the model (never pass a transient node to
     createIndex -- internalPointer would dangle and crash)."""
 
-    __slots__ = ("children", "key", "leaves", "orig", "parent", "row", "unit")
+    __slots__ = ("base_key", "children", "key", "orig", "parent", "row", "unit")
 
     def __init__(
         self,
         orig: str,
         unit: str,
         key: str | None,
-        leaves: list[tuple[str, str, str]] | None,
+        base_key: str | None,
         parent: _Node | None,
         row: int,
     ) -> None:
         self.orig = orig  # display name (Name column)
         self.unit = unit  # unit (Unit column); "" for a parent (aggregated in incr 5)
         self.key = key  # leaf signal_key; None for a parent node
-        self.leaves = leaves  # parent: [(orig, unit, key)]; leaf: None
+        # Synthetic grouping handle passed back to column_names_for() when this
+        # node is expanded. NOT a signal_key (a physical channel that was
+        # exploded has no Signal of its own) -- never let it reach .key.
+        self.base_key = base_key
         self.children: list[_Node] | None = None  # None = not materialized
         self.parent = parent
         self.row = row
@@ -76,22 +82,45 @@ class SignalTreeModel(QAbstractItemModel):
             self.endResetModel()
 
     def _rebuild(self) -> None:
-        """Eager top-level only; children stay lazy (None)."""
+        """Eager top-level only; children stay lazy (None).
+
+        column_names_for() is deliberately NOT called here: at prod scale that
+        is one span walk per row on every reset (O(n^2)) and would rebuild the
+        very per-column objects this increment removed.
+        """
         top: list[_Node] = []
-        for row, (base, leaves) in enumerate(self._vm.tree_groups()):
-            if len(leaves) == 1:
-                orig, unit, key = leaves[0]
-                top.append(_Node(orig, unit, key, None, None, row))
+        for row, (name, unit, base_key, _count, single) in enumerate(
+            self._vm.tree_groups()
+        ):
+            if single is not None:
+                # This row currently presents exactly one column (either the
+                # channel really has one, or the filter narrowed it to one).
+                # Both the key and the display name come from that column's
+                # **real identity** -- the synthetic base_key may not exist as a
+                # Signal at all (parent "Mono" of Mono[0], "P" of P.x, "Q" of
+                # Q.x), and using it as a leaf key would produce a row that is
+                # visible but can never be plotted.
+                orig, key = single
+                top.append(_Node(orig, unit, key, base_key, None, row))
             else:
-                top.append(_Node(base, "", None, leaves, None, row))
+                # Parent rows keep a blank Unit cell (UX-29: the unit lives on
+                # the children; aggregation is deferred to increment 5).
+                top.append(_Node(name, "", None, base_key, None, row))
         self._top = top
         self._sort_top()  # preserve the active sort across filter/signal rebuilds
 
     def _materialize(self, node: _Node) -> None:
+        """Synthesize *node*'s children on first demand (expansion), never before."""
         if node.children is None:
+            columns = (
+                self._vm.column_names_for(node.base_key)
+                if node.base_key is not None
+                else []
+            )
+            # Children are always leaves: base_key None (nothing to expand).
             node.children = [
                 _Node(orig, unit, key, None, node, r)
-                for r, (orig, unit, key) in enumerate(node.leaves or [])
+                for r, (orig, unit, key) in enumerate(columns)
             ]
             self._sort_children(node)  # apply the active sort to freshly-built children
 
@@ -131,7 +160,14 @@ class SignalTreeModel(QAbstractItemModel):
         if not parent.isValid():
             return len(self._top) > 0
         node: _Node = parent.internalPointer()
-        return node.key is None and bool(node.leaves)
+        # tree_groups() never returns a row with 0 matching columns, and a row
+        # down to 1 matching column is emitted as a leaf (key not None), so
+        # key is None <=> presented columns >= 2. Do NOT decide this from the
+        # column count (that is filter-independent, so a row the filter narrowed
+        # to a single column would stay a non-draggable parent). Answering
+        # without materializing is the whole point of this shape (rowCount does
+        # materialize).
+        return node.key is None
 
     def columnCount(self, parent: _Index = QModelIndex()) -> int:
         return len(self.HEADERS)

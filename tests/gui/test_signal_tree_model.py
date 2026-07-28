@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 import numpy as np
 from PySide6.QtCore import QModelIndex, Qt
 from pytestqt.qtbot import QtBot
@@ -13,7 +16,18 @@ from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
 
 
-def _sig(name: str) -> Signal:
+def _sig(name: str, phys: str | None = None) -> Signal:
+    """One synthetic column Signal.
+
+    E-2: real expanded columns carry metadata['physical_channel'] from the
+    loader, so a synthetic fixture that wants a PARENT row must pass *phys*
+    explicitly. Without it the fallback (missing physical_channel = one column
+    per physical channel) makes every column its own channel, no parent node is
+    ever built, and "no parent was materialized" asserts go vacuously green.
+    """
+    metadata: dict[str, Any] = {"unit": "V"}
+    if phys is not None:
+        metadata["physical_channel"] = phys
     return Signal(
         name=name,
         timestamps=np.array([0.0]),
@@ -21,7 +35,7 @@ def _sig(name: str) -> Signal:
         file_format="MDF4",
         bus_type="",
         source_file="",
-        metadata={"unit": "V"},
+        metadata=metadata,
     )
 
 
@@ -29,9 +43,9 @@ def _model(qtbot: QtBot) -> SignalTreeModel:
     app_vm = AppViewModel()
     vm = ChannelBrowserVM(app_vm)
     app_vm.session.group_signals = lambda key: [
-        _sig("g::Arr[0]"),
-        _sig("g::Arr[1]"),
-        _sig("g::Arr[2]"),
+        _sig("g::Arr[0]", phys="Arr"),
+        _sig("g::Arr[1]", phys="Arr"),
+        _sig("g::Arr[2]", phys="Arr"),
         _sig("g::Scalar"),
     ]
     app_vm.set_active_file("g")
@@ -112,9 +126,9 @@ def _sort_model(qtbot: QtBot) -> SignalTreeModel:
         _sig("g::Zeta"),
         _sig("g::alpha"),
         _sig("g::Mid"),
-        _sig("g::Arr[2]"),
-        _sig("g::Arr[0]"),
-        _sig("g::Arr[1]"),
+        _sig("g::Arr[2]", phys="Arr"),
+        _sig("g::Arr[0]", phys="Arr"),
+        _sig("g::Arr[1]", phys="Arr"),
     ]
     app_vm.set_active_file("g")
     return SignalTreeModel(vm)
@@ -186,3 +200,105 @@ def test_sort_preserved_across_filter(qtbot: QtBot) -> None:
     # 'a' matches alpha and Arr[*] (Arr base is prefix). Desc order among survivors.
     names = _top_names(m)
     assert names == sorted(names, key=str.lower, reverse=True)
+
+
+# ─── E-2: 1 行 = 1 物理チャンネル / 子は要求時合成 ─────────────────────────────
+# 実 mf4 経由 (合成 Signal では physical_channel の実 fallback を踏めない)。
+
+
+def _vm_from_mf4(path: Path) -> ChannelBrowserVM:
+    app_vm = AppViewModel()
+    key = app_vm.request_load(path)  # MDF4 は format_def 不要
+    app_vm.set_active_file(key)
+    return ChannelBrowserVM(app_vm)
+
+
+def _vm_with_array_channel(tmp_path: Path) -> ChannelBrowserVM:
+    from tests.mdf4_helpers import write_mdf4_2d
+
+    return _vm_from_mf4(write_mdf4_2d(tmp_path))  # Mat 3 列 + Clean 1 列
+
+
+def test_top_level_rows_are_physical_channels(qtbot: QtBot, tmp_path: Path) -> None:
+    # 1 行 = 1 物理チャンネル。配列チャンネルは 1 行で、展開して初めて列が出る。
+    vm = _vm_with_array_channel(tmp_path)
+    model = SignalTreeModel(vm)
+    tops = [model.index(r, 0).data() for r in range(model.rowCount())]
+    assert tops == ["Mat", "Clean"]
+    assert not any(str(t).startswith("Mat[") for t in tops)
+
+
+def test_children_are_synthesized_on_demand(qtbot: QtBot, tmp_path: Path) -> None:
+    vm = _vm_with_array_channel(tmp_path)
+    model = SignalTreeModel(vm)
+    row = next(r for r in range(model.rowCount()) if model.index(r, 0).data() == "Mat")
+    parent = model.index(row, 0)
+    node = parent.internalPointer()
+    assert node.children is None  # 要求されるまで作らない
+    assert model.hasChildren(parent) is True  # 合成せずに親と判る
+    assert model.rowCount(parent) == 3  # ここで初めて合成される
+    assert model.index(0, 0, parent).data() == "Mat[0]"
+
+
+def test_scalar_channel_has_no_children(qtbot: QtBot, tmp_path: Path) -> None:
+    vm = _vm_with_array_channel(tmp_path)
+    model = SignalTreeModel(vm)
+    row = next(
+        r for r in range(model.rowCount()) if model.index(r, 0).data() == "Clean"
+    )
+    assert model.hasChildren(model.index(row, 0)) is False
+
+
+def test_parent_row_unit_cell_is_blank(qtbot: QtBot, tmp_path: Path) -> None:
+    """m2: 親行の Unit は "" のまま (UX-29 — 親は空・実体は子)。"""
+    vm = _vm_with_array_channel(tmp_path)
+    model = SignalTreeModel(vm)
+    row = next(r for r in range(model.rowCount()) if model.index(r, 0).data() == "Mat")
+    assert model.index(row, 1).data() == ""
+
+
+def test_single_column_channels_are_draggable_leaves(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """C1: (N,1) 2D / 単一フィールド構造化 / 混在構造化 は列 1 本の **葉**。
+
+    表示名も key も実列のもの (Mono[0] / P.x / Q.x)。sabotage: key を base_key に
+    戻す・表示名を physical_name に戻すと 3 本とも RED になる。
+    """
+    from tests.mdf4_helpers import write_mdf4_single_column_shapes
+
+    vm = _vm_from_mf4(write_mdf4_single_column_shapes(tmp_path))
+    model = SignalTreeModel(vm)
+    tops = [model.index(r, 0).data() for r in range(model.rowCount())]
+    assert tops == ["Mono[0]", "P.x", "Q.x", "Clean"]
+    for r in range(model.rowCount()):
+        idx = model.index(r, 0)
+        assert model.hasChildren(idx) is False
+        assert model.signal_key_at(idx) == f"mf4_1::{tops[r]}"
+        assert model.flags(idx) & Qt.ItemFlag.ItemIsDragEnabled
+
+
+def test_every_signal_key_in_the_tree_resolves(qtbot: QtBot, tmp_path: Path) -> None:
+    """恒久ガード (E-3 の鋳造書き換えでも生き残る): モデルが出す全キーが解決する。
+
+    トップレベル全行と展開済み全子を歩き、signal_key_at が None でない全キーが
+    session.signal_map() で解決することを assert する。
+    """
+    from tests.mdf4_helpers import write_mdf4_single_column_shapes
+
+    app_vm = AppViewModel()
+    key = app_vm.request_load(write_mdf4_single_column_shapes(tmp_path))
+    app_vm.set_active_file(key)
+    model = SignalTreeModel(ChannelBrowserVM(app_vm))
+    sig_map = app_vm.session.signal_map()
+
+    def walk(parent: QModelIndex) -> None:
+        for r in range(model.rowCount(parent)):
+            idx = model.index(r, 0, parent)
+            k = model.signal_key_at(idx)
+            if k is not None:
+                assert sig_map.get(k) is not None, f"dead key in tree: {k!r}"
+            else:
+                walk(idx)  # 親は必ず展開して子まで検査する
+
+    walk(QModelIndex())

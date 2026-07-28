@@ -256,12 +256,12 @@ class ChannelBrowserView(QWidget):
         """Flatten-walk the tree in display order, collecting up to *limit*
         Unit-column strings.
 
-        Group (array/LD-14) rows show "" in the Unit column -- unit
-        aggregation across a group's members is a later increment -- so the
+        Group (physical-channel) rows show "" in the Unit column -- unit
+        aggregation across a channel's columns is a later increment -- so the
         real content lives on their leaf children. Where it is free to do so,
         the walk descends into groups rather than sampling only top-level
-        rows (a tree front-loaded with array bases would otherwise sample
-        nothing but blanks) -- but it never *forces* that descent.
+        rows (a tree front-loaded with multi-column channels would otherwise
+        sample nothing but blanks) -- but it never *forces* that descent.
         SignalTreeModel.rowCount() materializes a group's children on first
         touch, and doing that from a reset-driven sampler would defeat the
         lazy tree (FU-22 B: children build only on user expansion). So this
