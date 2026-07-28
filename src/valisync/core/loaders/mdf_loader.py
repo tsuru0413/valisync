@@ -548,6 +548,12 @@ class MdfLoader:
                     )
 
                 out_metadata = _extract_metadata(probe, raw_conversion)
+                # ブラウザの「1 行=1 物理チャンネル」グループ化キー。文字列解析では
+                # ACC.Speed (チャンネル名) と P.x (構造化フィールド) を区別できない。
+                # 生 base_name ではなく signal_name を使う: LD-08 で name_total>1 のとき
+                # base_name は別の物理チャンネル (別 gi/ci・別 shape/unit) と共有され
+                # 同一性を失う。selector 側の生名は LazyMdfValues が別に保持している。
+                out_metadata["physical_channel"] = signal_name
                 if deduplicated:
                     # E-2b: this name involved a LD-08 [idx] disambiguation —
                     # the ONLY basis cross-file same-name matching uses to
