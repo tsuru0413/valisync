@@ -324,6 +324,95 @@ def write_mdf4_interleaved_arrays(tmp_path: Path) -> Path:
     return path
 
 
+def write_mdf4_flatten_fixture(tmp_path: Path) -> Path:
+    """平坦化 realgui (E-2 Task 5) の fixture — 5 物理チャンネル / 9 列.
+
+    ローダー実測 (実 asammdf ラウンドトリップで確認済み):
+    ``ACC.Speed``, ``ACC.Accel``, ``Mat[0..2]``, ``Pos.xa``, ``Pos.xb``,
+    ``Pos.yc``, ``Scalar`` — 物理チャンネルは
+    ``ACC.Speed / ACC.Accel / Mat / Pos / Scalar`` の 5 本。
+
+    狙う mutation は **_base_of によるドット分割グルーピングの復活**
+    (E-2 前は orig の最初の ``[`` / ``.`` までを base にしていた)。接頭辞を共有する
+    2 本 (``ACC.Speed`` / ``ACC.Accel``) が無いと SignalTreeModel._rebuild の
+    単一リーフ畳み込みで旧実装でも ``"ACC.Speed"`` がトップ行に見えてしまい、
+    オラクルが mutation を殺せない。2 本あれば旧実装のトップ行は ``"ACC"`` に
+    なるので、期待値 ``["ACC.Speed", "ACC.Accel", ...]`` が確実に RED になる。
+
+    ``Pos`` は「英数字だけの実打鍵で一部の列だけを絞り込む」ための構造化チャンネル
+    (``x`` は他のどのチャンネル名にも現れないので 1 打鍵で ``Pos.xa`` / ``Pos.xb``
+    だけが残り ``Pos.yc`` は落ちる)。記号打鍵を避けるのは
+    ``ord('[') == 0x5B == VK_LWIN`` でスタートメニューが開き、以後の実クリックが
+    別ウィンドウへ流れるため (共有マシン上の不透明なフレーク)。
+    """
+    ts = np.array([0.0, 0.1, 0.2, 0.3])
+    mdf = MDF()
+    try:
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([1.0, 2.0, 3.0, 4.0]),
+                    timestamps=ts,
+                    name="ACC.Speed",
+                    unit="km/h",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([5.0, 6.0, 7.0, 8.0]),
+                    timestamps=ts,
+                    name="ACC.Accel",
+                    unit="m/s2",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array(
+                        [[0, 1, 2], [10, 11, 12], [20, 21, 22], [30, 31, 32]],
+                        dtype=np.uint8,
+                    ),
+                    timestamps=ts,
+                    name="Mat",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array(
+                        [
+                            (1.0, 2.0, 3.0),
+                            (4.0, 5.0, 6.0),
+                            (7.0, 8.0, 9.0),
+                            (10.0, 11.0, 12.0),
+                        ],
+                        dtype=[("xa", "<f8"), ("xb", "<f8"), ("yc", "<f8")],
+                    ),
+                    timestamps=ts,
+                    name="Pos",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([9.0, 8.0, 7.0, 6.0]),
+                    timestamps=ts,
+                    name="Scalar",
+                )
+            ]
+        )
+        path = tmp_path / "flatten.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
 def write_mdf4_structured(tmp_path: Path) -> Path:
     """構造化 dtype (x,y) チャンネル — フィールド展開検証用."""
     ts = np.array([0.0, 0.1, 0.2])

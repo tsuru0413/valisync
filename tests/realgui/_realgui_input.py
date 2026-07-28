@@ -27,6 +27,10 @@ KEYDOWN, KEYUP = 0x0000, 0x0002
 VK_RETURN, VK_ESCAPE, VK_CONTROL, VK_SHIFT = 0x0D, 0x1B, 0x11, 0x10
 # Arrow keys (Win32 virtual-key codes) for cursor stepping realgui (PC-08).
 VK_LEFT, VK_RIGHT = 0x25, 0x27
+# Backspace — the only way to *clear* a real-typed filter without a symbol
+# keystroke. A-Z/0-9 alone can type but not erase, and ord('[')==VK_LWIN opens
+# the Start menu (E-2 Task 5: real typing is restricted to alphanumerics).
+VK_BACK = 0x08
 
 _user32 = ctypes.windll.user32 if sys.platform == "win32" else None
 
