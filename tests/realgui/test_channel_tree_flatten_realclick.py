@@ -166,7 +166,15 @@ def _click_expand_arrow(tree, index: QModelIndex) -> None:  # type: ignore[no-un
     assert rect.height() > 0, "展開対象行が可視域に無い"
     indent = tree.indentation()
     assert indent > 0, "indentation が 0 — 展開矢印が存在しない"
-    local = QPoint(max(rect.left() - indent // 2, 2), rect.center().y())
+    arrow_x = rect.left() - indent // 2
+    # 負値を黙って 2px へ丸めると、ジオメトリ計算の誤りが「どこか別の場所への
+    # 誤クリック」として静かに揉み消される (assert がずれた症状で落ちる/落ちない
+    # を運任せにする)。ここでは丸めず失敗させる。
+    assert arrow_x > 0, (
+        f"展開矢印の想定 x が負 (rect.left()={rect.left()}, indent={indent}, "
+        f"x={arrow_x}) — インデント計算が壊れている"
+    )
+    local = QPoint(arrow_x, rect.center().y())
     _real_click(*_phys(tree.viewport(), local))
 
 
@@ -201,6 +209,7 @@ def _real_add_to_active_panel(tree, index: QModelIndex) -> None:  # type: ignore
                 (a for a in menu.actions() if a.text() == S.ACTION_ADD_TO_ACTIVE_PANEL),
                 None,
             )
+            seen["action_found"] = act is not None
             if act is not None:
                 gc = menu.mapToGlobal(menu.actionGeometry(act).center())
                 dpr = menu.devicePixelRatioF()
@@ -214,13 +223,38 @@ def _real_add_to_active_panel(tree, index: QModelIndex) -> None:  # type: ignore
             key_input(VK_ESCAPE)
         loop.quit()
 
-    QTimer.singleShot(300, right_click)
-    QTimer.singleShot(1000, click_item)
-    QTimer.singleShot(1600, watchdog)
-    QTimer.singleShot(5000, loop.quit)
+    # タイマーは変数に保持し exec() 復帰後に明示 stop() する。stop し忘れると
+    # click_item() (~1000ms) で loop.quit() した後も watchdog (1600ms) /
+    # 最終フォールバック (5000ms) が生き残り、後続の qtbot.waitUntil の最中に
+    # 発火 -- popup が別の理由でまだ開いていれば本物の VK_ESCAPE を送りかねない
+    # (共有マシンでの非決定性要因)。
+    t_click = QTimer()
+    t_click.setSingleShot(True)
+    t_click.timeout.connect(right_click)
+    t_item = QTimer()
+    t_item.setSingleShot(True)
+    t_item.timeout.connect(click_item)
+    t_watchdog = QTimer()
+    t_watchdog.setSingleShot(True)
+    t_watchdog.timeout.connect(watchdog)
+    t_fallback = QTimer()
+    t_fallback.setSingleShot(True)
+    t_fallback.timeout.connect(loop.quit)
+
+    t_click.start(300)
+    t_item.start(1000)
+    t_watchdog.start(1600)
+    t_fallback.start(5000)
     loop.exec()
+    for t in (t_click, t_item, t_watchdog, t_fallback):
+        t.stop()
+
     assert seen.get("popup") == "QMenu", (
         f"実右クリックでコンテキストメニューが出ない: {seen}"
+    )
+    assert seen.get("action_found"), (
+        f"メニューに {S.ACTION_ADD_TO_ACTIVE_PANEL!r} が無い "
+        f"(actions={seen.get('actions')})"
     )
 
 
@@ -329,6 +363,13 @@ def test_channel_tree_is_flattened_and_columns_stay_selectable(
 
     # ── (4) 配列チャンネルの **子行** を実選択して実メニューから追加 ────────
     mat_idx = model.index(_row_of(model, "Mat"), 0)
+    # BackSpace によるツリー再構築で展開状態が引き継がれていない前提を明示。
+    # もし将来フィルタ再構築後も展開が保持されるよう変わっていたら、この
+    # クリックは展開でなく畳み込みになり、直後の isExpanded assert が
+    # 「展開できていない」という誤った理由で落ちる。
+    assert not tree.isExpanded(mat_idx), (
+        "前提が崩れている: BackSpace 再構築後に Mat が展開状態のまま"
+    )
     _click_expand_arrow(tree, mat_idx)
     assert tree.isExpanded(mat_idx)
     child = model.index(0, 0, mat_idx)

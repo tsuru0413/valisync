@@ -127,14 +127,29 @@ def load_one_more(app: object, win: object, expect_files: int) -> LoadResult:
     )
 
 
-# One alphanumeric keystroke, deliberately the WORST CASE for prod_demo: 'o'
-# matches 264,001 of the 264,004 columns across 4,261 of the 4,264 rows (the
-# generated channels are Prod<n>_<nnnn>). A selective letter would understate
-# the residue -- 'a' for instance matches only 4,003 columns / 4,003 rows, so
-# every surviving row would carry exactly one column and the memo would be at
-# its smallest. The column-name scan itself walks every column either way, so
-# only the retained result size varies -- which is precisely what the "no
-# per-column name cache" claim is about.
+# One alphanumeric keystroke, deliberately the WORST CASE for prod_demo: 'o'.
+#
+# The retained memo (`(fl, list[_TreeRow], int)` in ChannelBrowserVM) is
+# O(surviving rows), never O(matched columns) -- per-row cost does NOT shrink
+# as more columns match. Per channel_browser_vm.py's filter memo builder, a
+# row with hits == 1 stores MORE than a row with hits > 1: it keeps an extra
+# `single` tuple (the sliced orig name + resolved unit), while hits > 1 stores
+# `None` in that slot. So the row-payload-MAXIMIZING case is the one where
+# most rows match exactly one column, which is 'a': it matches only 4,003 of
+# the 264,004 columns across 4,003 of the 4,264 rows (the generated channels
+# are Prod<n>_<nnnn>), i.e. essentially every surviving row has hits == 1 and
+# pays the extra tuple. Measured: FILTER MECHANISM COST +1.3 MB, wall 94.1 ms
+# (scans=1). Row counts between 'a' (4,003) and 'o' (4,261) are near-identical
+# out of 4,264 total, so switching from 'a' to 'o' does not add allocations --
+# if anything it removes ~4,000 of the per-row `single` tuples, since 'o'
+# rows mostly have hits > 1 and store None instead.
+#
+# What 'o' actually is, is the WALL-TIME worst case: the column-name scan
+# walks every column regardless of match, but the `hits += 1` branch (and the
+# `_matches` call feeding it) executes once per MATCHED column, 264,001 times
+# for 'o' vs only 4,003 times for 'a'. Measured: filter wall 126.3 ms for 'o'
+# vs 94.1 ms for 'a' (both scans=1) -- that additional per-hit work is why
+# 'o', not 'a', is used as the reported worst-case timing figure.
 BROWSER_FILTER_QUERY = "o"
 
 
