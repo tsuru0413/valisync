@@ -180,6 +180,63 @@ def write_mdf4_value2text(tmp_path: Path) -> Path:
     return path
 
 
+def write_mdf4_ttab(tmp_path: Path) -> Path:
+    """TTAB (text→value) 変換付きチャンネル + 通常チャンネル.
+
+    TTAB は value2text の**逆向き** — raw 表現がテキスト、物理値が数値。asammdf は
+    ``ignore_value2text_conversions`` で TABX/RTABX/TRANS/BITFIELD を短絡するが
+    ``CONVERSION_TYPE_TTAB`` には同ガードが無く (v4_blocks.py:4337)、常に
+    テキスト→数値へ写す。よって ``raw=True`` プローブの dtype は ``|S8``、
+    ``raw=False`` (= 本読みと同じ側) の dtype は ``float64`` になる。
+
+    ローダーの数値性ゲートを raw プローブ側で判定すると、このチャンネルは
+    「非数値型のためスキップ」で消滅する (物理サンプルは数値なので誤り)。
+    ``from_dict`` は TTAB を作れないため ``ChannelConversion`` を直接組む。
+    """
+    from asammdf.blocks import v4_constants as v4c
+    from asammdf.blocks.v4_blocks import ChannelConversion
+
+    texts = (b"OFF", b"LEFT", b"RIGHT")
+    kwargs: dict[str, Any] = {
+        "conversion_type": v4c.CONVERSION_TYPE_TTAB,
+        "links_nr": 4 + len(texts),  # 共通リンク 4 + text_i
+        "val_default": -1.0,
+    }
+    for i in range(len(texts)):
+        kwargs[f"text_{i}"] = 0  # リンクアドレスは save 時に解決される
+        kwargs[f"val_{i}"] = float(i) * 10.0
+    conv = ChannelConversion(**kwargs)
+    for i, text in enumerate(texts):
+        conv.referenced_blocks[f"text_{i}"] = text
+
+    ts = np.array([0.0, 0.1, 0.2, 0.3])
+    mdf = MDF()
+    try:
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([b"OFF", b"LEFT", b"RIGHT", b"LEFT"], dtype="S8"),
+                    timestamps=ts,
+                    name="StateTxt",
+                    conversion=conv,
+                    encoding="latin-1",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([1.0, 2.0, 3.0, 4.0]), timestamps=ts, name="Clean"
+                )
+            ]
+        )
+        path = tmp_path / "ttab.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
 def write_mdf4_shared_group(tmp_path: Path) -> Path:
     """同一チャンネルグループに 2ch (A/B, 同一時刻軸) — 共有マスタ検証用."""
     ts = np.arange(0.0, 1.0, 0.1)

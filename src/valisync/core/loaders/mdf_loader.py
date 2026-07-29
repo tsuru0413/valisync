@@ -208,6 +208,15 @@ class MdfLoader:
         "ignore_value2text_conversions": True,
         "copy_master": False,
     }
+    # 数値性 (dtype.kind) 判定専用: 1 レコードを **遅延読みと同じ非 raw の正準
+    # オプション** で読む。raw プローブの dtype では判定できない — 変換次第で
+    # raw と物理値の dtype.kind が食い違う (下の _load_group のゲート参照)。
+    _DTYPE_PROBE_OPTIONS: ClassVar[dict[str, Any]] = {
+        "record_count": 1,
+        "raw": False,
+        "ignore_value2text_conversions": True,
+        "copy_master": False,
+    }
     # master 読み専用 (_load_group): 遅延読みと同じ正準オプションで 1 チャンネル
     # だけ select し timestamps を取る。get_master(gi) と違い開いたハンドルに
     # 生レコードブロックを残さない (詳細は _load_group のコメント)。
@@ -475,7 +484,18 @@ class MdfLoader:
         # dtype・source は 1 レコードから確定する (shape[1:]/dtype/metadata は
         # record_count に依存しない)。
         probes = mdf.select(entries, **self._PROBE_OPTIONS)
-        for (base_name, _g, _c), probe in zip(entries, probes, strict=True):
+        # 数値性ゲートだけは物理値 (非 raw) 側の dtype で判定する — raw と物理値で
+        # dtype.kind が食い違う変換が実在するため。asammdf は
+        # ignore_value2text_conversions で TABX/RTABX/TRANS/BITFIELD を短絡するが
+        # CONVERSION_TYPE_TTAB (text→value) には同ガードが無く
+        # (v4_blocks.py:4337)、raw=テキスト / 物理値=数値になる。値の本読みは
+        # LazyMdfValues.array() が非 raw で行うので、ゲートも同じ側で見ないと
+        # 「数値なのに非数値としてスキップ」する (形状/ColumnSpec/metadata は
+        # 変換非依存なので raw プローブのまま)。
+        dtype_probes = mdf.select(entries, **self._DTYPE_PROBE_OPTIONS)
+        for (base_name, _g, _c), probe, dtype_probe in zip(
+            entries, probes, dtype_probes, strict=True
+        ):
             if cancel is not None and cancel():
                 raise LoadCancelled(f"load cancelled: {resolved_path.name}")
             idx = name_seen.get(base_name, 0)
@@ -502,8 +522,15 @@ class MdfLoader:
                         out_leaves, sel_leaves, strict=True
                     )
                 ]
+                # リーフ単位のゲート用に物理値側も同じ規則で 1 度だけ展開する
+                # (ペアごとに _flatten を呼ぶと O(リーフ数^2) になる)。
+                phys_leaf_dtypes = {
+                    sel_name: col.dtype
+                    for sel_name, col in _flatten(base_name, dtype_probe.samples)
+                }
             else:
                 pairs = [(signal_name, None, samples)]
+                phys_leaf_dtypes = {}
 
             # value_labels (value2text) は 1D 通常チャンネルのみ継承する —
             # value2text はスカラー enum の概念で、展開後の列 (2D/構造化の
@@ -519,16 +546,23 @@ class MdfLoader:
             for out_name, selector, col_probe in pairs:
                 # FU-20: native dtype を保持し float64 膨張 (wide uint8 の 8x) を避ける。
                 # 数値 (int/uint/float/bool) 以外は Signal が扱えないため従来どおり skip。
-                # dtype 検査は probe (1 レコード) の該当リーフで行う (値の全読み不要・
-                # raw/非raw で shape/dtype.kind の数値性は一致)。float64 化は計算境界
+                # 判定は **物理値プローブ (非 raw = 本読みと同じ側) の該当リーフ**
+                # で行う (値の全読みは不要)。リーフが物理値側で引けない場合のみ
+                # raw リーフへフォールバックする (変換で形が変わる想定は無いが、
+                # 引けないことを理由にチャンネルを落とさない)。float64 化は計算境界
                 # Signal.sorted_view() で行う。
-                if col_probe.dtype.kind not in "iufb":
+                gate_dtype = (
+                    dtype_probe.samples.dtype
+                    if selector is None
+                    else phys_leaf_dtypes.get(selector[-1], col_probe.dtype)
+                )
+                if gate_dtype.kind not in "iufb":
                     diagnostics.append(
                         Diagnostic(
                             level="warning",
                             message=(
                                 f"信号 '{out_name}': 非数値型のためスキップ"
-                                f"（dtype {col_probe.dtype}）"  # noqa: RUF001
+                                f"（dtype {gate_dtype}）"  # noqa: RUF001
                             ),
                         )
                     )

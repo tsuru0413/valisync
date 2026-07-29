@@ -29,6 +29,7 @@ from .mdf4_helpers import (
     write_mdf4_non_monotonic,
     write_mdf4_shared_group,
     write_mdf4_structured,
+    write_mdf4_ttab,
     write_mdf4_value2text,
     write_mdf4_wide_2d,
 )
@@ -521,6 +522,31 @@ def test_value_labels_extracted_to_metadata(tmp_path: Path) -> None:
     assert "value_labels" not in clean.metadata
     # conversion_info の互換キーは生チャンネル側 conversion から復元される (spec §3.3)
     assert "conversion_info" in turn.metadata
+
+
+def test_ttab_channel_survives_with_physical_numeric_values(tmp_path: Path) -> None:
+    """TTAB (text→value) チャンネルが物理値 (数値) で生存する.
+
+    数値性ゲートを raw プローブ (``raw=True``) の dtype で判定すると、TTAB は
+    raw 表現がテキスト (``|S8``) なので「非数値型のためスキップ」でチャンネルごと
+    消える — しかし本読み (``LazyMdfValues.array()``) は ``raw=False`` なので
+    物理サンプルは数値であり、この skip は事実として誤り。ゲートは本読みと同じ
+    非 raw 側の dtype で判定しなければならない。
+    """
+    path = write_mdf4_ttab(tmp_path)
+    result = MdfLoader().load(path)
+    assert result.signal_group is not None
+    names = {s.name for s in result.signal_group.signals}
+    assert "StateTxt" in names, (
+        f"TTAB チャンネルが落ちた: {names} / {[d.message for d in result.diagnostics]}"
+    )
+    state = next(s for s in result.signal_group.signals if s.name == "StateTxt")
+    assert state.values.dtype.kind in "iuf"
+    # 変換表: OFF→0.0 / LEFT→10.0 / RIGHT→20.0
+    np.testing.assert_allclose(state.values, [0.0, 10.0, 20.0, 10.0])
+    assert not any(
+        "非数値型" in d.message and "StateTxt" in d.message for d in result.diagnostics
+    )
 
 
 def test_same_group_signals_share_master(tmp_path: Path) -> None:
