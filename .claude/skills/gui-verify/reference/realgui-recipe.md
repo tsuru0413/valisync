@@ -59,7 +59,7 @@
 
 - ホイールは**カーソル下のウィジェット**へ配送される — 対象 viewport 上に置いてから発行（`wheel()` が `SetCursorPos` を内包）。
 - QDrag と違い OLE モーダルループは無い — `QApplication.processEvents()` の pump だけで配送され、別 OS スレッド・watchdog は不要。
-- 到達判定は `visibleRegion()` 非空で行うが、**部分可視で抜けると中心クリックが viewport 外へ落ちる**ため、ループ後に念押しで 1 ノッチ回す（実例: `tests/realgui/test_expansion_dialog_realinput.py`）。
+- 到達判定は `visibleRegion()` 非空で行うが、**部分可視で抜けると中心クリックが viewport 外へ落ちる**ため、ループ後に念押しで 1 ノッチ回す（実例だった `tests/realgui/test_expansion_dialog_realinput.py` は E-3 の 1024 ガード退役でダイアログごと削除済み — 手法自体は有効なので、次にスクロール可能な実 WM ダイアログを扱うときここへ実例を差し戻すこと）。
 - 合成代替（`verticalScrollBar().setValue()`・`QWheelEvent` 送出）は Layer B であり Layer C を騙れない。契約ガード（`tests/gui/test_realgui_layer_c_contract.py`）の正規表現は `wheel(` を実入力プリミティブとして認識する。
 
 ## 実 WM 経由のウィンドウリサイズ（SetWindowPos）

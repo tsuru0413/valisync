@@ -40,6 +40,10 @@ def test_wide_channel_loads_without_any_confirmation(tmp_path: Path) -> None:
     assert not [d for d in result.diagnostics if d.level in ("error", "warning")], [
         d.message for d in result.diagnostics
     ]
+    # 負の assert だけだと「warning → info への置換」という説明が自己証明しない
+    # (info が出なくなっても緑のまま)。置換後の info が実際に出ることを正で押さえる。
+    infos = [d.message for d in result.diagnostics if d.level == "info"]
+    assert any("W[0]" in m and "1025" in m for m in infos), infos
 
 
 def test_dedup_index_shifts_when_wide_channel_is_no_longer_skipped(
