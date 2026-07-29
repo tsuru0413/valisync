@@ -130,9 +130,20 @@ offset 適用は**timestamps だけシフトし values は不変**。新 Signal 
 
 ### ユーザー決定（確定）
 
-1. **close は `Session.remove_group` に置く**（`AppViewModel.unload_file` ではなく）。core が handle 寿命を持ち、unload と `_discard`（キャンセル完走のロールバック）の**両方を構造的にカバー**する。`remove_group` の呼出元は 3 箇所で爆風半径が既知。
+1. **close は `Session.remove_group` に置く**（`AppViewModel.unload_file` ではなく）。core が handle 寿命を持ち、unload と `_discard`（キャンセル完走のロールバック）の**両方を構造的にカバー**する。`remove_group` の呼出元は **2 箇所**（`app_viewmodel.py:188` / `main_window.py:612`）で爆風半径が既知。
+   > **注（増分B プラン敵対的レビュー反映）**: これは **close の置き場所**を縛る決定であり、
+   > **拒否ガードの置き場所は縛らない**。エクスポート中の unload 拒否は、実ユーザー経路
+   > （FileBrowserView → FileBrowserVM → `AppViewModel.unload_file` → `Session.remove_group`）の
+   > うち `ExportController` に到達できる唯一のチョークポイントである `AppViewModel.unload_file`
+   > に置く（`main_window.py` に unload 入口は存在しない）。
 2. **unload がエクスポート中のファイルを殺す挙動は許容する。ただし到達不能を確実にする** — 現状は `BusyOverlay` が偶然クリックを遮っているだけなので、**明示的なガード**（エクスポート実行中は unload を無効化/拒否）を置き、「偶然」に依存しない。
 3. **ドレインの 1 ティック上限は 8,000 信号**（実測 1.97µs/信号 ⇒ 約 16ms＝60fps の 1 フレーム）。バイト予算（64 MiB）との**二軸**にし、先に達した方で中断する。
+   > **追加決定（増分B プラン敵対的レビュー反映）**: 上記 8,000 は **count 軸のハード上限として
+   > 据え置く（下げない）**が、**実時間デッドライン `_TICK_DEADLINE_S = 0.008`（半フレーム）を
+   > 第 3 の停止条件として追加**する。WHY: 1.97µs/信号 は**未展開シェル**での実測値で、実際に
+   > 展開済み配列を解放するティックは実測 24-38ms（両予算を充足したまま）＝ count 軸が守ろうと
+   > したフレーム予算をそのまま破る。バイト軸は `_range_stat_index_cache` を数えないので補償
+   > できない。frame budget と単調な唯一の軸は経過時間。
 4. **MDF3 が開けない件は本増分に含めず follow-up** とする（後述）。
 
 ### コア（本増分の存在理由）
@@ -150,7 +161,7 @@ offset 適用は**timestamps だけシフトし values は不変**。新 Signal 
 - **`Session.load` の登録失敗**（`session.py:166-170`）: `add()` が `{MDF4, CSV}` 以外の `file_format` で raise し、**生きた handle を持つグループを捨てる**。GUI では `_on_load_error` がモーダルを出す間、トレースバックが handle を pin し続けるためダイアログ表示中ずっとファイルがロックされる。→ `add()` を try/except で囲み close してから re-raise。
 - （任意）`MainWindow.closeEvent` で生存 handle を閉じる。Session に列挙 API が無いので新設が要る。
 
-### 繰越 Minor（4 件・すべて存在を確認済み）
+### 繰越 Minor（3 件・すべて存在を確認済み）
 
 - **excepthook 診断に dedup が無く**（`main_window.py:578-592`）、固定ラベル「サンプル読み取り」で記録される。render 境界（`graph_panel_vm.py:1656-1684`）は `signal_key` ごとに dedup し実ファイル basename を使うので**非対称**。→ render 境界に合わせる。
 - **`MdfHandle._closed` の check-and-set が非アトミック**（`mdf_handle.py:28-29`）。並行 close で `mdf.close()` が 2 回走る（asammdf 7.3.18 が冪等なので**偶然**無害）。→ アトミック化する。
@@ -164,11 +175,11 @@ offset 適用は**timestamps だけシフトし values は不変**。新 Signal 
 
 ### テスト方針
 
-- **Layer A**: unload 直後に rename/replace/delete が**`gc.collect()` なしで**成功する。多重 unload 冪等。`_discard` 経路でも close される。`Session.load` の登録失敗後にロックが残らない。
-- **ペーシング**: 未展開 330k シェルのグループをドレインしても**1 ティックが 8,000 信号を超えない**（信号数で assert・時間で assert しない＝マシン依存を避ける）。honest bytes 単独に戻す sabotage で「1 ティックで全部」になることを実証する。
+- **Layer A**: unload 直後に rename/replace/delete が**`gc.collect()` なしで**成功する（`os.replace`/`os.remove` をオラクルにするテストは **Windows 限定 gate** を付ける — POSIX の `rename(2)` は open 中でも成功するため ubuntu CI では「確定 RED」か「恒真」にしかならない。CI 可視の主オラクルは `MdfHandle.is_closed` と `mdf.close()` の呼出回数）。**多重 unload は冪等ではない** — 同一キーの 2 回目の `remove_group` は `KeyError`（`signal_group_manager.py:57-60`・実行確認済み）で、GUI からは 1 回目でキーがリストから消えるため到達不能。よって**冪等化はせず実挙動を pin する**（増分B プラン敵対的レビューのユーザー判断）。`_discard` 経路でも close される。`Session.load` の登録失敗後にロックが残らない。
+- **ペーシング**: 未展開 330k シェルのグループをドレインしても**1 ティックが 8,000 信号を超えない**（信号数で assert・時間で assert しない＝マシン依存を避ける）。honest bytes 単独に戻す sabotage で「1 ティックで全部」になることを実証する。**第 3 軸（実時間デッドライン）は注入した偽クロックで assert する** — 「時間で assert しない」制約はテストのオラクルについての制約であり、production 機構を時間軸にすることは禁じていない。受け入れ実測は**未展開シェルと展開済み信号の 2 入力**で行う（前者だけだと 1.6µs regime しか通らず予算が『正しい』ことを構造的に証明してしまう）。
 - **会計**: master の identity 共有を dedup して計上する（現行 5 万倍の過大計上が是正されること）。
 - **並行**: close と in-flight read の競合で native クラッシュせず `SampleReadError` になる。double-checked read がキャッシュヒットで lock を取らない。
-- **①gate realgui**: 実 GUI で prod_demo をロード → unload → **その場でファイルを削除できる**（実 OS 操作）。エクスポート中は unload が拒否されることも実操作で確認。
+- **①gate realgui**: 実 GUI で **prod_demo の tmp コピー**をロード → unload → **その場でファイルを削除できる**（実 OS 操作）。**`demo_data/prod_demo.mf4` 本体を削除してはならない**（gitignore された 1.36 GB のデモ資産で他の realgui が依存する）。恒真化を防ぐため、クリック前の対照 assert（ロード完了・行の存在・`os.remove` が今は `PermissionError`）と `MDF.__del__` との弁別（teardown タイマーを止めてからクリックし `pending_signals() > 0` を確認）を必須にする。エクスポート中の拒否は **File ドックをフロートさせてから**確認する — ドッキング状態の実右クリックは全画面 `BusyOverlay`（MainWindow の子・`show()` が `raise_()`）に当たり `customContextMenuRequested` が発火しないので、ガードが 1 行も無くても「メニューが出ない／グループが残る」が成立してしまう。詳細な手順は増分B 実装プラン Task 8 が一次情報源。
 
 ## 増分C — オフセット全体適用の O(loaded) 解消 ✅ **完了（E-1 Task 4・commit aa0c37d）**
 
@@ -232,7 +243,7 @@ perf/メモリ変更ゆえ実測ベース。GUI 増分（C/D）は writing-plans
 - **スレッド安全（I4）**: 1 ハンドルを共有する信号に対し 2 スレッドから `array()`/`sorted_view()` を叩き、直列化（再入で失敗する monkeypatched `select`）で単一 get シーケンスを assert。
 - **同一性/診断**: master が group 内で identity 共有・`is_monotonic` が lazy 展開後も安定（かつ値を展開しない）・LD-03 が master eager でロード時に emit・LD-14 展開列が正値。
 - **エラー**: `select` 失敗注入 → `SampleReadError` → 集中 degrade（render・auto-fit・cursor-step・formula の各トリガ）で診断＋非クラッシュ。
-- **B**: unload で `MdfHandle` が閉じる（ファイルロック解除）・多重 unload 冪等。
+- **B**: unload で `MdfHandle` が閉じる（ファイルロック解除）・多重 unload は `KeyError`（冪等ではない — 上記 §増分B テスト方針の訂正を参照）。
 - **C**: overlay 構築が offset 信号のみ触れる（走査件数 assert）。
 - **D**: proxy 撤去・VM ソート/フィルタ等価性・reset freeze 低減は**実ディスプレイ（Layer C / ローカル計測）**で。`setSortIndicator(-1)` 前置の stale sort 抑止を TDD。
 - **実 RSS（I9・非 CI だが merge 必須成果物）**: 本セッションで確立した psutil peak/steady 法を writing-plans の受け入れに**必須アーティファクト化**し、**1 ファイル/2 ファイル比較の peak/steady コミット値**をプランに記録。
