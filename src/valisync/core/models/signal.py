@@ -16,6 +16,12 @@ class Signal:
     ``timestamps`` (グループ master・float64) は即時保持。``values`` は
     ``_values_source`` (EagerValues/LazyMdfValues) の背後で初回アクセス時に展開する。
     インスタンスは書込保護 (公開属性の再代入は AttributeError)。
+
+    **長さ不変条件は 2 段**: 構築時は ``source.length`` (遅延ソースでは master 由来の
+    **宣言値**) と突き合わせ、実配列との一致は初回展開時に ``LazyMdfValues.array()``
+    が検証して不一致なら ``SampleReadError``。遅延ソースでは構築時に実配列が存在
+    しないため、「全不変条件を構築時に強制」は成り立たない (不一致は 1 診断と当該
+    曲線の非描画として degrade する — 黙って numpy の clamp に流さない)。
     """
 
     __slots__ = (
