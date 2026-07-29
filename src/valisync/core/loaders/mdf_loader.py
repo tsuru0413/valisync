@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import datetime
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -19,28 +18,6 @@ from valisync.core.loaders.mdf_handle import MdfHandle
 from valisync.core.models import Diagnostic, LoadResult, Signal, SignalGroup
 from valisync.core.models.load_result import LoadCancelled
 from valisync.core.models.sample_source import LazyMdfValues
-
-EXPANSION_COLUMN_LIMIT = 1024  # per-channel の展開後リーフ列数の上限 (LD-14)
-
-
-@dataclass(frozen=True)
-class OversizedChannel:
-    """展開列数が上限を超えるチャンネル (確認ダイアログ提示用)."""
-
-    name: str
-    column_count: int
-
-
-@dataclass(frozen=True)
-class ExpansionRequest:
-    """上限超チャンネルの集約 — confirm_expansion コールバックへ渡す."""
-
-    channels: tuple[OversizedChannel, ...]
-
-
-# confirm_expansion(request) -> 展開する channels のインデックス集合。
-# 返らなかったインデックスはスキップ。空集合は全スキップ。
-ConfirmExpansion = Callable[[ExpansionRequest], set[int]]
 
 # Maps asammdf BusType int values to Signal.bus_type strings.
 # asammdf v4_constants.BusType: CAN=2, ETHERNET=7.
@@ -80,17 +57,12 @@ def _flatten(name: str, arr: np.ndarray) -> list[tuple[str, np.ndarray]]:
     ]
 
 
-def _leaf_column_count(arr: np.ndarray) -> int:
-    """arr を _flatten したときのリーフ列数 (1 レコードの samples でも可・LD-14).
-
-    1024 ガードの母数なので **dtype 非依存に全リーフを数える** (数値のみを数える
-    column_names.leaf_count とは意図的に別物)。構造は column_names の ColumnSpec に
-    委譲し、規則の二重実装を避ける。
-    """
-    return _all_leaf_count(spec_from_probe(arr))
-
-
 def _all_leaf_count(spec: ColumnSpec) -> int:
+    """展開後の全リーフ列数 — **dtype 非依存に数える** (LD-14 の列名文法).
+
+    「N 本に展開」info 診断の母数 (spec S2)。数値リーフだけを数える
+    column_names.leaf_count とは意図的に別物である。
+    """
     if spec.kind == "struct":
         return sum(_all_leaf_count(sub) for _n, sub in spec.fields)
     if spec.kind == "array":
@@ -259,42 +231,10 @@ class MdfLoader:
         version = str(getattr(mdf, "version", "4"))
         return "MDF4" if version.startswith("4") else "MDF3"
 
-    def _scan_oversized(
-        self,
-        mdf: Any,
-        cancel: Callable[[], bool] | None,
-    ) -> tuple[list[OversizedChannel], list[tuple[int, int]]]:
-        """本読み前に各チャンネルの展開列数を 1 レコードプローブで算出する (LD-14).
-
-        1024 超のチャンネルを集約して返す。呼び出しはグループ単位 (仮想グループ数
-        ぶん) の極小読みで済む。戻り値は表示用 OversizedChannel 列と、対応する
-        (物理gi, ci) キー列 (本読みでの除外照合用) の並列リスト。
-
-        列**数**は変換非依存なので _load_group と同じ統合プローブを共有する
-        (_PROBE_OPTIONS のコメント参照 — raw と非 raw でリーフ名/構造が一致する
-        ことは prod 全チャンネルで実測済み)。
-        """
-        oversized: list[OversizedChannel] = []
-        keys: list[tuple[int, int]] = []
-        for gi in mdf.virtual_groups:
-            if cancel is not None and cancel():
-                raise LoadCancelled("load cancelled during expansion scan")
-            entries = self._group_entries(mdf, gi)
-            if not entries:
-                continue
-            probes = mdf.select(entries, **self._PROBE_OPTIONS)
-            for (name, phys_gi, ci), probe in zip(entries, probes, strict=True):
-                cols = _leaf_column_count(probe.samples)
-                if cols > EXPANSION_COLUMN_LIMIT:
-                    oversized.append(OversizedChannel(name=name, column_count=cols))
-                    keys.append((phys_gi, ci))
-        return oversized, keys
-
     def load(
         self,
         file_path: Path,
         cancel: Callable[[], bool] | None = None,
-        confirm_expansion: ConfirmExpansion | None = None,
     ) -> LoadResult:
         if not file_path.exists() or not file_path.is_file():
             return LoadResult(
@@ -335,33 +275,6 @@ class MdfLoader:
         # mdf.close() 後は版が読めない恐れがあるため、ここで確定させる (LD-02)。
         format_label = self._format_label(mdf)
         try:
-            # 本読み前に展開列数をスキャンし、1024 超は確認 (無ければ全スキップ)。
-            # 承認されなかった超過チャンネルは skip_keys で本読み entries からも
-            # 除外する (本読みすらしない = メモリ/時間も節約・LD-14)。
-            oversized, over_keys = self._scan_oversized(mdf, cancel)
-            skip_keys: set[tuple[int, int]] = set()
-            if oversized:
-                if confirm_expansion is not None:
-                    chosen = confirm_expansion(
-                        ExpansionRequest(channels=tuple(oversized))
-                    )
-                else:
-                    chosen = set()  # ヘッドレス: 確認できないので全スキップ (安全側)
-                skip_keys = {key for i, key in enumerate(over_keys) if i not in chosen}
-                for i, key in enumerate(over_keys):
-                    if key in skip_keys:
-                        diagnostics.append(
-                            Diagnostic(
-                                level="warning",
-                                message=(
-                                    f"信号 '{oversized[i].name}': 展開列数 "
-                                    f"{oversized[i].column_count} が上限 "
-                                    f"{EXPANSION_COLUMN_LIMIT} を超えるためスキップ"
-                                ),
-                                signal_name=oversized[i].name,
-                            )
-                        )
-
             name_total = self._count_names(mdf)
             name_seen: dict[str, int] = {}
             # mdf.virtual_groups (物理グループ数ではない) を走査 — v4.20+ の
@@ -381,7 +294,6 @@ class MdfLoader:
                     signals,
                     diagnostics,
                     cancel,
-                    skip_keys,
                     handle,
                     column_records,
                 )
@@ -464,15 +376,10 @@ class MdfLoader:
         signals: list[Signal],
         diagnostics: list[Diagnostic],
         cancel: Callable[[], bool] | None,
-        skip_keys: set[tuple[int, int]],
         handle: MdfHandle,
         column_records: dict[str, ColumnRecord],
     ) -> None:
-        # skip_keys の (gi, ci) は上限超で展開しないと決まったチャンネル — 本読み
-        # entries から外し select にも渡さない (LD-14)。
-        entries = [
-            e for e in self._group_entries(mdf, gi) if (e[1], e[2]) not in skip_keys
-        ]
+        entries = self._group_entries(mdf, gi)
         if not entries:
             return
         if cancel is not None and cancel():

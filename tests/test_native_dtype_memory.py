@@ -1,7 +1,6 @@
 """FU-20 E2E: wide uint8 チャンネルの実ロードで値 RAM が native 比例 (float64 の 1/8)。
 
-prod 330k の ~10.8GB→~1.36GB (8x 削減) の CI 可能なプロキシ。展開上限 1024 を
-超えると headless では全スキップされるため cols=1000 (<1024) を使う。
+prod 330k の ~10.8GB→~1.36GB (8x 削減) の CI 可能なプロキシ。
 """
 
 from __future__ import annotations
@@ -13,7 +12,9 @@ from valisync.core.session import Session
 
 
 def test_wide_uint8_channel_keeps_native_footprint(tmp_path):
-    cols = 1000  # < EXPANSION_COLUMN_LIMIT(1024): 全列が展開対象
+    # 1024 展開ガードは E-3 T8 で退役したので cols は任意 — 1000 のままにするのは
+    # 測定に十分で速いから (幅を増やしても footprint 比は変わらない)。
+    cols = 1000
     path = write_mdf4_wide_2d(tmp_path, cols=cols)
     session = Session()
     key = session.load(path).key

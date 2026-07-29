@@ -43,14 +43,16 @@ def _eager_numeric_columns(path: Path) -> dict[str, tuple[str, ...]]:
     ``_flatten``) へ移すことで、**表から生成した列名 == 実データのリーフ**という
     元の契約をそのまま持ち越す (T0 の全数オラクルと同じ独立性)。
 
-    **独立性の限界 (T7 で記録)**: エントリ列挙 (``virtual_groups`` /
-    ``included_channels``) は production の ``mdf_loader`` と同じ規則を写しており、
-    さらに **LD-14 の per-channel 1024 列ガードを一切モデルしていない**。したがって
-    ``write_mdf4_wide_2d`` (1025 列) をこのオラクルを使うテストの parametrize へ
-    足してはならない — production はガードで展開を止める/確認を求めるのに、
-    オラクルは 1025 列を無条件に数え、**実装が正しくても RED** になる (逆に、
-    ガードの退役をこのオラクルは検出できない)。1024 ガードの end-to-end 検証は
-    専用テスト側で行うこと。
+    **独立性の限界 (T7 で記録・T8 で更新)**: エントリ列挙 (``virtual_groups`` /
+    ``included_channels``) は production の ``mdf_loader`` と同じ規則を写している
+    ので、列挙そのものの誤りはこのオラクルでは検出できない。
+
+    T8 で 1024 ガードを退役させたため、「production はガードで止めるがオラクルは
+    数える」という旧来の食い違いは解消した (旧記述はもう成立しない)。それでも
+    ``write_mdf4_wide_2d`` (1025 列) をこのオラクルを使う parametrize へ足しては
+    ならない: 1025 本ぶんの列名生成と select を全テストで回すだけで、契約の被覆は
+    1 本も増えない。広幅チャンネルの end-to-end (ガードが復活していないこと・
+    LD-08 dedup インデックス) は ``test_expansion_guard_retirement.py`` が持つ。
     """
     out: dict[str, tuple[str, ...]] = {}
     with MDF(str(path), time_from_zero=False) as mdf:
@@ -83,11 +85,7 @@ def _eager_numeric_columns(path: Path) -> dict[str, tuple[str, ...]]:
 
 
 def _loaded(path: Path) -> tuple[SignalGroupManager, str, SignalGroup]:
-    """実 mf4 をロードし、ローダーが出した表ごと manager へ登録する。
-
-    ``confirm_expansion`` は既定 None なので**渡さない** — Task 8 が引数ごと退役させる
-    ときに、このファイルが取りこぼされて ``TypeError`` で落ちるのを構造的に防ぐ。
-    """
+    """実 mf4 をロードし、ローダーが出した表ごと manager へ登録する。"""
     result = MdfLoader().load(path)
     sg = result.signal_group
     assert sg is not None

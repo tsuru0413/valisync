@@ -36,7 +36,6 @@ from .mdf4_helpers import (
     write_mdf4_structured,
     write_mdf4_ttab,
     write_mdf4_value2text,
-    write_mdf4_wide_2d,
 )
 
 
@@ -771,9 +770,10 @@ def test_structured_channel_fields_visible(tmp_path: Path) -> None:
     assert not any(d.level == "error" for d in outcome.diagnostics)
 
 
-def test_leaf_column_count_matches_flatten() -> None:
-    """任意形状で _leaf_column_count は _flatten のリーフ数と一致する (LD-14)."""
-    from valisync.core.loaders.mdf_loader import _flatten, _leaf_column_count
+def test_all_leaf_count_matches_flatten() -> None:
+    """任意形状で _all_leaf_count は _flatten のリーフ数と一致する (LD-14)."""
+    from valisync.core.loaders.column_names import spec_from_probe
+    from valisync.core.loaders.mdf_loader import _all_leaf_count, _flatten
 
     cases = [
         np.zeros(3),  # 1D scalar -> 1
@@ -783,11 +783,11 @@ def test_leaf_column_count_matches_flatten() -> None:
         np.zeros(3, dtype=[("x", "<f8"), ("y", "<f8", (4,))]),  # struct -> 1+4=5
     ]
     for arr in cases:
-        assert _leaf_column_count(arr) == len(_flatten("x", arr))
+        assert _all_leaf_count(spec_from_probe(arr)) == len(_flatten("x", arr))
 
-    assert _leaf_column_count(np.zeros((3, 4))) == 4
-    assert _leaf_column_count(np.zeros((3, 2, 5))) == 10
-    assert _leaf_column_count(np.zeros(3)) == 1
+    assert _all_leaf_count(spec_from_probe(np.zeros((3, 4)))) == 4
+    assert _all_leaf_count(spec_from_probe(np.zeros((3, 2, 5)))) == 10
+    assert _all_leaf_count(spec_from_probe(np.zeros(3))) == 1
 
 
 def test_flatten_subarray_field_one_level() -> None:
@@ -851,71 +851,6 @@ def test_flatten_plain_3d_expands_and_reports_one_info() -> None:
     _expansion_diagnostic("Cube", arr, _all_leaf_count(spec), leaf_count(spec), diags)
     assert len(diags) == 1
     assert diags[0].message == "信号 'Cube': 2x2 配列を 4 本に展開"
-
-
-def test_scan_oversized_flags_wide_channel(tmp_path: Path) -> None:
-    """1 レコードプローブで 1024 超チャンネルのみ検出する (LD-14)."""
-    from asammdf import MDF
-
-    path = write_mdf4_wide_2d(tmp_path, cols=1025)
-    loader = MdfLoader()
-    with MDF(str(path)) as mdf:
-        oversized, keys = loader._scan_oversized(mdf, None)
-    assert [o.name for o in oversized] == ["Wide"]
-    assert oversized[0].column_count == 1025
-    assert len(keys) == 1  # (gi, ci) キーが 1 件
-
-
-def test_oversized_expands_only_when_confirmed(tmp_path: Path) -> None:
-    """confirm_expansion が選んだ超過チャンネルのみ展開される (LD-14)."""
-    from valisync.core.loaders.mdf_loader import ExpansionRequest
-
-    path = write_mdf4_wide_2d(tmp_path, cols=1025)
-    seen: list[ExpansionRequest] = []
-
-    def confirm(req: ExpansionRequest) -> set[int]:
-        seen.append(req)
-        return {0}  # Wide を展開する
-
-    session = Session()
-    key = session.load(path, confirm_expansion=confirm).key
-    names = {s.name.split("::", 1)[1] for s in session.group_signals(key)}
-    assert names == {"Wide", "Clean"}  # E-3: 行は物理チャンネル
-    # 承認された 1025 列 (0..1024) は鋳造で引ける
-    assert session.resolve_signal(f"{key}::Wide[0]") is not None
-    assert session.resolve_signal(f"{key}::Wide[1024]") is not None
-    assert session.total_column_count(key) == 1026
-    assert len(seen) == 1 and seen[0].channels[0].name == "Wide"
-
-
-def test_oversized_skipped_when_declined(tmp_path: Path) -> None:
-    """空集合を返すと超過チャンネルはスキップ・警告診断が出る・他は生存 (LD-14)."""
-    path = write_mdf4_wide_2d(tmp_path, cols=1025)
-    # 反 vacuous 前置: 承認すれば "Wide" は現れる。E-3 で列 Signal が消えたので
-    # 「Wide で始まる名前が無い」だけでは間違った理由の PASS と区別できない。
-    approved = MdfLoader().load(path, confirm_expansion=lambda req: {0})
-    assert "Wide" in {s.name for s in approved.signal_group.signals}
-
-    result = MdfLoader().load(path, confirm_expansion=lambda req: set())
-    names = {s.name for s in result.signal_group.signals}
-    assert "Clean" in names
-    assert not any(n.startswith("Wide") for n in names)
-    warns = [
-        d for d in result.diagnostics if d.level == "warning" and "Wide" in d.message
-    ]
-    assert len(warns) == 1 and "1024" in warns[0].message
-
-
-def test_oversized_skipped_headless_without_callback(tmp_path: Path) -> None:
-    """コールバック不在 (ヘッドレス) は超過を全スキップ+警告 (LD-14 既定)."""
-    path = write_mdf4_wide_2d(tmp_path, cols=1025)
-    approved = MdfLoader().load(path, confirm_expansion=lambda req: {0})
-    assert "Wide" in {s.name for s in approved.signal_group.signals}  # 反 vacuous 前置
-
-    result = MdfLoader().load(path)  # confirm_expansion 無し
-    names = {s.name for s in result.signal_group.signals}
-    assert "Clean" in names and not any(n.startswith("Wide") for n in names)
-    assert any(d.level == "warning" and "Wide" in d.message for d in result.diagnostics)
 
 
 # ─── MdfLoader: native dtype 保持 (FU-20 Task 2) ─────────────────────────────

@@ -15,7 +15,7 @@ pytestmark = pytest.mark.skipif(not DEMO.exists(), reason="demo mf4 not generate
 
 
 def test_load_leaves_all_signals_unmaterialized() -> None:
-    result = MdfLoader().load(DEMO, confirm_expansion=None)
+    result = MdfLoader().load(DEMO)
     sg = result.signal_group
     assert sg is not None
     assert len(sg.signals) > 0
@@ -35,7 +35,7 @@ def test_lazy_values_equal_eager_select_for_sample_signals() -> None:
     アドレス (base 名/gi/ci/selector) は production が信号に持たせた
     ``LazyMdfValues`` から取り、**値の読み方**だけを eager select と突き合わせる。
     """
-    result = MdfLoader().load(DEMO, confirm_expansion=None)
+    result = MdfLoader().load(DEMO)
     sg = result.signal_group
     assert sg is not None
 
@@ -94,7 +94,7 @@ def test_group_master_equals_get_master() -> None:
     共有される同一オブジェクト) を ``get_master(gi)`` と突き合わせる。
     """
     loader = MdfLoader()
-    result = loader.load(DEMO, confirm_expansion=None)
+    result = loader.load(DEMO)
     sg = result.signal_group
     assert sg is not None
 
@@ -149,7 +149,7 @@ def test_unparsable_file_returns_error_diagnostic_without_group(tmp_path: Path) 
     """
     bad = tmp_path / "broken.mf4"
     bad.write_bytes(b"not an mdf file")
-    result = MdfLoader().load(bad, confirm_expansion=None)
+    result = MdfLoader().load(bad)
     assert result.signal_group is None
     assert any(d.level == "error" for d in result.diagnostics)
 
@@ -162,7 +162,7 @@ def test_lazy_selector_column_equals_eager_flatten() -> None:
     (uint8・8 列) をその実カバレッジに使う。
     """
     session = Session()
-    key = session.load(DEMO, confirm_expansion=None).key
+    key = session.load(DEMO).key
     base_name = "Radar.ObjMatrix"
     leaf_name = f"{base_name}[3]"
     col = session.resolve_signal(f"{key}::{leaf_name}")

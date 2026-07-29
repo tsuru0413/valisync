@@ -341,6 +341,38 @@ def write_mdf4_wide_2d(tmp_path: Path, cols: int = 1025) -> Path:
     return path
 
 
+def write_mdf4_duplicate_wide(tmp_path: Path, cols: int = 1025) -> Path:
+    """同名 "W" の 2 チャンネル (先=幅 cols の 2D / 後=スカラー) + Clean — C-f 用.
+
+    1024 ガードが生きている間は先頭の広幅 "W" がヘッドレスで丸ごとスキップされ、
+    生き残るスカラー側が LD-08 の idx 0 を取って ``W[0]`` になる。ガード退役後は
+    両方が載るのでスカラーは ``W[1]`` へ動く — この永続キーの移動 (spec C-f:
+    意図的リネーム・移行パスなし) を固定するための fixture。prod_demo には重複名が
+    無い (scripts/generate_demo_mf4.py の全チャンネル名は一意) ため、実データでは
+    この組み合わせを作れず、合成 fixture が唯一の観測点になる。
+
+    列 j の値は j % 256 (write_mdf4_wide_2d と同じ規則) で列ごとに識別できる。
+    先に append したチャンネルが小さい gi を取ることに依存する — 順序が入れ替わると
+    dedup インデックスが逆になり、テストは (無言の pass ではなく) FAIL する。
+    """
+    ts = np.array([0.0, 0.1, 0.2], dtype=np.float64)
+    mat = np.tile(np.arange(cols, dtype=np.uint8), (3, 1))  # (3, cols)
+    mdf = MDF()
+    try:
+        mdf.append([ASignal(samples=mat, timestamps=ts, name="W")])
+        mdf.append(
+            [ASignal(samples=np.array([7.0, 8.0, 9.0]), timestamps=ts, name="W")]
+        )
+        mdf.append(
+            [ASignal(samples=np.array([1.0, 2.0, 3.0]), timestamps=ts, name="Clean")]
+        )
+        path = tmp_path / "dupwide.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
 def write_mdf4_non_monotonic_2d(tmp_path: Path) -> Path:
     """非単調/重複タイムスタンプの 2D (Nx3) チャンネル + 同時刻軸の通常チャンネル.
 

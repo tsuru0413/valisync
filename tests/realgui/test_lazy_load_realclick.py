@@ -171,10 +171,6 @@ def test_lazy_load_keeps_unplotted_unmaterialized(qtbot: QtBot, tmp_path: Path) 
 
     window = MainWindow(AppViewModel())
     qtbot.addWidget(window)
-    # 配列展開は全スキップ (空集合) — 実ロード経路 (off-thread) から呼ばれるが
-    # override は set() を返す純関数でスレッド安全・ダイアログ非ブロック。
-    window._expansion_confirmer.confirm = lambda request: set()  # type: ignore[assignment]
-
     window.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
     screen = QApplication.primaryScreen().availableGeometry()
     w = min(1200, screen.width() - 120)

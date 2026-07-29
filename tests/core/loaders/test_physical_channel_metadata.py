@@ -41,7 +41,7 @@ def test_scalar_channel_carries_its_own_name(tmp_path: Path) -> None:
             }
         ],
     )
-    sg = MdfLoader().load(path, confirm_expansion=None).signal_group
+    sg = MdfLoader().load(path).signal_group
     assert sg is not None
     sig = next(s for s in sg.signals if s.name == "Spd")
     assert sig.metadata["physical_channel"] == "Spd"
@@ -67,6 +67,6 @@ def test_duplicate_raw_names_are_two_distinct_physical_channels(tmp_path: Path) 
             },
         ],
     )
-    sg = MdfLoader().load(path, confirm_expansion=None).signal_group
+    sg = MdfLoader().load(path).signal_group
     assert sg is not None
     assert {s.metadata["physical_channel"] for s in sg.signals} == {"sig[0]", "sig[1]"}

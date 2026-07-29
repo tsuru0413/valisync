@@ -43,7 +43,7 @@ def _load_one(tmp_path: Path) -> tuple[Session, str, Path]:
         ],
     )
     session = Session()
-    outcome = session.load(path, confirm_expansion=None)
+    outcome = session.load(path)
     return session, outcome.key, path
 
 
@@ -194,7 +194,7 @@ def test_registration_failure_closes_the_handle(tmp_path: Path, monkeypatch) -> 
 
     monkeypatch.setattr(session._groups, "add", _boom)
     with pytest.raises(ValueError):
-        session.load(path, confirm_expansion=None)
+        session.load(path)
 
     handle = captured[0].handle
     assert handle is not None and handle.is_closed is True
@@ -224,7 +224,7 @@ def test_registration_failure_does_not_leave_the_file_locked(
 
     monkeypatch.setattr(session._groups, "add", _boom)
     with pytest.raises(ValueError):
-        session.load(path, confirm_expansion=None)
+        session.load(path)
 
     victim = tmp_path / "moved2.mf4"
     os.replace(path, victim)  # 例外が出なければリークしていない

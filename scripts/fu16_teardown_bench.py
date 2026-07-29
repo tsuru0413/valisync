@@ -1,8 +1,13 @@
 """FU-16 teardown perf bench: prod スケールで close の同期時間と drain 中の UI 応答を実測.
 
-実アプリ経路 (MainWindow._load_file オフスレッド + ExpansionConfirmer 全展開 -> 330,004ch)
-で実 close を回し、(1) 同期 close 時間 (2) drain 中 heartbeat 最大 gap を測る。
-内部 API・小データ・confirmer 未 patch は 6 秒を隠すため厳禁 (len(signals) を検証)。
+実アプリ経路 (MainWindow._load_file オフスレッド -> 330,004ch) で実 close を回し、
+(1) 同期 close 時間 (2) drain 中 heartbeat 最大 gap を測る。
+内部 API・小データは 6 秒を隠すため厳禁 (len(signals) を検証)。
+
+E-3 T8: 1024 展開ガードと展開確認モーダルは退役した。到達チャンネル数を稼ぐために
+展開確認を「全展開」へ差し替えていた行はもう無い (差し替え対象が存在しない)。
+下の数値 (EXPECTED_CHANNELS・honest-RED 期待値) は列展開時代のもので、反転後の
+再実測と再ベースラインは T9 (計測器改修) の担当 — 本タスクでは触っていない。
 
 honest-RED (現行同期 remove_group・TeardownService 未配線):
     reached_channels=330004 / sync_close_ms ~ 7000 / drain_* ~ 0
@@ -91,12 +96,6 @@ def main() -> None:
     window = build_main_window(app_vm)
     window.resize(1200, 800)
     window.show()
-
-    # ExpansionConfirmer を全展開に差し替え (330k 到達に必須・小データ false-green 防止)。
-    def _expand_all(request):
-        return set(range(len(request.channels)))
-
-    window._expansion_confirmer.confirm = _expand_all  # type: ignore[method-assign]
 
     # 実ロード経路 (オフスレッド LoadController 経由) でロード完了まで pump。
     print(f"loading {PROD} ... ws={_working_set_mb():.0f}MB", flush=True)

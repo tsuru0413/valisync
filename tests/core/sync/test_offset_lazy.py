@@ -57,7 +57,7 @@ def test_apply_offset_zero_shares_identity_without_reading() -> None:
 
 @demo_only
 def test_apply_offset_shares_lazy_source_no_materialize() -> None:
-    sg = MdfLoader().load(DEMO, confirm_expansion=None).signal_group
+    sg = MdfLoader().load(DEMO).signal_group
     assert sg is not None
     base = sg.signals[0]
     shifted = TimeSynchronizer().apply_offset(base, file_offset=1.5)
@@ -68,7 +68,7 @@ def test_apply_offset_shares_lazy_source_no_materialize() -> None:
 
 @demo_only
 def test_apply_offset_zero_returns_same_signal() -> None:
-    sg = MdfLoader().load(DEMO, confirm_expansion=None).signal_group
+    sg = MdfLoader().load(DEMO).signal_group
     assert sg is not None
     base = sg.signals[0]
     assert TimeSynchronizer().apply_offset(base, 0.0, 0.0) is base

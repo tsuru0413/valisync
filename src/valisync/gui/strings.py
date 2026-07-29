@@ -119,12 +119,6 @@ EXPORT_SELECTION_COUNT_TMPL: Final = "{n} 信号を選択中"
 EXPORT_COLUMN_PLACEHOLDER: Final = "…"
 EXPORT_UNRESOLVED_ERROR_TMPL: Final = "選択した列を読み出せません（{n} 件・例: {name}）"
 
-# ── ダイアログ: 展開確認 (expansion_dialog・R-02 半角括弧) ────────────────────
-EXPANSION_OVER_LIMIT_TMPL: Final = (
-    "以下の信号は展開すると列数が上限 ({limit}) を超えます。\n"
-    "展開するものを選択してください（未選択はスキップ）。"
-)
-
 # ── ダイアログ: 信号プレビュー (signal_preview_window・R-05 em ダッシュ) ─────
 PREVIEW_UNAVAILABLE: Final = "この信号はプレビューできません"
 PREVIEW_TITLE_TMPL: Final = "信号プレビュー — {key}"

@@ -84,7 +84,6 @@ from valisync.gui.views.recent_files import RecentFiles
 from valisync.gui.views.shell_actions import ShellActions
 from valisync.gui.views.signal_preview_window import SignalPreviewWindow
 from valisync.gui.views.welcome_view import WelcomeView
-from valisync.gui.workers.expansion_confirmer import ExpansionConfirmer
 from valisync.gui.workers.export_worker import ExportController
 from valisync.gui.workers.load_worker import LoadController
 from valisync.gui.workers.teardown_service import TeardownService
@@ -204,8 +203,6 @@ class MainWindow(QMainWindow):
         self.app_vm.set_busy_predicate(self._export_controller.is_busy)
         # 拒否モーダルは DI (テストから差し替え可能 — _default_confirm と同規約)。
         self._notify_blocked: Callable[[str], None] = self._default_blocked_modal
-        # GUI スレッド所属 — ワーカーからの展開確認をモーダルへ marshal (LD-14)。
-        self._expansion_confirmer = ExpansionConfirmer(self)
         # LD-01: CSV フォーマット解決 (検出して確認ダイアログ)。テストで差し替え可能。
         self._csv_format_resolver: Callable[[Path], FormatDefinition | None] = (
             self._default_csv_format_resolver
@@ -659,7 +656,6 @@ class MainWindow(QMainWindow):
                 target,
                 fmt,
                 cancel=cancel_event.is_set,
-                confirm_expansion=self._expansion_confirmer.confirm,
             ),
             busy=self.busy_overlay,
             cancel_event=cancel_event,

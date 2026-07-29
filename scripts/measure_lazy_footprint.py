@@ -13,8 +13,10 @@ build + real ``_load_file`` reaches the true working set (memory
 ``gui_perf_e2e_repro_must_drive_real_load_path``).
 
 - QT_QPA_PLATFORM defaults to "windows" — a real window is shown on screen.
-- Array expansion is skipped (the user's "arrays skipped" condition; keeps the
-  dialog non-blocking) so nothing plotted stays lazy.
+- E-3 T8: the 1024 expansion guard and its confirmation modal are retired, so
+  there is no longer an "arrays skipped" knob to set here. Columns are no longer
+  Signals at all; they are minted on demand. Re-baselining the numbers below is
+  T9's job (measurement rework), not this task's.
 - QSettings is isolated to a Measure org (never touches the real registry).
 - The 2-file number loads prod_demo a second time into the SAME window (a
   compare-mode journey: keys mf4_1, mf4_2), so its steady RSS is the true
@@ -584,9 +586,6 @@ def main() -> None:
     win.show()
     app.processEvents()
     after_win = rss_mb()
-
-    # Skip every oversized array expansion (empty set = skip all).
-    win._expansion_confirmer.confirm = lambda request: set()  # type: ignore[assignment]
 
     disk_mb = TARGET.stat().st_size / MB
     print(

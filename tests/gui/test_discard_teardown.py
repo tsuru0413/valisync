@@ -84,7 +84,7 @@ def _loaded(tmp_path: Path) -> tuple[AppViewModel, str, MdfHandle]:
         ],
     )
     session = Session()
-    key = session.load(path, confirm_expansion=None).key
+    key = session.load(path).key
     app_vm = AppViewModel(session=session)
     app_vm.register_loaded(key)
     handle = session._groups.group(key).handle

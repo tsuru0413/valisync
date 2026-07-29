@@ -690,17 +690,18 @@ def test_load_file_wires_cancel_event_and_adapter(qtbot, monkeypatch, tmp_path):
     # (欠けるとハードキャンセルが無音で無効化される - 本タスクの肝の配線ガード)
     seen = {}
 
-    def fake_load(path, fmt, cancel=None, confirm_expansion=None):
+    def fake_load(path, fmt, cancel=None):
         seen["cancel"] = cancel
-        seen["confirm"] = confirm_expansion
         raise RuntimeError("stop before real load")
 
     monkeypatch.setattr(window.app_vm.session, "load", fake_load)
     with contextlib.suppress(RuntimeError):
         captured["load_callable"]()
     assert seen["cancel"] == event.is_set  # 同一 Event の bound method
-    # confirm_expansion に confirmer.confirm を渡すこと (LD-14 の展開確認配線ガード)
-    assert seen["confirm"] == window._expansion_confirmer.confirm
+    # 1024 ガード退役 (E-3): 展開確認モーダルは存在しない。fake_load が
+    # confirm_expansion を受け取らないこと自体が「production が渡していない」の
+    # 証明 (渡していれば TypeError で RED)。confirmer が残っていないことも見る。
+    assert not hasattr(window, "_expansion_confirmer")
 
     # on_discard 本体(手遅れ完走の巻き戻し)が正しい key/force で remove_group
     # を呼ぶこと — 「callable であること」だけでは中身の配線ミスを拾えない
@@ -743,7 +744,7 @@ def test_load_file_csv_uses_resolver_format(qtbot, monkeypatch, tmp_path):
 
     seen: dict = {}
 
-    def fake_load(path, f, cancel=None, confirm_expansion=None):
+    def fake_load(path, f, cancel=None):
         seen["fmt"] = f
         raise RuntimeError("stop")
 

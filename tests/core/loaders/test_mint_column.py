@@ -35,11 +35,7 @@ _Loaded = tuple[SignalGroup, Mapping[str, ColumnRecord]]
 
 
 def _load(path: Path) -> _Loaded:
-    """実 mf4 をロードし (group, 列表) を返す。
-
-    ``confirm_expansion`` は既定 None なので**渡さない** — Task 8 が引数ごと退役
-    させるときに、このファイルが取りこぼされて ``TypeError`` で落ちるのを防ぐ。
-    """
+    """実 mf4 をロードし (group, 列表) を返す。"""
     result = MdfLoader().load(path)
     sg = result.signal_group
     assert sg is not None

@@ -69,7 +69,7 @@ def test_load_does_not_retain_raw_record_blocks() -> None:
     gc.collect()
     before = proc.memory_info().rss / mb
 
-    result = MdfLoader().load(PROD_DEMO, confirm_expansion=None)
+    result = MdfLoader().load(PROD_DEMO)
     signal_group = result.signal_group
     assert signal_group is not None
     assert len(signal_group.signals) > 0

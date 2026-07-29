@@ -52,8 +52,7 @@ def _add_real(mgr: SignalGroupManager, tmp_path: Path) -> str:
 
     ``column_records`` を渡すのが要点: 表は manager 側にあり、渡さないと
     ``_mint_column`` の先頭で表が空になって**正しい実装でも常に None** を返す
-    (寿命テストが「鋳造できないから空」で通ってしまう)。``confirm_expansion`` は
-    既定 None なので渡さない (Task 8 の引数退役で取りこぼさないため)。
+    (寿命テストが「鋳造できないから空」で通ってしまう)。
     """
     result = MdfLoader().load(write_mdf4_2d(tmp_path))
     sg = result.signal_group

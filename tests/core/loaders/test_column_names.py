@@ -9,7 +9,7 @@ from valisync.core.loaders.column_names import (
     parse_leaf,
     spec_from_probe,
 )
-from valisync.core.loaders.mdf_loader import _flatten, _leaf_column_count
+from valisync.core.loaders.mdf_loader import _all_leaf_count, _flatten
 
 
 def test_scalar_channel_has_single_leaf() -> None:
@@ -156,9 +156,9 @@ def test_parse_leaf_rejects_non_numeric_leaf() -> None:
     assert parse_leaf("C.txt", specs) is None  # 非数値は列キー空間に無い
 
 
-def test_leaf_column_count_counts_all_leaves_including_non_numeric() -> None:
-    # _leaf_column_count は LD-14 の 1024 ガード用で dtype 盲目 (全リーフを数える)。
+def test_all_leaf_count_counts_all_leaves_including_non_numeric() -> None:
+    # _all_leaf_count は「N 本に展開」info 診断の母数で dtype 盲目 (全リーフを数える)。
     # leaf_count (数値のみ) とは意図的に別物である。
     arr = np.zeros(1, dtype=[("ok", "<f8"), ("txt", "S4")])
-    assert _leaf_column_count(arr) == 2
+    assert _all_leaf_count(spec_from_probe(arr)) == 2
     assert leaf_count(spec_from_probe(arr)) == 1

@@ -432,8 +432,6 @@ def test_quick_demo_top_rows_are_physical_channels(
         pytest.xfail(f"補助オラクル用の mf4 が無い (skip ではなく xfail): {_QUICK_MF4}")
 
     window = _build_window(qtbot)
-    # 配列展開の確認モーダルはワーカーからの呼び出し — 全スキップで非ブロック化。
-    window._expansion_confirmer.confirm = lambda request: set()  # type: ignore[assignment]
     window._load_file(_QUICK_MF4)
     qtbot.waitUntil(
         lambda: bool(window.app_vm.loaded_file_keys), timeout=_LOAD_TIMEOUT_MS
