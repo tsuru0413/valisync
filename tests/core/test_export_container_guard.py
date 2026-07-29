@@ -49,6 +49,41 @@ def _scalar_signal(name: str = "Plain") -> Signal:
     )
 
 
+def _struct_signal(name: str = "Pt") -> Signal:
+    """構造化の親: **ndim == 1 のまま** 1 時刻に複数値を持つ (複合は dtype 側)。
+
+    配列の親 (_2d_signal) と違い shape は (n,) なので、ndim だけを見るガードは
+    素通しし、`float(np.void)` の生 TypeError に到達する。
+    """
+    ts = np.arange(4.0, dtype=np.float64)
+    values = np.zeros(4, dtype=[("x", "<f8"), ("y", "<f8")])
+    values["x"] = [1.0, 2.0, 3.0, 4.0]
+    values["y"] = [5.0, 6.0, 7.0, 8.0]
+    assert values.ndim == 1, "前提: 構造化は ndim==1 (この腕の存在理由)"
+    return Signal(
+        name=name,
+        timestamps=ts,
+        values=values,
+        file_format="Derived",
+        bus_type="",
+        source_file="",
+        metadata={},
+    )
+
+
+def test_exporter_rejects_structured_parent(tmp_path: Path) -> None:
+    """レビュー I1: 構造化の親は ndim==1 なので ndim だけのガードを素通りしていた。"""
+    with pytest.raises(ValueError, match="配列チャンネル"):
+        CsvExporter().export([_struct_signal()], tmp_path / "out.csv")
+
+
+def test_exporter_rejects_structured_parent_unified_timeline(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="配列チャンネル"):
+        CsvExporter().export(
+            [_struct_signal()], tmp_path / "out.csv", use_unified_timeline=True
+        )
+
+
 def test_exporter_rejects_multi_column_values_shared_timeline(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="配列チャンネル"):
         CsvExporter().export([_2d_signal()], tmp_path / "out.csv")
@@ -63,7 +98,9 @@ def test_exporter_rejects_multi_column_values_unified_timeline(tmp_path: Path) -
 
 def test_exporter_writes_nothing_when_rejected(tmp_path: Path) -> None:
     out = tmp_path / "out.csv"
-    with pytest.raises(ValueError):
+    # match 無しの裸 raises が「別の ValueError で偶然緑」を生んだ (fixture の時間軸を
+    # 揃える前は修正なしでも pass した)。時間軸を揃えたうえで文言も縛り、クラスごと潰す。
+    with pytest.raises(ValueError, match="配列チャンネル"):
         CsvExporter().export([_2d_signal(), _scalar_signal()], out)
     assert not out.exists()
 

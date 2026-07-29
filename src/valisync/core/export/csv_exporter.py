@@ -120,7 +120,16 @@ class CsvExporter:
         無いから — 拒否される側だけが一度の読みを払う。
         """
         for sig in signals:
-            if sig.sorted_view()[1].ndim != 1:
+            # 判定は `sorted_view()` ではなく `values` で行う。**構造化の親では
+            # sorted_view 自身が先に落ちる** — `astype(np.float64)` が複合 dtype を
+            # キャストできず `TypeError: Cannot cast array data from
+            # dtype([('x','<f8'),('y','<f8')])` になり、この層が置き換えるはずの
+            # 生 numpy エラーがそのまま出てしまう。
+            values = sig.values
+            # **構造化の親は ndim == 1** — 複合は shape でなく dtype 側にある
+            # (`[('x','f8'),('y','f8')]` の shape は (n,))。ndim だけを見ると
+            # 配列の親しか捕まらない。
+            if values.ndim != 1 or values.dtype.names is not None:
                 raise ValueError(
                     EXPORT_MULTI_COLUMN_VALUES_ERROR_TMPL.format(name=sig.name)
                 )
