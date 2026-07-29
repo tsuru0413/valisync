@@ -9,7 +9,25 @@ if TYPE_CHECKING:
 
 
 class SampleReadError(Exception):
-    """遅延サンプル読み取りが I/O 等で失敗したことを表す (アプリは落とさず degrade)."""
+    """遅延サンプル読み取りが I/O 等で失敗したことを表す (アプリは落とさず degrade).
+
+    ``signal_key`` / ``source_file`` は診断の宛先を決めるための任意コンテキスト。
+    app レベルの excepthook は render 境界 (``GraphPanelVM._report_read_error``) と
+    同じ規約 — signal_key で「1 信号 1 診断」に dedup し、source_file の basename を
+    診断ラベルにする — を再現する必要があるが、フックには例外オブジェクトしか
+    届かない (Signal も signal_key も無い) ため、投げ手がここへ載せる。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        signal_key: str | None = None,
+        source_file: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.signal_key = signal_key
+        self.source_file = source_file
 
 
 @runtime_checkable
@@ -122,17 +140,35 @@ class LazyMdfValues:
         """キャッシュ済みの値配列 (未展開なら None — 読みで展開を誘発しない)."""
         return self._cache
 
+    def _closed_error(self) -> SampleReadError:
+        """閉鎖後アクセスのエラー (診断の dedup キー/ラベル付き).
+
+        signal_key は展開列でも**物理チャンネル名** (self._name) にする: LD-14 の
+        兄弟リーフは 1 本の select を共有するので、1 本壊れたときは同じ 1 件の
+        障害であり、リーフごとに診断を出すのは同じ事実の水増しになる。
+        """
+        return SampleReadError(
+            f"信号 '{self._name}' のファイルは既に閉じられています",
+            signal_key=self._name,
+            source_file=self._handle.source_path,
+        )
+
     def array(self) -> np.ndarray:
+        cached = self._cache
+        if cached is not None:
+            return cached  # ヒットは lock 不要 (代入は 1 回だけ・GIL 下で atomic)
+        if self._handle.is_closed:
+            # 先行 bail: close() の GUI 最悪待ちを「残り全列のループ」から
+            # 「in-flight select 1 本」に縮める (belt-and-braces)。
+            raise self._closed_error()
         # 遅延 import: sample_source(model) -> loaders の循環を避ける
         from valisync.core.loaders.mdf_loader import _flatten
 
         with self._handle.lock:
-            if self._cache is not None:
+            if self._cache is not None:  # ← 削除禁止 (double-checked の "second check")
                 return self._cache
-            if self._handle.is_closed:
-                raise SampleReadError(
-                    f"信号 '{self._name}' のファイルは既に閉じられています"
-                )
+            if self._handle.is_closed:  # ← lock 内判定も **維持** (外へ出すと TOCTOU)
+                raise self._closed_error()
             try:
                 asig = self._handle.mdf.select(
                     [(self._name, self._gi, self._ci)],
@@ -151,7 +187,9 @@ class LazyMdfValues:
                 raise
             except Exception as exc:  # I/O・破損・閉鎖後アクセス等
                 raise SampleReadError(
-                    f"信号 '{self._name}' のサンプル読み取りに失敗しました: {exc}"
+                    f"信号 '{self._name}' のサンプル読み取りに失敗しました: {exc}",
+                    signal_key=self._name,
+                    source_file=self._handle.source_path,
                 ) from exc
             col = _freeze(col)
             self._cache = col

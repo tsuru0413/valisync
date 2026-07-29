@@ -562,6 +562,11 @@ class MainWindow(QMainWindow):
             prev_hook(exc_type, exc_value, exc_tb)
 
         sys.excepthook = _hook
+        # 既に報告済みの (source_file, signal_key)。auto-fit / cursor-step は同じ
+        # 壊れた信号を何度でも踏むので、dedup しないと Diagnostics ドックが溢れる
+        # (render 境界の _read_error_reported と同型・「1 信号 1 診断」契約)。
+        # ロード完了 (_on_loaded) でのみクリアする。
+        self._read_error_reported: set[tuple[str, str]] = set()
         # None を代入して uninstall するため Optional で宣言する。
         self._sample_read_error_hook: (
             Callable[[type[BaseException], BaseException, TracebackType | None], None]
@@ -587,11 +592,24 @@ class MainWindow(QMainWindow):
         ダイアログは出さない (spec §Task 7 — excepthook 内モーダルの再入回避)。例外
         自身のメッセージ (LazyMdfValues 由来は信号名を含む) をそのまま使う。診断記録・
         ステータス更新のどちらかが失敗しても excepthook 内で二次例外を投げない。
+
+        宛先の決め方は render 境界 (``GraphPanelVM._report_read_error``) と同規約:
+        信号ごとに 1 件へ dedup し、ラベルは実ファイルの basename。コンテキストを
+        持たない例外 (テスト double・将来の別ソース) はメッセージを識別子に代用し、
+        ラベルは従来どおり汎用文字列にフォールバックする。
         """
         msg = str(exc) or S.SAMPLE_READ_ERROR_TMPL.format(name="")
+        signal_key = getattr(exc, "signal_key", None)
+        source_file = getattr(exc, "source_file", None)
+        mark = (source_file or "", signal_key or msg)
+        if mark in self._read_error_reported:
+            return
+        self._read_error_reported.add(mark)
+        source = Path(source_file).name if source_file else S.SAMPLE_READ_ERROR_SOURCE
         try:
             self.diagnostics_vm.add(
-                S.SAMPLE_READ_ERROR_SOURCE, [Diagnostic(level="error", message=msg)]
+                source,
+                [Diagnostic(level="error", message=msg, signal_name=signal_key)],
             )
             self.set_status_message(S.STATUS_SAMPLE_READ_ERROR_TMPL.format(msg=msg))
         except Exception:
@@ -649,6 +667,9 @@ class MainWindow(QMainWindow):
 
     def _on_loaded(self, outcome: LoadOutcome, source_path: Path | None = None) -> None:
         # GUI thread; register, surface diagnostics, activate, update status.
+        # ロード完了はデータが変わりうる機会 — 壊れていた信号が直っているかも
+        # しれないので報告済みマークを解いて再評価させる (GraphPanelVM.refresh と同型)。
+        self._read_error_reported.clear()
         self.app_vm.register_loaded(outcome.key)
         source = self.app_vm.session.source_name(outcome.key)
         self.diagnostics_vm.add(source, outcome.diagnostics)

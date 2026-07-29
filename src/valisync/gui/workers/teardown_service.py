@@ -116,8 +116,15 @@ class TeardownService(QObject):
         # する (実測 100% 再利用・memory gui_id_reuse_flake_object_recreation) —
         # ティックを跨ぐと後続グループが 0 バイト計上になりバイト軸が黙って死ぬ。
         # ティック内は安全: 会計対象の配列は全て live な Signal が保持しており、
-        # _drain 内で ndarray を新規確保する経路も無い。共有 master がティックごと
-        # 1 回計上される過大分は prod_demo で 64MiB 予算の 0.3% (direction-safe)。
+        # _drain 内に「このティックが計上する」ndarray を新規確保する経路も無い。
+        # ただし無条件ではない — グループ完了時に呼ぶ self._on_finished は**注入
+        # コールバック**で確保を禁じられないため、契約は「on_finished は再入で
+        # enqueue しないこと」(再入すると新しい信号が同じティックの会計へ入る)。
+        # コールバック内の無関係な確保が解放済み id を再利用した場合は後続 1 本の
+        # 計上が漏れうるが、向きはティックが長引く側 (予算に達しにくい) であって
+        # 解放漏れにはならない。
+        # 共有 master がティックごと 1 回計上される過大分は prod_demo で
+        # 64MiB 予算の 0.3% (direction-safe)。
         seen: set[int] = set()
         freed_bytes = 0
         freed_signals = 0

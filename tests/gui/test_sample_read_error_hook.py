@@ -22,6 +22,7 @@ from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from valisync.core.models import Signal, SignalGroup
 from valisync.core.models.sample_source import SampleReadError
+from valisync.core.session import LoadOutcome
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 
 
@@ -73,6 +74,35 @@ def _register_bad_signal(session, name: str = "bad") -> str:  # type: ignore[no-
     return session.group_signals(key)[0].name
 
 
+def _register_group(session, name: str = "grp") -> str:  # type: ignore[no-untyped-def]
+    """Session に最小グループを 1 つ足し、その**グループキー**を返す。"""
+    sig = Signal(
+        name=name,
+        timestamps=np.array([0.0, 1.0], dtype=np.float64),
+        values=np.array([1.0, 2.0], dtype=np.float64),
+        file_format="MDF4",
+        bus_type="",
+        source_file="/net/x.mf4",
+    )
+    return session._groups.add(
+        SignalGroup(
+            signals=(sig,),
+            source_path=Path.cwd() / f"{name}.mf4",
+            file_format="MDF4",
+            loaded_at=datetime.now(),
+        )
+    )
+
+
+def _read_error(name: str, source_file: str) -> SampleReadError:
+    """LazyMdfValues が実際に投げる形 (信号・ファイルのコンテキスト付き)。"""
+    return SampleReadError(
+        f"信号「{name}」のサンプル読み取りに失敗しました: I/O",
+        signal_key=name,
+        source_file=source_file,
+    )
+
+
 def test_hook_installed_at_construction(qtbot: QtBot) -> None:
     """MainWindow 構築で sys.excepthook が自身のフックへ差し替わる。"""
     window = _make_window(qtbot)
@@ -91,6 +121,66 @@ def test_hook_records_diagnostic_and_status(qtbot: QtBot) -> None:
     entry = window.diagnostics_vm.entries("error")[-1]
     assert "spd" in entry.message
     assert "サンプル読み取り" in window.status_message()
+
+
+def test_hook_dedupes_repeated_errors_for_one_signal(qtbot: QtBot) -> None:
+    """同じ信号の SampleReadError を何度受けても診断は 1 件 (auto-fit ごとの flood 防止)。
+
+    render 境界 (`GraphPanelVM._report_read_error`) は既に「1 信号 1 診断」だが、
+    その外 (auto-fit / cursor-step / formula) から抜けたぶんは app フックが受ける。
+    """
+    window = _make_window(qtbot)
+    before = window.diagnostics_vm.counts()[0]
+
+    for _ in range(3):
+        sys.excepthook(SampleReadError, _read_error("spd", "/net/logs/a.mf4"), None)
+
+    assert window.diagnostics_vm.counts()[0] == before + 1
+
+    # 対照: dedup は「1 信号 1 診断」であって「1 回だけ」ではない
+    sys.excepthook(SampleReadError, _read_error("rpm", "/net/logs/a.mf4"), None)
+    assert window.diagnostics_vm.counts()[0] == before + 2
+
+
+def test_hook_labels_diagnostic_with_real_file_basename(qtbot: QtBot) -> None:
+    """診断の source は固定文字列でなく実ファイル basename (render 境界と同じ規約)。"""
+    window = _make_window(qtbot)
+
+    sys.excepthook(SampleReadError, _read_error("spd", "/net/logs/drive_01.mf4"), None)
+
+    entry = window.diagnostics_vm.entries("error")[-1]
+    assert entry.source == "drive_01.mf4"
+    assert entry.signal_name == "spd"
+
+
+def test_hook_falls_back_to_generic_label_without_context(qtbot: QtBot) -> None:
+    """コンテキストを持たない SampleReadError は従来どおり汎用ラベルで記録される。"""
+    window = _make_window(qtbot)
+
+    sys.excepthook(SampleReadError, SampleReadError("読めません"), None)
+
+    entry = window.diagnostics_vm.entries("error")[-1]
+    assert entry.source == "サンプル読み取り"
+    assert entry.message == "読めません"
+
+
+def test_hook_dedup_marks_clear_on_load(qtbot: QtBot) -> None:
+    """ロード完了はデータが変わりうる機会なので報告済みマークを解く。
+
+    `GraphPanelVM.refresh()` が `_read_error_reported` をクリアするのと同じ理由 —
+    直さなければ「一度壊れた信号は以後プロセス寿命いっぱい沈黙」になる。
+    """
+    window = _make_window(qtbot)
+    sys.excepthook(SampleReadError, _read_error("spd", "/net/logs/a.mf4"), None)
+    assert window.diagnostics_vm.counts()[0] == 1
+
+    key = _register_group(window.app_vm.session)
+    window._on_loaded(LoadOutcome(key=key))
+
+    sys.excepthook(SampleReadError, _read_error("spd", "/net/logs/a.mf4"), None)
+    assert window.diagnostics_vm.counts()[0] == 2, (
+        "ロード後は再評価され、再び 1 回だけ報告されるべき"
+    )
 
 
 def test_hook_delegates_non_sample_read_error(qtbot: QtBot) -> None:

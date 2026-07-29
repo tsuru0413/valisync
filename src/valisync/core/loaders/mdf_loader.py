@@ -308,10 +308,12 @@ class MdfLoader:
         # 遅延読みのため MDF を開いたまま MdfHandle で保持する。成功経路では
         # SignalGroup がハンドルを所有し unload まで close しない。エラー/キャンセル
         # 経路でのみ明示的に close して決定的にハンドル/ロックを解放する (M3)。
-        handle = MdfHandle(mdf)
+        resolved_path = file_path.resolve()
+        # source_path は Signal.source_file と同一の文字列にする — 遅延読みが失敗
+        # したとき、診断ラベルが render 境界 (Signal 経由) と食い違わないため。
+        handle = MdfHandle(mdf, str(resolved_path))
         signals: list[Signal] = []
         diagnostics: list[Diagnostic] = []
-        resolved_path = file_path.resolve()
         # mdf.close() 後は版が読めない恐れがあるため、ここで確定させる (LD-02)。
         format_label = self._format_label(mdf)
         try:

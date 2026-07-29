@@ -36,6 +36,17 @@ def test_eager_values_nbytes_if_materialized() -> None:
     assert EagerValues(arr).nbytes_if_materialized == arr.nbytes
 
 
+def test_eager_values_array_if_materialized_is_the_same_object() -> None:
+    """teardown 会計の id-dedup はこの API の**同一性**に乗っている。
+
+    `==` では証明にならない (コピーを返す実装でも通ってしまい、共有 master が
+    信号ごとに計上されてバイト軸が壊れる)。実装本体を直接 pin する — 従来は
+    テスト double 経由でしか触られていなかった。
+    """
+    src = EagerValues(np.zeros(10, dtype=np.float64))
+    assert src.array_if_materialized() is src.array()
+
+
 def test_sample_read_error_is_exception() -> None:
     assert issubclass(SampleReadError, Exception)
 
