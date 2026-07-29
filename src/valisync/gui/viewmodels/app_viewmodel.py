@@ -58,7 +58,7 @@ class AppViewModel(Observable):
         # deltas applied to the ORIGINAL session signal at render time.
         self._signal_offsets: dict[str, float] = {}
         self._file_offsets: dict[str, float] = {}
-        self._teardown: object | None = None  # duck-typed: enqueue(key, group)
+        self._teardown: object | None = None  # duck-typed: enqueue(key, group, columns)
         self._releasing: dict[str, str] = {}  # key -> display name (capture at unload)
         # 増分B: 「重い処理が実行中か」の duck-typed 述語 (GUI が ExportController を
         # 注入する)。VM は Qt も ExportController も知らないままガードできる。
@@ -166,7 +166,11 @@ class AppViewModel(Observable):
         self._notify("reference")
 
     def set_teardown(self, service: object) -> None:
-        """Inject the GUI-thread teardown service (duck-typed ``enqueue(key, group)``)."""
+        """Inject the GUI-thread teardown service.
+
+        duck-typed ``enqueue(key, group, columns=())`` — ``columns`` は鋳造列
+        (``RemovalResult.removed_columns``) で、グループ信号と同じペーシングに乗せる。
+        """
         self._teardown = service
 
     def set_busy_predicate(self, predicate: Callable[[], bool] | None) -> None:
@@ -263,17 +267,16 @@ class AppViewModel(Observable):
         self._notify("unloaded")
         if result.removed_group is not None and self._teardown is not None:
             self._releasing[key] = name
-            if result.removed_columns:
-                # E-3: 鋳造列は enqueue(key, group)=group.signals を通らないため
-                # GUI スレッドで同期解放される (プロット済み列は実体化済みでバイトが
-                # 重い)。配線は E-3 の完了定義だが、鋳造が生きた瞬間に無音で
-                # ペーシングを迂回しないよう loud-fail する。MainWindow._discard の
-                # remove_group(force=True) も同じ配線が要る (E-3 の 2 サイト目)。
-                raise AssertionError(
-                    "E-3: 鋳造列は TeardownService へ渡すこと "
-                    "(未配線のまま鋳造を有効化するとペーシングを迂回する)"
-                )
-            self._teardown.enqueue(key, result.removed_group)  # type: ignore[attr-defined]
+            # 鋳造列 (E-1) は SignalGroup.signals の外に居るので、渡さないと result の
+            # スコープアウトで GUI スレッドの同期解放になる (プロット済み列は実体化済み
+            # = バイトが重い → FU-16 のフリーズが戻る)。columns は**常に**渡す: 空の
+            # ときだけ省く形にすると、鋳造が生きるまでこの実引数が一度も評価されず、
+            # テストダブルの署名ドリフトが無音で残る。MainWindow._discard の
+            # remove_group(force=True) も同じ配線を持つ (AppViewModel を経由しない
+            # 2 サイト目)。
+            self._teardown.enqueue(  # type: ignore[attr-defined]
+                key, result.removed_group, columns=result.removed_columns
+            )
             self._notify("releasing")
         # else: removed_group falls out of scope here -> immediate sync free.
 

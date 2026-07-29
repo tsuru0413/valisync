@@ -99,6 +99,67 @@ def test_empty_group_finishes_immediately(qtbot) -> None:
     assert svc.pending_bytes() == 0
 
 
+def test_minted_columns_drain_in_the_same_entry_and_finish_once(qtbot) -> None:
+    """E-3: 鋳造列 (SignalGroup.signals の外) も同じペーシングで解放され、
+    on_finished は 1 回だけ発火する。
+
+    同一 key を 2 エントリに分けると 1 本目の完了で on_finished が撃たれ、その宛先の
+    AppViewModel.mark_released は初回 pop で確定する (app_viewmodel.py:212-215) ので、
+    列がまだ残っているのに releasing 行が消える。だから列は同じエントリへ連結する。
+    """
+    done: list[str] = []
+    svc = TeardownService(on_finished=done.append, byte_budget=1 * 1024 * 1024)
+    col = _sig("mf4_1::W[1]", 500_000)
+    ref = weakref.ref(col.values)
+    grp = _group((_sig("s", 500_000),))
+
+    svc.enqueue("g", grp, columns=(col,))
+
+    assert svc.pending_signals() == 2  # グループ 1 本 + 列 1 本
+    assert done == []  # まだ 1 本も解放していない
+    del grp, col
+    _drain_all(svc, qtbot)
+    gc.collect()
+    assert done == ["g"]  # エントリが 1 つ = 発火も 1 回
+    assert ref() is None  # 列の配列が実際に解放された (会計だけでなく解放も通っている)
+
+
+def test_zero_columns_do_not_finish_a_still_draining_group_early(qtbot) -> None:
+    """列ゼロの通常ファイルで on_finished が早期発火しない。
+
+    列を「もう 1 つのエントリ」として積む実装だと、空タプルが即時 finish 分岐
+    (enqueue の `if not sigs`) に落ち、グループがまだドレイン中なのに releasing
+    スピナーが消える。列ゼロは production の既定経路なので、ここが本命の回帰点。
+    """
+    done: list[str] = []
+    svc = TeardownService(on_finished=done.append, byte_budget=1 * 1024 * 1024)
+
+    svc.enqueue("g", _group((_sig("a", 500_000), _sig("b", 500_000))), columns=())
+
+    assert done == []  # ドレイン前に「解放完了」を宣言していない
+    _drain_all(svc, qtbot)
+    assert done == ["g"]
+
+
+def test_columns_alone_do_not_take_the_empty_group_shortcut(qtbot) -> None:
+    """signals が空で列だけ残るグループも即時 finish にしない。
+
+    pin しているのは実データの形ではなく **extend が空判定より前にあること**そのもの:
+    順序が逆だと列がペーシングを迂回して同期解放される (列は実体化済み = バイトが重い)。
+    """
+    done: list[str] = []
+    svc = TeardownService(on_finished=done.append)
+    col = _sig("mf4_1::W[1]", 1_000)
+
+    svc.enqueue("g", _group(()), columns=(col,))
+
+    assert done == []
+    assert svc.pending_signals() == 1
+    del col
+    qtbot.waitUntil(lambda: svc.pending_signals() == 0, timeout=5000)
+    assert done == ["g"]
+
+
 class _CountingArr:
     """ndarray-like whose .nbytes read is counted (proves WHO touches bytes)."""
 

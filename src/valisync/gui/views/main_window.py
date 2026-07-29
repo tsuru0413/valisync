@@ -644,13 +644,13 @@ class MainWindow(QMainWindow):
             # なお本経路はエクスポートガードの対象外: このグループは register_loaded を
             # 通らず、エクスポートツリーの唯一のソース (app_vm.loaded_file_keys ->
             # export_csv_dialog.py:114) に載らないためエクスポート中になり得ない。
-            # E-3 の 2 サイト目: 鋳造列が生きたら result.removed_columns もここで
-            # TeardownService へ渡すこと (今は必ず空)。tripwire は
-            # AppViewModel.unload_file 側にしか無いので、この経路だけを編集する人には
-            # 何の信号も届かない — 無音でペーシングを迂回させないための逆参照。
+            # 鋳造列も渡す (E-3 の 2 サイト目): session.load はグループ登録の**後**に
+            # キャンセルが確定するので、その窓で resolve された列は実在しうる。
             result = session.remove_group(outcome.key, force=True)
             if result.removed_group is not None:
-                self.teardown_service.enqueue(outcome.key, result.removed_group)
+                self.teardown_service.enqueue(
+                    outcome.key, result.removed_group, columns=result.removed_columns
+                )
 
         self._load_controller.submit(
             lambda: session.load(
