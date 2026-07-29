@@ -45,9 +45,24 @@ _SIGNAL_BUDGET = 8_000  # ユーザー決定 3 (変更不可・ハード上限)
 # 1,200 サンプルでは 6,990 信号 / 64MiB で 36ms (両予算とも充足したまま)。
 # frame budget と単調な唯一の軸は経過時間なので、それを実効の一次軸にする。
 _TICK_DEADLINE_S = 0.008  # 半フレーム (60fps = 16.7ms)
-# クロックを見る粒度。毎回 perf_counter を呼ぶと、未展開シェル 1 本の解放 (~1.6us)
-# に対して計測自体が無視できないコストになる。
-_CLOCK_CHECK_EVERY = 256
+# クロックを見る粒度 = デッドラインの行き過ぎ幅そのもの (最悪 _CLOCK_CHECK_EVERY-1
+# 信号ぶんの解放がデッドライン超過後に走る)。値は**実測**で決める:
+#   - 未展開シェル       1.6 us/本 (合成 fixture)
+#   - 展開済み合成 fixture 3.0-4.8 us/本
+#   - 展開済み prod リーフ 8-27 us/本 <- values + sorted/finite view + RSI を持つ
+#     実データ (prod_demo 264,004 信号を実 GUI の unload 経路で計測)
+# 旧値 256 は合成 fixture の 3.0-4.8us だけを根拠にしていた (行き過ぎ ~1.2ms 想定)
+# が、実データは 3-5 倍高く行き過ぎは 4-7ms ⇒ 最大ティック 11.2-16.8ms と、この軸が
+# 守るはずの 1 フレーム (16.7ms) に到達していた。32 なら最悪 27us/本 でも
+# 31 * 27us = 0.84ms に収まり、最大ティックは ~8.8ms。
+# 1 (毎回読む) にしないのは、1.6us/本 の未展開シェル regime では perf_counter
+# 呼び出し自体が解放コストに対して無視できないから。加えて 32 未満に下げても
+# 最大ティックは縮まない: 粒度 1 で計測すると prod_demo 264,004 本のうち**1 本だけ**
+# 5.8ms かかる解放があり (残り全て <=0.6ms・p99 10us・gc=0 でヒープ返却由来)、
+# それが 8ms 直前に始まれば粒度に関係なくティックは 13.8ms になる。つまり
+# 最大ティック = デッドライン + 最大単発解放 が構造的な床で、粒度が支配するのは
+# その手前まで (実測: 展開済み regime の定常ティックは 8.6-8.8ms = 8ms + <=0.84ms)。
+_CLOCK_CHECK_EVERY = 32
 
 
 class TeardownService(QObject):
@@ -148,9 +163,10 @@ class TeardownService(QObject):
                 freed_signals += 1
                 freed_bytes += _retained_bytes(sig, seen)
                 del sig  # drop the last strong ref -> the arrays free here
-                # 読まない区間 (1 ティックが 256 信号未満) が安全なのは、バイト軸が
-                # 毎イテレーション評価されるから: その regime に入るのは 1 信号あたり
-                # が大きいときで、そのとき 64MiB 予算が数信号で発火する。
+                # 読まない区間 (1 ティックが _CLOCK_CHECK_EVERY 信号未満) が
+                # 安全なのは、バイト軸が毎イテレーション評価されるから: その
+                # regime に入るのは 1 信号あたりが大きいときで、そのとき 64MiB
+                # 予算が数信号で発火する。
                 if (
                     freed_signals % _CLOCK_CHECK_EVERY == 0
                     and self._now() - t0 >= self._deadline

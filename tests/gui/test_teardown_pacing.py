@@ -135,10 +135,12 @@ def test_tick_stops_at_the_deadline_with_a_fake_clock(qtbot) -> None:  # type: i
     before = svc.pending_signals()
     svc._drain()
     freed = before - svc.pending_signals()
-    # 偽クロックは完全決定的 (t0 で 1 回 + 256 信号ごとに 1 回) なので停止点は機械的に
-    # 確定する: 8 回目の読み = 8ms = 既定デッドライン ⇒ 256*8 = 2,048 信号。
-    # 「何らかの停止がある」ではなく既定値と粒度の両方を pin する。
-    assert freed == 2048, f"既定 8ms を 256 信号粒度で見た停止点のはず (freed={freed})"
+    # 偽クロックは完全決定的 (t0 で 1 回 + _CLOCK_CHECK_EVERY 信号ごとに 1 回) なので
+    # 停止点は機械的に確定する: 8 回目の読み = 8ms = 既定デッドライン ⇒ 32*8 = 256 信号。
+    # 「何らかの停止がある」ではなく既定デッドラインと粒度の両方を pin する
+    # (粒度が 256 のままだと 2,048 が出て RED — 実測 8-27us/本 の展開済み prod
+    # リーフでは 255 本の行き過ぎが 4-7ms になり最大ティックが 16.8ms へ膨らむ)。
+    assert freed == 256, f"既定 8ms を 32 信号粒度で見た停止点のはず (freed={freed})"
 
 
 def test_shared_master_is_counted_once_per_group(qtbot) -> None:  # type: ignore[no-untyped-def]

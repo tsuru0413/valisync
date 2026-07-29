@@ -492,8 +492,8 @@ def report_drain(results: list[DrainResult]) -> None:
         _TICK_DEADLINE_S,
     )
 
-    # 1 信号ぶんの粒度: デッドラインは _CLOCK_CHECK_EVERY 信号おきにしか見ないので、
-    # 超過は「デッドライン + 1 チェック間隔ぶん」までは設計どおり。
+    # 粒度: デッドラインは _CLOCK_CHECK_EVERY 信号おきにしか見ないので、超過は
+    # 「デッドライン + 1 チェック間隔ぶん」までは設計どおり。
     budget_ms = _TICK_DEADLINE_S * 1000.0
     allowance_ms = 12.0
     print("\n=== TEARDOWN DRAIN tick time (prod_demo, real GUI unload path) ===")
@@ -526,10 +526,19 @@ def report_drain(results: list[DrainResult]) -> None:
         f"  acceptance: MAX tick <= {allowance_ms:.0f} ms "
         "(plan: deadline + 1 granularity)"
     )
+    from valisync.gui.workers.teardown_service import _CLOCK_CHECK_EVERY
+
     print(
-        "  NOTE: a deadline-bound tick can overrun by up to _CLOCK_CHECK_EVERY (256)\n"
-        "        signals' worth of work -- ~0.5 ms for lazy shells but ~4 ms for\n"
-        "        materialized signals, which is why (b) sits at the top of the band.\n"
+        "  NOTE: a deadline-bound tick can overrun by up to _CLOCK_CHECK_EVERY-1\n"
+        f"        ({_CLOCK_CHECK_EVERY - 1}) signals' worth of work. Measured per-signal\n"
+        "        free cost: 1.6 us (lazy shell) .. 8-27 us (materialized prod leaf\n"
+        "        with sorted/finite view + range_stat_index), so the granularity is\n"
+        "        sized against the 27 us case (31 * 27 us = 0.84 ms).\n"
+        "  NOTE: the granularity is NOT what makes (b)'s single worst tick exceed the\n"
+        "        band. Traced at granularity 1, exactly ONE free out of 264,004 costs\n"
+        "        5.8 ms (rest <= 0.6 ms, p99 = 10 us, gc = 0) -- a heap-return stall.\n"
+        "        Max tick is therefore floored at deadline + max single free = 13.8 ms\n"
+        "        for ANY _CLOCK_CHECK_EVERY; only where it lands in a tick varies.\n"
         "  context: 1 frame @60fps = 16.7 ms; pre-pacing measured freeze = 649 ms"
     )
 
