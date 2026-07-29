@@ -193,7 +193,12 @@ class Session:
         return LoadManyResult(succeeded=tuple(succeeded), failed=tuple(failed))
 
     def signals(self) -> list[Signal]:
-        """Every loaded signal, name-spaced by its group key."""
+        """Every loaded signal, name-spaced by its group key.
+
+        シェルの列挙は安価だが **``Signal.values`` は遅延 I/O backed** (MDF は
+        ``LazyMdfValues``) — この戻り値を回して全信号の ``.values`` に触ると
+        ファイル全体を実体化する (遅延ロードで取り除いた回帰そのもの)。
+        """
         return self._groups.signals()
 
     def signal_map(self) -> Mapping[str, Signal]:
