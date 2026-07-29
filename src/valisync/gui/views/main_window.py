@@ -613,9 +613,18 @@ class MainWindow(QMainWindow):
         cancel_event = threading.Event()  # 所有=ここ・セット権=controller(spec §4.1)
 
         def _discard(outcome: LoadOutcome) -> None:
-            # 手遅れ完走のロールバック; remove_group の戻り値は on_discard の
-            # Callable[[LoadOutcome], None] 契約に不要なので握りつぶす。
-            session.remove_group(outcome.key, force=True)
+            # 増分B: 手遅れ完走のロールバック。Task 1 で handle は remove_group が
+            # 閉じるが、シェルの解放を放置すると GUI スレッドで同期実行される
+            # (330k シェルで実測 649ms)。AppViewModel は経由しない — このファイルは
+            # loaded_keys に載っていないので releasing スピナー行を出してはいけない。
+            # _discard は LoadController._finish (queued 接続スロット) から呼ばれる
+            # = GUI スレッドなので、QTimer を持つ enqueue をここで呼んでよい。
+            # なお本経路はエクスポートガードの対象外: このグループは register_loaded を
+            # 通らず、エクスポートツリーの唯一のソース (app_vm.loaded_file_keys ->
+            # export_csv_dialog.py:114) に載らないためエクスポート中になり得ない。
+            result = session.remove_group(outcome.key, force=True)
+            if result.removed_group is not None:
+                self.teardown_service.enqueue(outcome.key, result.removed_group)
 
         self._load_controller.submit(
             lambda: session.load(
