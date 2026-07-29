@@ -130,11 +130,25 @@ def test_group_master_equals_get_master() -> None:
         m.close()
 
 
-def test_load_failure_path_closes_handle(tmp_path: Path) -> None:
+def test_unparsable_file_returns_error_diagnostic_without_group(tmp_path: Path) -> None:
+    """``MDF()`` 自体が失敗する経路は error 診断 + signal_group=None で返る。
+
+    **名前を実体に合わせた (旧 test_load_failure_path_closes_handle)**: この経路
+    (mdf_loader.py の ``except`` — 「ハンドル未生成のためリークなし」) では
+    MdfHandle がまだ 1 個も作られておらず、このテストもハンドルを一切見ていない。
+    ハンドル寿命の名前を着ていた分、旧名は「close 経路が守られている」という
+    誤った安心を与えていた (実際には ``handle.close()`` を全部消しても緑)。
+
+    ハンドル寿命の契約は **demo 非依存で CI 実行される** 以下が所有する:
+      - ``tests/test_loaders.py::test_load_error_path_closes_handle_no_leak``
+        (ハンドル生成後の本読み失敗 → close)
+      - ``tests/test_loaders.py::test_mdf_loader_cancel_raises`` /
+        ``::test_mdf_loader_cancel_during_group_load_closes_handle`` (キャンセル経路)
+      - ``tests/core/test_handle_release.py`` (unload 経路)
+    """
     bad = tmp_path / "broken.mf4"
     bad.write_bytes(b"not an mdf file")
     result = MdfLoader().load(bad, confirm_expansion=None)
-    # 破損は error 診断で返る (ハンドルはリークしない)
     assert result.signal_group is None
     assert any(d.level == "error" for d in result.diagnostics)
 

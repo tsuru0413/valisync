@@ -17,7 +17,7 @@ import math
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import numpy as np
 
@@ -1689,9 +1689,26 @@ class _OffsetOverlay(Mapping[str, Signal]):
 
     base を丸ごとコピーしないので O(offset信号)。列キーを遅延解決する base map
     (E-1) とも両立する — 列挙は base に委譲し、鋳造を誘発しない。
+
+    **列挙系は構造的に封じる** (下の keys/items/values): ``Mapping`` ABC の既定実装は
+    すべて ``__getitem__`` 経由なので、``dict(overlay)`` / ``.items()`` は物理チャンネル
+    1 本につき ``Session.apply_offset`` を 1 回呼び、**全長 float64 タイムスタンプ配列を
+    1 本ずつ新規確保**する (prod 264k 本)。base 側 (``_ResolvingMap``) の非対称性は
+    「列挙が不完全」なだけだが、こちらは「列挙が高価」— docstring の禁止だけでは
+    ``dict(sig_map)`` 1 行で再導入されるので TypeError で落とす。
+    ``Mapping.__eq__`` も ``dict(self)`` を通るため同じ TypeError になる (大量確保より
+    loud-fail が望ましい・overlay を比較する呼び出し側は無い)。
     """
 
     __slots__ = ("_base", "_cache", "_file_offsets", "_session", "_signal_offsets")
+
+    # 列挙が要るのは「キーが欲しい」ときで、オフセットはキー集合を変えない。
+    _NO_ENUMERATION = (
+        "_OffsetOverlay は列挙できない (keys()/items()/values()/dict()): "
+        "1 キーごとに apply_offset が全長 float64 タイムスタンプ配列を確保するため、"
+        "物理チャンネル数 (prod 264k) ぶんの確保になる。キーだけなら "
+        "session.signal_map() を列挙し、値は必要なキーだけ [] / get() で引くこと。"
+    )
 
     def __init__(
         self,
@@ -1728,6 +1745,25 @@ class _OffsetOverlay(Mapping[str, Signal]):
             )
         self._cache[key] = sig
         return sig
+
+    def __contains__(self, key: object) -> bool:
+        """メンバシップは base へ委譲する (Signal を 1 個も作らない).
+
+        ``Mapping`` 既定の ``__contains__`` は ``self[key]`` を試すので、**存在を
+        尋ねるだけ**で apply_offset が走り全長タイムスタンプ配列が 1 本増える
+        (``key in overlay`` が最も鋭い刃)。オフセットはキー集合を変えない
+        (overlay は base とキー空間を共有する) ので、委譲しても真偽値は同一。
+        """
+        return key in self._base
+
+    def keys(self) -> NoReturn:
+        raise TypeError(self._NO_ENUMERATION)
+
+    def items(self) -> NoReturn:
+        raise TypeError(self._NO_ENUMERATION)
+
+    def values(self) -> NoReturn:
+        raise TypeError(self._NO_ENUMERATION)
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._base)

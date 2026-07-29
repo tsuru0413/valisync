@@ -269,3 +269,29 @@ def test_filter_memo_dropped_on_prep_lifecycle(tmp_path: Path) -> None:
     assert vm._filter_memo is not None
     vm.refresh()
     assert vm._filter_memo is None
+
+
+def test_invalidate_prep_releases_the_column_signals(tmp_path: Path) -> None:
+    """無効化は列 Signal への強参照まで手放す (M5).
+
+    _group_sigs はファイル 1 本ぶんの列 Signal 実体を掴む (main には無かった参照)。
+    今日は unload の notify カスケードが _ensure_prep(active_key=None) を再入させて
+    先に空にするので実害は無いが、それは購読中の view が居ることに依存した創発的な
+    保証でしかない。破れると TeardownService._drain が何も解放できないまま
+    pending_signals() だけが正常に減る (ドレインは健全に見えたままメモリが残る) —
+    最も観測しづらい壊れ方なので、無効化点そのものを固定する。
+
+    id() は使わない (CPython のアドレス再利用で非決定・memory
+    gui_id_reuse_flake_object_recreation) — コンテナが空であることを直接見る。
+    """
+    vm, _app_vm = _vm_for(write_mdf4_2d(tmp_path))
+    vm.tree_groups()
+    assert vm._group_sigs and vm._prep  # 前提: 掴んでいる状態を作れている
+
+    vm.refresh()  # = _invalidate_prep
+
+    assert vm._group_sigs == [], "無効化後も列 Signal を掴んでいる"
+    assert vm._prep == []
+    assert vm._row_by_base_key == {}
+    # 手放しても次の問い合わせは _ensure_prep が作り直す (機能は不変)
+    assert [row[0] for row in vm.tree_groups()] == ["Mat", "Clean"]

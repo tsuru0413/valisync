@@ -111,9 +111,21 @@ class ChannelBrowserVM(Observable):
         順序への暗黙依存で、順序が変われば静かに stale を配り始める。無効化点
         (refresh / active_file 切替) を単一の入口に寄せ、「_prep_valid が False
         なのにメモが生きている」中間状態自体を作らない。
+
+        **列 Signal への強参照もここで手放す**: _group_sigs はファイル 1 本ぶんの列
+        Signal 実体を掴む (main には無かった参照 — 旧 _prep は文字列だけを持っていた)。
+        今日の production では unload の notify カスケードが必ず
+        _ensure_prep(active_key=None) を再入させ、teardown.enqueue が走る前に空へ
+        するので実害は無い。だがそれは「購読中の view が居る」ことに依存した**創発的な**
+        保証でしかなく、破れると TeardownService._drain が何も解放できないまま
+        pending_signals() だけが正常に減る (ドレインは健全に見えたままメモリが残る)。
+        無効化点で無条件に手放し、保証を構造にする。
         """
         self._prep_valid = False
         self._filter_memo = None
+        self._prep = []
+        self._group_sigs = []
+        self._row_by_base_key = {}
 
     def _ensure_prep(self) -> None:
         """物理チャンネル単位の (name, unit, base_key, column_count, first_column,

@@ -126,8 +126,35 @@ def test_signal_is_instance_write_protected() -> None:
         s.name = "changed"  # type: ignore[misc]
 
 
+def _lazy_sig(timestamps: np.ndarray) -> tuple[Signal, CountingLazy]:
+    src = CountingLazy(len(timestamps))
+    sig = Signal(
+        name="s",
+        timestamps=timestamps,
+        values_source=src,  # type: ignore[arg-type]
+        file_format="MDF4",
+        bus_type="",
+        source_file="/x.mf4",
+    )
+    return sig, src
+
+
 def test_signal_is_monotonic_reads_master_only() -> None:
-    s = _sig(np.array([1.0, 2.0, 3.0]))
-    assert s.is_monotonic is True
-    # values 未展開で is_monotonic が判定できる (EagerValues は常に materialized なので
-    # LazyMdfValues 導入後の Task 2 で未展開判定は再検証する)
+    """``is_monotonic`` は master (timestamps) だけを見て値を展開しない。
+
+    ``EagerValues`` 越しではこの主張は**観測できない** (常に materialized なので
+    ``is_monotonic`` が ``self.values`` を触るように変えても緑のまま)。read を数える
+    遅延ソースで ``reads == 0`` を見るのが唯一の honest observable。単調/非単調の
+    両分岐を通す — 片方だけだと「非単調のときだけ値を読む」実装に盲目になる。
+    """
+    mono, mono_src = _lazy_sig(np.array([0.0, 1.0, 2.0]))
+    assert mono.is_monotonic is True
+    assert mono_src.reads == 0, (
+        "is_monotonic が値を展開した (master のみの契約が壊れた)"
+    )
+    assert mono_src.is_materialized is False
+
+    jumbled, jumbled_src = _lazy_sig(np.array([0.0, 2.0, 1.0]))
+    assert jumbled.is_monotonic is False
+    assert jumbled_src.reads == 0
+    assert jumbled_src.is_materialized is False

@@ -116,9 +116,14 @@ private commit / USS**（eager +281 MiB → E-3 +15 MiB）とする。mmap フ�
 - **1024 ガードの退役は E-3 へ前倒し**（削除のみ・E-3 の出口数値が 4,324 で揃う）。
   退役は **LD-08 dedup インデックスを動かしうる**（同名チャンネルの永続キー `W[0]`→`W[1]`）ため、
   意図的逸脱として記録しテストで固定する。
-- **公開 API の意味縮小**: `Session.signals()` / `AppViewModel.signals()` /
-  `Session.unified_timeline_signals()` は**物理チャンネルのみ**を返す（列は `resolve` 経由）。
-  ここで列を返すと 390 MB を自ら再導入するため、縮小は不可避。
+- **公開 API の意味縮小**: `Session.signals()` は**物理チャンネルのみ**を返す（列は `resolve`
+  経由）。ここで列を返すと 390 MB を自ら再導入するため、縮小は不可避。
+  > **2026-07-29 訂正（E-2/増分B 出荷時）**: 当初この項目は
+  > `AppViewModel.signals()` / `Session.unified_timeline_signals()` も名指ししていたが、
+  > **両者は本ブランチで削除済み**（commit `0847373`「死蔵の信号列挙 API を削除」—
+  > `SignalTableModel`/`SignalItem` と併せて撤去）。**E-3 でこの 2 つを縮小しようとしないこと**
+  > （存在しない）。残る縮小対象は `Session.signals()`（＋その委譲先
+  > `SignalGroupManager.signals()`）だけで、これは既に「物理チャンネルのみ」を返す。
 - **`signal_map()` は非対称 Mapping**（**列挙は物理のみ・`[]`/`get`/`in` は列も解決**）として
   出荷する。Mapping 不変条件からの**意図的逸脱**であり、`dict()`/`items()` での全キー列挙は
   330k 列を鋳造して 390 MB を再導入するため禁止する（型注釈とドキュメントで明示）。
@@ -265,7 +270,9 @@ E-3 は一時的に幅閾値を高く置いて着地 → prod_demo で広幅を�
 ### 意図的逸脱（記録）
 
 - 配列/構造化チャンネルの列単位 warning を物理チャンネル 1 件へ集約（ユーザー決定 6）。
-- `signals()`/`unified_timeline_signals()` の意味を物理チャンネルのみへ縮小。
+- `Session.signals()` の意味を物理チャンネルのみへ縮小（`AppViewModel.signals()` /
+  `Session.unified_timeline_signals()` は縮小ではなく**削除**で決着した — commit `0847373`・
+  上の「公開 API の意味縮小」の訂正注を参照）。
 - `signal_map()` の非対称 Mapping（列挙は物理のみ・ルックアップは列も解決）。
 - 1024 ガード退役に伴う LD-08 dedup インデックスのずれ（`W[0]`→`W[1]`）。
 - ツリーのモジュール階層廃止（ドット分割 → 物理チャンネル 1 行・ユーザー決定 3）。

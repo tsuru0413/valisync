@@ -14,6 +14,7 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from valisync.core.loaders.signal_group_manager import SignalGroupManager
 from valisync.core.models import Signal, SignalGroup
@@ -154,6 +155,48 @@ def test_offset_overlay_get_returns_none_for_unloaded_key() -> None:
     assert "g::missing" not in sm
     assert "g::a" in sm
     assert base.full_scans == 0  # 欠損判定も全走査しない
+
+
+def test_offset_overlay_enumeration_methods_are_blocked() -> None:
+    """`keys()`/`items()`/`values()`/`dict()` は TypeError で落ちる (M4).
+
+    `Mapping` ABC の既定実装は全て `__getitem__` 経由なので、これらは物理チャンネル
+    1 本につき apply_offset を 1 回呼び、全長 float64 タイムスタンプ配列を 1 本ずつ
+    新規確保する (prod 264k 本)。docstring の禁止だけでは `dict(sig_map)` 1 行で
+    再導入されるため、**構造的に使えない**ことを固定する。
+    """
+    base = _CountingMap({f"g::s{i}": _sig(f"g::s{i}") for i in range(5)})
+    vm, session = _vm(base, {"g": 1.0}, {})
+    sm = vm._signal_map()  # type: ignore[attr-defined]
+
+    for call in (sm.keys, sm.items, sm.values):
+        with pytest.raises(TypeError, match="列挙できない"):
+            call()
+    with pytest.raises(TypeError, match="列挙できない"):
+        dict(sm)  # keys() 経由なので dict() も構造的に塞がる
+
+    assert session.offset_calls == []  # 1 本も鋳造していない
+    assert sm._cache == {}
+
+
+def test_offset_overlay_membership_does_not_apply_offset() -> None:
+    """`key in overlay` は Signal を 1 個も作らない (M4 — 最も鋭い刃).
+
+    `Mapping` 既定の `__contains__` は `self[key]` を試すので、存在を尋ねるだけで
+    apply_offset が走り全長タイムスタンプ配列が 1 本増える。真偽値は base への委譲
+    でも同一 (オフセットはキー集合を変えない) なので、委譲でゼロコストにする。
+    """
+    base = _CountingMap({"g::a": _sig("g::a"), "g::b": _sig("g::b")})
+    vm, session = _vm(base, {"g": 1.0}, {"g::b": 0.5})
+    sm = vm._signal_map()  # type: ignore[attr-defined]
+
+    assert "g::a" in sm  # オフセット対象でも True
+    assert "g::b" in sm
+    assert "g::zz" not in sm
+
+    assert session.offset_calls == [], "メンバシップ判定が offset Signal を作った"
+    assert sm._cache == {}  # 鋳造そのものがゼロ
+    assert base.full_scans == 0
 
 
 def test_signal_map_fast_path_returns_base_object_when_no_offsets() -> None:

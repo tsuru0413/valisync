@@ -13,14 +13,14 @@ from valisync.core.models.sample_source import LazyMdfValues, SampleReadError
 DEMO = Path("demo_data/quick_demo.mf4")
 pytestmark = pytest.mark.skipif(not DEMO.exists(), reason="demo mf4 not generated")
 
-
-def test_mdf_handle_close_is_idempotent() -> None:
-    h = MdfHandle(MDF(str(DEMO)))
-    assert h.is_closed is False
-    h.close()
-    assert h.is_closed is True
-    h.close()  # 多重 close 安全
-    assert h.is_closed is True
+# NOTE: ``MdfHandle.close()`` の冪等性 (``if self._closed: return``) はここでは持たない。
+# かつて test_mdf_handle_close_is_idempotent があったが、**ガードを消しても緑のまま**
+# だった — asammdf 8.8.22 の ``MDF4.close()`` 自身が ``if self._closed: return`` を持つ
+# ので、二重 close は下層で吸収され ``is_closed`` の観測からは区別がつかない (実測)。
+# 契約の所有者は ``tests/core/loaders/test_mdf_handle_concurrency.py``:
+# ``test_concurrent_close_calls_mdf_close_once`` が ``mdf.close()`` の**呼出回数**を
+# spy で数えるのでガード削除に対して RED になり、しかも demo 非依存で CI 実行される
+# (このファイルは丸ごと demo gate 下で CI では常に skip)。
 
 
 def test_mdf_handle_has_lock() -> None:

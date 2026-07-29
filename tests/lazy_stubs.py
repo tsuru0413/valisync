@@ -39,5 +39,11 @@ class CountingLazy:
 
     def array(self) -> np.ndarray:
         self.reads += 1
-        self._cache = np.zeros(self._n, dtype=np.float64)
-        return self._cache
+        arr = np.zeros(self._n, dtype=np.float64)
+        # 実ソース (EagerValues/LazyMdfValues) は必ず read-only 凍結した配列を返す
+        # (sample_source._freeze)。スタブが writeable を返すと、``sorted_view()`` の
+        # zero-copy fast path 越しに書き込めてしまう配列がスタブ経由でだけ生まれ、
+        # 将来のテストがスタブ上でだけ通る/落ちる形になる。契約を実物に合わせる。
+        arr.flags.writeable = False
+        self._cache = arr
+        return arr
