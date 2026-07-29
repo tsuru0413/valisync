@@ -119,6 +119,17 @@ def parse_leaf(
     ``parse_leaf`` 自身では検出できない — 呼び出し側は生名の一意性を保証するか、
     (gi, ci) ごとに解決した spec を渡す必要がある。
 
+    **E-3 以降の正しい呼び方 (鋳造経路)**: 列キーは *表示空間* にある
+    (``Signal.name`` 由来・dedup 済みチャンネルなら ``sig[1][2]``)。それを全チャンネル
+    分の生名キー ``Mapping`` へそのまま渡してはならない — 上の限界にそのまま落ちる。
+    ``SignalGroupManager.column_records`` (キー = LD-08 dedup 済み表示名) で
+    **先に物理チャンネルを確定**し、生名は当該 ``ColumnRecord.raw_base_name`` から
+    取る。そのうえで本関数へ渡すのは
+    ``parse_leaf(raw_base_name + 残余, {raw_base_name: record.spec})`` の
+    **単一エントリ Mapping** — これが上で言う「(gi, ci) ごとに解決した spec」であり、
+    エントリが 1 本しかないので衝突は構造的に起こり得ない。失敗モードは例外でなく
+    **別チャンネルのデータ**なので、この順序は守ること。
+
     ルックアップは O(len(key)) (specs 全体の O(number of channels) 走査ではない)。
     """
     for i in range(len(display_key), 0, -1):

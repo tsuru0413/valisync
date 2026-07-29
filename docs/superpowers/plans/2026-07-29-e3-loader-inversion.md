@@ -17,7 +17,7 @@
 - **既存 assert を弱めない**。既存契約を保存: ハンドル close の全経路／teardown の三軸ペーシング（64 MiB・8,000 信号・8ms デッドライン・クロックは 32 信号ごと）／会計の identity dedup／`SampleReadError` の集中 degrade。
 - **各タスクは sabotage 必須**（実装を壊すと当該テストが RED になることを実証し、結果を報告に記す）。このブランチ系列は「実装が効いていることを証明できないテスト」を過去 6 回踏んでいる。
 - **LD-14 リーフ名の文法は永続キー**（`Name.field` / `Name[i]` / `Name[i][j]` / `Name.field[i]`）。変更は全保存の無言リネームになる。
-- `parse_leaf` へ渡す Mapping は **生チャンネル名キー**（LD-08 dedup 前）。dedup 済み表示名を渡すと `W[1][2]` の `[1]` を W 自身の配列インデックスとして消費し、解決不能または**別チャンネルの列を返す**。
+- **列キーの解決は 2 段**: 列キーは*表示空間*（`Signal.name` 由来・dedup 済みなら `sig[1][2]`）。まず `SignalGroupManager.column_records`（キー = LD-08 dedup 済み表示名）で**物理チャンネルを確定**し、生名は当該 `ColumnRecord.raw_base_name` から取る。`parse_leaf` へ渡すのは `parse_leaf(raw_base_name + 残余, {raw_base_name: record.spec})` の**単一エントリ Mapping**（＝`parse_leaf` docstring が言う「(gi, ci) ごとに解決した spec」）。全チャンネル分の生名キー Mapping をそのまま渡すと、同名 2 チャンネルが衝突して**例外でなく別チャンネルのデータを返す**。
 
 ## 確定事項（設計 spec の「E-3 着手時の確定事項」節・全て遵守）
 
@@ -7009,7 +7009,7 @@ scripts 2 サイト — 実行時に `AttributeError` になる行だけを外�
 
 **3h.（必要な場合のみ）鋳造の重複生名衝突**
 
-`test_column_of_duplicated_wide_channel_resolves_to_the_right_channel` が RED のまま残る場合、`signal_group_manager._mint_column`（T2）が `parse_leaf` を**生名キー**の Mapping で引いている。生名 `"W"` は構造の異なる 2 チャンネル（2D 1025 列 / スカラー）へ衝突する（`column_names.parse_leaf` docstring の「健全性の限界」）。`column_records(group_key)`（T1・キーは LD-08 dedup 済み表示名）から `{display_name: record.spec}` を組んで `parse_leaf` に渡し、セレクタには当該 `ColumnRecord.raw_base_name` を使う形へ直す。退役前はこの配置に到達できなかった（広幅がスキップされていた）ため、本タスクで初めて露出する。
+`test_column_of_duplicated_wide_channel_resolves_to_the_right_channel` が RED のまま残る場合、`signal_group_manager._mint_column`（T2）が `parse_leaf` を**生名キー**の Mapping で引いている。生名 `"W"` は構造の異なる 2 チャンネル（2D 1025 列 / スカラー）へ衝突する（`column_names.parse_leaf` docstring の「健全性の限界」）。`column_records(group_key)`（T1・キーは LD-08 dedup 済み表示名）で**先に親を確定**し、`parse_leaf` へは `parse_leaf(record.raw_base_name + 残余, {record.raw_base_name: record.spec})` の**単一エントリ Mapping**を渡す形へ直す（T2 の実装がこの形。全チャンネル分の生名 Mapping を渡すのが誤り）。退役前はこの配置に到達できなかった（広幅がスキップされていた）ため、本タスクで初めて露出する。
 
 - [ ] **Step 4: 通ることを確認**
 

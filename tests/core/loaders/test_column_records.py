@@ -262,11 +262,35 @@ def test_column_records_view_is_read_only(tmp_path: Path) -> None:
     assert mgr.column_records("mf4_9") == {}  # 未知 key は空 (KeyError にしない)
 
 
+def test_add_copies_the_loader_table(tmp_path: Path) -> None:
+    """add() が受け取った dict をコピーせず参照保持すると、ローダー側の後続変異が
+    表へ漏れる。読み出し view が read-only でも元 dict 経由で書き換わるので、
+    `dict(column_records)` を消しても他の全テストは緑のまま — ここで直接 pin する。"""
+    result = MdfLoader().load(write_mdf4_2d(tmp_path))
+    assert result.signal_group is not None
+    mgr = SignalGroupManager()
+    key = mgr.add(result.signal_group, column_records=result.column_records)
+    before = set(mgr.column_records(key))
+    assert before, "前提: 表が空でない"
+
+    result.column_records.clear()  # type: ignore[attr-defined]
+
+    assert set(mgr.column_records(key)) == before
+
+
 def test_session_exposes_column_names_and_total(tmp_path: Path) -> None:
-    """GUI 側 (T4/T5) が触るのは Session の 2 本だけ。"""
+    """GUI 側 (T4/T5/T7) が触る Session の 3 本。"""
     session = Session()
     key = session.load(write_mdf4_flatten_fixture(tmp_path)).key
     assert session.column_names_of(key, "Mat") == ("Mat[0]", "Mat[1]", "Mat[2]")
     assert session.total_column_count(key) == len(session.group_signals(key))
     # U2: n_channels の単位は列数のまま (T7 がこの一致を保つ)
     assert session.source_info(key).n_channels == session.total_column_count(key)
+    # has_column は T5 の行フィルタと T7 の衝突判定が使う。column_names_of への
+    # 誤委譲を落とすため 4 値を見る。**容器は列ではない** — 2-D 親を列扱いすると
+    # 2-D 値がプロット/エクスポートへ流れる (C-d が core で拒否する当のもの)。
+    assert session.has_column(key, "Mat[1]") is True  # 列
+    assert session.has_column(key, "Scalar") is True  # 数値スカラー = 自分自身が列
+    assert session.has_column(key, "Mat") is False  # 2-D 容器
+    assert session.has_column(key, "Mat[9]") is False  # 範囲外
+    assert session.has_column(key, "NoSuchChannel") is False
