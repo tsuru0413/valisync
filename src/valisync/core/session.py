@@ -7,7 +7,11 @@ from pathlib import Path
 import numpy as np
 
 from valisync.core.downsampler.downsampler import Downsampler
-from valisync.core.export.csv_exporter import CsvExporter, CsvExportOptions
+from valisync.core.export.csv_exporter import (
+    EXPORT_CONTAINER_CHANNEL_ERROR_TMPL,
+    CsvExporter,
+    CsvExportOptions,
+)
 from valisync.core.formula.engine import FormulaEngine
 from valisync.core.interpolation.interpolator import InterpolationMethod, Interpolator
 from valisync.core.loaders.csv_loader import CsvLoader
@@ -280,6 +284,16 @@ class Session:
         """
         return self._groups.has_column(key, display_name)
 
+    def is_container_channel(self, key: str, display_name: str) -> bool:
+        """*display_name* が複数列 (または改名列) へ展開される「親」チャンネルか。
+
+        判定は ColumnRecord の列構造から引く — ``sig.values.ndim`` を見ると
+        チャンネル全読み (prod で 1 本 96 MB) を誘発し、遅延展開の利得をその場で
+        捨てることになる。列キー・スカラー・未知名は ``(display_name,)`` が返るので
+        いずれも False (E-3 C-d)。
+        """
+        return self.column_names_of(key, display_name) != (display_name,)
+
     def source_info(self, key: str) -> SourceInfo:
         """Return read-only metadata for the group under *key* (KeyError if unknown)."""
         group = self._groups.group(key)
@@ -402,7 +416,33 @@ class Session:
         use_unified_timeline: bool = False,
         options: CsvExportOptions | None = None,
     ) -> None:
+        self._reject_container_channels(signals)
         self._exporter.export(signals, output_path, use_unified_timeline, options)
+
+    def _reject_container_channels(self, signals: list[Signal]) -> None:
+        """配列/構造体チャンネルの親を、値を読む前に拒否する (E-3 C-d)。
+
+        GUI のダイアログは親行をチェック不可にしている (C-a) が、scripted /
+        realgui は ``session.export_csv`` を直呼びするため、ここが実効的な唯一の
+        防波堤になる。所属グループが引けない Signal (Derived・アンロード済み) は
+        列構造を知りようがないので通す — 判定不能を拒否に倒すと Derived_Signal の
+        エクスポートが全滅する (最後の砦は CsvExporter 側の 1 時刻 1 値検査)。
+        """
+        loaded = set(self.group_keys())
+        for sig in signals:
+            group_key, sep, bare = sig.name.partition(KEY_SEPARATOR)
+            if not sep or group_key not in loaded:
+                continue
+            # 述語は is_container_channel と同一 — ここでインライン展開するのは、
+            # エラー文の「例: Mat[0]」に列名そのものが要るため (二度引きしない)。
+            columns = self.column_names_of(group_key, bare)
+            if columns == (bare,):
+                continue
+            raise ValueError(
+                EXPORT_CONTAINER_CHANNEL_ERROR_TMPL.format(
+                    name=bare, example=columns[0] if columns else bare
+                )
+            )
 
     # ─── Calcbar operations (Req 26 / 15) ─────────────────────────────────────
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
 from valisync.gui import strings as S
 from valisync.gui.display_names import split_key
 
@@ -27,7 +28,11 @@ class OverlayResult:
     """Outcome counts, partitioning the reference-file entries scanned.
 
     ``total`` is the denominator (spec §3: 母数=基準エントリ) and always
-    equals ``added + no_match + unit_mismatch + already_present + ambiguous``.
+    equals ``added + no_match + unit_mismatch + already_present + ambiguous
+    + container``.
+
+    ``container`` は既定 0 — E-2b 期に書かれた 6 分類の等値 assert をそのまま
+    生かすため (それらのケースでは実測値も 0 になる)。
     """
 
     total: int
@@ -36,6 +41,7 @@ class OverlayResult:
     unit_mismatch: int
     already_present: int
     ambiguous: int
+    container: int = 0
 
 
 def overlay_reference_signals(
@@ -51,12 +57,17 @@ def overlay_reference_signals(
     1. Scan ``panel.plotted_entries()`` for entries whose group is
        *reference_key* (母数=基準エントリ — snapshotted upfront so the scan is
        unaffected by entries this same call adds).
-    2. For each, look up the bare name in *target_key*'s ``group_signals``
-       (bare names are unique within one file — loader-guaranteed via ``[idx]``
-       LD-08 disambiguation).
+    2. For each, resolve the bare name **as a column key** inside *target_key*
+       (E-3 C-c — マッチ粒度は列レベル)。``session.resolve_signal`` が既存の
+       最長一致を再利用し、一致した 1 本だけを鋳造する。物理チャンネル単位で
+       突き合わせてはならない: ``already_present`` 判定は plotted entries の
+       **列キー**で作られているため、再実行で重複追加になる。
     3. A match is added to the SAME axis via ``panel.add_signal_to_axis``.
     4. Skips (all counted, nothing raises):
        - no bare-name match → ``no_match``
+       - 候補が配列/構造体チャンネル**本体** → ``container`` (spec E-3
+         「2-D 親を重ね対象から除外」。載せると sorted_view() が float64 へ
+         8 倍膨張した 2-D 配列を恒久キャッシュし、そもそも描画できない)
        - unit mismatch (``sig.metadata`` exact string compare, missing
          treated as ``""`` — so both-empty passes, one-empty-one-not fails)
          → ``unit_mismatch``
@@ -77,19 +88,13 @@ def overlay_reference_signals(
     ]
     total = len(reference_entries)
 
-    try:
-        target_signals = session.group_signals(target_key)
-    except KeyError:
-        target_signals = []
-    target_by_bare = {split_key(sig.name)[1]: sig for sig in target_signals}
-
     signal_map = session.signal_map()
     existing_pairs = {
         (signal_key, axis_index)
         for _eid, signal_key, axis_index in panel.plotted_entries()
     }
 
-    added = no_match = unit_mismatch = already_present = ambiguous = 0
+    added = no_match = unit_mismatch = already_present = ambiguous = container = 0
     for signal_key, axis_index in reference_entries:
         _, bare = split_key(signal_key)
         ref_sig = signal_map.get(signal_key)
@@ -97,9 +102,22 @@ def overlay_reference_signals(
             ambiguous += 1
             continue
 
-        candidate = target_by_bare.get(bare)
+        # 追加は解決した Signal の .name ではなく、この構成キーで行う — 鋳造列の
+        # 命名規約に依存せず、already_present の集合 (plotted entries のキー) と
+        # 同じ文字列で突き合わせられる。
+        candidate_key = f"{target_key}{KEY_SEPARATOR}{bare}"
+        candidate = session.resolve_signal(candidate_key)
         if candidate is None:
+            # 未ロードの target_key もここで全件 no_match になる (旧 group_signals の
+            # KeyError 経路と同じ結果)。この順序 (解決 -> 構造判定) にするのは
+            # container の母数を「実在する候補」だけに限るため — 解決できない候補まで
+            # 構造を見ると、単に名前が無いケースが「構造不一致」として要約に出る。
+            # なお is_container_channel 自体は未ロード key でも例外を投げない
+            # (column_names_of は表を dict.get で引き (display_name,) を返す)。
             no_match += 1
+            continue
+        if session.is_container_channel(target_key, bare):
+            container += 1
             continue
         if candidate.metadata.get("name_deduplicated"):
             ambiguous += 1
@@ -111,12 +129,12 @@ def overlay_reference_signals(
             unit_mismatch += 1
             continue
 
-        pair = (candidate.name, axis_index)
+        pair = (candidate_key, axis_index)
         if pair in existing_pairs:
             already_present += 1
             continue
 
-        panel.add_signal_to_axis(candidate.name, axis_index)
+        panel.add_signal_to_axis(candidate_key, axis_index)
         existing_pairs.add(pair)
         added += 1
 
@@ -127,6 +145,7 @@ def overlay_reference_signals(
         unit_mismatch=unit_mismatch,
         already_present=already_present,
         ambiguous=ambiguous,
+        container=container,
     )
 
 
@@ -162,6 +181,8 @@ def format_overlay_summary(result: OverlayResult, target_display_name: str) -> s
         clauses.append(S.OVERLAY_CLAUSE_ALREADY_TMPL.format(n=result.already_present))
     if result.ambiguous:
         clauses.append(S.OVERLAY_CLAUSE_AMBIGUOUS_TMPL.format(n=result.ambiguous))
+    if result.container:
+        clauses.append(S.OVERLAY_CLAUSE_CONTAINER_TMPL.format(n=result.container))
     detail = f"（{'・'.join(clauses)}）" if clauses else ""  # noqa: RUF001
 
     return S.STATUS_OVERLAY_SUMMARY_TMPL.format(

@@ -103,6 +103,7 @@ def _expansion_diagnostic(
     display_name: str,
     samples: np.ndarray,
     leaf_total: int,
+    numeric_total: int,
     diagnostics: list[Diagnostic],
 ) -> None:
     """「N 本に展開」info を物理チャンネル 1 件だけ emit する (E-3 反転).
@@ -111,15 +112,25 @@ def _expansion_diagnostic(
     (_all_leaf_count) を渡す — 数値リーフだけを数える column_names.leaf_count に
     替えると混在構造 (Q.x + Q.tag) の表示が「2 本」->「1 本」に変わり、列展開
     時代の文言と非互換になる。文言と signal_name は旧 _explode_samples と同一。
+
+    **D1 (T7 決定)**: その dtype 非依存の N は、混在構造ではユーザーが到達できる
+    列数と食い違う (Q は「2 本」だがブラウザ/エクスポートに出るのは Q.x の 1 本)。
+    反転前はその差を per-column の「非数値型のためスキップ」warning が説明していたが、
+    集約 (意図的 supersede) で消えた。N そのものは S2 の mandate ゆえ据え置き、
+    **食い違うときだけ**到達可能な本数を併記して説明を復活させる。数値==全数の
+    通常ケース (prod_demo は全件そう: info 320 / warning 0) では文言完全不変。
     """
     if samples.dtype.names:
         shape_desc = "構造化チャンネル"
     else:
         shape_desc = "x".join(str(d) for d in samples.shape[1:]) + " 配列"
+    message = f"信号 '{display_name}': {shape_desc}を {leaf_total} 本に展開"
+    if numeric_total != leaf_total:
+        message += f"（うち数値列 {numeric_total} 本）"  # noqa: RUF001
     diagnostics.append(
         Diagnostic(
             level="info",
-            message=f"信号 '{display_name}': {shape_desc}を {leaf_total} 本に展開",
+            message=message,
             signal_name=display_name,
         )
     )
@@ -525,8 +536,11 @@ class MdfLoader:
             # つき Signal 1 個** で、列は SignalGroupManager が ColumnRecord から
             # 要求時に鋳造する (264,004 -> 4,324)。
             all_leaves = _all_leaf_count(spec)
+            numeric_leaves = leaf_count(spec)
             if exploded and all_leaves:
-                _expansion_diagnostic(signal_name, samples, all_leaves, diagnostics)
+                _expansion_diagnostic(
+                    signal_name, samples, all_leaves, numeric_leaves, diagnostics
+                )
             if all_leaves == 0:
                 # 0 幅軸の展開不能列。列展開時代も pairs が空でループが 1 度も回らず
                 # Signal も診断も出なかった — その沈黙をそのまま保つ。
@@ -537,7 +551,7 @@ class MdfLoader:
             # 構造化チャンネルが「非数値型のためスキップ」で消滅する。probe は非 raw
             # (= 本読みと同じ側) なので、その dtype がそのままゲートの根拠になる
             # (raw 側で判定すると TTAB が消える・_PROBE_OPTIONS のコメント参照)。
-            if leaf_count(spec) == 0:
+            if numeric_leaves == 0:
                 # signal_name を Diagnostic に載せないのは列展開時代と同一
                 # (1-D 非数値の診断を byte-identical に保つ)。
                 diagnostics.append(

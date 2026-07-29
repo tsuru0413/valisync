@@ -188,6 +188,9 @@ OVERLAY_CLAUSE_NO_MATCH_TMPL: Final = "同名なし {n}"
 OVERLAY_CLAUSE_UNIT_MISMATCH_TMPL: Final = "単位不一致 {n}"
 OVERLAY_CLAUSE_ALREADY_TMPL: Final = "済み {n}"
 OVERLAY_CLAUSE_AMBIGUOUS_TMPL: Final = "曖昧 {n}"
+# E-3: 対象ファイル側の候補が配列/構造体チャンネル**本体**だった件数
+# (スカラー vs 配列の構造ミスマッチ — 単位不一致と同じ粒度の語彙に揃える)。
+OVERLAY_CLAUSE_CONTAINER_TMPL: Final = "構造不一致 {n}"
 STATUS_OVERLAY_ALL_DONE: Final = "すべて重ね済みです"
 STATUS_OVERLAY_NO_REFERENCE_SIGNALS: Final = "基準の信号がプロットされていません"
 

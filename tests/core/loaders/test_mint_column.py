@@ -156,6 +156,10 @@ def test_record_key_display_names_never_reach_the_minting_path(tmp_path: Path) -
     で、それが効くのは **レコードのキー集合 == 発行された Signal 名** (1:1) だから。
     つまりこのテストが本当に守っているのは 1:1 の方 — 表に「Signal を作らなかった
     チャンネル」が残った瞬間、その名前は誤データを返す入口に変わる。
+
+    **T7 で防波堤を二重化した**: 1:1 は不変条件であって述語ではない (壊れても何も
+    検出されない) ため、``_mint_column`` 自身がレコード名そのものを列と見なさず
+    打ち切るようにした。下の assert はその第 2 の防波堤を pin する。
     """
     ts = np.array([0.0, 0.1, 0.2, 0.3])
     mdf = MDF()
@@ -201,10 +205,11 @@ def test_record_key_display_names_never_reach_the_minting_path(tmp_path: Path) -
     np.testing.assert_array_equal(got.values, [7.0, 8.0, 9.0, 10.0])
     assert mgr.mint_count == 0  # 鋳造経路を **一度も通らない**
 
-    # 記録: 鋳造器を直接呼ぶと今も誤データを返す (だから 1:1 が防波堤である)。
-    # 将来ここが None を返すようになったら、上の防波堤は二重化されたということ。
-    leaked = mgr._mint_column(key, _ns(key, "A[0]"))
-    assert leaked is None or leaked.metadata["physical_channel"] == "A"
+    # 第 2 の防波堤 (T7): 鋳造器を直接呼んでも誤データを返さない。ここが親 "A" の
+    # 列 0 (unit "mm" / uint8 / [0,10,20,30]) を返す実装は、1:1 が崩れた瞬間に
+    # 例外なしで別チャンネルのデータを配る。`is None` でなければならず、
+    # 「親を返してもよい」という緩い形にはしない。
+    assert mgr._mint_column(key, _ns(key, "A[0]")) is None
 
 
 def test_structured_field_columns_are_minted(tmp_path: Path) -> None:

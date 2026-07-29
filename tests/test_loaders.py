@@ -828,7 +828,7 @@ def test_flatten_plain_3d_expands_and_reports_one_info() -> None:
     「本に展開」診断は _expansion_diagnostic が担うようになった (E-3 で
     _explode_samples は列を作らなくなったため 2 つに分離)。
     """
-    from valisync.core.loaders.column_names import spec_from_probe
+    from valisync.core.loaders.column_names import leaf_count, spec_from_probe
     from valisync.core.loaders.mdf_loader import (
         _all_leaf_count,
         _expansion_diagnostic,
@@ -846,7 +846,9 @@ def test_flatten_plain_3d_expands_and_reports_one_info() -> None:
     assert np.array_equal(dict(pairs)["Cube[1][1]"], arr[:, 1, 1])
 
     diags: list = []
-    _expansion_diagnostic("Cube", arr, _all_leaf_count(spec_from_probe(arr)), diags)
+    spec = spec_from_probe(arr)
+    # 全リーフが数値なので D1 の「うち数値列 M 本」併記は付かない (文言不変)。
+    _expansion_diagnostic("Cube", arr, _all_leaf_count(spec), leaf_count(spec), diags)
     assert len(diags) == 1
     assert diags[0].message == "信号 'Cube': 2x2 配列を 4 本に展開"
 

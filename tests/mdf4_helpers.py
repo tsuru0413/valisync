@@ -462,6 +462,45 @@ def write_mdf4_single_column_shapes(tmp_path: Path) -> Path:
     return path
 
 
+def write_mdf4_all_non_numeric_struct(tmp_path: Path) -> Path:
+    """全リーフが非数値の**構造化**チャンネル + 通常チャンネル — D2 の第 3 クラス.
+
+    E-3 の診断 supersede は 3 クラスある: (1) 全リーフ数値の容器 (warning なし)、
+    (2) 混在容器 ``Q`` (旧: リーフ単位 warning 1 件 → 新: 0 件)、(3) **全リーフ
+    非数値の容器**。(3) は旧コードがリーフごとに各リーフの scalar dtype で warning を
+    出していたのに対し、新コードは親レベルの warning を **1 件**、しかも親の複合
+    dtype で出す。既存 16 fixture のどれもこの形状を持たないため機械比較は構造的に
+    盲目だった (spec D2)。``Q`` (混在) では numeric>0 なので (3) は再現できない。
+    """
+    ts = np.array([0.0, 0.1, 0.2, 0.3])
+    mdf = MDF()
+    try:
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array(
+                        [(b"ab", b"xyz"), (b"cd", b"uvw")] * 2,
+                        dtype=[("tag", "S2"), ("code", "S3")],
+                    ),
+                    timestamps=ts,
+                    name="R",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([1.0, 2.0, 3.0, 4.0]), timestamps=ts, name="Clean"
+                )
+            ]
+        )
+        path = tmp_path / "allnonnum.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
 def write_mdf4_interleaved_arrays(tmp_path: Path) -> Path:
     """配列 / スカラー / 配列 の順 — 列 span が連続性に依存しないことの pin.
 

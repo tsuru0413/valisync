@@ -1,4 +1,4 @@
-# ruff: noqa: RUF003
+# ruff: noqa: RUF002, RUF003
 """E-3 反転: ローダーは物理チャンネル 1 本につき Signal を 1 個だけ発行する。
 
 判定軸は 2 つ (spec の E-3 行):
@@ -20,6 +20,7 @@ from tests.mdf4_helpers import (
     write_mdf4,
     write_mdf4_2d,
     write_mdf4_all_channels_bad,
+    write_mdf4_all_non_numeric_struct,
     write_mdf4_non_monotonic,
     write_mdf4_non_monotonic_2d,
     write_mdf4_single_column_shapes,
@@ -98,10 +99,19 @@ def test_expansion_info_counts_all_leaves_not_only_numeric_ones(
 
     件数を column_names.leaf_count (数値のみ) へ替えると「1 本に展開」に変わる —
     _all_leaf_count を残す理由そのもの。列キー空間には数値リーフだけが載る。
+
+    **D1 (T7 決定)**: N は据え置きだが、到達可能な列数と食い違うとき **だけ**
+    「（うち数値列 M 本）」を併記する (集約で消えた説明の復活)。M を落とすと
+    「info が 2 本と言い、ブラウザは 1 列しか見せる」説明なしの不一致に戻る。
     """
     session, key, diags = _loaded(write_mdf4_single_column_shapes(tmp_path))
     q_infos = [d for d in diags if d.level == "info" and d.signal_name == "Q"]
-    assert [d.message for d in q_infos] == ["信号 'Q': 構造化チャンネルを 2 本に展開"]
+    assert [d.message for d in q_infos] == [
+        "信号 'Q': 構造化チャンネルを 2 本に展開（うち数値列 1 本）"
+    ]
+    # 数値==全数の容器では併記しない (通常ケースの文言は完全不変・prod_demo は全件これ)。
+    p_infos = [d for d in diags if d.level == "info" and d.signal_name == "P"]
+    assert [d.message for d in p_infos] == ["信号 'P': 構造化チャンネルを 1 本に展開"]
     assert session.column_names_of(key, "Q") == ("Q.x",)
     assert session.resolve_signal(f"{key}::Q.x") is not None
     assert session.resolve_signal(f"{key}::Q.tag") is None  # 非数値リーフは列でない
@@ -111,6 +121,40 @@ def test_expansion_info_counts_all_leaves_not_only_numeric_ones(
     # 出していた。1-D 非数値チャンネルの警告は不変
     # (test_non_numeric_channel_is_skipped_with_the_same_warning が別途固定)。
     assert not [d for d in diags if "非数値型" in d.message]
+
+
+def test_all_non_numeric_container_is_one_parent_level_warning(
+    tmp_path: Path,
+) -> None:
+    """D2 (spec): 全リーフが非数値の容器 = 第 3 の supersede クラス。
+
+    旧コードはリーフごとに **各リーフの scalar dtype** で warning を出していた
+    (``'R.tag': ... dtype |S2`` / ``'R.code': ... dtype |S3`` の 2 件)。新コードは
+    親レベルの **1 件** を **親の複合 dtype** で出す。既存 16 fixture のどれもこの
+    形状を持たないため T6 の機械比較は構造的に盲目だった — ここで直接固定する
+    (混在容器 Q は numeric>0 なのでこのクラスを再現できない)。
+    """
+    session, key, diags = _loaded(write_mdf4_all_non_numeric_struct(tmp_path))
+
+    # 容器は Signal にも表にもならない (数値リーフゼロ)。
+    assert _orig_names(session, key) == ["Clean"]
+    assert session.resolve_signal(f"{key}::R") is None
+    assert session.resolve_signal(f"{key}::R.tag") is None
+    assert session.column_names_of(key, "R") == ("R",)  # 表に無い = 1 列扱い
+
+    warns = [d for d in diags if d.level == "warning"]
+    assert len(warns) == 1
+    assert warns[0].signal_name is None  # 1-D 非数値と同じ形 (byte-identical 契約)
+    assert warns[0].message.startswith("信号 'R': 非数値型のためスキップ（dtype ")
+    # リーフ単位の warning は出ない (集約 = 意図的 supersede)。
+    assert "R.tag" not in warns[0].message
+
+    # info は出る (展開しようとしたこと自体は報告する)。D1 の併記で「到達できる列は
+    # 0 本」と明示され、直後の warning がその理由を説明する。
+    infos = [d for d in diags if d.level == "info"]
+    assert [d.message for d in infos] == [
+        "信号 'R': 構造化チャンネルを 2 本に展開（うち数値列 0 本）"
+    ]
 
 
 def test_non_numeric_channel_is_skipped_with_the_same_warning(tmp_path: Path) -> None:

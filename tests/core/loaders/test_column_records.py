@@ -42,6 +42,15 @@ def _eager_numeric_columns(path: Path) -> dict[str, tuple[str, ...]]:
     ローダーは列 Signal を 1 つも発行しない。参照を production の外 (``select`` +
     ``_flatten``) へ移すことで、**表から生成した列名 == 実データのリーフ**という
     元の契約をそのまま持ち越す (T0 の全数オラクルと同じ独立性)。
+
+    **独立性の限界 (T7 で記録)**: エントリ列挙 (``virtual_groups`` /
+    ``included_channels``) は production の ``mdf_loader`` と同じ規則を写しており、
+    さらに **LD-14 の per-channel 1024 列ガードを一切モデルしていない**。したがって
+    ``write_mdf4_wide_2d`` (1025 列) をこのオラクルを使うテストの parametrize へ
+    足してはならない — production はガードで展開を止める/確認を求めるのに、
+    オラクルは 1025 列を無条件に数え、**実装が正しくても RED** になる (逆に、
+    ガードの退役をこのオラクルは検出できない)。1024 ガードの end-to-end 検証は
+    専用テスト側で行うこと。
     """
     out: dict[str, tuple[str, ...]] = {}
     with MDF(str(path), time_from_zero=False) as mdf:

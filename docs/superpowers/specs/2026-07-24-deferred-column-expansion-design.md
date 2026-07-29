@@ -313,8 +313,26 @@ info 診断は `_all_leaf_count`（**dtype-blind**）を母数にする — こ�
   `column_names_of(key, "Q") == ("Q.x",)` を**同一テストで**assert しており、不一致は
   test-lock 済み（黙って広がることはない）。
 - prod_demo は影響なし（info 320 件 / warning 0 件）。
-- **T7 で文言を「数値列数＋スキップしたリーフ数」の形へ改めるか、この不一致を仕様として
-  据え置くかを判断する。** 据え置く場合は本エントリが根拠。
+
+**D1 の決定（T7・確定）: 併記して説明を復活させる（据え置かない）。**
+`N`（`_all_leaf_count`・dtype-blind）は S2 の mandate ゆえ**据え置く**。そのうえで
+**数値リーフ数 `M` が `N` と食い違うときだけ**「（うち数値列 M 本）」を併記する
+（`mdf_loader._expansion_diagnostic`）。
+
+| 入力 | 文言 |
+|---|---|
+| 全リーフ数値（`M == N`） | `信号 'P': 構造化チャンネルを 1 本に展開` — **完全不変** |
+| 混在（`Q`: x=f8 / tag=S2） | `信号 'Q': 構造化チャンネルを 2 本に展開（うち数値列 1 本）` |
+| 全リーフ非数値（`R`・D2） | `信号 'R': 構造化チャンネルを 2 本に展開（うち数値列 0 本）` |
+
+- 「reword して N を到達可能な数にする」は採らない — S2（`_all_leaf_count` を残す理由）
+  そのものを覆すため。併記なら N を保ったまま「ユーザーが到達できる本数」が文面に出る。
+- **prod_demo は文言が 1 件も変わらない**（`M == N` が全件・info 320 / warning 0）。
+  発火するのは今日まさに誤解を生んでいた混在／全非数値の場合だけ。
+- 保存契約「1-D チャンネルの診断は byte-identical」は不変（1-D は `exploded` でないため
+  この info を出さない）。
+- test-lock: `test_expansion_info_counts_all_leaves_not_only_numeric_ones`（混在＋
+  `P` の不変ケース）／`test_all_non_numeric_container_is_one_parent_level_warning`（`R`）。
 
 **D2: 全リーフが非数値の容器という第 3 の supersede クラスが未 pin（記録）。**
 新コードは info を出したうえで親レベルの warning を 1 件
@@ -322,6 +340,20 @@ info 診断は `_all_leaf_count`（**dtype-blind**）を母数にする — こ�
 各リーフの scalar dtype で warning を出していた。**16 fixture のどれもこの形状を持たない**
 ため機械比較は構造的に盲目で、テストも無い。T7 で fixture 1 本を足すか、
 仕様として明記すること。
+
+**D2 の決定（T7・確定）: fixture を足して test-lock（仕様として据え置かない）。**
+`tests/mdf4_helpers.write_mdf4_all_non_numeric_struct`（`R`: `tag` S2 ＋ `code` S3 の
+構造化チャンネル ＋ 通常チャンネル `Clean`）を新設し、
+`test_all_non_numeric_container_is_one_parent_level_warning` が実測を固定する:
+
+- Signal ゼロ・`ColumnRecord` ゼロ（`resolve_signal(f"{key}::R")` / `::R.tag` とも None）。
+- warning は**親レベル 1 件**・`signal_name is None`・dtype は**親の複合 dtype**
+  （`[('tag', 'S2'), ('code', 'S3')]`）。旧コードのリーフ単位 2 件（`R.tag`: `|S2` /
+  `R.code`: `|S3`）からの**意図的 supersede**。
+- info は 1 件出る（D1 の併記で「うち数値列 0 本」）。
+
+混在容器 `Q` は `numeric > 0` のためこのクラスを構造的に再現できない ＝ 専用 fixture が
+必要だった、というのが D2 の「機械比較が盲目」の中身。
 
 ## 保存すべき契約（違反＝サイレント破壊）
 

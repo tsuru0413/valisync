@@ -14,6 +14,19 @@ _TIMESTAMP_HEADER = "timestamp"
 #: 単位行を出力するときのタイムスタンプ列の単位(コアは秒に正規化済み)。
 _TIMESTAMP_UNIT = "s"
 
+#: 配列チャンネルの親を書き出そうとしたときのエラー文言。core に置くのは、GUI
+#: ダイアログを通らない直呼び (scripted / realgui の Session.export_csv) まで守れる
+#: 唯一の層だから (E-3 C-d)。gui.strings へは置かない — 本モジュールは core であり
+#: gui を import しない (header_names の注記と同じ理由)。
+EXPORT_MULTI_COLUMN_VALUES_ERROR_TMPL = (
+    "信号 '{name}' は 1 時刻につき複数の値を持つ配列チャンネルのため CSV に"
+    "書き出せません。展開された列を選択してください。"
+)
+EXPORT_CONTAINER_CHANNEL_ERROR_TMPL = (
+    "信号 '{name}' は配列/構造体チャンネル本体のため CSV に書き出せません。"
+    "展開された列 (例: '{example}') を選択してください。"
+)
+
 
 @dataclass(frozen=True)
 class CsvExportOptions:
@@ -89,11 +102,28 @@ class CsvExporter:
         options: CsvExportOptions | None = None,
     ) -> None:
         opts = options if options is not None else CsvExportOptions()
+        self._require_single_value_columns(signals)
         if use_unified_timeline:
             rows = self._rows_unified_timeline(signals, opts)
         else:
             rows = self._rows_shared_timeline(signals, opts)
         self._atomic_write(Path(output_path), rows)
+
+    @staticmethod
+    def _require_single_value_columns(signals: list[Signal]) -> None:
+        """1 時刻 1 値でない Signal (配列チャンネルの親) を拒否する (E-3 C-d)。
+
+        **値を読まずに**親を弾くのは ``Session.export_csv`` の役目 (ColumnRecord
+        由来)。ここは CsvExporter を直接呼ぶ経路の最後の砦で、numpy の生 TypeError
+        を意味の分かる日本語エラーへ変える。判定を ``sorted_view()`` の結果で行うのは、
+        直後に同じ (キャッシュされた) ビューを読むため健全な経路には追加コストが
+        無いから — 拒否される側だけが一度の読みを払う。
+        """
+        for sig in signals:
+            if sig.sorted_view()[1].ndim != 1:
+                raise ValueError(
+                    EXPORT_MULTI_COLUMN_VALUES_ERROR_TMPL.format(name=sig.name)
+                )
 
     def _header_rows(self, signals: list[Signal], opts: CsvExportOptions) -> list[str]:
         """ヘッダ行(+ unit_row 指定時は単位行)を返す。"""

@@ -12,6 +12,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDockWidget
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
+from tests.mdf4_helpers import write_mdf4_2d
 from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.models.load_result import Diagnostic
 from valisync.core.session import LoadError, LoadOutcome
@@ -540,6 +541,19 @@ class TestDiagnosticActivatedJump:
         window._on_diagnostic_activated("no_such_thing")
 
         assert window.app_vm.active_file_key == key
+
+    def test_jumps_by_expanded_column_name(self, qtbot, tmp_path):
+        """診断が載せる signal_name は素の列名 ("Mat[0]")。反転後 group_signals は
+        物理チャンネルしか返さないので、名前の線形比較では二度と一致せず、行を
+        ダブルクリックしても無反応になる (無音の機能喪失)。"""
+        window = _make_window(qtbot)
+        key_csv = window.app_vm.request_load(_write_csv(tmp_path), _csv_format())
+        key_mf4 = window.app_vm.request_load(write_mdf4_2d(tmp_path))
+        window.app_vm.set_active_file(key_csv)
+
+        window._on_diagnostic_activated("Mat[0]")
+
+        assert window.app_vm.active_file_key == key_mf4
 
 
 # ---------------------------------------------------------------------------

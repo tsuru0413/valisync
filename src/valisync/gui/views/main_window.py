@@ -47,12 +47,14 @@ from PySide6.QtWidgets import (
 )
 
 from valisync.core.loaders.csv_format_detector import CsvFormatDetector
+from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
 from valisync.core.models.format_def import FormatDefinition
 from valisync.core.models.load_result import Diagnostic
 from valisync.core.models.sample_source import SampleReadError
 from valisync.core.session import LoadOutcome
 from valisync.gui import reference_overlay
 from valisync.gui import strings as S
+from valisync.gui.display_names import split_key
 from valisync.gui.strings import mn
 from valisync.gui.theme import apply as theme_apply
 from valisync.gui.theme import icons, tokens
@@ -740,12 +742,17 @@ class MainWindow(QMainWindow):
         # Defensive: no current emitter sends a signal name here, but this
         # fallback stays ready for a future signal-name emit / signal-row
         # selection without another _on_diagnostic_activated rewrite.
+        #
+        # E-3: 診断が載せる signal_name は **素の列名** ("Mat[0]")。反転後
+        # group_signals は物理チャンネルしか返さないので、名前の線形比較では
+        # 列名の診断が二度と一致しない (ダブルクリックしても無反応)。解決器なら
+        # 列キーを最長一致で引ける。名前空間つきキーがそのまま来た場合は所属
+        # グループへ絞ってから引く (二重接頭辞にしない)。
+        group_key, bare = split_key(target)
         for key in self.app_vm.loaded_file_keys:
-            try:
-                group_sigs = self.app_vm.session.group_signals(key)
-            except KeyError:
+            if group_key and group_key != key:
                 continue
-            if any(sig.name == target for sig in group_sigs):
+            if self.app_vm.session.resolve_signal(f"{key}{KEY_SEPARATOR}{bare}"):
                 self.app_vm.set_active_file(key)
                 return
 

@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from tests.mdf4_helpers import write_mdf4_2d
 from valisync.core.interpolation import InterpolationMethod
 from valisync.core.models import Delimiter, FormatDefinition, Signal, SignalGroup
 from valisync.core.session import (
@@ -433,6 +434,16 @@ def test_source_info_ignores_empty_signals_but_counts_them(tmp_path):
     info = session.source_info(key)
     assert info.t_min == 1.0 and info.t_max == 4.0
     assert info.n_channels == 2  # 空信号も channel 数には数える
+
+
+def test_source_info_n_channels_counts_expanded_columns(tmp_path):
+    """U2: 表示件数の単位は **列数**。反転後 group.signals は物理チャンネルのみ
+    なので len(group.signals) では Mat の 3 列が 1 と数えられ、ChannelBrowser の
+    「N ch 中 M ch を表示」と単位が食い違う (FileBrowser ツールチップも同様)。"""
+    session = Session()
+    key = session.load(write_mdf4_2d(tmp_path)).key
+    info = session.source_info(key)
+    assert info.n_channels == 4  # Mat[0..2] + Clean
 
 
 def test_source_info_time_range_none_when_all_empty(tmp_path):

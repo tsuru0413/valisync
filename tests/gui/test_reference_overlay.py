@@ -1,3 +1,4 @@
+# ruff: noqa: RUF002
 """Tests for reference_overlay (E-2b — reference-file same-name auto-overlay).
 
 Pure-Python VM-level logic (spec §3): the 5-step matching/skip-counting
@@ -12,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
+from tests.mdf4_helpers import write_mdf4, write_mdf4_2d
 from valisync.core.models import Signal, SignalGroup
 from valisync.core.session import Session
 from valisync.gui.reference_overlay import (
@@ -381,3 +383,116 @@ def test_file_display_name_qualifies_on_basename_collision(tmp_path: Path) -> No
         SignalGroup((), (tmp_path / "a.csv").absolute(), "CSV", datetime.now())
     )
     assert file_display_name(session, [k1, k2], k2) == f"a.csv ({k2})"
+
+
+# ─── E-3: 列レベルのマッチ (spec C-c) ───────────────────────────────────────
+
+
+def _mat2d_in(tmp_path: Path, sub: str) -> Path:
+    """write_mdf4_2d は固定名 mat2d.mf4 を書くので 2 本目は別ディレクトリへ置く。"""
+    directory = tmp_path / sub
+    directory.mkdir()
+    return write_mdf4_2d(directory)
+
+
+def test_overlay_matches_expanded_column_across_files(tmp_path: Path) -> None:
+    """反転後 group_signals は物理チャンネルしか返さない。列レベルで引かないと
+    Mat[0] が全て no_match になり「0 件重ねました（同名なし 1）」という
+    **正常に見える嘘**が出る (真の不一致と区別できない)。"""
+    session = Session()
+    ref_key = session.load(_mat2d_in(tmp_path, "ref")).key
+    tgt_key = session.load(_mat2d_in(tmp_path, "tgt")).key
+    ref_col = f"{ref_key}::Mat[0]"
+
+    panel = GraphPanelVM(session)
+    panel.add_signal_to_axis(ref_col, 0)
+
+    result = overlay_reference_signals(panel, session, ref_key, tgt_key)
+
+    assert result.added == 1
+    assert result.no_match == 0
+    assert {(sk, ax) for _eid, sk, ax in panel.plotted_entries()} == {
+        (ref_col, 0),
+        (f"{tgt_key}::Mat[0]", 0),
+    }
+
+
+def test_overlay_column_key_collision_prefers_real_channel(tmp_path: Path) -> None:
+    """`Mat[0]` 衝突の pin: 参照側の配列列 `Mat[0]` は、対象ファイルに実在する
+    1-D チャンネル `Mat[0]` と単位一致で偶然ペアリングされる。どちらが選ばれるかは
+    parse_leaf の最長一致規則 (実チャンネルが展開列に優先) で決まる — 規則を変えると
+    重ねる相手が黙って別物になるので、値まで含めて固定する。"""
+    session = Session()
+    ref_key = session.load(_mat2d_in(tmp_path, "ref")).key
+    tgt_path = write_mdf4(
+        tmp_path / "tgt.mf4",
+        [
+            {
+                "name": "Mat[0]",
+                "timestamps": [0.0, 0.1, 0.2, 0.3],
+                "values": [7.0, 8.0, 9.0, 10.0],
+            }
+        ],
+    )
+    tgt_key = session.load(tgt_path).key
+    ref_col = f"{ref_key}::Mat[0]"
+
+    panel = GraphPanelVM(session)
+    panel.add_signal_to_axis(ref_col, 0)
+
+    result = overlay_reference_signals(panel, session, ref_key, tgt_key)
+
+    added_key = f"{tgt_key}::Mat[0]"
+    assert result.added == 1
+    assert (added_key, 0) in {(sk, ax) for _eid, sk, ax in panel.plotted_entries()}
+    # 実チャンネル (物理) が勝つ — 鋳造された展開列ではない
+    assert added_key in {s.name for s in session.group_signals(tgt_key)}
+    got = session.resolve_signal(added_key)
+    assert got is not None
+    assert got.sorted_view()[1].tolist() == [7.0, 8.0, 9.0, 10.0]
+
+
+def test_overlay_skips_container_channel_candidate(tmp_path: Path) -> None:
+    """参照が 1-D スカラー `Mat`、対象が 2-D 配列チャンネル `Mat` のとき、候補は列
+    ではなく **配列の親**。載せると sorted_view() が float64 へ 8 倍膨張した 2-D 配列を
+    恒久キャッシュし (prod で 96 MB/本)、そもそも描画できない。"""
+    session = Session()
+    ref_path = write_mdf4(
+        tmp_path / "ref.mf4",
+        [
+            {
+                "name": "Mat",
+                "timestamps": [0.0, 0.1, 0.2, 0.3],
+                "values": [1.0, 2.0, 3.0, 4.0],
+            }
+        ],
+    )
+    ref_key = session.load(ref_path).key
+    tgt_key = session.load(_mat2d_in(tmp_path, "tgt")).key
+
+    panel = GraphPanelVM(session)
+    panel.add_signal_to_axis(f"{ref_key}::Mat", 0)
+
+    result = overlay_reference_signals(panel, session, ref_key, tgt_key)
+
+    assert result.container == 1
+    assert result.added == 0
+    assert len(panel.plotted_entries()) == 1  # 親は載らない
+    # 拒否は **値を読まずに** 決める (チャンネル全読みは遅延展開の利得を捨てる)
+    parent = session.resolve_signal(f"{tgt_key}::Mat")
+    assert parent is not None
+    assert parent._values_source.is_materialized is False
+
+
+def test_format_summary_container_clause() -> None:
+    result = OverlayResult(
+        total=1,
+        added=0,
+        no_match=0,
+        unit_mismatch=0,
+        already_present=0,
+        ambiguous=0,
+        container=1,
+    )
+    msg = format_overlay_summary(result, "b.mf4")
+    assert msg == "b.mf4 の同名信号を 0 件重ねました（構造不一致 1）"

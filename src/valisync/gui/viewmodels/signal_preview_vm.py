@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from valisync.core.downsampler.downsampler import Downsampler
+from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
 from valisync.gui.display_names import display_names as _resolve_display_names
+from valisync.gui.display_names import split_key
 
 if TYPE_CHECKING:
     from valisync.gui.viewmodels.app_viewmodel import AppViewModel
@@ -31,47 +33,58 @@ class SignalPreviewVM:
 
     def _signal(self) -> Any | None:
         key = self._signal_key
-        active_key = self._app_vm.active_file_key
-        if not key or not active_key:
+        if not key:
             return None
-        try:
-            for sig in self._app_vm.session.group_signals(active_key):
-                if sig.name == key:
-                    return sig
-        except KeyError:
+        # E-3: 列キー (Mat[0] / Pos.x) は反転後 group_signals に載らない。線形走査の
+        # ままだと解決できず、プレビュー窓が「この信号はプレビューできません」で
+        # 静かに真っ白になる — 設計された空状態と見分けがつかない。解決器は物理
+        # チャンネルをそのまま返し、列は最長一致で鋳造する。
+        group_key, bare = split_key(key)
+        sig = self._app_vm.session.resolve_signal(key)
+        if sig is None:
             return None
-        return None
-
-    def _all_loaded_signal_keys(self) -> list[str]:
-        """Every signal_key across every currently loaded file (E-0 collision scope).
-
-        Used to resolve display_name so the "名前" row and the windowTitle
-        (same rule, spec §1.2) agree on whether a bare name needs qualifying —
-        scoped to ALL loaded signals, not just the active file's.
-        """
-        keys: list[str] = []
-        for group_key in self._app_vm.loaded_file_keys:
-            try:
-                keys.extend(
-                    sig.name for sig in self._app_vm.session.group_signals(group_key)
-                )
-            except KeyError:
-                continue
-        return keys
+        if group_key and self._app_vm.session.is_container_channel(group_key, bare):
+            # 配列/構造体チャンネルの親は 1 本の波形を持たない。ここで弾かないと
+            # properties() の np.isfinite(sig.values) がチャンネル全読み (prod で
+            # 96 MB/本) を誘発し、Downsampler が 2-D 配列に出くわす。判定は列構造
+            # (名前) だけで済むので、値には触れない。
+            return None
+        return sig
 
     def display_name(self, key: str) -> str:
         """Resolve *key* to its display string (E-0), scoped to all loaded signals.
 
-        *key* is included in the resolution population even when it is not
-        itself a currently-loaded signal (e.g. "unknown" keys passed straight
-        through from show_signal) so callers never get a KeyError — an
-        unresolvable key simply never collides with anything and comes back
-        as its own bare name.
+        衝突判定に必要なのは「他の読み込み済みファイルに同じ bare 名の列があるか」
+        だけなので、母数は全ファイルの全列ではなく **他ファイルごとの同名 1 本**へ
+        縮約する (prod 264k 列を呼び出しのたびに列挙しない)。distinct group_key の
+        数だけが結果を決めるので、``display_names`` の規則そのものは変わらない。
+
+        判定に ``resolve_signal`` を使わないのが要点: 鋳造した列は
+        ``_resolved_by_key`` へ **恒久的に** 入る (LRU は E-3 では入れない = C-g) ため、
+        プレビュー窓のタイトルやプロパティの「名前」を出すだけで、他ファイルぶんの
+        列 Signal が寿命いっぱい滞留する。``has_column`` (列の存在) と
+        ``is_container_channel`` (親チャンネルの存在) はどちらも ColumnRecord の
+        列構造だけを見るので、1 本も鋳造しない。2 つを OR するのは旧実装
+        (``resolve_signal is not None``) の母数を厳密に保つため — 解決できるキーは
+        「列」か「物理チャンネル (容器を含む)」のどちらかである。
+
+        *key* は読み込み済み信号でなくても (show_signal から素通しされた未知キー等)
+        常に母数に含めるので KeyError にはならない — 何とも衝突せず bare 名で返る。
         """
-        keys = self._all_loaded_signal_keys()
-        if key not in keys:
-            keys = [*keys, key]
-        return _resolve_display_names(keys)[key]
+        group_key, bare = split_key(key)
+        if not group_key:
+            # 名前空間なしのキーは所属ファイルが無く、衝突判定の対象にならない。
+            return bare
+        session = self._app_vm.session
+        population = [key]
+        for other in self._app_vm.loaded_file_keys:
+            if other == group_key:
+                continue
+            if session.has_column(other, bare) or session.is_container_channel(
+                other, bare
+            ):
+                population.append(f"{other}{KEY_SEPARATOR}{bare}")
+        return _resolve_display_names(population)[key]
 
     def properties(self) -> list[tuple[str, str]]:
         sig = self._signal()
