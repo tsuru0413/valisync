@@ -60,6 +60,10 @@ class AppViewModel(Observable):
         self._file_offsets: dict[str, float] = {}
         self._teardown: object | None = None  # duck-typed: enqueue(key, group)
         self._releasing: dict[str, str] = {}  # key -> display name (capture at unload)
+        # 増分B: 「重い処理が実行中か」の duck-typed 述語 (GUI が ExportController を
+        # 注入する)。VM は Qt も ExportController も知らないままガードできる。
+        self._busy_predicate: Callable[[], bool] | None = None
+        self._last_unload_refusal: tuple[str, tuple[str, ...]] | None = None
 
     @property
     def session(self) -> Session:
@@ -165,6 +169,34 @@ class AppViewModel(Observable):
         """Inject the GUI-thread teardown service (duck-typed ``enqueue(key, group)``)."""
         self._teardown = service
 
+    def set_busy_predicate(self, predicate: Callable[[], bool] | None) -> None:
+        """Inject a duck-typed "a blocking job is running" predicate (増分B).
+
+        Same shape as :meth:`set_teardown`. The real unload path
+        (FileBrowserView → FileBrowserVM → :meth:`unload_file`) cannot reach the
+        GUI-owned ExportController, so guarding at this single chokepoint is what
+        makes the refusal cover the actual user path instead of a synthetic
+        MainWindow entry point.
+        """
+        self._busy_predicate = predicate
+
+    def is_busy(self) -> bool:
+        """True when the injected predicate says a blocking job is running.
+
+        The affordance (context-menu item) and the backstop (:meth:`unload_file`)
+        read this same predicate, so they cannot disagree.
+        """
+        return self._busy_predicate is not None and self._busy_predicate()
+
+    @property
+    def last_unload_refusal(self) -> tuple[str, tuple[str, ...]] | None:
+        """(reason code, detail names) of the most recently refused unload.
+
+        Reason codes are VM-level, not user text: the View maps them to strings
+        (``gui/strings.py``) so the ViewModel stays free of presentation.
+        """
+        return self._last_unload_refusal
+
     @property
     def releasing_files(self) -> list[tuple[str, str]]:
         """(key, display name) of files whose data is still draining, in order."""
@@ -184,6 +216,15 @@ class AppViewModel(Observable):
         synchronous. Refused without side effects when a Derived_Signal depends on
         the group.
         """
+        if self.is_busy():
+            # 増分B: close() は handle.lock を取るので、export ワーカーが select 中
+            # だと GUI スレッドがその読み終了まで同期ブロックする (実測 0.73-1.18s)。
+            # かつ _closed 以降の列読みは SampleReadError になりエクスポートが壊れる。
+            # BusyOverlay は MainWindow の子で cover() が parent.rect() なので、
+            # フロートしたドックは覆えない = 「偶然の遮断」は今日も成立していない。
+            self._last_unload_refusal = ("export_busy", ())
+            self._notify("unload_blocked")
+            return
         name = self._safe_source_name(key)
         result = self._session.remove_group(key)
         if not result.removed:

@@ -310,6 +310,21 @@ class Session:
         # This bookkeeping is the term most likely to grow toward the sync-close
         # budget at very high channel counts.
         group, columns = self._groups.remove(key)
+        # 増分B: handle 寿命は core が持つ。ここで閉じることで unload と
+        # MainWindow._discard (キャンセル完走のロールバック) の両方が構造的に
+        # カバーされる — GUI 側 (unload_file) に置くと _discard が漏れる。
+        # CSV/Derived グループは handle=None なので no-op。
+        #
+        # WHY (機序・誤解しやすい): close() は handle.lock を取る
+        # (mdf_handle.py:30-31) ので、export ワーカーが select 中なら **GUI スレッドが
+        # その読みの終了まで同期ブロック**する (実測 cold 1.18s / warm 0.73-0.83s)。
+        # in-flight の select は lock により完走し、SampleReadError になるのは
+        # _closed を見る「次の列」。lock は mdf.close() と in-flight mmap read の
+        # 競合 (native アクセス違反) を防いでおり外せない。だから「エクスポート中の
+        # unload」は close をやめるのではなく **UI 側で拒否**する
+        # (AppViewModel.unload_file の述語ガード)。
+        if group.handle is not None:
+            group.handle.close()
         return RemovalResult(
             removed=True,
             dependent_signals=dependents,

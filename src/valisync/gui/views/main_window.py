@@ -196,6 +196,12 @@ class MainWindow(QMainWindow):
         self.busy_overlay = BusyOverlay(self)
         self._load_controller = LoadController(parent=self)
         self._export_controller = ExportController(parent=self)
+        # 増分B: unload の拒否ガード。実経路 (FileBrowserView → FileBrowserVM →
+        # AppViewModel.unload_file) は ExportController に到達できないので、述語を
+        # VM のチョークポイントへ注入する (set_teardown と同型の duck-typed 注入)。
+        self.app_vm.set_busy_predicate(self._export_controller.is_busy)
+        # 拒否モーダルは DI (テストから差し替え可能 — _default_confirm と同規約)。
+        self._notify_blocked: Callable[[str], None] = self._default_blocked_modal
         # GUI スレッド所属 — ワーカーからの展開確認をモーダルへ marshal (LD-14)。
         self._expansion_confirmer = ExpansionConfirmer(self)
         # LD-01: CSV フォーマット解決 (検出して確認ダイアログ)。テストで差し替え可能。
@@ -705,7 +711,23 @@ class MainWindow(QMainWindow):
                 self.app_vm.set_active_file(key)
                 return
 
+    def _default_blocked_modal(self, message: str) -> None:
+        QMessageBox.warning(self, S.ACTION_REMOVE_FILE, message)
+
+    def _on_unload_blocked(self) -> None:
+        """VM が拒否した unload を通知する (FB-01: never silent — status + modal)。
+
+        ステータス単独では不十分: event() が全ての QStatusTipEvent を横取りして
+        set_status_message へ流すため (event() の docstring 参照)、メニューを
+        hover しただけで空 tip が来てラベルが消える。timeout_ms は他の読み捨て
+        メッセージと同じ 8000 (永続する stale ラベルを作らない)。
+        """
+        self.set_status_message(S.UNLOAD_BLOCKED_BY_EXPORT, timeout_ms=8000)
+        self._notify_blocked(S.UNLOAD_BLOCKED_BY_EXPORT)
+
     def _on_app_change(self, change: str) -> None:
+        if change == "unload_blocked":
+            self._on_unload_blocked()
         if change == "loaded":
             self.channel_browser_vm.refresh()
             # Panels are reconciled by GraphAreaVM, which subscribes to app_vm.

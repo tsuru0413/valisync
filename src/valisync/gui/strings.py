@@ -161,6 +161,8 @@ ACTION_REMOVE_FILE: Final = "ファイルを閉じる"
 CONFIRM_CLOSE_FILE_TMPL: Final = "{filename} を閉じますか？プロット中の信号も消えます。"
 CONFIRM_CLOSE_YES: Final = "閉じる"  # QMessageBox.Yes の setText (本文動詞と一致)
 CONFIRM_CLOSE_NO: Final = "キャンセル"  # QMessageBox.No の setText
+# 増分B: エクスポート実行中の unload 拒否 (AppViewModel.unload_file の述語ガード)。
+UNLOAD_BLOCKED_BY_EXPORT: Final = "エクスポート中はファイルを閉じられません"
 
 # ── 基準ファイル・同名重ね (E-2a/b・file_browser_view/vm・reference_overlay) ──
 ACTION_SET_REFERENCE: Final = "基準に設定"
