@@ -167,7 +167,9 @@ class Session:
             messages = [d.message for d in result.diagnostics]
             raise LoadError(file_path, messages, diagnostics=result.diagnostics)
         try:
-            key = self._groups.add(result.signal_group)
+            key = self._groups.add(
+                result.signal_group, column_records=result.column_records
+            )
         except Exception:
             # 登録に失敗したグループは誰も所有しない。handle を閉じないと
             # トレースバックが生かし続け、GUI のエラーダイアログ表示中ずっと
@@ -257,6 +259,26 @@ class Session:
     def resolve_signal(self, key: str) -> Signal | None:
         """名前空間つきキーを Signal へ解決する (列キーは要求時に鋳造・E-1)."""
         return self._groups.resolve(key)
+
+    def column_names_of(self, key: str, display_name: str) -> tuple[str, ...]:
+        """物理チャンネル 1 本の列名を順序どおり返す (名前空間なし・E-3)。
+
+        GUI が「その物理チャンネルにどんな列があるか」を知る唯一の口。
+        鋳造 (``resolve_signal``) を誘発しないので、展開していない親にも使える。
+        """
+        return self._groups.column_names_of(key, display_name)
+
+    def total_column_count(self, key: str) -> int:
+        """グループの数値列総数 (KeyError if unknown)。表示件数の母数 (U2)。"""
+        return self._groups.total_column_count(key)
+
+    def has_column(self, key: str, display_name: str) -> bool:
+        """*display_name* の列がこのグループに実在するか (鋳造しない存在判定)。
+
+        ``resolve_signal`` と違い副テーブルへ何も残さない — 「表示のためだけに列を
+        恒久登録する」経路を作らないための口 (E-3 C-g)。
+        """
+        return self._groups.has_column(key, display_name)
 
     def source_info(self, key: str) -> SourceInfo:
         """Return read-only metadata for the group under *key* (KeyError if unknown)."""

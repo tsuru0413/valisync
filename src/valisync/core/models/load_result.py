@@ -1,8 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from valisync.core.models.signal_group import SignalGroup
+
+if TYPE_CHECKING:
+    # 実行時 import は循環する: core.models -> core.loaders.column_names は
+    # パッケージ core.loaders の __init__ (csv_loader/mdf_loader) を起動し、
+    # そこから core.models へ戻る。注釈は from __future__ で文字列化済み。
+    from valisync.core.loaders.column_names import ColumnRecord
 
 
 @dataclass(frozen=True)
@@ -29,6 +37,10 @@ class LoadResult:
 
     signal_group: SignalGroup | None
     diagnostics: tuple[Diagnostic, ...] = ()
+    # E-3: 列鋳造の材料 {LD-08 dedup 済み表示名: ColumnRecord}。ローダーが 1 レコード
+    # プローブから作り、Session が SignalGroupManager へ引き渡す。列構造を持たない
+    # CSV は空のまま (1 信号 1 列として扱われる)。
+    column_records: Mapping[str, ColumnRecord] = field(default_factory=dict)
 
 
 class LoadCancelled(Exception):

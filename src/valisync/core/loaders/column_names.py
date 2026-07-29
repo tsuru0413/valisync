@@ -30,6 +30,22 @@ class ColumnSpec:
     fields: tuple[tuple[str, ColumnSpec], ...] = ()  # struct のみ (順序保存)
 
 
+@dataclass(frozen=True, slots=True)
+class ColumnRecord:
+    """物理チャンネル 1 本の鋳造に必要な最小情報 (値は持たない)。
+
+    ローダーが持つ 2 つのキー空間を橋渡しする唯一の置き場: 列キー / 表示名は
+    LD-08 dedup 済み (同名 2 本なら ``sig[0]`` / ``sig[1]``) だが、asammdf の
+    ``select`` は**生チャンネル名と (gi, ci)** を要求する。表示名からは生名も
+    位置も復元できない (dedup は非可逆) ため、ロード時にここへ残す。
+    """
+
+    raw_base_name: str  # asammdf のチャンネル名 (LD-08 dedup 前の生名)
+    group_index: int
+    channel_index: int
+    spec: ColumnSpec
+
+
 def spec_from_probe(arr: np.ndarray) -> ColumnSpec:
     """samples (axis 0 = サンプル) から列構造を作る。_flatten と同じ規則・同じ順序。
 

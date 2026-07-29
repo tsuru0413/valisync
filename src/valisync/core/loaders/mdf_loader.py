@@ -9,7 +9,7 @@ from typing import Any, ClassVar
 import numpy as np
 from asammdf import MDF
 
-from valisync.core.loaders.column_names import ColumnSpec, spec_from_probe
+from valisync.core.loaders.column_names import ColumnRecord, ColumnSpec, spec_from_probe
 from valisync.core.loaders.mdf_handle import MdfHandle
 from valisync.core.models import Diagnostic, LoadResult, Signal, SignalGroup
 from valisync.core.models.load_result import LoadCancelled
@@ -314,6 +314,8 @@ class MdfLoader:
         handle = MdfHandle(mdf, str(resolved_path))
         signals: list[Signal] = []
         diagnostics: list[Diagnostic] = []
+        # 物理チャンネル 1 本につき 1 レコード (列数ではない) — prod 4,324 件。
+        column_records: dict[str, ColumnRecord] = {}
         # mdf.close() 後は版が読めない恐れがあるため、ここで確定させる (LD-02)。
         format_label = self._format_label(mdf)
         try:
@@ -365,6 +367,7 @@ class MdfLoader:
                     cancel,
                     skip_keys,
                     handle,
+                    column_records,
                 )
         except LoadCancelled:
             # Must not be swallowed by the broad except below (LoadCancelled is
@@ -400,7 +403,11 @@ class MdfLoader:
             loaded_at=datetime.datetime.now(),
             handle=handle,
         )
-        return LoadResult(signal_group=signal_group, diagnostics=tuple(diagnostics))
+        return LoadResult(
+            signal_group=signal_group,
+            diagnostics=tuple(diagnostics),
+            column_records=column_records,
+        )
 
     @staticmethod
     def _group_entries(mdf: Any, gi: int) -> list[tuple[str, int, int]]:
@@ -443,6 +450,7 @@ class MdfLoader:
         cancel: Callable[[], bool] | None,
         skip_keys: set[tuple[int, int]],
         handle: MdfHandle,
+        column_records: dict[str, ColumnRecord],
     ) -> None:
         # skip_keys の (gi, ci) は上限超で展開しないと決まったチャンネル — 本読み
         # entries から外し select にも渡さない (LD-14)。
@@ -504,6 +512,15 @@ class MdfLoader:
             name_seen[base_name] = idx + 1
             deduplicated = name_total[base_name] > 1
             signal_name = f"{base_name}[{idx}]" if deduplicated else base_name
+            # E-3: 鋳造 (要求時の列生成) の材料はここでしか確定できない。表示名からは
+            # 生名も (gi, ci) も復元できず、後から引き直すとファイル全体の再走査に
+            # なる。spec は既に読んだ 1 レコードプローブ由来で値を持たない。
+            column_records[signal_name] = ColumnRecord(
+                raw_base_name=base_name,
+                group_index=_g,
+                channel_index=_c,
+                spec=spec_from_probe(probe.samples),
+            )
 
             samples = probe.samples
             exploded = samples.ndim != 1 or bool(samples.dtype.names)

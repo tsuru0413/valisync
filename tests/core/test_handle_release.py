@@ -186,7 +186,9 @@ def test_registration_failure_closes_the_handle(tmp_path: Path, monkeypatch) -> 
     session = Session()
     captured: list[object] = []
 
-    def _boom(group):  # type: ignore[no-untyped-def]
+    # 本物の add と同じシグネチャに揃える (E-3 T1 で column_records が追加された)。
+    # オラクルは handle.is_closed のまま — 二重 (double) の受け口だけを広げる。
+    def _boom(group, column_records=None):  # type: ignore[no-untyped-def]
         captured.append(group)  # 強参照を保持 -> GC ではなく close だけを測る
         raise ValueError("unsupported file_format: 'MDF3'")
 
@@ -217,7 +219,7 @@ def test_registration_failure_does_not_leave_the_file_locked(
     )
     session = Session()
 
-    def _boom(_group):  # type: ignore[no-untyped-def]
+    def _boom(_group, column_records=None):  # type: ignore[no-untyped-def]
         raise ValueError("unsupported file_format: 'MDF3'")
 
     monkeypatch.setattr(session._groups, "add", _boom)
