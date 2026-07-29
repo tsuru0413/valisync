@@ -9,7 +9,6 @@ dict を作り直していた (prod 264k エントリ)。列キーを遅延解�
 
 from __future__ import annotations
 
-import dataclasses
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 
@@ -213,11 +212,13 @@ def test_signal_map_fast_path_returns_base_object_when_no_offsets() -> None:
 
 
 def _resolving_manager(tmp_path: Path) -> tuple[SignalGroupManager, str]:
-    """実 mf4 の代表列 1 本だけを持つ manager (Mat[1]/Mat[2] が鋳造経路)。
+    """実 mf4 を読んだ manager (物理チャンネル Mat / Clean・Mat[i] が鋳造経路)。
 
     E-1 のテストダブル (常に Signal を返す `_mint_column` の上書き) は overlay の
     合成しか見ておらず、鋳造そのものが壊れても緑のままだった。T2 で実装が入ったので
-    実 mf4 の鋳造へ差し替える。
+    実 mf4 の鋳造へ差し替える。T6 の反転前は「代表列 1 本だけ残す」細工で列キーを
+    map から外していたが、反転後は production がそのままその形 (細工を残すと
+    signals が空になり、親不在で鋳造が None になって偽緑)。
 
     ``column_records`` を渡し忘れると表が空になり、正しい実装でも `_mint_column` が
     常に None を返す (overlay 側のテストが「解決できないだけ」で緑にならず全 RED)。
@@ -225,13 +226,9 @@ def _resolving_manager(tmp_path: Path) -> tuple[SignalGroupManager, str]:
     result = MdfLoader().load(write_mdf4_2d(tmp_path))
     sg = result.signal_group
     assert sg is not None
+    assert {s.name for s in sg.signals} == {"Mat", "Clean"}, "反転後の形 (setup 前提)"
     mgr = SignalGroupManager()
-    key = mgr.add(
-        dataclasses.replace(
-            sg, signals=tuple(s for s in sg.signals if s.name == "Mat[0]")
-        ),
-        column_records=result.column_records,
-    )
+    key = mgr.add(sg, column_records=result.column_records)
     return mgr, key
 
 
@@ -244,15 +241,16 @@ def test_overlay_over_resolving_base_enumerates_physical_keys_only(
     sm = vm._signal_map()  # type: ignore[attr-defined]
 
     before = mgr.mint_count
-    assert len(sm) == 1
-    assert list(sm) == [f"{key}::Mat[0]"]
+    physical = [f"{key}::Mat", f"{key}::Clean"]  # E-3: 行は物理チャンネル
+    assert len(sm) == 2
+    assert list(sm) == physical
     assert mgr.mint_count == before  # 列挙は鋳造しない
 
     # 鋳造済みの列があっても列挙は物理キーのみ
     assert sm[f"{key}::Mat[2]"] is not None
     assert mgr.mint_count == before + 1
-    assert len(sm) == 1
-    assert list(sm) == [f"{key}::Mat[0]"]
+    assert len(sm) == 2
+    assert list(sm) == physical
 
 
 def test_overlay_over_resolving_base_applies_offset_to_minted_column(

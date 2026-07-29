@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
-
 from tests.mdf4_helpers import (
     CAN,
     write_mdf4,
@@ -36,8 +34,11 @@ def test_tree_groups_is_one_row_per_physical_channel(tmp_path: Path) -> None:
     rows = vm.tree_groups()
     names = [name for name, _unit, _key, _n, _single in rows]
     assert names == ["Mat", "Clean"]
-    assert not any(n.startswith("Mat[") for n in names)  # 列は行にならない
     mat = next(r for r in rows if r[0] == "Mat")
+    # 反 vacuous 前置: 列は 3 本実在する。E-3 で列 Signal が消えたので、
+    # 「Mat[ で始まる行が無い」だけでは間違った理由の PASS と区別できない。
+    assert [c[0] for c in vm.column_names_for(mat[2])] == ["Mat[0]", "Mat[1]", "Mat[2]"]
+    assert not any(n.startswith("Mat[") for n in names)  # 列は行にならない
     assert mat[3] == 3  # column_count
     assert mat[4] is None  # 複数列 -> 親 (single_column なし)
 
@@ -104,6 +105,7 @@ def test_single_column_rows_carry_the_real_column_identity(tmp_path: Path) -> No
     sabotage: single_column の代わりに base_key/physical_name を返すと 3 本とも RED。
     """
     vm, app_vm = _vm_for(write_mdf4_single_column_shapes(tmp_path))
+    key = app_vm.active_file_key or ""
     rows = {
         name: (base_key, n, single)
         for name, _u, base_key, n, single in vm.tree_groups()
@@ -123,8 +125,12 @@ def test_single_column_rows_carry_the_real_column_identity(tmp_path: Path) -> No
         assert orig == expected_orig
         assert sig_map.get(ns_name) is not None, f"{ns_name} must resolve to a Signal"
         if phys != "Clean":
-            # 合成ハンドルは実在しない — これを葉キーにするのが C1 のバグ
-            assert sig_map.get(base_key) is None
+            # 合成ハンドルは **列ではない** — これを葉キーにするのが C1 のバグ。
+            # E-3 反転で base_key は物理チャンネル Signal の名前にもなったので
+            # 「signal_map に居ない」では判定できない (Mono は 2-D 容器として実在
+            # する)。列かどうかを答えるのは has_column — 鋳造も誘発しない。
+            assert app_vm.session.has_column(key, phys) is False
+            assert ns_name != base_key
 
 
 def test_duplicate_raw_names_stay_two_rows(tmp_path: Path) -> None:
@@ -155,8 +161,13 @@ def test_duplicate_raw_names_stay_two_rows(tmp_path: Path) -> None:
         assert sig_map.get(single[1]) is not None
 
 
-def test_column_spans_do_not_assume_contiguity(tmp_path: Path) -> None:
-    """m1: 配列 / スカラー / 配列 の順でも各行が自分の列だけを返す。"""
+def test_rows_do_not_assume_contiguous_columns(tmp_path: Path) -> None:
+    """m1: 配列 / スカラー / 配列 の順でも各行が自分の列だけを返す。
+
+    名前にあった "spans" は T4 で廃止した機構 (列 Signal の並びから span を切り出す)
+    の名残。反転後は行ごとに ColumnRecord を引くので構造的に起きないが、不変条件
+    (行が他行の列を返さない) 自体は D&D/フィルタ/エクスポートの土台なので残す。
+    """
     vm, _app_vm = _vm_for(write_mdf4_interleaved_arrays(tmp_path))
     by_name = {name: base_key for name, _u, base_key, _n, _s in vm.tree_groups()}
     assert [c[0] for c in vm.column_names_for(by_name["A"])] == ["A[0]", "A[1]"]
@@ -320,43 +331,37 @@ def test_vm_never_holds_column_signals(tmp_path: Path) -> None:
 # ─── 列ソースは ColumnRecord (E-3 T4 / spec 追補 S1) ──────────────────────────
 
 
-def _invert_to_physical_signals(app_vm: AppViewModel, key: str) -> None:
-    """session.group_signals を「1 物理チャンネル = Signal 1 個」へ寄せる (T6 の擬似反転)。
+def _assert_production_is_inverted(app_vm: AppViewModel, key: str) -> None:
+    """production のローダーが「1 物理チャンネル = Signal 1 個」であることを固定する。
 
-    反転後のローダーは列 Signal を 1 つも発行しない。列を group_signals から
-    数えている実装は、この差し替えだけで全行が 1 列の葉に潰れる (Mat[1]/Mat[2] が
-    木・フィルタ・D&D・プレビュー・エクスポートから同時に消える) — T6 を待たずに
-    T4 の受理条件を判定できる唯一の手段。
+    T6 の反転前、このモジュールは group_signals を物理チャンネルへ差し替える擬似反転
+    (``_invert_to_physical_signals``) で T4 の受理条件を先取りしていた。反転が入った
+    いま、その差し替えは production と同じ形を **偽物で作り直す** だけなので撤去し、
+    代わりに前提そのものを assert する — 以降のテストは実ローダーの出力を見る。
 
-    差し替えるのは **VM の行/列ソースだけ**: signal_map()/resolve_signal() は実
-    ローダーのまま残す (列キーが実 Signal に当たる不変条件を既存 assert が
-    そのまま使えるようにするため)。値は読まない — 長さだけ合わせたゼロ配列を
-    渡し、元 Signal の遅延ソースには一切触れない (遅延契約)。
+    判定は表との 1:1: ``column_records`` のキーは物理チャンネルなので、列 Signal が
+    1 本でも group_signals に残れば集合が食い違って落ちる。以下の「反転版」テストが
+    「列が畳まれた世界」を見ている根拠はこの 1 本。
     """
-    physical: list[Signal] = []
-    seen: set[str] = set()
-    for sig in app_vm.session.group_signals(key):
-        md = sig.metadata or {}
-        phys = str(md.get("physical_channel") or sig.name.split(KEY_SEPARATOR, 1)[-1])
-        if phys in seen:
-            continue
-        seen.add(phys)
-        physical.append(
-            Signal(
-                name=f"{key}{KEY_SEPARATOR}{phys}",
-                timestamps=sig.timestamps,
-                values=np.zeros(len(sig.timestamps)),
-                file_format=sig.file_format,
-                bus_type=sig.bus_type,
-                source_file=sig.source_file,
-                metadata=sig.metadata,
-            )
-        )
+    names = {
+        s.name.split(KEY_SEPARATOR, 1)[-1] for s in app_vm.session.group_signals(key)
+    }
+    records = set(app_vm.session._groups.column_records(key))
+    assert records, "前提: MDF グループには ColumnRecord 表がある"
+    assert names == records, (names, records)
 
-    def _physical_only(k: str) -> list[Signal]:
-        return list(physical) if k == key else []
 
-    app_vm.session.group_signals = _physical_only  # type: ignore[method-assign]
+def _mint_count(app_vm: AppViewModel) -> int:
+    """鋳造カウンタのスナップショット (読み取り経路の前後で差分を測る)。
+
+    E-3 C-g で鋳造列は **恒久保持** (LRU なし)。ブラウザの読み取り経路
+    (prep 構築 / 行 / 列名 / 件数 / フィルタ) が 1 本でも resolve_signal を呼ぶと、
+    prod では 264,004 本の列 Signal が「木を描いただけ」で常駐する。T4 の擬似反転
+    fixture は signal_map/resolve を実ローダーのまま残していたため、合成した列キーが
+    _namespaced_map に当たり **鋳造がそもそも起きなかった** (実測 delta 0) —
+    つまり構造的にこの回帰へ盲目だった。反転で鋳造が本物になった今こそ測る。
+    """
+    return app_vm.session._groups.mint_count
 
 
 def test_columns_survive_the_loader_inversion(tmp_path: Path) -> None:
@@ -368,8 +373,7 @@ def test_columns_survive_the_loader_inversion(tmp_path: Path) -> None:
     """
     vm, app_vm = _vm_for(write_mdf4_2d(tmp_path))
     key = app_vm.active_file_key or ""
-    _invert_to_physical_signals(app_vm, key)
-    vm.refresh()
+    _assert_production_is_inverted(app_vm, key)
 
     rows = vm.tree_groups()
     assert [r[0] for r in rows] == ["Mat", "Clean"]
@@ -397,8 +401,7 @@ def test_inverted_filter_still_matches_column_names(tmp_path: Path) -> None:
     """
     vm, app_vm = _vm_for(write_mdf4_2d(tmp_path))
     key = app_vm.active_file_key or ""
-    _invert_to_physical_signals(app_vm, key)
-    vm.refresh()
+    _assert_production_is_inverted(app_vm, key)
 
     vm.set_filter("mat")
     assert [r[0] for r in vm.tree_groups()] == ["Mat"]  # Clean は落ちる
@@ -426,8 +429,7 @@ def test_inverted_single_column_rows_carry_the_real_column_identity(
     """
     vm, app_vm = _vm_for(write_mdf4_single_column_shapes(tmp_path))
     key = app_vm.active_file_key or ""
-    _invert_to_physical_signals(app_vm, key)
-    vm.refresh()
+    _assert_production_is_inverted(app_vm, key)
 
     rows = {
         name: (base_key, n, single)
@@ -449,8 +451,11 @@ def test_inverted_single_column_rows_carry_the_real_column_identity(
         ), f"{phys}: single_column must carry the real column"
         assert sig_map.get(single[1]) is not None
         if phys != "Clean":
-            # 合成ハンドルは実在しない — これを葉キーにするのが C1 のバグ
-            assert sig_map.get(base_key) is None
+            # 合成ハンドルは **列ではない** — これを葉キーにするのが C1 のバグ。
+            # 反転で base_key は物理チャンネル Signal の名前でもあるので
+            # 「signal_map に居ない」では判定できない (has_column が唯一の口)。
+            assert app_vm.session.has_column(key, phys) is False
+            assert single[1] != base_key
 
 
 def test_group_total_agrees_with_session_total_column_count(tmp_path: Path) -> None:
@@ -465,9 +470,51 @@ def test_group_total_agrees_with_session_total_column_count(tmp_path: Path) -> N
     key = app_vm.active_file_key or ""
     assert vm._group_total() == app_vm.session.total_column_count(key) == 4
 
-    _invert_to_physical_signals(app_vm, key)
-    vm.refresh()
+    _assert_production_is_inverted(app_vm, key)
+    vm.refresh()  # prep を捨てて作り直しても母数は動かない
     assert vm._group_total() == app_vm.session.total_column_count(key) == 4
+
+
+def test_browser_read_paths_never_mint_a_column(tmp_path: Path) -> None:
+    """C-g: ブラウザの読み取り経路は列 Signal を **1 本も鋳造しない**。
+
+    鋳造列は ``_resolved_by_key`` へ恒久登録される (E-3 決定 C-g で LRU なし)。
+    ``_ensure_prep`` / ``column_names_for`` のどこか 1 箇所が
+    ``session.resolve_signal`` を呼ぶと、prod では「木を開いた・フィルタを打った」
+    だけで 264,004 本の列 Signal が寿命いっぱい常駐する — 本増分が取り除いた
+    コストそのものが裏口から戻る。
+
+    T4 時点ではこの回帰を測れなかった: 擬似反転 fixture が signal_map/resolve を
+    実ローダーのまま残していたため、合成した列キーは ``_namespaced_map`` に当たり
+    **鋳造が起きなかった** (実測 delta 0 = 構造的に盲目)。反転で鋳造が唯一の
+    列供給経路になった今、初めて意味を持つ。
+
+    ``tooltip_for`` は意図的に対象外 — 鋳造して当てる仕様 (production 消費者ゼロ)
+    で、`_signal_by_key` の docstring が理由を持つ。
+    """
+    vm, app_vm = _vm_for(write_mdf4_2d(tmp_path))
+    key = app_vm.active_file_key or ""
+    _assert_production_is_inverted(app_vm, key)
+    before = _mint_count(app_vm)
+
+    rows = vm.tree_groups()  # prep 構築 + 行
+    for _n, _u, base_key, _c, _s in rows:
+        vm.column_names_for(base_key)  # 列名 (要求時合成)
+    vm.shown_count()
+    vm.header_text()
+    vm.empty_state()
+    vm._group_total()
+    vm.set_filter("mat[1")
+    vm.tree_groups()
+    vm.shown_count()
+    vm.refresh()
+    vm.tree_groups()  # 再構築も鋳造しない
+
+    assert _mint_count(app_vm) == before, "ブラウザの読み取りが列を鋳造した (C-g 違反)"
+    # 反 vacuous 前置: このセッションで鋳造は**実際に起こりうる** (guard が「鋳造
+    # 経路が死んでいるから 0」で通っていない)。
+    assert app_vm.session.resolve_signal(f"{key}{KEY_SEPARATOR}Mat[1]") is not None
+    assert _mint_count(app_vm) == before + 1
 
 
 def test_csv_group_falls_back_to_the_observed_columns(tmp_path: Path) -> None:
@@ -519,8 +566,7 @@ def test_tooltip_resolves_a_column_key_after_inversion(tmp_path: Path) -> None:
     """
     vm, app_vm = _vm_for(write_mdf4_2d(tmp_path))
     key = app_vm.active_file_key or ""
-    _invert_to_physical_signals(app_vm, key)
-    vm.refresh()
+    _assert_production_is_inverted(app_vm, key)
 
     tip = vm.tooltip_for(f"{key}{KEY_SEPARATOR}Mat[1]")
     assert "サンプル数: 4" in tip

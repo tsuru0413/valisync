@@ -8,6 +8,7 @@ import pytest
 from asammdf import MDF
 
 from valisync.core.loaders.mdf_loader import MdfLoader, _flatten
+from valisync.core.session import Session
 
 DEMO = Path("demo_data/quick_demo.mf4")
 pytestmark = pytest.mark.skipif(not DEMO.exists(), reason="demo mf4 not generated")
@@ -154,33 +155,21 @@ def test_unparsable_file_returns_error_diagnostic_without_group(tmp_path: Path) 
 
 
 def test_lazy_selector_column_equals_eager_flatten() -> None:
-    """LD-14: 展開リーフ列 (selector 付き) の遅延値が eager select+_flatten と一致する.
+    """LD-14: 鋳造列 (selector 付き) の遅延値が eager select+_flatten と一致する.
 
-    quick_demo は ``Radar.ObjMatrix`` (uint8・8 列の配列チャンネル) を持つ — これが
-    展開されて ``Radar.ObjMatrix[i]`` 群になり、各信号は selector 付き
-    ``LazyMdfValues`` を背負う。materialize した値が、現行 eager 意味論
-    (``select(raw=False, ignore_value2text_conversions=True, copy_master=False)``
-    +``_flatten``) の該当リーフと厳密一致することを確認する (Task 2 の selector
-    分岐に対する実カバレッジ)。
+    E-3 反転後、展開列は SignalGroup に居ない — ColumnRecord からの鋳造が
+    selector 分岐の production 経路になった。quick_demo の Radar.ObjMatrix
+    (uint8・8 列) をその実カバレッジに使う。
     """
-    result = MdfLoader().load(DEMO, confirm_expansion=None)
-    sg = result.signal_group
-    assert sg is not None
+    session = Session()
+    key = session.load(DEMO, confirm_expansion=None).key
+    base_name = "Radar.ObjMatrix"
+    leaf_name = f"{base_name}[3]"
+    col = session.resolve_signal(f"{key}::{leaf_name}")
+    assert col is not None, "配列列が鋳造できない"
+    assert col._values_source.is_materialized is False
 
-    # 展開されたリーフ信号 (名前に "[" を含む配列展開列) を 1 本選ぶ。
-    exploded = next(
-        (s for s in sg.signals if "ObjMatrix[" in s.name),
-        None,
-    )
-    assert exploded is not None, "配列展開されたリーフ信号が見つからない"
-    assert exploded._values_source.is_materialized is False
-
-    # base チャンネル名と目的リーフ名を復元する ("Radar.ObjMatrix[3]" → base
-    # "Radar.ObjMatrix"・leaf "Radar.ObjMatrix[3]")。
-    leaf_name = exploded.name
-    base_name = leaf_name[: leaf_name.rindex("[")]
-
-    got = exploded.values  # 遅延展開 (selector リーフ抽出)
+    got = col.values  # 遅延展開 (selector リーフ抽出)
     assert got.flags.writeable is False
 
     m = MDF(str(DEMO))

@@ -582,10 +582,32 @@ def test_deduplicated_exploded_channel_pins_both_name_spaces(loaded: _Loaded) ->
     # 列数が違う (3 / 4) — 生名を共有する 2 本を 1 つの spec で代表させると崩れる
     assert loaded.resolve("Mat2[0][3]") is None  # 相方の 4 列目は名乗れない
 
-    # 生 selector 空間 (Mat2[0..3]) が表示空間へ漏れていない。漏れているなら
+    # 生 selector 空間 (Mat2[0..3]) が **列として** 表示空間へ漏れていない。漏れているなら
     # 「表示キーを生名から作った」ことの直接の証拠になる。
+    #
+    # **述語が変わった理由 (E-3 反転・restore してはいけない)**: ここは元々
+    # ``assert loaded.resolve(f"Mat2[{i}]") is None`` だった。それが通っていたのは
+    # 契約だったからではなく、**eager 展開の副産物**である — 反転前は容器の表示名
+    # ``Mat2[0]`` に対応する Signal が存在せず、resolve がたまたま None を返していた。
+    # 反転後は「1 物理チャンネル = Signal 1 個」なので、LD-08 dedup 済み表示名
+    # ``Mat2[0]``/``Mat2[1]`` は **設計どおり** 容器 Signal へ解決する (それが本増分の
+    # 目的そのもので、記録↔Signal の 1:1 不変条件が要求する)。
+    # assert が言いたかった不変条件は「容器の表示名は **列ではない**」であり、それを
+    # 正確に述べるのが ``has_column`` (鋳造も誘発しない)。**チェックを緩めたのではなく、
+    # 容器が実在の Signal になったので述語を正した**。同じ置換は T4 が
+    # ``test_single_column_rows_carry_the_real_column_identity`` で既に行っている
+    # (「signal_map に居ない」が効かなくなったのと同じ理由)。歯は 1 本も抜けていない:
+    # 全数ラウンドトリップ (値・dtype・master identity・metadata) は別テストが保持する。
     for i in range(4):
-        assert loaded.resolve(f"Mat2[{i}]") is None, i
+        assert loaded.session.has_column(loaded.key, f"Mat2[{i}]") is False, i
+    # 漏れていれば「1-D の列」が返るはず — 実際に返るのは 2-D の容器であることを直接押さえる
+    # (単に「何か返る」で済ませると、生名由来の列が返る壊れ方を見逃す)。
+    for i, unit in ((0, "A"), (1, "Nm")):
+        container = loaded.resolve(f"Mat2[{i}]")
+        assert container is not None, i
+        assert container.metadata["physical_channel"] == f"Mat2[{i}]", i
+        assert container.metadata["unit"] == unit, i
+        assert container.values.ndim == 2, i
 
     # 別グループ = 別 master (dup と同じ性質を展開チャンネルでも確認)
     assert first[0].timestamps is not second[0].timestamps

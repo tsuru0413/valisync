@@ -3,51 +3,25 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
-import numpy as np
 from PySide6.QtCore import QModelIndex, Qt
 from pytestqt.qtbot import QtBot
 
-from valisync.core.models import Signal
+from tests.gui._physical_fixtures import inject_physical_channels
 from valisync.gui.adapters.qt_signal_models import decode_signal_keys
 from valisync.gui.adapters.signal_tree_model import SignalTreeModel
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
 
 
-def _sig(name: str, phys: str | None = None) -> Signal:
-    """One synthetic column Signal.
-
-    E-2: real expanded columns carry metadata['physical_channel'] from the
-    loader, so a synthetic fixture that wants a PARENT row must pass *phys*
-    explicitly. Without it the fallback (missing physical_channel = one column
-    per physical channel) makes every column its own channel, no parent node is
-    ever built, and "no parent was materialized" asserts go vacuously green.
-    """
-    metadata: dict[str, Any] = {"unit": "V"}
-    if phys is not None:
-        metadata["physical_channel"] = phys
-    return Signal(
-        name=name,
-        timestamps=np.array([0.0]),
-        values=np.array([1.0]),
-        file_format="MDF4",
-        bus_type="",
-        source_file="",
-        metadata=metadata,
-    )
-
-
 def _model(qtbot: QtBot) -> SignalTreeModel:
     app_vm = AppViewModel()
     vm = ChannelBrowserVM(app_vm)
-    app_vm.session.group_signals = lambda key: [
-        _sig("g::Arr[0]", phys="Arr"),
-        _sig("g::Arr[1]", phys="Arr"),
-        _sig("g::Arr[2]", phys="Arr"),
-        _sig("g::Scalar"),
-    ]
+    inject_physical_channels(
+        app_vm,
+        "g",
+        [("Arr", "V", ("Arr[0]", "Arr[1]", "Arr[2]")), ("Scalar", "V", ("Scalar",))],
+    )
     app_vm.set_active_file("g")
     return SignalTreeModel(vm)
 
@@ -122,14 +96,17 @@ def test_mimedata_encodes_leaf_keys(qtbot: QtBot) -> None:
 def _sort_model(qtbot: QtBot) -> SignalTreeModel:
     app_vm = AppViewModel()
     vm = ChannelBrowserVM(app_vm)
-    app_vm.session.group_signals = lambda k: [
-        _sig("g::Zeta"),
-        _sig("g::alpha"),
-        _sig("g::Mid"),
-        _sig("g::Arr[2]", phys="Arr"),
-        _sig("g::Arr[0]", phys="Arr"),
-        _sig("g::Arr[1]", phys="Arr"),
-    ]
+    # 列順は未ソートのまま (Arr[2], Arr[0], Arr[1]) = 子ソートの母数
+    inject_physical_channels(
+        app_vm,
+        "g",
+        [
+            ("Zeta", "V", ("Zeta",)),
+            ("alpha", "V", ("alpha",)),
+            ("Mid", "V", ("Mid",)),
+            ("Arr", "V", ("Arr[2]", "Arr[0]", "Arr[1]")),
+        ],
+    )
     app_vm.set_active_file("g")
     return SignalTreeModel(vm)
 

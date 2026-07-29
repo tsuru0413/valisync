@@ -13,11 +13,13 @@
 from __future__ import annotations
 
 import datetime
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
 import pytest
+from asammdf import MDF
 
 from tests.mdf4_helpers import (
     CAN,
@@ -27,10 +29,48 @@ from tests.mdf4_helpers import (
     write_mdf4_flatten_fixture,
     write_mdf4_single_column_shapes,
 )
-from valisync.core.loaders.mdf_loader import MdfLoader
+from valisync.core.loaders.mdf_loader import MdfLoader, _flatten
 from valisync.core.loaders.signal_group_manager import SignalGroupManager
 from valisync.core.models import Signal, SignalGroup
 from valisync.core.session import Session
+
+
+def _eager_numeric_columns(path: Path) -> dict[str, tuple[str, ...]]:
+    """{LD-08 dedup 済み表示名: 数値リーフ列名} を asammdf 直叩きで作る独立オラクル。
+
+    T6 (反転) までは「ローダーが発行した列 Signal 名」がこの参照だったが、反転後
+    ローダーは列 Signal を 1 つも発行しない。参照を production の外 (``select`` +
+    ``_flatten``) へ移すことで、**表から生成した列名 == 実データのリーフ**という
+    元の契約をそのまま持ち越す (T0 の全数オラクルと同じ独立性)。
+    """
+    out: dict[str, tuple[str, ...]] = {}
+    with MDF(str(path), time_from_zero=False) as mdf:
+        entries = [
+            (mdf.groups[phys_gi].channels[ci].name, phys_gi, ci)
+            for vgi in mdf.virtual_groups
+            for phys_gi, channel_indexes in mdf.included_channels(vgi)[vgi].items()
+            for ci in channel_indexes
+        ]
+        totals = Counter(name for name, _g, _c in entries)
+        seen: Counter[str] = Counter()
+        for raw_name, gi, ci in entries:
+            idx = seen[raw_name]
+            seen[raw_name] += 1
+            display = f"{raw_name}[{idx}]" if totals[raw_name] > 1 else raw_name
+            asig = mdf.select(
+                [(raw_name, gi, ci)],
+                raw=False,
+                ignore_value2text_conversions=True,
+                copy_master=False,
+            )[0]
+            numeric = tuple(
+                name
+                for name, column in _flatten(display, asig.samples)
+                if column.dtype.kind in "iufb"
+            )
+            if numeric:  # 数値リーフゼロ = ローダーも Signal も表も作らない
+                out[display] = numeric
+    return out
 
 
 def _loaded(path: Path) -> tuple[SignalGroupManager, str, SignalGroup]:
@@ -186,23 +226,24 @@ def test_has_column_falls_back_to_observed_signals_without_records() -> None:
 
 
 def test_generated_column_names_match_eager_expansion(tmp_path: Path) -> None:
-    """反転前にしかできない突合: 表から作った列名 == 実際に載っている Signal 名。
+    """表から作った列名 == 実データのリーフ名 (順序込み・独立オラクル)。
 
-    順序も含めて一致すること (leaf_names は _flatten と同順・ローダーはその順で
-    Signal を append する)。T6 はこの一致を保ったまま Signal 側だけを減らす。
+    順序も含めて一致すること (leaf_names は _flatten と同順)。T6 の反転で参照が
+    「ローダーが発行した列 Signal 名」から `_eager_numeric_columns` (asammdf 直叩き)
+    へ移った — 契約そのものは不変で、参照が production の内側から外側へ出ただけ。
+    表のキー集合が発行された物理チャンネルと 1:1 であることも同時に固定する。
     """
     for path in (
         write_mdf4_flatten_fixture(tmp_path),
         write_mdf4_single_column_shapes(tmp_path),
     ):
         mgr, key, sg = _loaded(path)
-        expected: dict[str, list[str]] = {}
-        for s in sg.signals:
-            phys = str((s.metadata or {}).get("physical_channel") or s.name)
-            expected.setdefault(phys, []).append(s.name)
-        assert expected, path.name
+        expected = _eager_numeric_columns(path)
+        assert expected, path.name  # 反 vacuous: オラクルが空でない
+        assert set(mgr.column_records(key)) == set(expected), path.name
+        assert {s.name for s in sg.signals} == set(expected), path.name
         for phys, names in expected.items():
-            assert mgr.column_names_of(key, phys) == tuple(names), (path.name, phys)
+            assert mgr.column_names_of(key, phys) == names, (path.name, phys)
 
 
 @pytest.mark.parametrize(
@@ -214,17 +255,23 @@ def test_generated_column_names_match_eager_expansion(tmp_path: Path) -> None:
         write_mdf4_all_channels_bad,
     ],
 )
-def test_total_column_count_equals_eager_signal_count(
+def test_total_column_count_equals_eager_column_count(
     writer: Callable[[Path], Path], tmp_path: Path
 ) -> None:
-    """(4) 数値列総数が eager 展開後の Signal 数と一致する。
+    """(4) 数値列総数が実データの数値リーフ総数と一致する。
 
     single_column_shapes は非数値リーフ (Q.tag) を、all_channels_bad は非数値
     チャンネルのみを含む — dtype-blind に数えると両方 RED になる (数えるのは
     **数値リーフのみ** = leaf_count であって _all_leaf_count ではない)。
+
+    T6 の反転で参照は「eager 展開後の Signal 数」から `_eager_numeric_columns`
+    (asammdf 直叩き) の列数へ移った。反転後は len(sg.signals) が物理チャンネル数に
+    なるため、それを参照に据えると 2-D を含む fixture で母数が黙って縮む。
     """
-    mgr, key, sg = _loaded(writer(tmp_path))
-    assert mgr.total_column_count(key) == len(sg.signals)
+    path = writer(tmp_path)
+    mgr, key, _sg = _loaded(path)
+    expected = sum(len(names) for names in _eager_numeric_columns(path).values())
+    assert mgr.total_column_count(key) == expected
 
 
 def test_group_without_records_falls_back_to_one_column_per_signal() -> None:
@@ -283,7 +330,10 @@ def test_session_exposes_column_names_and_total(tmp_path: Path) -> None:
     session = Session()
     key = session.load(write_mdf4_flatten_fixture(tmp_path)).key
     assert session.column_names_of(key, "Mat") == ("Mat[0]", "Mat[1]", "Mat[2]")
-    assert session.total_column_count(key) == len(session.group_signals(key))
+    # E-3 反転: 母数 (列) と行 (物理チャンネル) は**別の数**になった。両方を同時に
+    # 見て、母数が物理チャンネル数へ黙って縮んでいないことを固定する。
+    assert session.total_column_count(key) == 9
+    assert len(session.group_signals(key)) == 5
     # U2: n_channels の単位は列数のまま (T7 がこの一致を保つ)
     assert session.source_info(key).n_channels == session.total_column_count(key)
     # has_column は T5 の行フィルタと T7 の衝突判定が使う。column_names_of への

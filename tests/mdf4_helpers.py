@@ -341,6 +341,35 @@ def write_mdf4_wide_2d(tmp_path: Path, cols: int = 1025) -> Path:
     return path
 
 
+def write_mdf4_non_monotonic_2d(tmp_path: Path) -> Path:
+    """非単調/重複タイムスタンプの 2D (Nx3) チャンネル + 同時刻軸の通常チャンネル.
+
+    診断 fan-out 集約 (E-3) の RED fixture。列展開時代は Mat[0..2] の 3 件へ増幅
+    されていた非単調警告が物理チャンネル 1 件へ畳まれること、同じ時刻軸を持つ
+    1-D チャンネル (Clean) の 1 件は文言ごと不変であることを、1 ファイルで対に
+    固定する (prod では 1 グループ最大 96,000 件の増幅だった)。
+    """
+    ts = np.array([0.0, 2.0, 1.0, 1.0], dtype=np.float64)
+    mat = np.array(
+        [[0, 1, 2], [10, 11, 12], [20, 21, 22], [30, 31, 32]], dtype=np.uint8
+    )
+    mdf = MDF()
+    try:
+        mdf.append([ASignal(samples=mat, timestamps=ts, name="Mat")])
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([1.0, 2.0, 3.0, 4.0]), timestamps=ts, name="Clean"
+                )
+            ]
+        )
+        path = tmp_path / "messy2d.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
 def write_mdf4_dup_2d(tmp_path: Path) -> Path:
     """同名 (W) の 2D uint8 チャンネル 2 本 — LD-08 dedup と LD-14 展開の合成.
 

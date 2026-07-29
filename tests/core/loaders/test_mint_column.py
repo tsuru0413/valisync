@@ -1,17 +1,18 @@
 """列キーから Signal を鋳造する経路 (_mint_column) の契約。
 
-T6 の反転後は **これが列 Signal の唯一の供給経路**になる。eager ローダーがまだ
-全列を発行している今のうちに「鋳造した列 == eager が発行した列」を固定する
-(反転後は独立オラクルが失われる)。
+T6 の反転後は **これが列 Signal の唯一の供給経路**である。「鋳造した列 == 実データ
+のリーフ」を独立オラクル (asammdf の ``select`` + ``_flatten`` 直叩き) で固定する —
+反転前はローダーが発行した列 Signal をその参照に使えたが、いまは存在しない。
 """
 
 from __future__ import annotations
 
-import dataclasses
 from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
+from asammdf import MDF
+from asammdf import Signal as ASignal
 
 from tests.mdf4_helpers import (
     write_mdf4_2d,
@@ -20,7 +21,7 @@ from tests.mdf4_helpers import (
     write_mdf4_structured,
 )
 from valisync.core.loaders.column_names import ColumnRecord
-from valisync.core.loaders.mdf_loader import MdfLoader
+from valisync.core.loaders.mdf_loader import MdfLoader, _flatten
 from valisync.core.loaders.signal_group_manager import (
     KEY_SEPARATOR,
     SignalGroupManager,
@@ -61,44 +62,47 @@ def _mint(mgr: SignalGroupManager, key: str, name: str) -> Signal:
     return got
 
 
-def _only(loaded: _Loaded, keep: str) -> _Loaded:
-    """物理チャンネルの代表列 1 本だけを残した (group, 列表) (T6 反転後の形の近似)。
+def _eager_columns(path: Path, display: str, raw_name: str) -> dict[str, np.ndarray]:
+    """物理チャンネル 1 本の {列キー: 値} を asammdf 直叩きで作る独立オラクル。
 
-    反転前の eager ローダーは全列を発行するので、そのまま add すると列キーが既存の
-    namespaced map に当たり resolve() が鋳造経路へ落ちない。代表を 1 本だけ残すと
-    残りの列キーが「map に無い実在の列キー」になり、resolve() 経由の鋳造
-    (mint_count・副テーブルの寿命) を **実装のまま** 踏める。代表列は物理チャンネルの
-    metadata (master・physical_channel) を運ぶ。列表は**物理チャンネル単位**なので
-    signals を絞っても `Mat` のレコードはそのまま残る (絞る対象は signals だけ)。
+    T6 の反転で「ローダーが発行した列 Signal」という参照は消えた。列キーは
+    **表示名** (LD-08 dedup 済み) から、値は **生名** で読んだ samples から作る —
+    その 2 空間の食い違い自体が鋳造の契約なので、オラクルも両方を明示的に受ける。
     """
-    sg, records = loaded
-    return (
-        dataclasses.replace(sg, signals=tuple(s for s in sg.signals if s.name == keep)),
-        records,
-    )
+    with MDF(str(path), time_from_zero=False) as mdf:
+        asig = mdf.select(
+            [raw_name],
+            raw=False,
+            ignore_value2text_conversions=True,
+            copy_master=False,
+        )[0]
+        return {name: np.array(col) for name, col in _flatten(display, asig.samples)}
 
 
-def test_minted_column_equals_the_eager_column(tmp_path: Path) -> None:
-    """鋳造列は eager ローダーの列と等価 (値・dtype・metadata)。
+def test_minted_column_equals_the_real_column_data(tmp_path: Path) -> None:
+    """鋳造列は実データのリーフと等価 (値・dtype)、metadata は親から継承する。
 
-    metadata を丸ごと突き合わせるのは、physical_channel/unit/source 系の継承と
-    変換系キーの非継承を 1 本の独立参照で同時に固定するため。
+    metadata を親と突き合わせるのは、physical_channel/unit/source 系の継承と
+    変換系キーの非継承を 1 本の参照で同時に固定するため (LD-07 の非継承は
+    test_minted_column_does_not_inherit_conversion_metadata が別に強制する)。
     """
-    loaded = _load(write_mdf4_2d(tmp_path))
+    path = write_mdf4_2d(tmp_path)
+    loaded = _load(path)
     sg, _records = loaded
     mgr, key = _manager(loaded)
-    eager = {s.name: s for s in sg.signals}
-    assert {"Mat[0]", "Mat[1]", "Mat[2]", "Clean"} <= set(eager)
+    eager = _eager_columns(path, "Mat", "Mat")
+    assert set(eager) == {"Mat[0]", "Mat[1]", "Mat[2]"}  # 反 vacuous 前置
+    parent = next(s for s in sg.signals if s.metadata["physical_channel"] == "Mat")
 
     for name in ("Mat[0]", "Mat[1]", "Mat[2]"):
         minted = _mint(mgr, key, name)
         assert minted.name == _ns(key, name)
         assert minted._values_source.is_materialized is False  # 構築は読まない
-        np.testing.assert_array_equal(minted.values, eager[name].values)
+        np.testing.assert_array_equal(minted.values, eager[name])
         # native dtype 保持 (float64 へ upcast すると uint8 の 8 倍膨張が戻る)
         assert minted.values.dtype == np.uint8
-        assert minted.values.dtype == eager[name].values.dtype
-        assert minted.metadata == eager[name].metadata
+        assert minted.values.dtype == eager[name].dtype
+        assert minted.metadata == parent.metadata
 
 
 def test_minted_column_shares_the_group_master_object(tmp_path: Path) -> None:
@@ -126,20 +130,90 @@ def test_container_keys_are_not_columns(tmp_path: Path) -> None:
     """
     mgr, key = _manager(_load(write_mdf4_2d(tmp_path)))
     assert mgr._mint_column(key, _ns(key, "Mat")) is None
-    # スカラーは「物理チャンネル == 列」なので鋳造対象にならない (map が先に当たる)
+    # スカラーは「物理チャンネル == 列」なので鋳造対象にならない (map が先に当たる)。
+    # 拒否の担い手は 2 つに分かれている: 容器 (配列/構造体) は parse_leaf が、
+    # 数値スカラーは `if not rest: continue` **だけ** が落とす。後者は表に
+    # スカラーのレコードが**在ること**が前提なので、反転後もそうであることを
+    # 同じテスト内で固定する (レコードが消えると `is None` は別の理由で通る)。
+    assert "Clean" in mgr.column_records(key)
+    assert mgr.column_records(key)["Clean"].spec.kind == "leaf"
+    assert mgr.has_column(key, "Clean") is True
     assert mgr._mint_column(key, _ns(key, "Clean")) is None
 
     mgr2, key2 = _manager(_load(write_mdf4_structured(tmp_path)))
     assert mgr2._mint_column(key2, _ns(key2, "Pt")) is None
 
 
-def test_structured_field_columns_are_minted(tmp_path: Path) -> None:
-    loaded = _load(write_mdf4_structured(tmp_path))
-    sg, _records = loaded
+def test_record_key_display_names_never_reach_the_minting_path(tmp_path: Path) -> None:
+    """実チャンネル ``A[0]`` が配列 ``A`` の列 0 と字面衝突する「誤データ」クラス。
+
+    ``_mint_column`` 単体はこの衝突で **黙って別チャンネルの値** を返す (実測):
+    表示名 ``A[0]`` はレコードにヒットするが ``rest`` が空なので ``continue`` し、
+    次に短い ``A`` (2-D) がヒットして ``A[0]`` を**その列 0** として解決してしまう。
+    例外は出ない — 出るのは違う単位・違う dtype・違う値である。
+
+    production で起きないのは ``resolve()`` が ``_namespaced_map`` を先に見るから
+    で、それが効くのは **レコードのキー集合 == 発行された Signal 名** (1:1) だから。
+    つまりこのテストが本当に守っているのは 1:1 の方 — 表に「Signal を作らなかった
+    チャンネル」が残った瞬間、その名前は誤データを返す入口に変わる。
+    """
+    ts = np.array([0.0, 0.1, 0.2, 0.3])
+    mdf = MDF()
+    try:
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array(
+                        [[0, 1, 2], [10, 11, 12], [20, 21, 22], [30, 31, 32]],
+                        dtype=np.uint8,
+                    ),
+                    timestamps=ts,
+                    name="A",
+                    unit="mm",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([7.0, 8.0, 9.0, 10.0]),
+                    timestamps=ts,
+                    name="A[0]",
+                    unit="deg",
+                )
+            ]
+        )
+        path = tmp_path / "collide.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+
+    loaded = _load(path)
+    sg, records = loaded
     mgr, key = _manager(loaded)
-    eager = {s.name: s for s in sg.signals}
+    # 1:1 — これが崩れた瞬間に下の resolve が鋳造経路へ落ちる
+    assert set(records) == {s.name for s in sg.signals} == {"A", "A[0]"}
+
+    got = mgr.resolve(_ns(key, "A[0]"))
+    assert got is not None
+    assert got.metadata["physical_channel"] == "A[0]"  # 親 "A" ではない
+    assert got.metadata["unit"] == "deg"  # 親は "mm"
+    np.testing.assert_array_equal(got.values, [7.0, 8.0, 9.0, 10.0])
+    assert mgr.mint_count == 0  # 鋳造経路を **一度も通らない**
+
+    # 記録: 鋳造器を直接呼ぶと今も誤データを返す (だから 1:1 が防波堤である)。
+    # 将来ここが None を返すようになったら、上の防波堤は二重化されたということ。
+    leaked = mgr._mint_column(key, _ns(key, "A[0]"))
+    assert leaked is None or leaked.metadata["physical_channel"] == "A"
+
+
+def test_structured_field_columns_are_minted(tmp_path: Path) -> None:
+    path = write_mdf4_structured(tmp_path)
+    mgr, key = _manager(_load(path))
+    eager = _eager_columns(path, "Pt", "Pt")
+    assert set(eager) == {"Pt.x", "Pt.y"}  # 反 vacuous 前置
     for name in ("Pt.x", "Pt.y"):
-        np.testing.assert_array_equal(_mint(mgr, key, name).values, eager[name].values)
+        np.testing.assert_array_equal(_mint(mgr, key, name).values, eager[name])
 
 
 def test_non_numeric_leaf_is_not_minted(tmp_path: Path) -> None:
@@ -159,19 +233,23 @@ def test_dedup_display_names_mint_from_the_right_channel(tmp_path: Path) -> None
     dedup 済み表示名のまま parse_leaf へ引くと "W[1][1]" の先頭 "[1]" を W 自身の
     配列インデックスとして消費し、解決不能になるか **別チャンネルの列** を返す。
     値だけでどのチャンネルのどの列かが判る fixture で直接殺す。
-    """
-    loaded = _load(write_mdf4_dup_2d(tmp_path))
-    sg, _records = loaded
-    mgr, key = _manager(loaded)
-    eager = {s.name: s for s in sg.signals}
-    assert set(eager) == {"W[0][0]", "W[0][1]", "W[1][0]", "W[1][1]"}
 
-    for name in eager:
-        np.testing.assert_array_equal(_mint(mgr, key, name).values, eager[name].values)
-    np.testing.assert_array_equal(
-        _mint(mgr, key, "W[1][1]").values,
-        np.array([101, 103, 105, 107], dtype=np.uint8),
-    )
+    期待値は write_mdf4_dup_2d の定義から**手で書き下す** — 生名 W を 2 本が共有
+    するため asammdf の名前引き (select(["W"])) では正しい相方を区別できず、
+    `_flatten` 経由のオラクルはここでだけ使えない (T6 の反転でローダー側の参照も
+    消えた)。
+    """
+    mgr, key = _manager(_load(write_mdf4_dup_2d(tmp_path)))
+    expected = {
+        "W[0][0]": [0, 2, 4, 6],
+        "W[0][1]": [1, 3, 5, 7],
+        "W[1][0]": [100, 102, 104, 106],
+        "W[1][1]": [101, 103, 105, 107],
+    }
+    for name, values in expected.items():
+        minted = _mint(mgr, key, name)
+        assert minted.values.dtype == np.uint8, name
+        np.testing.assert_array_equal(minted.values, values, err_msg=name)
 
 
 def test_minted_column_inherits_the_dedup_flag(tmp_path: Path) -> None:
@@ -216,8 +294,11 @@ def test_resolve_mints_a_column_missing_from_the_map(tmp_path: Path) -> None:
     """E-1 の「未配線ゆえ None」(test_resolver の旧 test_e1_mint_is_not_wired_yet) の反転。
 
     map に無い実在の列キーは鋳造され、同じキーは同じオブジェクトを返す。
+    T6 反転前はローダーが全列を発行していたため、代表 1 本だけを残す `_only`
+    ヘルパで「map に無い実在の列キー」を人工的に作っていた。反転後は production が
+    そのまま同じ状況なので、細工なしで鋳造経路を踏む (擬似反転は不要になった)。
     """
-    mgr, key = _manager(_only(_load(write_mdf4_2d(tmp_path)), "Mat[0]"))
+    mgr, key = _manager(_load(write_mdf4_2d(tmp_path)))
 
     col_key = _ns(key, "Mat[2]")
     got = mgr.resolve(col_key)
@@ -230,8 +311,15 @@ def test_resolve_mints_a_column_missing_from_the_map(tmp_path: Path) -> None:
 
 
 def test_resolve_still_returns_none_for_unresolvable_keys(tmp_path: Path) -> None:
-    mgr, key = _manager(_only(_load(write_mdf4_2d(tmp_path)), "Mat[0]"))
+    mgr, key = _manager(_load(write_mdf4_2d(tmp_path)))
+    # 反 vacuous 前置: 解決できる列が実在する状態で「これらは None」を見る
+    # (グループを空にすると全部 None になり、この 3 本が理由なく緑になる)。
+    assert mgr.resolve(_ns(key, "Mat[2]")) is not None
+    assert mgr.mint_count == 1
     assert mgr.resolve(_ns(key, "Mat[7]")) is None  # 幅 3 の範囲外
     assert mgr.resolve(_ns(key, "Nope")) is None  # 未知の物理チャンネル
-    assert mgr.resolve(_ns(key, "Mat")) is None  # 親コンテナ
-    assert mgr.mint_count == 0
+    # 親コンテナ: 反転後は物理チャンネル Signal として map に居るので resolve は
+    # それを返す — **鋳造** はしない (列ではない)。列でないことは has_column が答える。
+    assert mgr._mint_column(key, _ns(key, "Mat")) is None
+    assert mgr.has_column(key, "Mat") is False
+    assert mgr.mint_count == 1  # 上の 1 本以外は鋳造していない

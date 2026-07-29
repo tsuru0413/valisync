@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import datetime
 from collections.abc import Mapping
 from pathlib import Path
@@ -42,12 +41,14 @@ def _group(*names: str) -> SignalGroup:
 
 
 def _add_real(mgr: SignalGroupManager, tmp_path: Path) -> str:
-    """実 mf4 (Mat 3 列 + Clean) を読み、代表列 Mat[0] だけを残して **表ごと** 登録する。
+    """実 mf4 (物理チャンネル Mat / Clean) を **表ごと** 登録する。
 
-    反転前の eager ローダーは全列を発行するので、そのまま add すると列キーが既存 map に
-    当たり鋳造経路を踏めない。代表 1 本だけ残すと Mat[1]/Mat[2] が「map に無い実在の
-    列キー」になり、副テーブルの寿命を **実装の鋳造** で検証できる。テストダブルで
-    鋳造を偽装すると、寿命は緑のまま鋳造の中身が壊れていても気づけない。
+    T6 反転前の eager ローダーは全列を発行したので、代表列 1 本だけを残す細工で
+    ``Mat[1]``/``Mat[2]`` を「map に無い実在の列キー」に仕立てていた。反転後は
+    production がそのままその形なので細工は不要 (むしろ細工を残すと signals が
+    空になり、鋳造が「親が居ないから None」で偽緑になる)。副テーブルの寿命は
+    **実装の鋳造** で検証する — テストダブルで鋳造を偽装すると、寿命は緑のまま
+    鋳造の中身が壊れていても気づけない。
 
     ``column_records`` を渡すのが要点: 表は manager 側にあり、渡さないと
     ``_mint_column`` の先頭で表が空になって**正しい実装でも常に None** を返す
@@ -57,12 +58,8 @@ def _add_real(mgr: SignalGroupManager, tmp_path: Path) -> str:
     result = MdfLoader().load(write_mdf4_2d(tmp_path))
     sg = result.signal_group
     assert sg is not None
-    return mgr.add(
-        dataclasses.replace(
-            sg, signals=tuple(s for s in sg.signals if s.name == "Mat[0]")
-        ),
-        column_records=result.column_records,
-    )
+    assert {s.name for s in sg.signals} == {"Mat", "Clean"}, "反転後の形 (setup 前提)"
+    return mgr.add(sg, column_records=result.column_records)
 
 
 def test_resolve_returns_existing_signal_without_minting() -> None:
@@ -145,8 +142,8 @@ def test_remove_returns_minted_columns_for_teardown(tmp_path: Path) -> None:
     k1 = _add_real(mgr, tmp_path)
     minted = mgr.resolve(f"{k1}::Mat[2]")
     group, columns = mgr.remove(k1)
-    assert group.signals[0].name == "Mat[0]"
-    assert columns == (minted,)
+    assert {s.name for s in group.signals} == {"Mat", "Clean"}  # 行は物理チャンネル
+    assert columns == (minted,)  # 鋳造列は signals の外 = ここでしか返せない
 
 
 def test_resolved_keys_does_not_mint(tmp_path: Path) -> None:
@@ -166,7 +163,7 @@ def test_signal_map_lookup_falls_through_to_resolver(tmp_path: Path) -> None:
     key = _add_real(mgr, tmp_path)
     m = mgr.signal_map()
 
-    assert m.get(f"{key}::Mat[0]") is not None  # 物理キー
+    assert m.get(f"{key}::Mat") is not None  # 物理キー (E-3: 2-D の親チャンネル)
     assert mgr.mint_count == 0  # 物理キーは解決器を通さない
 
     minted = m.get(f"{key}::Mat[2]")  # 既存 map に無い列キー
@@ -199,7 +196,7 @@ def test_signal_map_contains_falls_through_but_not_for_physical_keys(
     key = _add_real(mgr, tmp_path)
     m = mgr.signal_map()
 
-    assert f"{key}::Mat[0]" in m
+    assert f"{key}::Mat" in m
     assert mgr.mint_count == 0  # 既存キーの `in` は鋳造しない
     assert f"{key}::Mat[2]" in m  # 列キーは解決器へ落ちる
     assert mgr.mint_count == 1
@@ -212,10 +209,11 @@ def test_signal_map_enumeration_does_not_mint(tmp_path: Path) -> None:
     key = _add_real(mgr, tmp_path)
     m = mgr.signal_map()
     before = mgr.mint_count
-    assert list(m) == [f"{key}::Mat[0]"]
-    assert len(m) == 1
-    assert set(m.keys()) == {f"{key}::Mat[0]"}
-    assert set(dict(m)) == {f"{key}::Mat[0]"}
+    physical = [f"{key}::Mat", f"{key}::Clean"]
+    assert list(m) == physical
+    assert len(m) == 2
+    assert set(m.keys()) == set(physical)
+    assert set(dict(m)) == set(physical)
     assert mgr.mint_count == before
 
 
@@ -232,8 +230,8 @@ def test_signal_map_enumeration_excludes_already_minted_columns(
     m = mgr.signal_map()
     assert m.get(f"{key}::Mat[2]") is not None  # 鋳造させる
     assert mgr.mint_count == 1
-    assert list(m) == [f"{key}::Mat[0]"]
-    assert len(m) == 1
+    assert list(m) == [f"{key}::Mat", f"{key}::Clean"]
+    assert len(m) == 2
 
 
 def test_signal_map_is_read_only() -> None:

@@ -302,7 +302,12 @@ class Session:
             size_bytes=size,
             t_min=t_min,
             t_max=t_max,
-            n_channels=len(group.signals),
+            # U2: 単位は **列数**。E-3 反転で len(group.signals) は物理チャンネル数
+            # (prod 4,324) になったので、そのまま使うとファイル情報だけが別の母数を
+            # 名乗る (ブラウザヘッダ/エクスポートは列数 264,004)。表を持たない
+            # CSV/Derived では total_column_count が len(group.signals) に落ちるので
+            # 従来値のまま。
+            n_channels=self._groups.total_column_count(key),
             file_format=group.file_format,
         )
 

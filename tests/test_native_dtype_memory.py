@@ -9,15 +9,20 @@ from __future__ import annotations
 import numpy as np
 
 from tests.mdf4_helpers import write_mdf4_wide_2d
-from valisync.core.loaders.mdf_loader import MdfLoader
+from valisync.core.session import Session
 
 
 def test_wide_uint8_channel_keeps_native_footprint(tmp_path):
-    cols = 1000  # < EXPANSION_COLUMN_LIMIT(1024): 全列がロードされる
+    cols = 1000  # < EXPANSION_COLUMN_LIMIT(1024): 全列が展開対象
     path = write_mdf4_wide_2d(tmp_path, cols=cols)
-    result = MdfLoader().load(path)
-    wide = [s for s in result.signal_group.signals if s.name.startswith("Wide")]
-    assert len(wide) == cols  # 展開された uint8 列
+    session = Session()
+    key = session.load(path).key
+    # E-3: 列は事前生成されない — 鋳造して値の footprint を測る。
+    assert session.column_names_of(key, "Wide") == tuple(
+        f"Wide[{i}]" for i in range(cols)
+    )
+    wide = [session.resolve_signal(f"{key}::Wide[{i}]") for i in range(cols)]
+    assert all(s is not None for s in wide)
 
     # 各列は 3 サンプル (write_mdf4_wide_2d の ts は 3 点) の uint8。
     assert all(s.values.dtype == np.uint8 for s in wide)

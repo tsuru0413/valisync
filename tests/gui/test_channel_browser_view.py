@@ -13,6 +13,7 @@ import pytest
 from PySide6.QtCore import QItemSelectionModel, QModelIndex, QPoint, Qt
 from pytestqt.qtbot import QtBot
 
+from tests.gui._physical_fixtures import inject_physical_channels
 from valisync.core.models import Delimiter, FormatDefinition
 from valisync.gui import strings as S
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
@@ -156,31 +157,10 @@ def _make_view_with_arrays(
     node exists at all -- silently turning the parent-focused asserts below
     into vacuous ones.
     """
-    import numpy as np
-
-    from valisync.core.models import Signal
-
     app_vm = AppViewModel()
-
-    def _sig(name: str, phys: str | None = None) -> Signal:
-        metadata: dict[str, object] = {"unit": "V"}
-        if phys is not None:
-            metadata["physical_channel"] = phys
-        return Signal(
-            name=name,
-            timestamps=np.array([0.0]),
-            values=np.array([1.0]),
-            file_format="MDF4",
-            bus_type="",
-            source_file="",
-            metadata=metadata,
-        )
-
-    app_vm.session.group_signals = lambda k: [  # type: ignore[method-assign]
-        _sig("g::Arr[0]", phys="Arr"),
-        _sig("g::Arr[1]", phys="Arr"),
-        _sig("g::Scalar"),
-    ]
+    inject_physical_channels(
+        app_vm, "g", [("Arr", "V", ("Arr[0]", "Arr[1]")), ("Scalar", "V", ("Scalar",))]
+    )
     app_vm.set_active_file("g")
     vm = ChannelBrowserVM(app_vm)
     view = ChannelBrowserView(vm)
@@ -748,32 +728,13 @@ def test_sampling_reflects_real_leaf_units_once_group_materialized(
     materialization) is already covered by
     test_sorting_enabled_does_not_materialize_children in the sort section
     above."""
-    import numpy as np
-
-    from valisync.core.models import Signal
-
     long_unit = "kilometers_per_hour_precise"
     app_vm = AppViewModel()
-
-    def _sig(name: str, unit: str, phys: str | None = None) -> Signal:
-        metadata: dict[str, object] = {"unit": unit}
-        if phys is not None:
-            metadata["physical_channel"] = phys  # E-2: 親を立てるのに必須
-        return Signal(
-            name=name,
-            timestamps=np.array([0.0]),
-            values=np.array([1.0]),
-            file_format="MDF4",
-            bus_type="",
-            source_file="",
-            metadata=metadata,
-        )
-
-    app_vm.session.group_signals = lambda k: [  # type: ignore[method-assign]
-        _sig("g::Arr[0]", long_unit, phys="Arr"),
-        _sig("g::Arr[1]", long_unit, phys="Arr"),
-        _sig("g::Scalar", "V"),
-    ]
+    inject_physical_channels(
+        app_vm,
+        "g",
+        [("Arr", long_unit, ("Arr[0]", "Arr[1]")), ("Scalar", "V", ("Scalar",))],
+    )
     app_vm.set_active_file("g")
     vm = ChannelBrowserVM(app_vm)
     view = ChannelBrowserView(vm)

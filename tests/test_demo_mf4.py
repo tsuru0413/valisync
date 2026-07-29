@@ -213,11 +213,18 @@ def test_2d_channels_explode_in_valisync(tmp_path):
     outcome = session.load(out)
 
     names = {sig.name.split("::", 1)[1] for sig in session.group_signals(outcome.key)}
+    # E-3 反転: 2D チャンネルは **物理チャンネル 1 行** として現れ、列は解決器が
+    # 鋳造する。旧 assert (親名が信号として現れない) は意図的 supersede — 親は
+    # 2-D 値の器で、プロット/エクスポートには載らない (Task 4/7 が拒否する)。
+    assert "Radar.ObjMatrix" in names and "Cam.ObjMatrix" in names
     for i in range(8):
-        assert f"Radar.ObjMatrix[{i}]" in names
-        assert f"Cam.ObjMatrix[{i}]" in names
-    assert "Radar.ObjMatrix" not in names
-    assert "Cam.ObjMatrix" not in names
+        assert (
+            session.resolve_signal(f"{outcome.key}::Radar.ObjMatrix[{i}]") is not None
+        )
+        assert session.resolve_signal(f"{outcome.key}::Cam.ObjMatrix[{i}]") is not None
+    assert session.column_names_of(outcome.key, "Radar.ObjMatrix") == tuple(
+        f"Radar.ObjMatrix[{i}]" for i in range(8)
+    )
 
     infos = [
         d for d in outcome.diagnostics if d.level == "info" and "ObjMatrix" in d.message
@@ -277,7 +284,8 @@ def test_valisync_loads_smoke_profile(tmp_path):
     sigs = session.group_signals(outcome.key)
     names = {s.name.split("::", 1)[1] for s in sigs}
     assert "VehSpd" in names and "Radar.Obj[0].dx" in names
-    assert "Radar.ObjMatrix[0]" in names  # (b) 2D チャンネルは展開されて見える (LD-12)
+    assert "Radar.ObjMatrix" in names  # (b) 2D チャンネルは親行として見える (E-3)
+    assert session.resolve_signal(f"{outcome.key}::Radar.ObjMatrix[0]") is not None
     assert not any(d.level == "error" for d in outcome.diagnostics)
 
 
@@ -495,10 +503,16 @@ def test_prod_tiny_structure_loads(tmp_path):
     # シナリオ実信号が見える + 値が物理レンジ (cruise ≈ 80km/h・既存 smoke と同流儀)
     assert "VehSpd" in names
     assert 70.0 < float(np.nanmean(by_name["VehSpd"].values)) < 90.0
-    # ≤1024 列アレイは要素展開される (cols=6 → [0..5])
-    assert "Prod10_0000[0]" in names and "Prod10_0000[5]" in names
+    # ≤1024 列アレイは列キーとして引ける (cols=6 → [0..5])。E-3 反転で列 Signal は
+    # 発行されないので、行は親 (Prod10_0000) ・列は鋳造で確認する。
+    assert "Prod10_0000" in names
+    assert session.column_names_of(outcome.key, "Prod10_0000") == tuple(
+        f"Prod10_0000[{i}]" for i in range(6)
+    )
+    assert session.resolve_signal(f"{outcome.key}::Prod10_0000[0]") is not None
+    assert session.resolve_signal(f"{outcome.key}::Prod10_0000[5]") is not None
     # >1024 列の広幅アレイはヘッドレスでは展開されない (LD-14 全スキップ=FU-01 対象)
-    assert not any(n.startswith("Prod10Wide_0000[") for n in names)
+    assert not any(n.startswith("Prod10Wide_0000") for n in names)
     # 非展開だけでは「無関係な理由で消えた」場合も緑になる。LD-14 の >1024 ガードが
     # 実際に発火し警告診断を出した (=FU-01 の展開ダイアログ候補になる) ことを弁別する。
     assert any(
