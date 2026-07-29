@@ -164,9 +164,14 @@ def test_minted_columns_trip_the_e3_wire(tmp_path) -> None:  # type: ignore[no-u
     """
     # _loaded は tests/gui/test_unload_export_guard.py と同型
     app_vm, key, _handle = _loaded(tmp_path)
-    app_vm.set_teardown(_DummyTeardown())
+    dummy = _DummyTeardown()
+    app_vm.set_teardown(dummy)
     column = _minted_column(f"{key}::Spd[7]")
     app_vm.session._groups._resolved_by_key.setdefault(key, {})[column.name] = column
 
     with pytest.raises(AssertionError, match="E-3"):
         app_vm.unload_file(key)
+
+    # raise だけを見ると `enqueue` の**後**に raise を移しても緑のままで、守りたい方向
+    # (鋳造列が無音でペーシングを迂回しない) が壊れる。迂回そのものを pin する。
+    assert dummy.calls == []
