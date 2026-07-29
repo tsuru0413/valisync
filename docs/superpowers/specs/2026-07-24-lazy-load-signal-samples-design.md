@@ -72,8 +72,8 @@ valisync は**ファイルを開いた瞬間に全信号のサンプルを圧縮
 |---|---|---|
 | **A** | 遅延ロード core（サンプルソース抽象・ローダー master+メタのみ・MDF ハンドル保持＋ロック・values プロパティ化・検証遅延・**teardown の非展開ガード**） | メモリ/ロードの本丸 |
 | **B** | ハンドル生存＋teardown 会計再定義（unload で MDF ハンドルを閉じる） | unload の正しさ・ファイルロック解放 |
-| **C** | オフセット全体適用の O(loaded) dict 再構築を O(offset信号) 化 | 「オフセットをファイル全体に適用が遅い」を根治 |
-| **D** | 264k 行チャンネル一覧の view 仮想化（QSortFilterProxyModel 撤去・遅延ツリー reset） | 「一覧操作が遅い」を根治 |
+| ~~**C**~~ | ~~オフセット全体適用の O(loaded) dict 再構築を O(offset信号) 化~~ | ✅ **完了（E-1 Task 4・aa0c37d）** — 実測 n=100k で 0.064ms vs 1,150.7ms |
+| ~~**D**~~ | ~~264k 行チャンネル一覧の view 仮想化~~ | ❌ **不要** — 3 項目とも実装済み・前提の 4.3 秒は実測 ~100ms へ消滅（E-2 が 61 分の 1 に） |
 
 **A/B の結合（レビュー I3）**: teardown は現行 `sig.values.nbytes` を全信号で読むため、A の values プロパティ化だけを merge すると unload で全展開する回帰になる。よって **teardown の「非展開・is_materialized gate」ガードは増分A に含める**（A 単独で unload しても展開しないことを A の①gate で実証）。ハンドル close 自体と会計の再定義は増分B。
 
@@ -122,25 +122,88 @@ offset 適用は**timestamps だけシフトし values は不変**。新 Signal 
 - **core 計算**: `SampleReadError` を既存の派生信号生成エラー UI（`>=2 samples` の `ValueError` と同経路）で surface。
 - **消費者マップの区別**: 「materialize トリガ点（広い）」と「全信号 sample-sweep 点（狭い＝実質無し）」を分けて記す。
 
-## 増分B — ハンドル生存＋teardown 会計再定義
+## 増分B — 決定的なハンドル解放＋teardown ペーシング
 
-- `unload_file` → `remove_group` の後、グループ保持の `MdfHandle.close()`（mmap 解放・ファイルロック解除・`handle.lock` 保護下）。
-- **teardown 会計（増分A で非展開ガード・B で再定義）**: `pending_bytes`/`_drain` は **`sig.values` を未展開信号で決して読まない**。常に `timestamps.nbytes`（eager master）＋`values.nbytes`（`is_materialized` の時のみ）＋Signal 上に載る派生キャッシュ（`_sorted_view_cache`〔float64 昇格で native の最大8倍〕・`_finite_view_cache`・`_range_stat_index_cache` のブロック配列）を `getattr` ガードで計上（zero-copy エイリアス/native==float64 no-copy は array id で dedupe）。**float64 昇格キャッシュは Signal 側に載る**ためソースのみ会計では過少 pacing になる点を明記。
-- 順序: unload 通知で plotted 信号を prune（既存 `prune_missing_signals`）→ その後ハンドル close。close 後の遅延アクセスは `handle.lock` 下で「閉鎖済み」を検知し `SampleReadError` で degrade。
-- 追い出しなし方針（ユーザー決定）ゆえ materialized 配列は unload まで生存（長時間セッションで plotted-ever の materialized 集合が単調増加し得る＝メモリは「ピークを遅らせる」だけになる場面がある）ことを許容。
+> **2026-07-29 再定義**: 実装後の調査（A+E-0/E-1/E-2 出荷後）で、当初の 2 項目より広いことが判明したため書き直した。
+> **production の削除経路で handle を閉じる箇所は現在ゼロ**（`.close()` は src/ に 2 箇所しかなく、両方 `mdf_loader` の失敗処理内 `:372/375`）。
+> 削除経路は 1 つでなく **5 つ**あり、「会計を正直にする」だけだと **FU-16 のフリーズが再来する罠**がある（後述）。
 
-## 増分C — オフセット全体適用の O(loaded) 解消
+### ユーザー決定（確定）
 
-`GraphPanelVM._signal_map` の offset overlay（offset 有効時に base map 全体 264k を走査して dict 再構築）を、**base map を参照のまま offset を持つ信号だけ上書き挿入**する O(offset信号) へ再構築。値展開は I5 により offset 信号を実際にプロットした時のみ。dict 全走査（O(loaded) CPU）を解消。
+1. **close は `Session.remove_group` に置く**（`AppViewModel.unload_file` ではなく）。core が handle 寿命を持ち、unload と `_discard`（キャンセル完走のロールバック）の**両方を構造的にカバー**する。`remove_group` の呼出元は 3 箇所で爆風半径が既知。
+2. **unload がエクスポート中のファイルを殺す挙動は許容する。ただし到達不能を確実にする** — 現状は `BusyOverlay` が偶然クリックを遮っているだけなので、**明示的なガード**（エクスポート実行中は unload を無効化/拒否）を置き、「偶然」に依存しない。
+3. **ドレインの 1 ティック上限は 8,000 信号**（実測 1.97µs/信号 ⇒ 約 16ms＝60fps の 1 フレーム）。バイト予算（64 MiB）との**二軸**にし、先に達した方で中断する。
+4. **MDF3 が開けない件は本増分に含めず follow-up** とする（後述）。
 
-## 増分D — 264k 行チャンネル一覧の view 仮想化
+### コア（本増分の存在理由）
 
-reset freeze の原因は VM 構築（264k で ~675ms のみ）でなく **QTreeView reset（~2750ms）＋QSortFilterProxyModel remap（~1550ms）**（memory `gui_large_model_reset_freeze_is_view_proxy_not_vm_build` 既測）。
+- **`Session.remove_group` で `MdfHandle.close()` を呼ぶ**（CSV グループは `None` ガード・`prune_missing_signals` の後）。実測: ロード中は rename/replace/delete がブロックされ（WinError 5/32）、**close 後は即座に成功**する。
+  今日でも最終的にはロック解除されるが、それは asammdf の `MDF.__del__` 経由で「そのグループの最後の Signal 参照が死んだ時」＝ `TeardownService` がドレインを終えた後であり**非決定的**。明示 close で決定化する。
+  > **spec 記述の訂正**: 旧「上書き/切詰め/リネーム/移動/削除が全てブロック」は誇張だった。実測では **rename/replace/delete はブロックされるが `open('r+b')` は成功**する。mmap が原因かは未検証。
+- **teardown 会計の再定義（罠つき）**: 現行 `_materialized_value_bytes` は過大計上（マスターはグループ内で identity 共有なのに信号ごとに計上 ⇒ prod_demo で**実体 0.2 MiB に対し 10,316 MiB＝約 5 万倍**／sorted・finite キャッシュは 2.00x〔float64〕/1.47x〔uint8〕の二重計上／`_range_stat_index_cache` は spec §128 に反し未計上）。過大なので**方向は安全**（ドレインが細かく刻まれるだけ）。
+  **罠**: バイトを正直にすると未展開の遅延グループは実質 0 バイトになり、**330,004 シェルが 1 ティックで解放されて実測 649ms のフリーズ**＝FU-16 の再来。よって**信号数上限（8,000/tick）が必須**であり、オプションではない。
+  併せて id-dedup 用の `SampleSource` アクセサ（例 `array_if_materialized`）が要る — `nbytes_if_materialized` は数値を返すだけで**同一性が取れない**ため現状 dedup 不能。
+- **`MainWindow._discard`（キャンセル完走のロールバック・`main_window.py:609-612`）を teardown 経路へ通す**。現状は `RemovalResult` を捨てており close も遅延解放も無く、**330k シェルを GUI スレッドで同期解放（実測 649ms）**。close を `remove_group` に置けば close は自動的に効くが、遅延解放の配線は別途要る（`_discard` はファイルを register していないので `'releasing'` スピナーを出さない enqueue 変種か、FileBrowserVM が描画しないキーが要る）。
 
-- **QSortFilterProxyModel を撤去**（遅延ツリー上の proxy は reset で全親 rowCount を probe → 全子 materialize を強制＝memory `gui_qsortfilterproxy_over_lazy_tree_forces_full_materialization`）。ソート/フィルタを **VM 側**（`ChannelBrowserVM` の memoized prep・model index 直接解決）へ。選択/D&D は源 index 直接に。
-- `SignalTreeModel` の遅延性を reset 経路でも保つ。reset コストを top-level（base group ~4264）に限定。
-- `setSortingEnabled(True)` の stale 既定インジケータ発火（memory `gui_setsortingenabled_fires_stale_default_indicator`）を `header().setSortIndicator(-1)` 前置で是正。
-- 本増分は最も独立性が高く重いため、writing-plans でさらに細分し得る。
+### 隣接するリーク箇所
+
+- **`Session.load` の登録失敗**（`session.py:166-170`）: `add()` が `{MDF4, CSV}` 以外の `file_format` で raise し、**生きた handle を持つグループを捨てる**。GUI では `_on_load_error` がモーダルを出す間、トレースバックが handle を pin し続けるためダイアログ表示中ずっとファイルがロックされる。→ `add()` を try/except で囲み close してから re-raise。
+- （任意）`MainWindow.closeEvent` で生存 handle を閉じる。Session に列挙 API が無いので新設が要る。
+
+### 繰越 Minor（4 件・すべて存在を確認済み）
+
+- **excepthook 診断に dedup が無く**（`main_window.py:578-592`）、固定ラベル「サンプル読み取り」で記録される。render 境界（`graph_panel_vm.py:1656-1684`）は `signal_key` ごとに dedup し実ファイル basename を使うので**非対称**。→ render 境界に合わせる。
+- **`MdfHandle._closed` の check-and-set が非アトミック**（`mdf_handle.py:28-29`）。並行 close で `mdf.close()` が 2 回走る（asammdf 7.3.18 が冪等なので**偶然**無害）。→ アトミック化する。
+  ただし**フラグを lock の外で立てるのは意図的に維持する** — lock 内に移すと、待機中の reader が `is_closed` を False と読んで、閉じる直前の handle に select を投げてしまい**厳密に悪化**する。この WHY をコメントに残す。
+- **`LazyMdfValues.array()` がキャッシュヒットでも lock を取る**（`sample_source.py:113-114`）。GUI スレッドのキャッシュ読みが、オフスレッド export の ~1 秒 select の後ろで待たされうる。→ double-checked read（lock の外でキャッシュを見る）。
+
+### 明示的に本増分ではないもの
+
+- **`RemovalResult.removed_columns` の配線**: `_mint_column` が `None` を返す限り**証明可能に常に `()`**（`signal_group_manager.py:203-213`）。E-3 で鋳造が生きた瞬間に実害化するので、**E-3 の完了定義**に置く（本増分で配線しても end-to-end 検証ができない）。
+- **MDF3 が開けない defect**: 実 v3.30 の `.mdf` が `ValueError: unsupported file_format: 'MDF3'` で**そもそも開けない**（LD-02 に反する・Session レベルのテストなし。`tests/test_loaders.py:375-380` はローダーのみ）。handle リーク箇所でもあるが**ユーザーから見た defect はリークより遥かに大きい**ため、**B では close だけ直し、MDF3 は別 follow-up として起票**（ユーザー決定 4）。
+
+### テスト方針
+
+- **Layer A**: unload 直後に rename/replace/delete が**`gc.collect()` なしで**成功する。多重 unload 冪等。`_discard` 経路でも close される。`Session.load` の登録失敗後にロックが残らない。
+- **ペーシング**: 未展開 330k シェルのグループをドレインしても**1 ティックが 8,000 信号を超えない**（信号数で assert・時間で assert しない＝マシン依存を避ける）。honest bytes 単独に戻す sabotage で「1 ティックで全部」になることを実証する。
+- **会計**: master の identity 共有を dedup して計上する（現行 5 万倍の過大計上が是正されること）。
+- **並行**: close と in-flight read の競合で native クラッシュせず `SampleReadError` になる。double-checked read がキャッシュヒットで lock を取らない。
+- **①gate realgui**: 実 GUI で prod_demo をロード → unload → **その場でファイルを削除できる**（実 OS 操作）。エクスポート中は unload が拒否されることも実操作で確認。
+
+## 増分C — オフセット全体適用の O(loaded) 解消 ✅ **完了（E-1 Task 4・commit aa0c37d）**
+
+> **本増分は実装済み。追加作業は無い。再実装しないこと。**
+
+`GraphPanelVM._signal_map` は offset 無しなら Session の base Mapping を**そのまま返し**（`graph_panel_vm.py:1601-1602`）、offset 有りなら `_OffsetOverlay`（`:1687-1736`）で包む。overlay は base を**参照で保持**し `__getitem__` の中で looked-up キーにだけ `Session.apply_offset` を適用する（per-overlay メモつき）。`__iter__`/`__len__` は base へ委譲するので E-1 の遅延解決 Mapping とも合成でき、列を鋳造しない。dict 内包も copy も無い。
+
+**全消費者を確認済み**: `_signal_map()` の 7 呼出点（`:964/1021/1262/1309/1397/1472/1613`）は全て `self._plotted` のループ内で `sig_map.get(...)`。`sig_map` の grep 16 ヒットは全て `.get`。`AppViewModel._purge_signal_offsets_under` は `_signal_offsets` のみ走査、`'offsets'` に反応するのは `GraphAreaVM._on_app_change`（小さい dict 2 個のコピー＋キャッシュクリア）だけ。値展開も無い（`synchronizer.py:41-49` が `values_source=` を共有するのでファイル全体オフセットは timestamps のみシフト）。
+
+**実測（実 AppViewModel→GraphAreaVM→GraphPanelVM 経路・best of 5）**: n=2,000 → 0.063ms（現行）vs 22.2ms（revert）／n=20,000 → 0.061 vs 232.3／n=100,000 → **0.064 vs 1,150.7（約18,000倍）**。264k 列へ外挿すると旧形は 1 パネル 1 オフセット適用あたり ~3 秒。
+
+**sabotage 検証済み**: dict 再構築へ revert すると `tests/gui/viewmodels/test_signal_map_overlay.py` の 9 件中 7 件が RED（復元で 18 pass）。弁別テスト（`:132-143`）は**2 回列挙して `full_scans==2`** を assert する（1 回だと恒真化するため）。`tests/core/sync/test_offset_lazy.py:32-49` が `values_source=`→`values=` の revert を CI で捕まえる。
+
+## 増分D — 264k 行チャンネル一覧の view 仮想化 ❌ **不要（obsolete）**
+
+> **本増分は着手しないこと。3 つの作業項目は全て実装済みで、性能上の前提も消滅した。**
+
+**3 項目とも既に code に入っている**（本ブランチで実測確認）:
+- `QSortFilterProxyModel` は **src/ に 0 ヒット**。ソートはモデル内（`signal_tree_model.py:178-191`）、選択は源 index を直接解決（`channel_browser_view.py:298-311`・`mapToSource` 無し）。
+- stale 既定インジケータ是正は**適用済みかつ順序も正しい**（`channel_browser_view.py:125` の `setSortIndicator(-1)` が `:126` の `setSortingEnabled(True)` より前・`:128` に passthrough の `sortByColumn(-1)`）。
+- 子の遅延 materialize は成立（`_rebuild()` は top-level のみ・`column_names_for()` を呼ばない／`_materialize()` は `index()`/`rowCount()` からのみ到達／`hasChildren()` は materialize せず答える）。
+
+**性能上の前提が void**（実ディスプレイ・実 `build_main_window`・実オフスレッドロード・prod_demo 1.36GB＝264,004 列 / 4,264 行）:
+
+| 操作 | 実測 |
+|---|---|
+| モデル全 reset | 248-257ms sync＋89-100ms idle |
+| アクティブファイル切替（6 回） | 202-243ms sync＋79-94ms idle |
+| フィルタ（実 view 経路・`'o'`） | 112-144ms sync（scans=1） |
+| **1,000 列の親を展開** | **22.0ms sync＋14.5ms idle**（2 本目も 35.7ms＝warm-up でない） |
+| ソート（4,264 行） | 79.6-177.1ms／スクロール 10ms |
+
+**attribution（同一 run で view 接続 vs `setModel(None)` 切断）**: VM prep 単体 255-275ms／`SignalTreeModel._rebuild` 単体 **2.7-2.9ms**（264k 子を作っていない証明）／`vm.refresh()` は接続時 336-357ms vs 切断時 253-273ms（idle は 0.4-0.7ms に縮む）→ **full reset の QTreeView 側コストは ~85-100ms**。旧根拠「reset ~2,750ms＋proxy remap ~1,550ms ≈ 4.3 秒」は E-2 がツリーを 264,004 行→4,264 行（61 分の 1）にし、proxy が src/ から消えたことで**消滅した**。
+
+**残る唯一のブロックは view でなく VM**: `ChannelBrowserVM` の prep 再構築が 264,004 列に対する純 Python で **255-275ms**、アクティブファイル切替/`refresh()` のたびに支払われる。これは**増分D のスコープ外**（view 仮想化では直らない）。prep のファイル別キャッシュは、保持メモリをキャッシュ数だけ倍加させ本 spec のメモリ目標と正面衝突し、かつ single-slot 設計が回避している deselect-to-None エイリアシングバグを再導入するリスクがあるため、**現時点では追わない**（E-3 でシェルが 264k→4,324 になれば prep も比例して軽くなる見込み）。
 
 ## 設計判断（確定事項）
 
