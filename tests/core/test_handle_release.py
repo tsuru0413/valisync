@@ -163,3 +163,67 @@ def test_remove_group_twice_raises(tmp_path: Path) -> None:
     session.remove_group(key)
     with pytest.raises(KeyError):
         session.remove_group(key)
+
+
+def test_registration_failure_closes_the_handle(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """add() が raise しても handle はリークしない (CI 可視の主オラクル)。
+
+    GUI では _on_load_error がモーダルを出す間トレースバックが handle を pin する
+    ため、閉じないとダイアログ表示中ずっとファイルがロックされる。
+    """
+    path = tmp_path / "reg_fail.mf4"
+    write_mdf4(
+        path,
+        [
+            {
+                "name": "Spd",
+                "bus_type": CAN,
+                "timestamps": [0.0, 1.0],
+                "values": [1.0, 2.0],
+            }
+        ],
+    )
+    session = Session()
+    captured: list[object] = []
+
+    def _boom(group):  # type: ignore[no-untyped-def]
+        captured.append(group)  # 強参照を保持 -> GC ではなく close だけを測る
+        raise ValueError("unsupported file_format: 'MDF3'")
+
+    monkeypatch.setattr(session._groups, "add", _boom)
+    with pytest.raises(ValueError):
+        session.load(path, confirm_expansion=None)
+
+    handle = captured[0].handle
+    assert handle is not None and handle.is_closed is True
+
+
+@windows_only
+def test_registration_failure_does_not_leave_the_file_locked(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """実 OS のロック解放版 (Windows のみ — POSIX の rename は open 中でも成功する)。"""
+    path = tmp_path / "reg_fail2.mf4"
+    write_mdf4(
+        path,
+        [
+            {
+                "name": "Spd",
+                "bus_type": CAN,
+                "timestamps": [0.0, 1.0],
+                "values": [1.0, 2.0],
+            }
+        ],
+    )
+    session = Session()
+
+    def _boom(_group):  # type: ignore[no-untyped-def]
+        raise ValueError("unsupported file_format: 'MDF3'")
+
+    monkeypatch.setattr(session._groups, "add", _boom)
+    with pytest.raises(ValueError):
+        session.load(path, confirm_expansion=None)
+
+    victim = tmp_path / "moved2.mf4"
+    os.replace(path, victim)  # 例外が出なければリークしていない
+    assert victim.exists()

@@ -166,7 +166,20 @@ class Session:
         if result.signal_group is None:
             messages = [d.message for d in result.diagnostics]
             raise LoadError(file_path, messages, diagnostics=result.diagnostics)
-        key = self._groups.add(result.signal_group)
+        try:
+            key = self._groups.add(result.signal_group)
+        except Exception:
+            # 登録に失敗したグループは誰も所有しない。handle を閉じないと
+            # トレースバックが生かし続け、GUI のエラーダイアログ表示中ずっと
+            # ファイルがロックされる。ローダー自身の失敗経路 (mdf_loader の
+            # cancel/例外時) は signal_group=None を返すので上の early return
+            # で抜けており、ここに来るのは group が実在する場合のみ — 二重
+            # close にはならない (MdfHandle.close() は冪等だが、それに頼らず
+            # 所有権の切れ目をここに一本化する)。
+            handle = result.signal_group.handle
+            if handle is not None:
+                handle.close()
+            raise
         return LoadOutcome(key=key, diagnostics=result.diagnostics)
 
     def is_csv(self, file_path: Path) -> bool:
