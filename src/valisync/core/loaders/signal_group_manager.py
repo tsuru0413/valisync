@@ -3,14 +3,26 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping
 from types import MappingProxyType
 
-from valisync.core.loaders.column_names import ColumnRecord, leaf_count, leaf_names
+from valisync.core.loaders.column_names import (
+    ColumnRecord,
+    leaf_count,
+    leaf_names,
+    parse_leaf,
+)
 from valisync.core.models import Signal, SignalGroup
+from valisync.core.models.sample_source import LazyMdfValues
 
 _FORMAT_KEY_PREFIX: dict[str, str] = {"MDF4": "mf4", "CSV": "csv"}
 KEY_SEPARATOR = "::"
 
 # 表を持たないグループ (CSV/Derived・未知 key) が返す共有の空ビュー。
 _NO_COLUMN_RECORDS: Mapping[str, ColumnRecord] = MappingProxyType({})
+
+# 鋳造列が親から**継承してはならない** metadata (LD-07)。value2text と変換情報は
+# スカラー enum の概念で、配列成分/構造化フィールドへ写すと「その列の値ラベル」と
+# いう偽の意味を与える。eager ローダーも展開時は raw_conversion=None で継承を
+# 止めている (mdf_loader._load_group) ので、鋳造側をそれに一致させる。
+_UNINHERITED_METADATA = frozenset({"conversion_info", "value_labels"})
 
 
 class SignalGroupManager:
@@ -299,15 +311,80 @@ class SignalGroupManager:
         return False
 
     def _mint_column(self, group_key: str, key: str) -> Signal | None:
-        """列キーから Signal を鋳造する。E-1 では ColumnSpec 未配線のため None。
-
-        E-3 でローダーが per-channel Signal + ColumnSpec を発行したら、ここで
-        parse_leaf → LazyMdfValues(selector) → Signal 構築を行う。
+        """列キーから Signal を鋳造する (解決できなければ None)。
 
         鋳造した Signal は列キーの**正典**であり (resolve は同じキーに同じオブジェクトを
-        返す)、namespaced ラッパーと違って別の元 Signal を持たない —
-        ``_sorted_view_delegate`` は不要。
+        返す)、namespaced ラッパーと違って別の元 Signal を持たない --
+        ``_sorted_view_delegate`` は付けない。
         """
+        _prefix, sep, display_key = key.partition(KEY_SEPARATOR)
+        if not sep:
+            return None  # 名前空間の無いキーは列キーではない
+        group = self._groups[group_key]
+        handle = group.handle
+        if handle is None:
+            return None  # CSV/Derived は LD-14 の列文法を持たない
+        records = self.column_records(group_key)
+        # 親は **表示名** (LD-08 dedup 済み) の最長一致で確定する。表示名は物理
+        # チャンネルごとに一意なので、parse_leaf 単体では避けられない生名衝突
+        # (同名 2 チャンネルが同じ spec キーを共有する・column_names.parse_leaf の
+        # precondition) をここで断てる。
+        for i in range(len(display_key), 0, -1):
+            record = records.get(display_key[:i])
+            if record is None:
+                continue
+            rest = display_key[i:]
+            if not rest:
+                continue  # 表示名そのもの = 物理チャンネル (容器) であって列ではない
+            # 二重名の契約: 表示名は dedup 済み名から、selector は **生チャンネル名**
+            # から導く。両者は同じ suffix を共有する (ローダーの out_leaves と
+            # sel_leaves は同一構造を同順に走査する)。dedup 済み表示名で parse_leaf を
+            # 引くと "W[1][2]" の "[1]" を W 自身の配列インデックスとして消費し、
+            # 解決不能になるか別チャンネルの列を返す。
+            raw_leaf = f"{record.raw_base_name}{rest}"
+            if parse_leaf(raw_leaf, {record.raw_base_name: record.spec}) is None:
+                continue  # 消費しきれない / 非数値リーフ = この親では解決不能
+            parent = self._physical_signal(group, display_key[:i])
+            if parent is None:
+                return None
+            return Signal(
+                name=key,
+                # master は親と**同一オブジェクト**を渡す (source_info の
+                # id(s.timestamps) dedup が同一性に依存する)。ローダーが read-only
+                # 化済みなので Signal.__init__ はコピーしない。
+                timestamps=parent.timestamps,
+                values_source=LazyMdfValues(
+                    handle,
+                    record.raw_base_name,
+                    record.group_index,
+                    record.channel_index,
+                    length=len(parent.timestamps),
+                    selector=(raw_leaf,),
+                ),
+                file_format=parent.file_format,
+                bus_type=parent.bus_type,
+                source_file=parent.source_file,
+                metadata={
+                    k: v
+                    for k, v in parent.metadata.items()
+                    if k not in _UNINHERITED_METADATA
+                },
+            )
+        return None
+
+    @staticmethod
+    def _physical_signal(group: SignalGroup, display_name: str) -> Signal | None:
+        """物理チャンネル ``display_name`` を代表する Signal (継承元)。
+
+        反転後は「物理チャンネル 1 本 = Signal 1 個」なので name 一致でも当たるが、
+        反転前 (ローダーが列を発行している間) はその名前の Signal が存在しない。
+        どちらでも同じ答え (master・file_format・bus_type・source_file・unit 等は
+        チャンネル単位で不変) が要るので ``metadata['physical_channel']`` で引く。
+        走査は列キーごとに 1 回だけ (結果は ``_resolved_by_key`` が保持する)。
+        """
+        for sig in group.signals:
+            if sig.metadata.get("physical_channel") == display_name:
+                return sig
         return None
 
 

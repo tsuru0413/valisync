@@ -341,6 +341,40 @@ def write_mdf4_wide_2d(tmp_path: Path, cols: int = 1025) -> Path:
     return path
 
 
+def write_mdf4_dup_2d(tmp_path: Path) -> Path:
+    """同名 (W) の 2D uint8 チャンネル 2 本 — LD-08 dedup と LD-14 展開の合成.
+
+    ローダーの規則から、表示名は dedup 済みの ``W[0]`` / ``W[1]``、selector 側の
+    リーフ名は生名由来の ``W[0]`` / ``W[1]`` (= 列インデックス) になる。**2 つのキー
+    空間が同じ文字列に見えて別物**になる唯一のケースであり、鋳造がキー空間を
+    取り違えると解決不能になるか別チャンネルの列を返す。
+
+    列の値は
+    ``W[0][0]=[0,2,4,6]`` / ``W[0][1]=[1,3,5,7]`` /
+    ``W[1][0]=[100,102,104,106]`` / ``W[1][1]=[101,103,105,107]``
+    で、どのチャンネルのどの列を読んだかが値だけで判別できる。
+    """
+    ts = np.array([0.0, 0.1, 0.2, 0.3])
+    mdf = MDF()
+    try:
+        for base in (0, 100):
+            samples = np.array(
+                [
+                    [base + 0, base + 1],
+                    [base + 2, base + 3],
+                    [base + 4, base + 5],
+                    [base + 6, base + 7],
+                ],
+                dtype=np.uint8,
+            )
+            mdf.append([ASignal(samples=samples, timestamps=ts, name="W", unit="m")])
+        path = tmp_path / "dup2d.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
 def write_mdf4_single_column_shapes(tmp_path: Path) -> Path:
     """「展開したのに列が 1 本」になる 3 形状 + スカラー — C1 の RED fixture.
 
