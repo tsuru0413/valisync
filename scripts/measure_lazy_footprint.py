@@ -408,6 +408,14 @@ def materialize_leaves(win: object, key: str, target: int) -> int:
         assert prod_arr.flags.writeable == bulk_arr.flags.writeable is False
         assert prod_arr.flags.c_contiguous and bulk_arr.flags.c_contiguous
         assert np.array_equal(prod_arr, bulk_arr)
+        # 測定の意味を決めるのはここ: dtype/shape/内容が一致していても、bulk 側の
+        # リーフが 1 つの base 配列をエイリアスしていたら「解放」が桁違いに安くなり、
+        # ティック時間を無言で低く見せる (上の 4 つはその失敗モードに盲目)。
+        # production は _flatten の ascontiguousarray + _freeze でリーフごとに
+        # 独立バッファを持つので、bulk 側にも同じ所有権を要求する。
+        assert prod_arr.flags.owndata and bulk_arr.flags.owndata, (
+            "リーフが base をエイリアスしている — 解放コストが production と違う"
+        )
         print(
             f"  EQUIVALENCE ok [{branch}]: bulk route reproduces the lazy array "
             f"({prod_arr.dtype}, {prod_arr.shape}, {prod_arr.nbytes / 1024:,.0f} KiB)"

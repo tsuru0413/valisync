@@ -461,6 +461,12 @@ def test_export_blocks_unload_on_a_floated_dock_then_allows_it_after(
     key = _load_and_settle(qtbot, window, path)
     handle = window.app_vm.session._groups.group(key).handle
     assert handle is not None and handle.is_closed is False
+    # 末尾の os.remove を非空虚にする対照 — 「今このハンドルが実際に OS ロックを
+    # 握っている」ことを先に実測する。これが無いと、ロードが実は失敗していた場合も
+    # ファイルはロックされておらず os.remove が成功して緑になる (test 1 の対照に
+    # 相乗りせず、このテスト自身で成立させる)。
+    with pytest.raises(PermissionError):
+        os.remove(path)
 
     # ── File ドックを実クリックでフロート化 ────────────────────────────────
     # BusyOverlay は MainWindow の子 (cover() が parent.rect()) なので、
