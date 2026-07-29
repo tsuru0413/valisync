@@ -190,10 +190,17 @@ class AppViewModel(Observable):
 
     @property
     def last_unload_refusal(self) -> tuple[str, tuple[str, ...]] | None:
-        """(reason code, detail names) of the most recently refused unload.
+        """(reason code, detail names) of the LATEST :meth:`unload_file` attempt,
+        or None when that attempt was not refused.
 
-        Reason codes are VM-level, not user text: the View maps them to strings
-        (``gui/strings.py``) so the ViewModel stays free of presentation.
+        Not a latch: :meth:`unload_file` clears this unconditionally on entry, so
+        a value here always describes the most recent attempt and can never be a
+        leftover from an older refusal (which a reader keyed off something other
+        than the ``"unload_blocked"`` notification would otherwise misreport).
+
+        Reason codes (``"export_busy"`` / ``"dependents"``) are VM-level, not user
+        text: the View maps them to strings (``gui/strings.py``) so the ViewModel
+        stays free of presentation.
         """
         return self._last_unload_refusal
 
@@ -214,8 +221,12 @@ class AppViewModel(Observable):
         service (byte-budget background drain) so the UI thread returns at once
         (FU-16). Logical close (loaded list / active file / offsets / prune) stays
         synchronous. Refused without side effects when a Derived_Signal depends on
-        the group.
+        the group; every refusal is announced via ``"unload_blocked"`` (増分B).
         """
+        # 増分B: 拒否理由を latch にしない。試行ごとに無条件で捨てることで、
+        # 「成功したのに前回の拒否理由が残っている」状態が存在しえなくなる
+        # (残す場合に必要な "unload_blocked のときだけ読め" という口約束が不要)。
+        self._last_unload_refusal = None
         if self.is_busy():
             # 増分B: close() は handle.lock を取るので、export ワーカーが select 中
             # だと GUI スレッドがその読み終了まで同期ブロックする (実測 0.73-1.18s)。
@@ -228,6 +239,11 @@ class AppViewModel(Observable):
         name = self._safe_source_name(key)
         result = self._session.remove_group(key)
         if not result.removed:
+            # 増分B: 破壊的操作が無音で何も起きない状態をやめる (FB-01: never silent)。
+            # dependent_signals は GUI の消費者がゼロだったので、確認モーダルに
+            # 「はい」と答えたユーザーには「何も起きない」ようにしか見えなかった。
+            self._last_unload_refusal = ("dependents", result.dependent_signals)
+            self._notify("unload_blocked")
             return
         if key in self._loaded_keys:
             self._loaded_keys.remove(key)

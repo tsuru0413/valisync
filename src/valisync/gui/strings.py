@@ -163,6 +163,11 @@ CONFIRM_CLOSE_YES: Final = "閉じる"  # QMessageBox.Yes の setText (本文動
 CONFIRM_CLOSE_NO: Final = "キャンセル"  # QMessageBox.No の setText
 # 増分B: エクスポート実行中の unload 拒否 (AppViewModel.unload_file の述語ガード)。
 UNLOAD_BLOCKED_BY_EXPORT: Final = "エクスポート中はファイルを閉じられません"
+# 増分B: 派生信号が参照している場合の unload 拒否 (Session.remove_group の
+# dependent_signals — 従来は GUI に消費者がおらず無音で何も起きなかった)。
+UNLOAD_BLOCKED_BY_DEPENDENTS_TMPL: Final = (
+    "派生信号 {names} が参照しているため閉じられません"
+)
 
 # ── 基準ファイル・同名重ね (E-2a/b・file_browser_view/vm・reference_overlay) ──
 ACTION_SET_REFERENCE: Final = "基準に設定"

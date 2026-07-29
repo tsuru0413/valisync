@@ -714,6 +714,17 @@ class MainWindow(QMainWindow):
     def _default_blocked_modal(self, message: str) -> None:
         QMessageBox.warning(self, S.ACTION_REMOVE_FILE, message)
 
+    def _unload_refusal_message(self) -> str:
+        """拒否理由コード → 表示文言 (VM は理由コードのみを持つ・増分B)。
+
+        None は「理由が読めなかった」だけなので、既定はより一般的な
+        エクスポート中の文言へ倒す (無音に戻すよりまし)。
+        """
+        reason, names = self.app_vm.last_unload_refusal or ("export_busy", ())
+        if reason == "dependents":
+            return S.UNLOAD_BLOCKED_BY_DEPENDENTS_TMPL.format(names="、".join(names))
+        return S.UNLOAD_BLOCKED_BY_EXPORT
+
     def _on_unload_blocked(self) -> None:
         """VM が拒否した unload を通知する (FB-01: never silent — status + modal)。
 
@@ -722,8 +733,9 @@ class MainWindow(QMainWindow):
         hover しただけで空 tip が来てラベルが消える。timeout_ms は他の読み捨て
         メッセージと同じ 8000 (永続する stale ラベルを作らない)。
         """
-        self.set_status_message(S.UNLOAD_BLOCKED_BY_EXPORT, timeout_ms=8000)
-        self._notify_blocked(S.UNLOAD_BLOCKED_BY_EXPORT)
+        message = self._unload_refusal_message()
+        self.set_status_message(message, timeout_ms=8000)
+        self._notify_blocked(message)
 
     def _on_app_change(self, change: str) -> None:
         if change == "unload_blocked":
