@@ -45,6 +45,9 @@ _SIGNAL_BUDGET = 8_000  # ユーザー決定 3 (変更不可・ハード上限)
 # 1,200 サンプルでは 6,990 信号 / 64MiB で 36ms (両予算とも充足したまま)。
 # frame budget と単調な唯一の軸は経過時間なので、それを実効の一次軸にする。
 _TICK_DEADLINE_S = 0.008  # 半フレーム (60fps = 16.7ms)
+# クロックを見る粒度。毎回 perf_counter を呼ぶと、未展開シェル 1 本の解放 (~1.6us)
+# に対して計測自体が無視できないコストになる。
+_CLOCK_CHECK_EVERY = 256
 
 
 class TeardownService(QObject):
@@ -138,9 +141,13 @@ class TeardownService(QObject):
                 freed_signals += 1
                 freed_bytes += _retained_bytes(sig, seen)
                 del sig  # drop the last strong ref -> the arrays free here
-                # クロックは 256 信号ごとにだけ見る: 未展開シェル 1 本の解放は
-                # ~1.6us なので、毎回 perf_counter を呼ぶとその自体が無視できない。
-                if freed_signals & 0xFF == 0 and self._now() - t0 >= self._deadline:
+                # 読まない区間 (1 ティックが 256 信号未満) が安全なのは、バイト軸が
+                # 毎イテレーション評価されるから: その regime に入るのは 1 信号あたり
+                # が大きいときで、そのとき 64MiB 予算が数信号で発火する。
+                if (
+                    freed_signals % _CLOCK_CHECK_EVERY == 0
+                    and self._now() - t0 >= self._deadline
+                ):
                     deadline_hit = True
                     break
             if not sigs:

@@ -126,15 +126,19 @@ def test_tick_stops_at_the_deadline_with_a_fake_clock(qtbot) -> None:  # type: i
     svc = TeardownService(
         byte_budget=1 << 62,  # バイト軸を実質無効化
         signal_budget=10_000,  # 信号軸も 1 ティックで足りる大きさ
-        tick_deadline_s=0.008,
+        # tick_deadline_s は**渡さない** — 既定 (_TICK_DEADLINE_S) を使わせることで
+        # 既定値そのものをロックする。明示で渡すと既定を 1.0 に書き換えても緑のままで、
+        # production は 8,000 信号ティック (実測 24-38ms) に静かに戻る。
         now=lambda: next(ticks) * 0.001,  # 呼ばれるたび +1ms
     )
     svc.enqueue("k", _lazy_group(10_000))
     before = svc.pending_signals()
     svc._drain()
     freed = before - svc.pending_signals()
-    # 256 信号ごとに 1 回だけクロックを見るので、8 回目 (=2,048 信号) で 8ms に到達する。
-    assert 0 < freed < 10_000, f"デッドラインで止まっていない (freed={freed})"
+    # 偽クロックは完全決定的 (t0 で 1 回 + 256 信号ごとに 1 回) なので停止点は機械的に
+    # 確定する: 8 回目の読み = 8ms = 既定デッドライン ⇒ 256*8 = 2,048 信号。
+    # 「何らかの停止がある」ではなく既定値と粒度の両方を pin する。
+    assert freed == 2048, f"既定 8ms を 256 信号粒度で見た停止点のはず (freed={freed})"
 
 
 def test_shared_master_is_counted_once_per_group(qtbot) -> None:  # type: ignore[no-untyped-def]
