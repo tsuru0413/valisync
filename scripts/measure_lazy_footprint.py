@@ -496,6 +496,7 @@ def drain_after_unload(app: object, win: object, key: str, label: str) -> DrainR
 def report_drain(results: list[DrainResult]) -> None:
     from valisync.gui.workers.teardown_service import (
         _BYTE_BUDGET,
+        _CLOCK_CHECK_EVERY,
         _SIGNAL_BUDGET,
         _TICK_DEADLINE_S,
     )
@@ -534,7 +535,6 @@ def report_drain(results: list[DrainResult]) -> None:
         f"  acceptance: MAX tick <= {allowance_ms:.0f} ms "
         "(plan: deadline + 1 granularity)"
     )
-    from valisync.gui.workers.teardown_service import _CLOCK_CHECK_EVERY
 
     print(
         "  NOTE: a deadline-bound tick can overrun by up to _CLOCK_CHECK_EVERY-1\n"
@@ -545,8 +545,12 @@ def report_drain(results: list[DrainResult]) -> None:
         "  NOTE: the granularity is NOT what makes (b)'s single worst tick exceed the\n"
         "        band. Traced at granularity 1, exactly ONE free out of 264,004 costs\n"
         "        5.8 ms (rest <= 0.6 ms, p99 = 10 us, gc = 0) -- a heap-return stall.\n"
-        "        Max tick is therefore floored at deadline + max single free = 13.8 ms\n"
-        "        for ANY _CLOCK_CHECK_EVERY; only where it lands in a tick varies.\n"
+        "        Max tick is therefore floored at deadline + max single free ~= 14 ms\n"
+        "        (measured worst 14.2; the stall magnitude varies run to run, so 13.8\n"
+        "        is a lower bound, not a ceiling) for ANY _CLOCK_CHECK_EVERY.\n"
+        "  NOTE: tightening _BYTE_BUDGET does NOT lower that floor -- the byte axis can\n"
+        "        only end a tick EARLIER than the deadline, never shorten\n"
+        "        'deadline + one atomic free'. Do not retry that lever.\n"
         "  context: 1 frame @60fps = 16.7 ms; pre-pacing measured freeze = 649 ms"
     )
 

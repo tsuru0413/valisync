@@ -15,7 +15,11 @@ import numpy as np
 
 from valisync.core.models import Signal, SignalGroup
 from valisync.core.models.sample_source import EagerValues
-from valisync.gui.workers.teardown_service import TeardownService
+from valisync.gui.workers.teardown_service import (
+    _CLOCK_CHECK_EVERY,
+    _TICK_DEADLINE_S,
+    TeardownService,
+)
 
 
 class _ZeroByteSource:
@@ -141,6 +145,10 @@ def test_tick_stops_at_the_deadline_with_a_fake_clock(qtbot) -> None:  # type: i
     # (粒度が 256 のままだと 2,048 が出て RED — 実測 8-27us/本 の展開済み prod
     # リーフでは 255 本の行き過ぎが 4-7ms になり最大ティックが 16.8ms へ膨らむ)。
     assert freed == 256, f"既定 8ms を 32 信号粒度で見た停止点のはず (freed={freed})"
+    # 上の pin は**積** (粒度 x デッドライン) しか縛らない — 粒度 64 かつ
+    # デッドライン 0.004 のような相殺変更でも 256 が出る。2 定数を独立に縛る。
+    assert _TICK_DEADLINE_S == 0.008
+    assert _CLOCK_CHECK_EVERY == 32
 
 
 def test_shared_master_is_counted_once_per_group(qtbot) -> None:  # type: ignore[no-untyped-def]
