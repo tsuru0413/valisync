@@ -108,7 +108,7 @@ def _two_panel_area(qtbot: QtBot):
             has_header=True,
         ),
     )
-    signal_key = sorted(s.name for s in app.signals())[0]
+    signal_key = sorted(s.name for s in app.session.signals())[0]
     area_vm = GraphAreaVM(app)
     area_vm.add_panel(0)  # tab 0 now holds two panels
     for p in area_vm.panels(0):

@@ -30,7 +30,7 @@ def _area_with_signal() -> tuple[GraphAreaVM, AppViewModel, str]:
             has_header=True,
         ),
     )
-    signal_key = sorted(s.name for s in app.signals())[0]
+    signal_key = sorted(s.name for s in app.session.signals())[0]
     area = GraphAreaVM(app)
     return area, app, signal_key
 

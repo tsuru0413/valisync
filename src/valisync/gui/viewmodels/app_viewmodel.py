@@ -11,7 +11,7 @@ import contextlib
 from collections.abc import Callable
 from pathlib import Path
 
-from valisync.core.models import FormatDefinition, Signal
+from valisync.core.models import FormatDefinition
 from valisync.core.session import Session
 from valisync.gui.theme import tokens
 from valisync.gui.viewmodels.observable import Observable
@@ -60,6 +60,10 @@ class AppViewModel(Observable):
         self._file_offsets: dict[str, float] = {}
         self._teardown: object | None = None  # duck-typed: enqueue(key, group)
         self._releasing: dict[str, str] = {}  # key -> display name (capture at unload)
+        # 増分B: 「重い処理が実行中か」の duck-typed 述語 (GUI が ExportController を
+        # 注入する)。VM は Qt も ExportController も知らないままガードできる。
+        self._busy_predicate: Callable[[], bool] | None = None
+        self._last_unload_refusal: tuple[str, tuple[str, ...]] | None = None
 
     @property
     def session(self) -> Session:
@@ -165,6 +169,41 @@ class AppViewModel(Observable):
         """Inject the GUI-thread teardown service (duck-typed ``enqueue(key, group)``)."""
         self._teardown = service
 
+    def set_busy_predicate(self, predicate: Callable[[], bool] | None) -> None:
+        """Inject a duck-typed "a blocking job is running" predicate (増分B).
+
+        Same shape as :meth:`set_teardown`. The real unload path
+        (FileBrowserView → FileBrowserVM → :meth:`unload_file`) cannot reach the
+        GUI-owned ExportController, so guarding at this single chokepoint is what
+        makes the refusal cover the actual user path instead of a synthetic
+        MainWindow entry point.
+        """
+        self._busy_predicate = predicate
+
+    def is_busy(self) -> bool:
+        """True when the injected predicate says a blocking job is running.
+
+        The affordance (context-menu item) and the backstop (:meth:`unload_file`)
+        read this same predicate, so they cannot disagree.
+        """
+        return self._busy_predicate is not None and self._busy_predicate()
+
+    @property
+    def last_unload_refusal(self) -> tuple[str, tuple[str, ...]] | None:
+        """(reason code, detail names) of the LATEST :meth:`unload_file` attempt,
+        or None when that attempt was not refused.
+
+        Not a latch: :meth:`unload_file` clears this unconditionally on entry, so
+        a value here always describes the most recent attempt and can never be a
+        leftover from an older refusal (which a reader keyed off something other
+        than the ``"unload_blocked"`` notification would otherwise misreport).
+
+        Reason codes (``"export_busy"`` / ``"dependents"``) are VM-level, not user
+        text: the View maps them to strings (``gui/strings.py``) so the ViewModel
+        stays free of presentation.
+        """
+        return self._last_unload_refusal
+
     @property
     def releasing_files(self) -> list[tuple[str, str]]:
         """(key, display name) of files whose data is still draining, in order."""
@@ -182,11 +221,29 @@ class AppViewModel(Observable):
         service (byte-budget background drain) so the UI thread returns at once
         (FU-16). Logical close (loaded list / active file / offsets / prune) stays
         synchronous. Refused without side effects when a Derived_Signal depends on
-        the group.
+        the group; every refusal is announced via ``"unload_blocked"`` (増分B).
         """
+        # 増分B: 拒否理由を latch にしない。試行ごとに無条件で捨てることで、
+        # 「成功したのに前回の拒否理由が残っている」状態が存在しえなくなる
+        # (残す場合に必要な "unload_blocked のときだけ読め" という口約束が不要)。
+        self._last_unload_refusal = None
+        if self.is_busy():
+            # 増分B: close() は handle.lock を取るので、export ワーカーが select 中
+            # だと GUI スレッドがその読み終了まで同期ブロックする (実測 0.73-1.18s)。
+            # かつ _closed 以降の列読みは SampleReadError になりエクスポートが壊れる。
+            # BusyOverlay は MainWindow の子で cover() が parent.rect() なので、
+            # フロートしたドックは覆えない = 「偶然の遮断」は今日も成立していない。
+            self._last_unload_refusal = ("export_busy", ())
+            self._notify("unload_blocked")
+            return
         name = self._safe_source_name(key)
         result = self._session.remove_group(key)
         if not result.removed:
+            # 増分B: 破壊的操作が無音で何も起きない状態をやめる (FB-01: never silent)。
+            # dependent_signals は GUI の消費者がゼロだったので、確認モーダルに
+            # 「はい」と答えたユーザーには「何も起きない」ようにしか見えなかった。
+            self._last_unload_refusal = ("dependents", result.dependent_signals)
+            self._notify("unload_blocked")
             return
         if key in self._loaded_keys:
             self._loaded_keys.remove(key)
@@ -206,6 +263,16 @@ class AppViewModel(Observable):
         self._notify("unloaded")
         if result.removed_group is not None and self._teardown is not None:
             self._releasing[key] = name
+            if result.removed_columns:
+                # E-3: 鋳造列は enqueue(key, group)=group.signals を通らないため
+                # GUI スレッドで同期解放される (プロット済み列は実体化済みでバイトが
+                # 重い)。配線は E-3 の完了定義だが、鋳造が生きた瞬間に無音で
+                # ペーシングを迂回しないよう loud-fail する。MainWindow._discard の
+                # remove_group(force=True) も同じ配線が要る (E-3 の 2 サイト目)。
+                raise AssertionError(
+                    "E-3: 鋳造列は TeardownService へ渡すこと "
+                    "(未配線のまま鋳造を有効化するとペーシングを迂回する)"
+                )
             self._teardown.enqueue(key, result.removed_group)  # type: ignore[attr-defined]
             self._notify("releasing")
         # else: removed_group falls out of scope here -> immediate sync free.
@@ -326,12 +393,6 @@ class AppViewModel(Observable):
             return self._file_hue_index.get(group_key)
 
         return _resolve
-
-    # ─── Signals proxy ───────────────────────────────────────────────────────
-
-    def signals(self) -> list[Signal]:
-        """Return the full namespaced signal list from the underlying Session."""
-        return self._session.signals()
 
     # ─── Data sources ────────────────────────────────────────────────────────
 

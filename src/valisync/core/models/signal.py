@@ -1,53 +1,106 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+from valisync.core.models.sample_source import EagerValues, SampleSource
 
 if TYPE_CHECKING:
     from valisync.core.statistics.range_stat_index import RangeStatIndex
 
 
-@dataclass(frozen=True)
 class Signal:
-    """Immutable time-series signal. All invariants are enforced at construction time."""
+    """Immutable time-series signal. Values are supplied lazily via a SampleSource.
 
+    ``timestamps`` (グループ master・float64) は即時保持。``values`` は
+    ``_values_source`` (EagerValues/LazyMdfValues) の背後で初回アクセス時に展開する。
+    インスタンスは書込保護 (公開属性の再代入は AttributeError)。
+
+    **長さ不変条件は 2 段**: 構築時は ``source.length`` (遅延ソースでは master 由来の
+    **宣言値**) と突き合わせ、実配列との一致は初回展開時に ``LazyMdfValues.array()``
+    が検証して不一致なら ``SampleReadError``。遅延ソースでは構築時に実配列が存在
+    しないため、「全不変条件を構築時に強制」は成り立たない (不一致は 1 診断と当該
+    曲線の非描画として degrade する — 黙って numpy の clamp に流さない)。
+    """
+
+    __slots__ = (
+        "_finite_view_cache",
+        "_monotonic",
+        "_range_stat_index_cache",
+        "_sorted_view_cache",
+        "_sorted_view_delegate",
+        "_values_source",
+        "bus_type",
+        "file_format",
+        "metadata",
+        "name",
+        "source_file",
+        "timestamps",
+    )
+
+    # __slots__ 自体は mypy に型を教えないため、bare 注釈で属性型を宣言する
+    # (代入は伴わない — ランタイムの記述子生成は __slots__ タプルのみが担う)。
     name: str
-    timestamps: (
-        np.ndarray
-    )  # float64, shape=(n,), all finite; 記録どおり(非単調・重複あり得る)
-    values: (
-        np.ndarray
-    )  # native 数値 dtype, shape=(n,); float64 化は sorted_view()/finite_view() が担う
-    file_format: str  # "MDF4" | "CSV" | "Derived"
-    bus_type: str  # "CAN" | "XCP" | "Ethernet" | "" (empty for CSV and Derived)
-    source_file: str  # absolute path; empty string for Derived signals
-    metadata: dict[str, Any] = field(default_factory=dict)
+    timestamps: np.ndarray
+    file_format: str
+    bus_type: str
+    source_file: str
+    metadata: dict[str, Any]
+    _values_source: SampleSource
+    _monotonic: bool | None
+    _sorted_view_cache: tuple[np.ndarray, np.ndarray] | None
+    _finite_view_cache: tuple[np.ndarray, np.ndarray] | None
+    _range_stat_index_cache: RangeStatIndex | None
+    _sorted_view_delegate: Signal | None
 
-    def __post_init__(self) -> None:
-        if len(self.timestamps) != len(self.values):
+    def __init__(
+        self,
+        name: str,
+        timestamps: np.ndarray,
+        file_format: str,
+        bus_type: str,
+        source_file: str,
+        values: np.ndarray | None = None,
+        values_source: SampleSource | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        if (values is None) == (values_source is None):
+            raise ValueError("exactly one of values / values_source must be given")
+        # array-imported コンストラクションは EagerValues に包む (既存サイト無変更)
+        source: SampleSource = (
+            values_source if values_source is not None else EagerValues(values)  # type: ignore[arg-type]
+        )
+        # 長さ不変条件は values を展開せず source.length で検証する
+        if len(timestamps) != source.length:
             raise ValueError(
-                f"timestamps ({len(self.timestamps)}) and values ({len(self.values)}) "
+                f"timestamps ({len(timestamps)}) and values ({source.length}) "
                 "must have the same length"
             )
-        if len(self.timestamps) > 0 and not np.all(np.isfinite(self.timestamps)):
-            idx = int(np.argmax(~np.isfinite(self.timestamps)))
+        if len(timestamps) > 0 and not np.all(np.isfinite(timestamps)):
+            idx = int(np.argmax(~np.isfinite(timestamps)))
             raise ValueError(f"時刻列の {idx} 番目に非有限値が含まれています")
-        object.__setattr__(
-            self,
-            "timestamps",
-            self.timestamps.copy()
-            if self.timestamps.flags.writeable
-            else self.timestamps,
-        )
-        object.__setattr__(
-            self,
-            "values",
-            self.values.copy() if self.values.flags.writeable else self.values,
-        )
-        self.timestamps.flags.writeable = False
-        self.values.flags.writeable = False
+        ts = timestamps.copy() if timestamps.flags.writeable else timestamps
+        ts.flags.writeable = False
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "timestamps", ts)
+        object.__setattr__(self, "file_format", file_format)
+        object.__setattr__(self, "bus_type", bus_type)
+        object.__setattr__(self, "source_file", source_file)
+        object.__setattr__(self, "metadata", metadata if metadata is not None else {})
+        object.__setattr__(self, "_values_source", source)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        # インスタンス不変 (旧 frozen dataclass 相当)。内部は object.__setattr__ を使う。
+        raise AttributeError(f"Signal is immutable; cannot set {name!r}")
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError(f"Signal is immutable; cannot delete {name!r}")
+
+    @property
+    def values(self) -> np.ndarray:
+        """値配列 (初回アクセスで展開+キャッシュ)。失敗時 SampleReadError."""
+        return self._values_source.array()
 
     def sorted_view(self) -> tuple[np.ndarray, np.ndarray]:
         """Strictly-monotonic float64 view for computation and rendering (spec §4.1).
@@ -58,9 +111,12 @@ class Signal:
         stored in its native dtype (FU-20: avoids the 8x float64 inflation of
         wide uint8 array channels) while every consumer still receives float64.
         Timestamps are already float64 and are returned untouched, so
-        ``is_monotonic`` (a timestamp-identity check) is unaffected. Cached
-        after the first call; the computation is idempotent, so racing
-        initialisations are harmless.
+        ``is_monotonic`` (computed independently from the master only) is
+        unaffected. Cached after the first call; the computation is
+        idempotent, so racing initialisations are harmless — once ``values``
+        is I/O-backed (Task 2), the underlying read itself wins-once via
+        ``handle.lock``, so a racing recompute here still only re-reads an
+        already-materialized array.
         """
         cache = getattr(self, "_sorted_view_cache", None)
         if cache is not None:
@@ -170,5 +226,11 @@ class Signal:
 
     @property
     def is_monotonic(self) -> bool:
-        """True when the sorted view is the raw arrays (zero-copy fast path)."""
-        return self.sorted_view()[0] is self.timestamps
+        """True when timestamps are strictly increasing (master のみ・値を展開しない)."""
+        cached = getattr(self, "_monotonic", None)
+        if cached is not None:
+            return cached
+        ts = self.timestamps
+        result = len(ts) < 2 or bool(np.all(np.diff(ts) > 0))
+        object.__setattr__(self, "_monotonic", result)
+        return result

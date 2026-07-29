@@ -217,6 +217,38 @@ def test_remove_group_refused_has_no_removed_group(tmp_path: Path) -> None:
     result = session.remove_group(key)
     assert result.removed is False
     assert result.removed_group is None
+    assert result.removed_columns == ()
+
+
+def test_resolve_signal_delegates_to_group_manager(tmp_path: Path) -> None:
+    """Session は列キー解決の唯一の入口 (E-1)。既存キーは map から、未ロードは None。"""
+    csv = tmp_path / "a.csv"
+    _write_csv(csv, "t,speed", ["0.0,10.0", "1.0,20.0"])
+    session = Session()
+    key = session.load(csv, format_def=_FMT).key
+
+    got = session.resolve_signal(f"{key}::speed")
+    assert got is not None
+    assert got.name == f"{key}::speed"
+    assert session.resolve_signal("csv_9::speed") is None  # 未ロードグループ
+
+
+def test_remove_group_reports_minted_columns(tmp_path: Path) -> None:
+    """鋳造済み列 Signal は SignalGroup.signals の外に居るため、削除時に
+    RemovalResult 経由で呼び出し側 (GUI teardown) へ渡らないと会計から漏れる。"""
+    csv = tmp_path / "a.csv"
+    _write_csv(csv, "t,speed", ["0.0,10.0", "1.0,20.0"])
+    session = Session()
+    key = session.load(csv, format_def=_FMT).key
+    # E-1 ではローダーがまだ列を展開するため鋳造経路は走らない。副テーブルへ
+    # 直接置いて、remove_group の受け渡し配線だけを検証する。
+    column = _derived(f"{key}::speed[7]", [0.0], [1.0])
+    session._groups._resolved_by_key.setdefault(key, {})[column.name] = column
+
+    result = session.remove_group(key)
+
+    assert result.removed is True
+    assert result.removed_columns == (column,)
 
 
 # ─── Pure-computation pass-throughs ───────────────────────────────────────────
@@ -253,32 +285,6 @@ def test_export_csv_delegates_to_core(tmp_path):
     out = tmp_path / "e.csv"
     Session().export_csv([sig], out)
     assert out.read_text(encoding="utf-8").splitlines()[0] == "timestamp,speed"
-
-
-def test_unified_timeline_applies_offsets_preserving_count_and_order(tmp_path):
-    csv = tmp_path / "a.csv"
-    # two signals sharing one timestamp axis
-    csv.write_text("t,a,b\n0.0,1.0,4.0\n1.0,2.0,5.0\n", encoding="utf-8")
-    fmt = FormatDefinition(
-        name="t2",
-        delimiter=Delimiter.COMMA,
-        timestamp_column=0,
-        timestamp_unit="sec",
-        signal_start_column=1,
-        signal_end_column=2,
-        has_header=True,
-    )
-    session = Session()
-    session.load(csv, format_def=fmt)
-
-    placed = session.unified_timeline_signals(file_offsets={"csv_1": 2.0})
-
-    assert [s.name for s in placed] == ["csv_1::a", "csv_1::b"]  # order preserved (8.3)
-    for s in placed:
-        np.testing.assert_array_equal(
-            s.timestamps, np.array([2.0, 3.0])
-        )  # offset (8.1)
-        assert len(s.timestamps) == 2  # sample count unchanged (8.4)
 
 
 # ─── LoadOutcome / diagnostics (FB-02 foundation) ─────────────────────────────

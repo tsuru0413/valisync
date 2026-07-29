@@ -60,6 +60,15 @@ class ExportController(QObject):
         # delivery lifetime safety, same rationale as LoadController._active.
         self._active: set[ExportWorker] = set()
 
+    def is_busy(self) -> bool:
+        """エクスポートが実行中か (増分B: unload 拒否ガードの判定に使う)。
+
+        submit で _active に入り _finish/_fail (GUI スレッドの queued スロット) で
+        抜けるので、pool でワーカーが走り始める前から True になる — ガードとしては
+        それが正しい (submit 直後の unload も拒否したい)。
+        """
+        return bool(self._active)
+
     def submit(
         self,
         export_callable: Callable[[], None],

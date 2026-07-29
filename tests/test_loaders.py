@@ -8,11 +8,15 @@ data, empty file, column-count mismatch.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
+from unittest.mock import patch
 
 import numpy as np
 import pytest
 
+from valisync.core.loaders import mdf_loader
 from valisync.core.loaders.csv_loader import CsvLoader
+from valisync.core.loaders.mdf_handle import MdfHandle
 from valisync.core.loaders.mdf_loader import MdfLoader
 from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.session import LoadCancelled
@@ -25,10 +29,12 @@ from .mdf4_helpers import (
     write_mdf4,
     write_mdf4_2d,
     write_mdf4_all_channels_bad,
+    write_mdf4_linear_conversion,
     write_mdf4_non_finite_ts,
     write_mdf4_non_monotonic,
     write_mdf4_shared_group,
     write_mdf4_structured,
+    write_mdf4_ttab,
     write_mdf4_value2text,
     write_mdf4_wide_2d,
 )
@@ -492,8 +498,60 @@ def test_mdf_loader_cancel_raises(tmp_path: Path) -> None:
             }
         ],
     )
-    with pytest.raises(LoadCancelled):
-        MdfLoader().load(path, cancel=lambda: True)
+    # キャンセルでもハンドルはリークさせない (except LoadCancelled の close)。
+    # この経路だけは in-session の回収手段が無い: グループが 1 つも登録されない
+    # ため loaded_file_keys に載らず unload 導線が存在しない = 閉じ損ねると
+    # プロセス終了までファイルが mmap でロックされたままになる。close の有無を
+    # assert しないと handle.close() を消しても全テストが緑のままだった。
+    created: list[MdfHandle] = []
+
+    def _spy_handle(*args: Any, **kwargs: Any) -> MdfHandle:
+        handle = MdfHandle(*args, **kwargs)
+        created.append(handle)
+        return handle
+
+    with patch.object(mdf_loader, "MdfHandle", _spy_handle):
+        with pytest.raises(LoadCancelled):
+            MdfLoader().load(path, cancel=lambda: True)
+    try:
+        assert created, "MdfHandle が生成されていない (setup 失敗)"
+        assert created[0].is_closed, (
+            "キャンセル経路で handle が閉じられていない (リーク・回収導線なし)"
+        )
+    finally:
+        for handle in created:  # sabotage 時に mmap を残さない (tmp_path 後片付け)
+            handle.close()
+
+
+def test_mdf_loader_cancel_during_group_load_closes_handle(tmp_path: Path) -> None:
+    """本読み中のキャンセル (``_load_group`` 内の cancel 判定) でも close される。
+
+    ``test_mdf_loader_cancel_raises`` はスキャン段でのキャンセルを見るので、
+    実運用で最も長い「本読みループ中に押される」入口を別に押さえる
+    (``test_load_error_path_closes_handle_no_leak`` と同じ patch 形)。
+    """
+    path = write_mdf4(
+        tmp_path / "cancel_mid.mf4",
+        [{"name": "a", "timestamps": [0.0, 1.0], "values": [1.0, 2.0]}],
+    )
+    captured: list[MdfHandle] = []
+
+    def _cancel_in_group(*args: Any, **kwargs: Any) -> None:
+        captured.append(args[-1])  # handle は最後の位置引数
+        raise LoadCancelled("cancelled mid-load")
+
+    with patch.object(MdfLoader, "_load_group", _cancel_in_group):
+        with pytest.raises(LoadCancelled):
+            MdfLoader().load(path)
+    try:
+        assert captured, "_load_group が呼ばれていない (setup 失敗)"
+        assert isinstance(captured[0], MdfHandle), "最後の位置引数が handle でない"
+        assert captured[0].is_closed, (
+            "本読み中キャンセルで handle が閉じられていない (リーク)"
+        )
+    finally:
+        for handle in captured:
+            handle.close()
 
 
 # ─── MdfLoader: select() ベース読み取りパス (LD-13/LD-10, 第3弾 Task 2) ──────
@@ -521,6 +579,55 @@ def test_value_labels_extracted_to_metadata(tmp_path: Path) -> None:
     assert "value_labels" not in clean.metadata
     # conversion_info の互換キーは生チャンネル側 conversion から復元される (spec §3.3)
     assert "conversion_info" in turn.metadata
+
+
+def test_ttab_channel_survives_with_physical_numeric_values(tmp_path: Path) -> None:
+    """TTAB (text→value) チャンネルが物理値 (数値) で生存する.
+
+    数値性ゲートを raw プローブ (``raw=True``) の dtype で判定すると、TTAB は
+    raw 表現がテキスト (``|S8``) なので「非数値型のためスキップ」でチャンネルごと
+    消える — しかし本読み (``LazyMdfValues.array()``) は ``raw=False`` なので
+    物理サンプルは数値であり、この skip は事実として誤り。ゲートは本読みと同じ
+    非 raw 側の dtype で判定しなければならない。
+    """
+    path = write_mdf4_ttab(tmp_path)
+    result = MdfLoader().load(path)
+    assert result.signal_group is not None
+    names = {s.name for s in result.signal_group.signals}
+    assert "StateTxt" in names, (
+        f"TTAB チャンネルが落ちた: {names} / {[d.message for d in result.diagnostics]}"
+    )
+    state = next(s for s in result.signal_group.signals if s.name == "StateTxt")
+    assert state.values.dtype.kind in "iuf"
+    # 変換表: OFF→0.0 / LEFT→10.0 / RIGHT→20.0
+    np.testing.assert_allclose(state.values, [0.0, 10.0, 20.0, 10.0])
+    assert not any(
+        "非数値型" in d.message and "StateTxt" in d.message for d in result.diagnostics
+    )
+
+
+def test_linear_conversion_values_are_physical_not_raw(tmp_path: Path) -> None:
+    """線形変換つきチャンネルの値がスケール済み物理値で返る (CI 実行可能なオラクル).
+
+    遅延読みの select オプションから ``raw=False`` が落ちると、生カウントが
+    そのまま返り値が 100 倍ずれる (無言のデータ破損)。demo_data 依存の
+    ``tests/core/loaders/test_mdf_loader_lazy.py`` は gitignore 済みデータを
+    必要とするため CI では skip される — このテストが CI 側の防波堤。
+    """
+    path = write_mdf4_linear_conversion(tmp_path)
+    result = MdfLoader().load(path)
+    sg = result.signal_group
+    assert sg is not None
+    scaled = next(s for s in sg.signals if s.name == "Scaled")
+
+    # 反空虚ガード: ラウンドトリップ後も変換が本当に付いている。これが無いと
+    # 「変換の無いチャンネルを検査しているだけ」に無言で劣化しうる。
+    src = scaled._values_source
+    assert sg.handle is not None
+    channel = sg.handle.mdf.groups[src._gi].channels[src._ci]  # type: ignore[union-attr]
+    assert channel.conversion is not None, "変換が round-trip で失われている"
+
+    np.testing.assert_allclose(scaled.values, [0.0, 79.8, -12.34, 327.67])
 
 
 def test_same_group_signals_share_master(tmp_path: Path) -> None:
@@ -806,6 +913,103 @@ def test_loader_skips_non_numeric_channel_with_warning(tmp_path: Path) -> None:
     assert any(
         d.level == "warning" and "非数値型" in d.message for d in result.diagnostics
     )
+
+
+# ─── MdfLoader: 遅延ロード契約 (増分A Task 3・demo 非依存で CI 実行) ──────────
+
+
+def test_load_leaves_signals_unmaterialized_and_keeps_handle(tmp_path: Path) -> None:
+    """ロード直後は全信号が未展開で、SignalGroup が開いたハンドルを保持する.
+
+    合成ファイルなので demo mf4 の有無に依らず CI で遅延契約を担保する
+    (demo 依存テストは skip されるため)。値は初回 .values まで読まれない。
+    """
+    path = write_mdf4(
+        tmp_path / "lazy.mf4",
+        [
+            {"name": "a", "timestamps": [0.0, 1.0], "values": [1.0, 2.0]},
+            {"name": "b", "timestamps": [0.0, 1.0], "values": [3.0, 4.0]},
+        ],
+    )
+    result = MdfLoader().load(path)
+    sg = result.signal_group
+    assert sg is not None
+    assert len(sg.signals) == 2
+    assert all(s._values_source.is_materialized is False for s in sg.signals)
+    assert sg.handle is not None and sg.handle.is_closed is False
+    # 初回 .values で展開される (遅延の実効)。
+    first = sg.signals[0]
+    _ = first.values
+    assert first._values_source.is_materialized is True
+
+
+def test_lazy_selector_column_matches_eager_flatten_synthetic(tmp_path: Path) -> None:
+    """LD-14 selector 分岐の CI 実行カバレッジ (Task 2 review folded-in).
+
+    write_mdf4_2d の "Mat" (4x3 uint8) は Mat[0..2] に展開され、各信号は
+    selector 付き LazyMdfValues を背負う。materialize した Mat[1] の値が、
+    現行 eager 意味論 (select(raw=False, ignore_value2text_conversions=True,
+    copy_master=False)+_flatten) の該当リーフと厳密一致することを確認する。
+    """
+    from asammdf import MDF
+
+    from valisync.core.loaders.mdf_loader import _flatten
+
+    path = write_mdf4_2d(tmp_path)
+    result = MdfLoader().load(path)
+    sg = result.signal_group
+    assert sg is not None
+    mat1 = next(s for s in sg.signals if s.name == "Mat[1]")
+    assert mat1._values_source.is_materialized is False  # 未展開で待機
+
+    got = mat1.values  # 遅延展開 (selector リーフ抽出)
+    assert got.dtype == np.uint8  # native dtype 保持 (selector 経路でも)
+    assert got.flags.writeable is False
+
+    m = MDF(str(path))
+    try:
+        asig = m.select(
+            ["Mat"], raw=False, ignore_value2text_conversions=True, copy_master=False
+        )[0]
+        expected = dict(_flatten("Mat", asig.samples))["Mat[1]"]
+    finally:
+        m.close()
+    np.testing.assert_array_equal(got, expected)
+    # write_mdf4_2d の列 1 は [1, 11, 21, 31]。
+    np.testing.assert_array_equal(got, [1, 11, 21, 31])
+
+
+def test_load_error_path_closes_handle_no_leak(tmp_path: Path) -> None:
+    """チャンネル読み取り失敗時にハンドルが閉じられる (リークしない・M3).
+
+    ``included_channels`` を patch して本読みループで例外を起こし、broad except
+    経路 (signal_group=None) が handle.close() を経ることを検証する。MDF()
+    自体は成功するため、ハンドルが生成された後の失敗経路を確実に通る。
+    """
+    from unittest.mock import patch
+
+    from valisync.core.loaders.mdf_handle import MdfHandle
+
+    path = write_mdf4(
+        tmp_path / "boom.mf4",
+        [{"name": "a", "timestamps": [0.0, 1.0], "values": [1.0, 2.0]}],
+    )
+    closed: list[bool] = []
+    real_close = MdfHandle.close
+
+    def spy_close(self: MdfHandle) -> None:
+        closed.append(True)
+        real_close(self)
+
+    # _count_names 通過後、本読みの _group_entries で例外を起こす。
+    with (
+        patch.object(MdfHandle, "close", spy_close),
+        patch.object(MdfLoader, "_load_group", side_effect=RuntimeError("boom")),
+    ):
+        result = MdfLoader().load(path)
+    assert result.signal_group is None
+    assert any(d.level == "error" for d in result.diagnostics)
+    assert closed, "エラー経路で handle.close() が呼ばれていない (リーク)"
 
 
 # ─── core 診断・例外文言の同一性 (文言OS G-34・Task 6) ───────────────────────

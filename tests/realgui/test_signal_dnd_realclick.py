@@ -491,18 +491,24 @@ def test_drop_highlight_visible_mid_drag(qtbot: QtBot, tmp_path: Path) -> None:
 
 
 def _make_browser_and_panel_arrays(qtbot: QtBot, tmp_path: Path):
-    """Like _make_browser_and_panel but the active file has an ARRAY base
-    (Arr[0]/Arr[1] -> a collapsible parent) plus a scalar. Dragging a CHILD row
-    exercises the child grab-point model.index(childRow, 0, parentIndex) ->
-    visualRect -- the exact path the proxy removal repaired (memory
-    gui_qsortfilterproxy_visualrect_source_index_empty_rect). CSV headers become
-    signal names verbatim, so Arr[0]/Arr[1] group under base 'Arr' and their
-    namespaced keys (csv_1::Arr[0]) resolve in the panel VM's signal_map so a
-    real drop actually draws the curve. Returns (browser, panel)."""
+    """Like _make_browser_and_panel but the active file has a MULTI-COLUMN
+    physical channel (Mat -> a collapsible parent of Mat[0..2]) plus a scalar
+    (Clean). Dragging a CHILD row exercises the child grab-point
+    model.index(childRow, 0, parentIndex) -> visualRect -- the exact path the
+    proxy removal repaired (memory
+    gui_qsortfilterproxy_visualrect_source_index_empty_rect).
+
+    E-2: a real 2-D mf4, not a CSV whose headers happen to look like 'Arr[0]'.
+    Rows are now grouped by the loader's metadata['physical_channel'], which
+    CSV does not have (each CSV column is its own physical channel -- the
+    accepted behaviour change), so a CSV fixture would produce a flat tree and
+    no parent to expand at all. The columns' namespaced keys (mf4_1::Mat[0])
+    resolve in the panel VM's signal_map so a real drop actually draws the
+    curve. Returns (browser, panel)."""
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
 
-    from valisync.core.models import Delimiter, FormatDefinition
+    from tests.mdf4_helpers import write_mdf4_2d
     from valisync.gui.viewmodels.app_viewmodel import AppViewModel
     from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
     from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
@@ -516,22 +522,8 @@ def _make_browser_and_panel_arrays(qtbot: QtBot, tmp_path: Path):
             super().dropEvent(ev)  # type: ignore[arg-type]
             self.drop_seen = True
 
-    fmt = FormatDefinition(
-        name="f",
-        delimiter=Delimiter.COMMA,
-        timestamp_column=0,
-        timestamp_unit="sec",
-        signal_start_column=1,
-        signal_end_column=3,
-        has_header=True,
-    )
-    csv = tmp_path / "arr.csv"
-    csv.write_text(
-        "t,Arr[0],Arr[1],Scalar\n0.0,1.0,4.0,7.0\n1.0,2.0,5.0,8.0\n",
-        encoding="utf-8",
-    )
     app_vm = AppViewModel()
-    file_key = app_vm.request_load(csv, fmt)
+    file_key = app_vm.request_load(write_mdf4_2d(tmp_path))  # MDF4 は format_def 不要
     app_vm.set_active_file(file_key)
 
     browser = ChannelBrowserView(ChannelBrowserVM(app_vm))
@@ -575,10 +567,18 @@ def test_drop_expanded_array_child_creates_axis(qtbot: QtBot, tmp_path: Path) ->
     from PySide6.QtWidgets import QApplication
 
     browser, panel = _make_browser_and_panel_arrays(qtbot, tmp_path)
-    arr_index = browser.model.index(0, 0)  # top-level Arr parent (row 0)
-    assert browser.model.signal_key_at(arr_index) is None, (
-        "row 0 should be the Arr parent (key None)"
+    # The parent is the row with no signal_key of its own (E-2: a multi-column
+    # physical channel). Found by that contract rather than by row number, so
+    # the test does not silently depend on loader ordering.
+    parent_rows = [
+        idx
+        for idx in (browser.model.index(r, 0) for r in range(browser.model.rowCount()))
+        if browser.model.signal_key_at(idx) is None
+    ]
+    assert len(parent_rows) == 1, (
+        f"expected exactly one parent (multi-column) row, got {len(parent_rows)}"
     )
+    arr_index = parent_rows[0]
 
     browser.tree.expand(arr_index)
     qtbot.waitUntil(
@@ -587,9 +587,9 @@ def test_drop_expanded_array_child_creates_axis(qtbot: QtBot, tmp_path: Path) ->
         ),
         timeout=3000,
     )
-    child_index = browser.model.index(0, 0, arr_index)  # Arr[0]
+    child_index = browser.model.index(0, 0, arr_index)  # Mat[0]
     child_key = browser.model.signal_key_at(child_index)
-    assert child_key and child_key.endswith("::Arr[0]"), (
+    assert child_key and child_key.endswith("::Mat[0]"), (
         f"unexpected child key {child_key!r}"
     )
 

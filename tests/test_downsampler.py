@@ -18,13 +18,13 @@ from valisync.core.models import Signal
 
 def _sig(ts: list[float], vs: list[float]) -> Signal:
     return Signal(
-        "s",
-        np.array(ts, dtype=np.float64),
-        np.array(vs, dtype=np.float64),
-        "Derived",
-        "",
-        "",
-        {},
+        name="s",
+        timestamps=np.array(ts, dtype=np.float64),
+        values=np.array(vs, dtype=np.float64),
+        file_format="Derived",
+        bus_type="",
+        source_file="",
+        metadata={},
     )
 
 
@@ -56,7 +56,14 @@ def test_passthrough_when_within_target() -> None:
 def test_output_within_target_and_subset() -> None:
     ts = np.arange(100, dtype=np.float64)
     vs = np.sin(ts / 5.0)
-    sig = Signal("s", ts, vs, "Derived", "", "", {})
+    sig = Signal(
+        name="s",
+        timestamps=ts,
+        values=vs,
+        file_format="Derived",
+        bus_type="",
+        source_file="",
+    )
     result = Downsampler().downsample(sig, 10)
 
     assert len(result.timestamps) <= 10
@@ -69,7 +76,14 @@ def test_output_within_target_and_subset() -> None:
 def test_global_min_max_retained_single_bucket() -> None:
     ts = np.arange(10, dtype=np.float64)
     vs = np.array([5.0, 6.0, 7.0, -3.0, 4.0, 2.0, 1.0, 9.0, 8.0, 0.0])
-    sig = Signal("s", ts, vs, "Derived", "", "", {})
+    sig = Signal(
+        name="s",
+        timestamps=ts,
+        values=vs,
+        file_format="Derived",
+        bus_type="",
+        source_file="",
+    )
     # n=2 → one bucket spanning the whole range → must keep global min and max
     result = Downsampler().downsample(sig, 2)
     assert -3.0 in result.values  # global min at index 3
@@ -79,7 +93,14 @@ def test_global_min_max_retained_single_bucket() -> None:
 def test_all_nan_bucket_keeps_one_sample() -> None:
     ts = np.arange(10, dtype=np.float64)
     vs = np.full(10, np.nan)
-    sig = Signal("s", ts, vs, "Derived", "", "", {})
+    sig = Signal(
+        name="s",
+        timestamps=ts,
+        values=vs,
+        file_format="Derived",
+        bus_type="",
+        source_file="",
+    )
     result = Downsampler().downsample(sig, 2)
     assert len(result.timestamps) == 1
 
@@ -93,7 +114,14 @@ def test_downsample_large_signal_is_fast() -> None:
     n_samples = 1_000_000
     ts = np.arange(n_samples, dtype=np.float64)
     vs = np.sin(ts / 1000.0)
-    sig = Signal("s", ts, vs, "Derived", "", "", {})
+    sig = Signal(
+        name="s",
+        timestamps=ts,
+        values=vs,
+        file_format="Derived",
+        bus_type="",
+        source_file="",
+    )
 
     start = time.perf_counter()
     result = Downsampler().downsample(sig, 2000)

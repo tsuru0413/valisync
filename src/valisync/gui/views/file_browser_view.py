@@ -144,11 +144,23 @@ class FileBrowserView(QWidget):
         no key, so both are skipped regardless of mode. On the reference row
         itself, "基準に設定" is disabled and "基準の同名信号を重ねる" is
         omitted (spec §2/§3).
+
+        増分B: "ファイルを閉じる" is disabled (with the reason as a tooltip)
+        while an export is running — the refusal has to be visible BEFORE the
+        click, not after the user has answered the confirmation modal.
         """
         menu = QMenu(self)
-        menu.addAction(S.ACTION_REMOVE_FILE).triggered.connect(
-            lambda *_: self._confirm_and_unload(row)
-        )
+        # Qt はメニュー項目の tooltip を既定で抑制する (src/ の前例は main_window.py と
+        # graph_panel_view.py の 2 箇所のみ)。disabled の理由を出すには必須。
+        menu.setToolTipsVisible(True)
+        blocked = self._vm.is_unload_blocked()
+        remove_action = menu.addAction(S.ACTION_REMOVE_FILE)
+        remove_action.setEnabled(not blocked)
+        if blocked:
+            # 実行不能な操作は入口で塞ぐ — 確認モーダルに「はい」と答えさせてから
+            # 拒否するのは二度手間 (直下の set_ref_action.setEnabled と同型)。
+            remove_action.setToolTip(S.UNLOAD_BLOCKED_BY_EXPORT)
+        remove_action.triggered.connect(lambda *_: self._confirm_and_unload(row))
         key = self._vm.key_at(row)
         if key is not None and self._vm.is_comparison_mode():
             is_ref = self._vm.is_reference(row)

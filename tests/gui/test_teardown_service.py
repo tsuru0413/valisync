@@ -46,7 +46,9 @@ def test_drains_in_byte_budget_slices(qtbot) -> None:
     def _spy() -> None:
         before = svc.pending_bytes()
         orig()
-        slice_bytes.append(before - svc.pending_bytes())
+        after = svc.pending_bytes()
+        slice_bytes.append(before - after)
+        assert svc.last_tick_bytes == before - after
 
     svc._drain = _spy  # type: ignore[method-assign]
     svc.enqueue("g", _group(sigs))
@@ -110,13 +112,35 @@ class _CountingArr:
         return self._n
 
 
+class _CountingSource:
+    """values_source-like whose .nbytes_if_materialized read is counted.
+
+    Accounting now goes through SampleSource (lazy-load), not sig.values, so
+    the spy must expose the same surface the real teardown code reads.
+    """
+
+    def __init__(self, nbytes: int, counter: list[int]) -> None:
+        self._n = nbytes
+        self._c = counter
+
+    @property
+    def nbytes_if_materialized(self) -> int:
+        self._c[0] += 1
+        return self._n
+
+    def array_if_materialized(self) -> None:
+        # None を返して「未展開」を装い、バイト数の観測点を nbytes スパイ
+        # (_CountingArr) 側に残す。
+        return None
+
+
 class _SpySignal:
-    """Signal-like carrying counting arrays; not a real Signal (SignalGroup does
+    """Signal-like carrying counting sources; not a real Signal (SignalGroup does
     not type-check its members, so this rides through unmodified)."""
 
     def __init__(self, nbytes: int, counter: list[int]) -> None:
         self.timestamps = _CountingArr(nbytes // 2, counter)
-        self.values = _CountingArr(nbytes // 2, counter)
+        self._values_source = _CountingSource(nbytes // 2, counter)
 
 
 def test_enqueue_is_o1_defers_byte_access_to_drain(qtbot) -> None:

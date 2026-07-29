@@ -83,6 +83,14 @@ BUSY_EXPORTING_TMPL: Final = "{label} をエクスポート中…"
 STATUS_DIAG_ALERT_TMPL: Final = f" ・ ⚠ 警告/エラー {{n}} 件（{REF_DIAGNOSTICS}）"
 STATUS_DIAG_INFO_TMPL: Final = f" ・ ℹ 情報 {{n}} 件（{REF_DIAGNOSTICS}）"
 
+# ── 遅延サンプル読み取り失敗 (graph_panel_vm render 境界 / main_window app フック・遅延ロード) ─
+# render 境界の局所 degrade が付与する診断メッセージ (信号名を埋める)。app レベル
+# フックが catch する SampleReadError は自身のメッセージ (LazyMdfValues 由来で信号名
+# を含む) をそのまま出すため、SAMPLE_READ_ERROR_SOURCE のみ共有する。
+SAMPLE_READ_ERROR_TMPL: Final = "信号「{name}」のサンプル読み取りに失敗しました"
+SAMPLE_READ_ERROR_SOURCE: Final = "サンプル読み取り"
+STATUS_SAMPLE_READ_ERROR_TMPL: Final = "⛔ {msg}"
+
 # ── ダイアログ: CSV エクスポート (export_csv_dialog・G-19/G-38/E-1/R-07) ─────
 EXPORT_DESELECT_ALL: Final = "すべて解除"
 EXPORT_UNIFIED_TIMELINE_TOOLTIP: Final = "全信号を共通時間列に整列して 1 表で出力します"
@@ -153,6 +161,13 @@ ACTION_REMOVE_FILE: Final = "ファイルを閉じる"
 CONFIRM_CLOSE_FILE_TMPL: Final = "{filename} を閉じますか？プロット中の信号も消えます。"
 CONFIRM_CLOSE_YES: Final = "閉じる"  # QMessageBox.Yes の setText (本文動詞と一致)
 CONFIRM_CLOSE_NO: Final = "キャンセル"  # QMessageBox.No の setText
+# 増分B: エクスポート実行中の unload 拒否 (AppViewModel.unload_file の述語ガード)。
+UNLOAD_BLOCKED_BY_EXPORT: Final = "エクスポート中はファイルを閉じられません"
+# 増分B: 派生信号が参照している場合の unload 拒否 (Session.remove_group の
+# dependent_signals — 従来は GUI に消費者がおらず無音で何も起きなかった)。
+UNLOAD_BLOCKED_BY_DEPENDENTS_TMPL: Final = (
+    "派生信号 {names} が参照しているため閉じられません"
+)
 
 # ── 基準ファイル・同名重ね (E-2a/b・file_browser_view/vm・reference_overlay) ──
 ACTION_SET_REFERENCE: Final = "基準に設定"
@@ -229,6 +244,12 @@ SIGNAL_TREE_COL_UNIT: Final = "単位"
 # #14 (雑メモ解消): ファイル名プレフィックスは廃止 (件数のみ)。どのファイルかは
 # 右上ファイルブラウザの選択で判別する (docs/superpowers/specs/2026-07-23-
 # memo-ux-cleanup-design.md §1)。
+# E-2 (列展開の遅延化): 数える単位が「信号」から **展開列** に変わったため助数詞を
+# 「ch」へ (ユーザー決定 4)。1 行 = 1 物理チャンネルになった木に対し、件数だけが
+# 「N 信号」のままだと行数と桁が合わず読者が数えられない。R-07 の単一パターン
+# 「{n} 信号中 {m} 件を表示」と「ch は技術メタ情報に限定」を **当該箇所に限り
+# 意図的に supersede** する (docs/design.md R-07・対訳表 G-42 に記録済み —
+# 無記録だと次の文言スイープで「信号」へ差し戻される)。桁区切りは付けない。
 CHANNEL_HEADER_NO_FILE: Final = "ファイル未選択"
-CHANNEL_HEADER_EMPTY_TMPL: Final = "0 信号"
-CHANNEL_HEADER_COUNT_TMPL: Final = "{total} 信号中 {shown} 件を表示"
+CHANNEL_HEADER_EMPTY_TMPL: Final = "0 ch"
+CHANNEL_HEADER_COUNT_TMPL: Final = "{total} ch 中 {shown} ch を表示"

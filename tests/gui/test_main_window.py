@@ -693,11 +693,17 @@ def test_load_file_wires_cancel_event_and_adapter(qtbot, monkeypatch, tmp_path):
     import types
 
     calls: list[tuple[str, bool]] = []
-    monkeypatch.setattr(
-        window.app_vm.session,
-        "remove_group",
-        lambda key, force=False: calls.append((key, force)),
-    )
+    # 増分B: _discard は戻り値の removed_group を TeardownService へ渡すので、
+    # ダブルも本物と同じ RemovalResult を返す (append の None を返していた頃は
+    # 「戻り値を使わない実装」に依存した偶然のグリーンだった)。手渡し自体の
+    # 検証は tests/gui/test_discard_teardown.py が持つ。
+    from valisync.core.session import RemovalResult
+
+    def fake_remove_group(key, force=False):
+        calls.append((key, force))
+        return RemovalResult(removed=True)
+
+    monkeypatch.setattr(window.app_vm.session, "remove_group", fake_remove_group)
     kw["on_discard"](types.SimpleNamespace(key="csv_9"))
     assert calls == [("csv_9", True)]
 

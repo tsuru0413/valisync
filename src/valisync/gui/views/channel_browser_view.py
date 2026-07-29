@@ -1,9 +1,12 @@
 """Channel_Browser view — refactored for master-detail (Task 2.3).
 
-A search box atop a hierarchical QTreeView. Array bases (LD-14 Name[i]/.field)
-collapse under a parent node; scalars stay top-level leaves (FU-22 B). User
-gestures are forwarded to the VM. Displays signals for the currently active
-file in AppViewModel.
+A search box atop a hierarchical QTreeView. Rows are grouped by physical
+channel (metadata['physical_channel'], E-2): a channel presenting several
+columns (LD-14 Name[i]/.field) collapses under a parent node, while one
+presenting a single column -- including a channel the filter has narrowed
+down to one surviving column (Mono[0], P.x) -- is itself a top-level leaf
+(FU-22 B). User gestures are forwarded to the VM. Displays signals for the
+currently active file in AppViewModel.
 """
 
 from __future__ import annotations
@@ -256,12 +259,12 @@ class ChannelBrowserView(QWidget):
         """Flatten-walk the tree in display order, collecting up to *limit*
         Unit-column strings.
 
-        Group (array/LD-14) rows show "" in the Unit column -- unit
-        aggregation across a group's members is a later increment -- so the
+        Group (physical-channel) rows show "" in the Unit column -- unit
+        aggregation across a channel's columns is a later increment -- so the
         real content lives on their leaf children. Where it is free to do so,
         the walk descends into groups rather than sampling only top-level
-        rows (a tree front-loaded with array bases would otherwise sample
-        nothing but blanks) -- but it never *forces* that descent.
+        rows (a tree front-loaded with multi-column channels would otherwise
+        sample nothing but blanks) -- but it never *forces* that descent.
         SignalTreeModel.rowCount() materializes a group's children on first
         touch, and doing that from a reset-driven sampler would defeat the
         lazy tree (FU-22 B: children build only on user expansion). So this

@@ -296,7 +296,7 @@ def _area_one_curve(qtbot: QtBot):  # type: ignore[no-untyped-def]
             has_header=True,
         ),
     )
-    signal_key = sorted(s.name for s in app.signals())[0]
+    signal_key = sorted(s.name for s in app.session.signals())[0]
     area_vm = GraphAreaVM(app)
     area_vm.panels(0)[0].add_signal_to_axis(signal_key, 0)
 

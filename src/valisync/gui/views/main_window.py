@@ -16,9 +16,12 @@ collaborators and connects their signals.
 from __future__ import annotations
 
 import itertools
+import sys
 import threading
+import weakref
 from collections.abc import Callable
 from pathlib import Path
+from types import TracebackType
 from typing import ClassVar, cast
 
 from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
@@ -45,6 +48,8 @@ from PySide6.QtWidgets import (
 
 from valisync.core.loaders.csv_format_detector import CsvFormatDetector
 from valisync.core.models.format_def import FormatDefinition
+from valisync.core.models.load_result import Diagnostic
+from valisync.core.models.sample_source import SampleReadError
 from valisync.core.session import LoadOutcome
 from valisync.gui import reference_overlay
 from valisync.gui import strings as S
@@ -164,8 +169,16 @@ class MainWindow(QMainWindow):
         # ── Shared ViewModels (one Session) ──────────────────────────────────
         self.file_browser_vm = FileBrowserVM(app_vm)
         self.channel_browser_vm = ChannelBrowserVM(app_vm)
-        self.graph_area_vm = GraphAreaVM(app_vm)
+        # Task 7: diagnostics_vm は graph_area_vm より先に作る — GraphAreaVM は
+        # __init__ で最初のパネル VM を生成し、そこへ遅延読みエラー用 sink を配線
+        # するため、sink の宛先 (diagnostics_vm) が先に存在している必要がある。
         self.diagnostics_vm = DiagnosticsViewModel()
+        self.graph_area_vm = GraphAreaVM(
+            app_vm, diagnostic_sink=self._record_read_error_diagnostic
+        )
+        # 遅延サンプル読み取りが render 境界外 (auto-fit / cursor-step / formula 等) で
+        # 失敗しても実イベントループでプロセスを落とさないための最後の砦 (spec §Task 7)。
+        self._install_sample_read_error_guard()
 
         # spec §2.2: Analyze メニューと各パネルの空白右クリックメニューが共有する
         # 解析系 QAction 群。trigger 時の配送先は固定 dispatch ではなく、メニューを
@@ -183,6 +196,12 @@ class MainWindow(QMainWindow):
         self.busy_overlay = BusyOverlay(self)
         self._load_controller = LoadController(parent=self)
         self._export_controller = ExportController(parent=self)
+        # 増分B: unload の拒否ガード。実経路 (FileBrowserView → FileBrowserVM →
+        # AppViewModel.unload_file) は ExportController に到達できないので、述語を
+        # VM のチョークポイントへ注入する (set_teardown と同型の duck-typed 注入)。
+        self.app_vm.set_busy_predicate(self._export_controller.is_busy)
+        # 拒否モーダルは DI (テストから差し替え可能 — _default_confirm と同規約)。
+        self._notify_blocked: Callable[[str], None] = self._default_blocked_modal
         # GUI スレッド所属 — ワーカーからの展開確認をモーダルへ marshal (LD-14)。
         self._expansion_confirmer = ExpansionConfirmer(self)
         # LD-01: CSV フォーマット解決 (検出して確認ダイアログ)。テストで差し替え可能。
@@ -502,6 +521,104 @@ class MainWindow(QMainWindow):
         # 罠を踏むため、実際の適用は showEvent 後まで遅延する。
         self._default_dock_ratio_applied = False
 
+    # ─── SampleReadError の集中 degrade (Task 7) ────────────────────────────────
+
+    def _record_read_error_diagnostic(
+        self, source: str, diagnostic: Diagnostic
+    ) -> None:
+        """render 境界 (GraphPanelVM) から届く遅延読みエラー診断を DiagnosticsVM へ流す。
+
+        GraphAreaVM 経由で全パネル VM へ注入される sink の宛先 (spec §Task 7・
+        render 境界の局所 degrade が「1 信号 1 診断」で呼ぶ)。
+        """
+        self.diagnostics_vm.add(source, [diagnostic])
+
+    def _install_sample_read_error_guard(self) -> None:
+        """render 境界の外で起きた SampleReadError を実イベントループで握る最後の砦。
+
+        PySide6 は Qt スロット/仮想メソッド内の未処理 Python 例外を ``sys.excepthook``
+        へルーティングする (実測: signal→slot も C++ 仮想オーバーライドも同経路)。
+        ここで SampleReadError を捕まえ、ダイアログでなく診断+ステータスへ落として
+        握る (従来フックへ委譲しない = そのまま継続。それ以外の型は従来フックへ委譲)。
+        auto-fit / cursor-step / formula 等、render 境界の局所 degrade が届かない
+        初回展開経路の保険 (spec §Task 7)。
+
+        self は weakref 経由で参照する: ウィンドウ破棄後もフックが sys.excepthook に
+        残った (テストで close されなかった) 場合でも、死んだ self を触らず単なる
+        pass-through になる (shiboken の "already deleted" を回避)。
+        """
+        self_ref = weakref.ref(self)
+        prev_hook = sys.excepthook
+
+        def _hook(
+            exc_type: type[BaseException],
+            exc_value: BaseException,
+            exc_tb: TracebackType | None,
+        ) -> None:
+            win = self_ref()
+            if win is not None and isinstance(exc_value, SampleReadError):
+                win._handle_sample_read_error(exc_value)
+                return  # 握った — 継続 (プロセスを落とさない)
+            prev_hook(exc_type, exc_value, exc_tb)
+
+        sys.excepthook = _hook
+        # 既に報告済みの (source_file, signal_key)。auto-fit / cursor-step は同じ
+        # 壊れた信号を何度でも踏むので、dedup しないと Diagnostics ドックが溢れる
+        # (render 境界の _read_error_reported と同型・「1 信号 1 診断」契約)。
+        # ロード完了 (_on_loaded) でのみクリアする。
+        self._read_error_reported: set[tuple[str, str]] = set()
+        # None を代入して uninstall するため Optional で宣言する。
+        self._sample_read_error_hook: (
+            Callable[[type[BaseException], BaseException, TracebackType | None], None]
+            | None
+        ) = _hook
+        self._prev_excepthook = prev_hook
+
+    def _uninstall_sample_read_error_guard(self) -> None:
+        """自分が設置したフックが現行なら従来フックへ戻す (close 時・leak 防止)。
+
+        後から別ウィンドウがフックを重ねていれば触らない — その weakref フックは
+        自 self 破棄後に pass-through 化するので放置して安全。
+        """
+        if getattr(self, "_sample_read_error_hook", None) is None:
+            return
+        if sys.excepthook is self._sample_read_error_hook:
+            sys.excepthook = self._prev_excepthook
+        self._sample_read_error_hook = None
+
+    def _handle_sample_read_error(self, exc: BaseException) -> None:
+        """実イベントループで捕捉した SampleReadError を診断+ステータスへ落とす。
+
+        ダイアログは出さない (spec §Task 7 — excepthook 内モーダルの再入回避)。例外
+        自身のメッセージ (LazyMdfValues 由来は信号名を含む) をそのまま使う。診断記録・
+        ステータス更新のどちらかが失敗しても excepthook 内で二次例外を投げない。
+
+        宛先の決め方は render 境界 (``GraphPanelVM._report_read_error``) と同規約:
+        信号ごとに 1 件へ dedup し、ラベルは実ファイルの basename。コンテキストを
+        持たない例外 (テスト double・将来の別ソース) はメッセージを識別子に代用し、
+        ラベルは従来どおり汎用文字列にフォールバックする。
+        """
+        msg = str(exc) or S.SAMPLE_READ_ERROR_TMPL.format(name="")
+        signal_key = getattr(exc, "signal_key", None)
+        source_file = getattr(exc, "source_file", None)
+        mark = (source_file or "", signal_key or msg)
+        if mark in self._read_error_reported:
+            return
+        source = Path(source_file).name if source_file else S.SAMPLE_READ_ERROR_SOURCE
+        try:
+            self.diagnostics_vm.add(
+                source,
+                [Diagnostic(level="error", message=msg, signal_name=signal_key)],
+            )
+            self.set_status_message(S.STATUS_SAMPLE_READ_ERROR_TMPL.format(msg=msg))
+        except Exception:
+            pass  # excepthook 内 — 二次例外で握り経路を壊さない
+        else:
+            # dedup マークは記録に**成功してから**立てる。先に立てると、シンクが
+            # 例外を投げたときその信号は診断ゼロのまま恒久的に無音になる (握りが
+            # 「1 回ぶんの抑制」ではなく「全抑制」に化ける)。
+            self._read_error_reported.add(mark)
+
     # ─── Load pipeline ─────────────────────────────────────────────────────────
 
     def _load_file(self, path: str | Path) -> None:
@@ -518,9 +635,22 @@ class MainWindow(QMainWindow):
         cancel_event = threading.Event()  # 所有=ここ・セット権=controller(spec §4.1)
 
         def _discard(outcome: LoadOutcome) -> None:
-            # 手遅れ完走のロールバック; remove_group の戻り値は on_discard の
-            # Callable[[LoadOutcome], None] 契約に不要なので握りつぶす。
-            session.remove_group(outcome.key, force=True)
+            # 増分B: 手遅れ完走のロールバック。Task 1 で handle は remove_group が
+            # 閉じるが、シェルの解放を放置すると GUI スレッドで同期実行される
+            # (330k シェルで実測 649ms)。AppViewModel は経由しない — このファイルは
+            # loaded_keys に載っていないので releasing スピナー行を出してはいけない。
+            # _discard は LoadController._finish (queued 接続スロット) から呼ばれる
+            # = GUI スレッドなので、QTimer を持つ enqueue をここで呼んでよい。
+            # なお本経路はエクスポートガードの対象外: このグループは register_loaded を
+            # 通らず、エクスポートツリーの唯一のソース (app_vm.loaded_file_keys ->
+            # export_csv_dialog.py:114) に載らないためエクスポート中になり得ない。
+            # E-3 の 2 サイト目: 鋳造列が生きたら result.removed_columns もここで
+            # TeardownService へ渡すこと (今は必ず空)。tripwire は
+            # AppViewModel.unload_file 側にしか無いので、この経路だけを編集する人には
+            # 何の信号も届かない — 無音でペーシングを迂回させないための逆参照。
+            result = session.remove_group(outcome.key, force=True)
+            if result.removed_group is not None:
+                self.teardown_service.enqueue(outcome.key, result.removed_group)
 
         self._load_controller.submit(
             lambda: session.load(
@@ -545,6 +675,9 @@ class MainWindow(QMainWindow):
 
     def _on_loaded(self, outcome: LoadOutcome, source_path: Path | None = None) -> None:
         # GUI thread; register, surface diagnostics, activate, update status.
+        # ロード完了はデータが変わりうる機会 — 壊れていた信号が直っているかも
+        # しれないので報告済みマークを解いて再評価させる (GraphPanelVM.refresh と同型)。
+        self._read_error_reported.clear()
         self.app_vm.register_loaded(outcome.key)
         source = self.app_vm.session.source_name(outcome.key)
         self.diagnostics_vm.add(source, outcome.diagnostics)
@@ -574,8 +707,6 @@ class MainWindow(QMainWindow):
         if diags:
             self.diagnostics_vm.add(source, diags)
         else:
-            from valisync.core.models.load_result import Diagnostic
-
             self.diagnostics_vm.add(
                 source, [Diagnostic(level="error", message="; ".join(messages))]
             )
@@ -618,7 +749,35 @@ class MainWindow(QMainWindow):
                 self.app_vm.set_active_file(key)
                 return
 
+    def _default_blocked_modal(self, message: str) -> None:
+        QMessageBox.warning(self, S.ACTION_REMOVE_FILE, message)
+
+    def _unload_refusal_message(self) -> str:
+        """拒否理由コード → 表示文言 (VM は理由コードのみを持つ・増分B)。
+
+        None は「理由が読めなかった」だけなので、既定はより一般的な
+        エクスポート中の文言へ倒す (無音に戻すよりまし)。
+        """
+        reason, names = self.app_vm.last_unload_refusal or ("export_busy", ())
+        if reason == "dependents":
+            return S.UNLOAD_BLOCKED_BY_DEPENDENTS_TMPL.format(names="、".join(names))
+        return S.UNLOAD_BLOCKED_BY_EXPORT
+
+    def _on_unload_blocked(self) -> None:
+        """VM が拒否した unload を通知する (FB-01: never silent — status + modal)。
+
+        ステータス単独では不十分: event() が全ての QStatusTipEvent を横取りして
+        set_status_message へ流すため (event() の docstring 参照)、メニューを
+        hover しただけで空 tip が来てラベルが消える。timeout_ms は他の読み捨て
+        メッセージと同じ 8000 (永続する stale ラベルを作らない)。
+        """
+        message = self._unload_refusal_message()
+        self.set_status_message(message, timeout_ms=8000)
+        self._notify_blocked(message)
+
     def _on_app_change(self, change: str) -> None:
+        if change == "unload_blocked":
+            self._on_unload_blocked()
         if change == "loaded":
             self.channel_browser_vm.refresh()
             # Panels are reconciled by GraphAreaVM, which subscribes to app_vm.
@@ -940,6 +1099,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         """Persist window state on close so it can be restored next launch (R2.3)."""
         self.save_state()
+        # Task 7: 設置した sys.excepthook を従来フックへ戻す (プロセス寿命をまたぐ leak
+        # 防止)。実運用は単一ウィンドウで無害だが、テストの多数ウィンドウ生成で確実に。
+        self._uninstall_sample_read_error_guard()
         super().closeEvent(event)
 
     def showEvent(self, event: QShowEvent) -> None:

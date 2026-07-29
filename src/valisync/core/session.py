@@ -80,11 +80,15 @@ class RemovalResult:
     forced; ``dependent_signals`` then names the blocking Derived_Signals.
     ``removed_group`` carries the popped Signal_Group on success so the GUI can
     defer its dealloc off the UI thread (FU-16); None when removal was refused.
+    ``removed_columns`` carries the group's minted column Signals (E-1), which
+    live outside ``SignalGroup.signals`` and would otherwise escape the teardown
+    accounting.
     """
 
     removed: bool
     dependent_signals: tuple[str, ...] = ()
     removed_group: SignalGroup | None = None
+    removed_columns: tuple[Signal, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -162,7 +166,20 @@ class Session:
         if result.signal_group is None:
             messages = [d.message for d in result.diagnostics]
             raise LoadError(file_path, messages, diagnostics=result.diagnostics)
-        key = self._groups.add(result.signal_group)
+        try:
+            key = self._groups.add(result.signal_group)
+        except Exception:
+            # 登録に失敗したグループは誰も所有しない。handle を閉じないと
+            # トレースバックが生かし続け、GUI のエラーダイアログ表示中ずっと
+            # ファイルがロックされる。ローダー自身の失敗経路 (mdf_loader の
+            # cancel/例外時) は signal_group=None を返すので上の early return
+            # で抜けており、ここに来るのは group が実在する場合のみ — 二重
+            # close にはならない (MdfHandle.close() は冪等だが、それに頼らず
+            # 所有権の切れ目をここに一本化する)。
+            handle = result.signal_group.handle
+            if handle is not None:
+                handle.close()
+            raise
         return LoadOutcome(key=key, diagnostics=result.diagnostics)
 
     def is_csv(self, file_path: Path) -> bool:
@@ -189,7 +206,12 @@ class Session:
         return LoadManyResult(succeeded=tuple(succeeded), failed=tuple(failed))
 
     def signals(self) -> list[Signal]:
-        """Every loaded signal, name-spaced by its group key."""
+        """Every loaded signal, name-spaced by its group key.
+
+        シェルの列挙は安価だが **``Signal.values`` は遅延 I/O backed** (MDF は
+        ``LazyMdfValues``) — この戻り値を回して全信号の ``.values`` に触ると
+        ファイル全体を実体化する (遅延ロードで取り除いた回帰そのもの)。
+        """
         return self._groups.signals()
 
     def signal_map(self) -> Mapping[str, Signal]:
@@ -197,6 +219,13 @@ class Session:
 
         Cached at the SignalGroupManager level and rebuilt only on load/unload
         (FU-08) — callers on the autofit hot path avoid re-walking every signal.
+
+        **非対称 Mapping** (意図的逸脱): ルックアップ (``[]``/``get``/``in``) は
+        列キーを解決器経由で鋳造しうるが、列挙 (``__iter__``/``len``) は**物理キー
+        のみ**を返す。``dict(session.signal_map())``・``.items()``・``.values()``
+        による全キー列挙は**してはならない** — 330k 列を鋳造して ~390 MB を再導入
+        する (この増分で取り除いた回帰そのもの)。詳細は
+        ``SignalGroupManager.signal_map()`` / ``_ResolvingMap`` を参照。
         """
         return self._groups.signal_map()
 
@@ -224,6 +253,10 @@ class Session:
         Lets callers fetch one file's signals without scanning every group.
         """
         return self._groups.group_signals(key)
+
+    def resolve_signal(self, key: str) -> Signal | None:
+        """名前空間つきキーを Signal へ解決する (列キーは要求時に鋳造・E-1)."""
+        return self._groups.resolve(key)
 
     def source_info(self, key: str) -> SourceInfo:
         """Return read-only metadata for the group under *key* (KeyError if unknown)."""
@@ -289,9 +322,27 @@ class Session:
         # the caller hands `removed_group` to the GUI teardown service (FU-16).
         # This bookkeeping is the term most likely to grow toward the sync-close
         # budget at very high channel counts.
-        group = self._groups.remove(key)
+        group, columns = self._groups.remove(key)
+        # 増分B: handle 寿命は core が持つ。ここで閉じることで unload と
+        # MainWindow._discard (キャンセル完走のロールバック) の両方が構造的に
+        # カバーされる — GUI 側 (unload_file) に置くと _discard が漏れる。
+        # CSV/Derived グループは handle=None なので no-op。
+        #
+        # WHY (機序・誤解しやすい): close() は handle.lock を取る
+        # (mdf_handle.py:30-31) ので、export ワーカーが select 中なら **GUI スレッドが
+        # その読みの終了まで同期ブロック**する (実測 cold 1.18s / warm 0.73-0.83s)。
+        # in-flight の select は lock により完走し、SampleReadError になるのは
+        # _closed を見る「次の列」。lock は mdf.close() と in-flight mmap read の
+        # 競合 (native アクセス違反) を防いでおり外せない。だから「エクスポート中の
+        # unload」は close をやめるのではなく **UI 側で拒否**する
+        # (AppViewModel.unload_file の述語ガード)。
+        if group.handle is not None:
+            group.handle.close()
         return RemovalResult(
-            removed=True, dependent_signals=dependents, removed_group=group
+            removed=True,
+            dependent_signals=dependents,
+            removed_group=group,
+            removed_columns=columns,
         )
 
     # ─── Pure-computation pass-throughs (Session is the only gateway) ──────────
@@ -325,32 +376,6 @@ class Session:
         options: CsvExportOptions | None = None,
     ) -> None:
         self._exporter.export(signals, output_path, use_unified_timeline, options)
-
-    def unified_timeline_signals(
-        self,
-        file_offsets: dict[str, float] | None = None,
-        signal_offsets: dict[str, float] | None = None,
-    ) -> list[Signal]:
-        """Place every loaded signal on the Unified_Timeline (Req 8.1, 8.3).
-
-        Applies a per-file offset (keyed by group key) and a per-signal offset
-        (keyed by namespaced signal name) to each signal. No reordering or
-        resampling is done, so inter-signal relative order is preserved (8.3) and
-        sample counts are unchanged (8.4).
-        """
-        file_offsets = file_offsets or {}
-        signal_offsets = signal_offsets or {}
-        placed: list[Signal] = []
-        for sig in self._groups.signals():
-            key = sig.name.split(KEY_SEPARATOR, 1)[0]
-            placed.append(
-                self._synchronizer.apply_offset(
-                    sig,
-                    file_offset=file_offsets.get(key, 0.0),
-                    signal_offset=signal_offsets.get(sig.name, 0.0),
-                )
-            )
-        return placed
 
     # ─── Calcbar operations (Req 26 / 15) ─────────────────────────────────────
 

@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from valisync.core.models.load_result import Diagnostic
 from valisync.gui import strings as S
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.graph_panel_vm import CursorState, GraphPanelVM
@@ -42,10 +43,17 @@ class GraphAreaVM(Observable):
     - active_tab_index is always a valid index into _tabs.
     """
 
-    def __init__(self, app_vm: AppViewModel) -> None:
+    def __init__(
+        self,
+        app_vm: AppViewModel,
+        diagnostic_sink: Callable[[str, Diagnostic], None] | None = None,
+    ) -> None:
         super().__init__()
         self._app_vm = app_vm
         self._session = app_vm.session
+        # Task 7: 遅延サンプル読み取り失敗を診断へ落とす sink。_make_panel が全パネル
+        # へ構造的に配る (単一構築点なので新規生成点が増えても漏れない・spec §4.1)。
+        self._diagnostic_sink = diagnostic_sink
         # Guards re-entrancy while pushing a synced range to sibling panels.
         self._propagating = False
         self._panel_unsubs: dict[int, Callable[[], None]] = {}
@@ -79,6 +87,7 @@ class GraphAreaVM(Observable):
             self._session,
             cursor_state=cursor_state,
             hue_resolver=self._app_vm.file_hue_resolver(),
+            diagnostic_sink=self._diagnostic_sink,
         )
 
     # ─── App-level reconciliation ─────────────────────────────────────────────

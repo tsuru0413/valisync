@@ -149,6 +149,12 @@ def _make_view_with_arrays(
     group_signals is monkeypatched directly so no real load is needed; the
     active file key just has to be set before ChannelBrowserVM/View exist
     since SignalTreeModel reads tree_groups() in its own __init__.
+
+    E-2: the columns must carry metadata['physical_channel'] (as the loader
+    gives them) for Arr[0]/Arr[1] to fold back into one parent row. Without it
+    the fallback treats each column as its own physical channel and no parent
+    node exists at all -- silently turning the parent-focused asserts below
+    into vacuous ones.
     """
     import numpy as np
 
@@ -156,7 +162,10 @@ def _make_view_with_arrays(
 
     app_vm = AppViewModel()
 
-    def _sig(name: str) -> Signal:
+    def _sig(name: str, phys: str | None = None) -> Signal:
+        metadata: dict[str, object] = {"unit": "V"}
+        if phys is not None:
+            metadata["physical_channel"] = phys
         return Signal(
             name=name,
             timestamps=np.array([0.0]),
@@ -164,12 +173,12 @@ def _make_view_with_arrays(
             file_format="MDF4",
             bus_type="",
             source_file="",
-            metadata={"unit": "V"},
+            metadata=metadata,
         )
 
     app_vm.session.group_signals = lambda k: [  # type: ignore[method-assign]
-        _sig("g::Arr[0]"),
-        _sig("g::Arr[1]"),
+        _sig("g::Arr[0]", phys="Arr"),
+        _sig("g::Arr[1]", phys="Arr"),
         _sig("g::Scalar"),
     ]
     app_vm.set_active_file("g")
@@ -300,7 +309,7 @@ def test_header_label_shows_counts_without_filename(
     app_vm.set_active_file(key)
     view = _make_view(qtbot, vm)
     assert "d.csv" not in view.header_label.text()
-    assert "2 信号中 2 件を表示" in view.header_label.text()
+    assert "2 ch 中 2 ch を表示" in view.header_label.text()
 
 
 def test_header_label_word_wrap_enabled(qtbot: QtBot, tmp_path: Path) -> None:
@@ -340,7 +349,7 @@ def test_min_width_smaller_without_filename_header(
     # instead of duplicating the old template string.
     view.header_label.setWordWrap(False)
     view.header_label.setText(
-        f"{app_vm.session.source_name(key)} — 2 信号中 2 件を表示"
+        f"{app_vm.session.source_name(key)} — 2 ch 中 2 ch を表示"
     )
     old_width = view.minimumSizeHint().width()
 
@@ -746,7 +755,10 @@ def test_sampling_reflects_real_leaf_units_once_group_materialized(
     long_unit = "kilometers_per_hour_precise"
     app_vm = AppViewModel()
 
-    def _sig(name: str, unit: str) -> Signal:
+    def _sig(name: str, unit: str, phys: str | None = None) -> Signal:
+        metadata: dict[str, object] = {"unit": unit}
+        if phys is not None:
+            metadata["physical_channel"] = phys  # E-2: 親を立てるのに必須
         return Signal(
             name=name,
             timestamps=np.array([0.0]),
@@ -754,12 +766,12 @@ def test_sampling_reflects_real_leaf_units_once_group_materialized(
             file_format="MDF4",
             bus_type="",
             source_file="",
-            metadata={"unit": unit},
+            metadata=metadata,
         )
 
     app_vm.session.group_signals = lambda k: [  # type: ignore[method-assign]
-        _sig("g::Arr[0]", long_unit),
-        _sig("g::Arr[1]", long_unit),
+        _sig("g::Arr[0]", long_unit, phys="Arr"),
+        _sig("g::Arr[1]", long_unit, phys="Arr"),
         _sig("g::Scalar", "V"),
     ]
     app_vm.set_active_file("g")

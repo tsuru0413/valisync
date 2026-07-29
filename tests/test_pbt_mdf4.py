@@ -57,14 +57,21 @@ def test_mdf4_signal_roundtrip(
         )
         expected.append((name, vs, bus_str))
 
+    # 遅延ロード (増分A Task 3): values は初回アクセスまで読まれず、ハンドルは
+    # ファイルを開いたまま保持する。従って値の検証は TemporaryDirectory が生存
+    # している間に行い、削除前にハンドルを明示 close する (Windows の mmap
+    # ロックを解放しないと rmtree が PermissionError になる)。
     with tempfile.TemporaryDirectory() as d:
         path = write_mdf4(Path(d) / "rt.mf4", channels)
         result = MdfLoader().load(path)
 
-    assert result.signal_group is not None
-    by_name = {s.name: s for s in result.signal_group.signals}
-    for name, vs, bus_str in expected:
-        sig = by_name[name]
-        np.testing.assert_array_equal(sig.timestamps, ts)
-        np.testing.assert_array_equal(sig.values, vs)
-        assert sig.bus_type == bus_str
+        assert result.signal_group is not None
+        by_name = {s.name: s for s in result.signal_group.signals}
+        for name, vs, bus_str in expected:
+            sig = by_name[name]
+            np.testing.assert_array_equal(sig.timestamps, ts)
+            np.testing.assert_array_equal(sig.values, vs)  # 遅延展開 (file 生存中)
+            assert sig.bus_type == bus_str
+
+        assert result.signal_group.handle is not None
+        result.signal_group.handle.close()

@@ -11,8 +11,6 @@ Property 3: Transform input immutability (no transform mutates its input Signal;
 
 from __future__ import annotations
 
-import dataclasses
-
 import hypothesis.extra.numpy as hnp
 import numpy as np
 import pytest
@@ -50,7 +48,15 @@ def test_valid_signal_construction_succeeds(signal: Signal) -> None:
 def test_length_mismatch_rejected(ts: np.ndarray, extra: int) -> None:
     values = np.zeros(len(ts) + extra, dtype=np.float64)
     with pytest.raises(ValueError):
-        Signal("s", ts, values, "Derived", "", "", {})
+        Signal(
+            name="s",
+            timestamps=ts,
+            values=values,
+            file_format="Derived",
+            bus_type="",
+            source_file="",
+            metadata={},
+        )
 
 
 @given(monotonic_timestamps(), st.sampled_from([np.inf, -np.inf, np.nan]))
@@ -59,7 +65,15 @@ def test_non_finite_timestamp_rejected(ts: np.ndarray, bad: float) -> None:
     ts[len(ts) // 2] = bad
     values = np.zeros(len(ts), dtype=np.float64)
     with pytest.raises(ValueError):
-        Signal("s", ts, values, "Derived", "", "", {})
+        Signal(
+            name="s",
+            timestamps=ts,
+            values=values,
+            file_format="Derived",
+            bus_type="",
+            source_file="",
+            metadata={},
+        )
 
 
 @given(monotonic_timestamps(min_size=3))
@@ -72,7 +86,15 @@ def test_non_monotonic_timestamp_accepted_and_sorted_view_monotonic(
     # force a non-increasing step by duplicating a neighbour
     ts[1] = ts[0]
     values = np.zeros(len(ts), dtype=np.float64)
-    signal = Signal("s", ts, values, "Derived", "", "", {})
+    signal = Signal(
+        name="s",
+        timestamps=ts,
+        values=values,
+        file_format="Derived",
+        bus_type="",
+        source_file="",
+        metadata={},
+    )
     assert len(signal.timestamps) == len(ts)
     sorted_ts, _ = signal.sorted_view()
     assert np.all(np.diff(sorted_ts) > 0)
@@ -142,7 +164,7 @@ def test_arrays_are_read_only(signal: Signal) -> None:
 
 @given(valid_signals())
 def test_instance_is_frozen(signal: Signal) -> None:
-    with pytest.raises(dataclasses.FrozenInstanceError):
+    with pytest.raises(AttributeError):
         signal.name = "mutated"  # type: ignore[misc]
 
 

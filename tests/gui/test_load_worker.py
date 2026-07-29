@@ -180,7 +180,7 @@ class TestLoadController:
 
         # Select the active file to see signals
         app_vm.set_active_file(keys[0])
-        assert len(cb_vm.signals) == 1
+        assert cb_vm.shown_count() == 1
         assert busy.isHidden()
 
     def test_busy_shown_during_load(self, qtbot: QtBot) -> None:

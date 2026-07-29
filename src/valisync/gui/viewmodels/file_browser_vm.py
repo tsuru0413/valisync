@@ -69,6 +69,14 @@ class FileBrowserVM(Observable):
         if 0 <= index < len(keys):
             self._app_vm.unload_file(keys[index])
 
+    def is_unload_blocked(self) -> bool:
+        """True when unload would be refused right now (エクスポート実行中・増分B).
+
+        Reads the SAME predicate as the backstop in ``AppViewModel.unload_file``,
+        so the menu affordance and the refusal can never disagree.
+        """
+        return self._app_vm.is_busy()
+
     # ─── E-2a: reference file ───────────────────────────────────────────────
 
     def key_at(self, row: int) -> str | None:

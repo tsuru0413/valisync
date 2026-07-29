@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from tests.lazy_stubs import CountingLazy
+from valisync.core.models.sample_source import EagerValues, SampleReadError
+from valisync.core.models.signal import Signal
+
+
+def test_eager_values_returns_array_and_is_materialized() -> None:
+    arr = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+    src = EagerValues(arr)
+    assert src.is_materialized is True
+    assert src.length == 3
+    got = src.array()
+    np.testing.assert_array_equal(got, arr)
+    assert got.flags.writeable is False  # 凍結される
+
+
+def test_eager_values_copies_writeable_input_not_freezing_caller_array() -> None:
+    # 呼び出し側の可変配列を in-place 凍結してはならない (現行 __post_init__ と同契約)
+    caller = np.array([1.0, 2.0], dtype=np.float64)  # writeable
+    EagerValues(caller)
+    assert caller.flags.writeable is True  # 呼び出し側配列は不変のまま
+
+
+def test_eager_values_shares_readonly_input_without_copy() -> None:
+    ro = np.array([1.0, 2.0], dtype=np.float64)
+    ro.flags.writeable = False
+    src = EagerValues(ro)
+    assert src.array() is ro  # read-only はコピーせず共有
+
+
+def test_eager_values_nbytes_if_materialized() -> None:
+    arr = np.zeros(10, dtype=np.float64)
+    assert EagerValues(arr).nbytes_if_materialized == arr.nbytes
+
+
+def test_eager_values_array_if_materialized_is_the_same_object() -> None:
+    """teardown 会計の id-dedup はこの API の**同一性**に乗っている。
+
+    `==` では証明にならない (コピーを返す実装でも通ってしまい、共有 master が
+    信号ごとに計上されてバイト軸が壊れる)。実装本体を直接 pin する — 従来は
+    テスト double 経由でしか触られていなかった。
+    """
+    src = EagerValues(np.zeros(10, dtype=np.float64))
+    assert src.array_if_materialized() is src.array()
+
+
+def test_sample_read_error_is_exception() -> None:
+    assert issubclass(SampleReadError, Exception)
+
+
+def _sig(values: np.ndarray) -> Signal:
+    ts = np.arange(len(values), dtype=np.float64)
+    return Signal(
+        name="s",
+        timestamps=ts,
+        values=values,
+        file_format="MDF4",
+        bus_type="CAN",
+        source_file="/x.mf4",
+    )
+
+
+def test_signal_wraps_array_values_in_eager_source() -> None:
+    s = _sig(np.array([1.0, 2.0, 3.0]))
+    assert isinstance(s._values_source, EagerValues)
+    assert s._values_source.is_materialized is True
+    np.testing.assert_array_equal(s.values, [1.0, 2.0, 3.0])
+
+
+def test_signal_accepts_values_source_directly() -> None:
+    src = EagerValues(np.array([4.0, 5.0]))
+    ts = np.array([0.0, 1.0])
+    s = Signal(
+        name="s",
+        timestamps=ts,
+        values_source=src,
+        file_format="MDF4",
+        bus_type="CAN",
+        source_file="/x.mf4",
+    )
+    assert s._values_source is src
+    np.testing.assert_array_equal(s.values, [4.0, 5.0])
+
+
+def test_signal_length_invariant_uses_source_length_not_values() -> None:
+    # timestamps と source.length が食い違えば構築時に ValueError
+    ts = np.array([0.0, 1.0, 2.0])
+    with pytest.raises(ValueError, match="same length"):
+        Signal(
+            name="s",
+            timestamps=ts,
+            values=np.array([1.0, 2.0]),
+            file_format="MDF4",
+            bus_type="",
+            source_file="",
+        )
+    # values= 版だけだと source.length == len(values) なのでテスト名が主張する
+    # 区別 (values を**展開せず** source.length で検証する) が観測できない。
+    # 遅延ソースで「読まずに落ちる」ことまで見る。
+    lazy = CountingLazy(2)
+    with pytest.raises(ValueError, match="same length"):
+        Signal(
+            name="s",
+            timestamps=ts,
+            values_source=lazy,
+            file_format="MDF4",
+            bus_type="",
+            source_file="",
+        )
+    assert lazy.reads == 0, "長さ検証が値を展開している (遅延契約が壊れている)"
+
+
+def test_signal_requires_exactly_one_of_values_or_source() -> None:
+    ts = np.array([0.0])
+    with pytest.raises(ValueError, match="exactly one"):
+        Signal(name="s", timestamps=ts, file_format="MDF4", bus_type="", source_file="")
+
+
+def test_signal_is_instance_write_protected() -> None:
+    s = _sig(np.array([1.0]))
+    with pytest.raises(AttributeError):
+        s.name = "changed"  # type: ignore[misc]
+
+
+def _lazy_sig(timestamps: np.ndarray) -> tuple[Signal, CountingLazy]:
+    src = CountingLazy(len(timestamps))
+    sig = Signal(
+        name="s",
+        timestamps=timestamps,
+        values_source=src,  # type: ignore[arg-type]
+        file_format="MDF4",
+        bus_type="",
+        source_file="/x.mf4",
+    )
+    return sig, src
+
+
+def test_signal_is_monotonic_reads_master_only() -> None:
+    """``is_monotonic`` は master (timestamps) だけを見て値を展開しない。
+
+    ``EagerValues`` 越しではこの主張は**観測できない** (常に materialized なので
+    ``is_monotonic`` が ``self.values`` を触るように変えても緑のまま)。read を数える
+    遅延ソースで ``reads == 0`` を見るのが唯一の honest observable。単調/非単調の
+    両分岐を通す — 片方だけだと「非単調のときだけ値を読む」実装に盲目になる。
+    """
+    mono, mono_src = _lazy_sig(np.array([0.0, 1.0, 2.0]))
+    assert mono.is_monotonic is True
+    assert mono_src.reads == 0, (
+        "is_monotonic が値を展開した (master のみの契約が壊れた)"
+    )
+    assert mono_src.is_materialized is False
+
+    jumbled, jumbled_src = _lazy_sig(np.array([0.0, 2.0, 1.0]))
+    assert jumbled.is_monotonic is False
+    assert jumbled_src.reads == 0
+    assert jumbled_src.is_materialized is False

@@ -6,12 +6,10 @@ to Qt's Model/View architecture.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import Any
 
 from PySide6.QtCore import (
     QAbstractListModel,
-    QAbstractTableModel,
     QMimeData,
     QModelIndex,
     QObject,
@@ -21,7 +19,6 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor
 
 from valisync.gui.theme import tokens
-from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM, SignalItem
 from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
 
 _Index = QModelIndex | QPersistentModelIndex
@@ -115,98 +112,3 @@ class FileListModel(QAbstractListModel):
             # 解放中の行は選択も操作も不可(スピナーのプレースホルダ)。
             return base & ~Qt.ItemFlag.ItemIsSelectable & ~Qt.ItemFlag.ItemIsEnabled
         return base
-
-
-class SignalTableModel(QAbstractTableModel):
-    """QAbstractTableModel mirroring :meth:`ChannelBrowserVM.signals`."""
-
-    HEADERS = ("Name", "Unit")
-
-    def __init__(self, vm: ChannelBrowserVM, parent: QObject | None = None) -> None:
-        super().__init__(parent)
-        self._vm = vm
-        # Snapshot the VM's signal list so per-cell lookups (rowCount/data) are
-        # O(1) instead of recomputing the whole list on every cell.
-        self._rows: list[SignalItem] = list(vm.signals)
-        self._vm.subscribe(self._on_vm_change)
-
-    def _on_vm_change(self, change: str) -> None:
-        if change in ("signals", "filter"):
-            self.beginResetModel()
-            self._rows = list(self._vm.signals)
-            self.endResetModel()
-
-    def rowCount(self, parent: _Index = QModelIndex()) -> int:
-        if parent.isValid():
-            return 0
-        return len(self._rows)
-
-    def columnCount(self, parent: _Index = QModelIndex()) -> int:
-        return len(self.HEADERS)
-
-    def data(self, index: _Index, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
-        if not index.isValid():
-            return None
-
-        if not (0 <= index.row() < len(self._rows)):
-            return None
-
-        item = self._rows[index.row()]
-        col = index.column()
-
-        if role == Qt.ItemDataRole.DisplayRole:
-            if col == 0:
-                return item.name
-            if col == 1:
-                return item.unit
-
-        if role == Qt.ItemDataRole.ToolTipRole:
-            return self._vm.tooltip_for(item.key) or None
-
-        return None
-
-    def headerData(
-        self,
-        section: int,
-        orientation: Qt.Orientation,
-        role: int = Qt.ItemDataRole.DisplayRole,
-    ) -> Any:
-        if (
-            orientation == Qt.Orientation.Horizontal
-            and role == Qt.ItemDataRole.DisplayRole
-            and 0 <= section < len(self.HEADERS)
-        ):
-            return self.HEADERS[section]
-        return None
-
-    def signal_key_at(self, index: _Index) -> str | None:
-        """Return the namespaced signal key for a row."""
-        if not index.isValid():
-            return None
-        if 0 <= index.row() < len(self._rows):
-            return self._rows[index.row()].key
-        return None
-
-    def flags(self, index: _Index) -> Qt.ItemFlag:
-        if not index.isValid():
-            return Qt.ItemFlag.NoItemFlags
-        return (
-            Qt.ItemFlag.ItemIsEnabled
-            | Qt.ItemFlag.ItemIsSelectable
-            | Qt.ItemFlag.ItemIsDragEnabled
-        )
-
-    def mimeTypes(self) -> list[str]:
-        return [SIGNAL_KEYS_MIME]
-
-    def mimeData(self, indexes: Sequence[_Index]) -> QMimeData:
-        keys: list[str] = []
-        seen: set[int] = set()
-        for index in indexes:
-            row = index.row()
-            if row not in seen:
-                key = self.signal_key_at(index)
-                if key:
-                    keys.append(key)
-                seen.add(row)
-        return encode_signal_keys(keys)

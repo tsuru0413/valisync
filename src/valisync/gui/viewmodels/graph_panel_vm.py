@@ -14,17 +14,21 @@ LOD pipeline (render_data):
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import Any, NoReturn
 
 import numpy as np
 
 from valisync.core.interpolation import InterpolationMethod
 from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
 from valisync.core.models import Signal
+from valisync.core.models.load_result import Diagnostic
+from valisync.core.models.sample_source import SampleReadError
 from valisync.core.session import Session
 from valisync.core.statistics.range_stats import StatisticsResult
+from valisync.gui import strings as S
 from valisync.gui.color_variants import hue_variant
 from valisync.gui.display_names import display_names as _resolve_display_names
 from valisync.gui.theme import tokens
@@ -195,10 +199,19 @@ class GraphPanelVM(Observable):
         session: Session,
         cursor_state: CursorState | None = None,
         hue_resolver: Callable[[str], int | None] | None = None,
+        diagnostic_sink: Callable[[str, Diagnostic], None] | None = None,
     ) -> None:
         super().__init__()
         self._session = session
         self._hue_resolver = hue_resolver
+        # 遅延サンプル読み取り失敗 (Task 7) を診断へ落とす sink。None は未配線 (bare
+        # ハーネス/単独構成) — 診断は出ないが degrade (空カーブ) は sink 非依存で
+        # 常に働く。実運用は GraphAreaVM 経由で MainWindow の DiagnosticsViewModel へ。
+        self._diagnostic_sink = diagnostic_sink
+        # 既に SampleReadError を報告済みの signal_key。render は毎フレーム走るので、
+        # dedup しないと同一の壊れた信号が診断を溢れさせる (「1 信号 1 診断」契約)。
+        # refresh() (= 再ロード等でデータが変わりうる機会) でのみクリアする。
+        self._read_error_reported: set[str] = set()
         self._plotted: list[_PlottedEntry] = []
         self._next_entry_id: int = 0  # monotonic id issued on each add
         self.x_range: tuple[float, float] | None = None
@@ -640,6 +653,10 @@ class GraphPanelVM(Observable):
         cached an empty curve under an unchanged key; invalidating lets the now
         present data render (review finding ⑥).
         """
+        # Task 7: 再ロード等でデータが変わりうる機会。壊れていた信号が復旧している
+        # かもしれないので、SampleReadError の報告済みマークを解除して次の render で
+        # 再評価させる (復旧すれば普通に描画、まだ壊れていれば再び 1 回だけ報告)。
+        self._read_error_reported.clear()
         self._invalidate_cache()
         self._notify("signals")
 
@@ -1027,7 +1044,25 @@ class GraphPanelVM(Observable):
                 )
                 continue
 
-            ts, vs = sig.sorted_view()
+            # Task 7: 遅延サンプル読み取りが失敗したら (ネットワークドライブ切断等)、
+            # 例外を render 経由で貫通させずに当該カーブだけ空 degrade する。値アクセス
+            # (sorted_view -> Signal.values -> SampleSource.array) が唯一の失敗点なので
+            # ここだけ守れば十分。診断は 1 信号 1 回だけ落とす (_report_read_error)。
+            try:
+                ts, vs = sig.sorted_view()
+            except SampleReadError:
+                self._report_read_error(entry.signal_key, sig)
+                curves.append(
+                    RenderCurve(
+                        name=entry.signal_key,
+                        color=entry.color,
+                        timestamps=np.empty(0, dtype=np.float64),
+                        values=np.empty(0, dtype=np.float64),
+                        axis_index=entry.axis_index,
+                        entry_id=entry.entry_id,
+                    )
+                )
+                continue
 
             # Determine visible x-window
             if self.x_range is not None:
@@ -1554,26 +1589,20 @@ class GraphPanelVM(Observable):
         """Return {signal.name: signal} with stored time offsets applied (R14).
 
         Fast path (no offsets, the norm): return the Session's cached read-only
-        map unchanged — no per-call rebuild of the 264k-entry map (FU-08). Only
-        when an offset is set do we shallow-overlay the affected signals via the
-        pure Session.apply_offset; a zero total leaves the base wrapper in place.
-        Group key is the prefix before '::' (same convention as Session).
+        map unchanged — no per-call rebuild of the 264k-entry map (FU-08). With
+        an offset set, wrap it in an overlay that applies the pure
+        Session.apply_offset ON LOOKUP for the affected keys only: copying the
+        whole base map here was O(loaded) per call, and it is also structurally
+        incompatible with a lazily-resolving base map (E-1) — the walk would
+        mint every column key. Group key is the prefix before '::' (same
+        convention as Session).
         """
         base = self._session.signal_map()
         if not self._file_offsets and not self._signal_offsets:
             return base
-        result: dict[str, Signal] = {}
-        for name, sig in base.items():
-            group_key = name.split("::", 1)[0]
-            file_off = self._file_offsets.get(group_key, 0.0)
-            sig_off = self._signal_offsets.get(name, 0.0)
-            if file_off or sig_off:
-                result[name] = self._session.apply_offset(
-                    sig, file_offset=file_off, signal_offset=sig_off
-                )
-            else:
-                result[name] = sig
-        return result
+        return _OffsetOverlay(
+            base, dict(self._file_offsets), dict(self._signal_offsets), self._session
+        )
 
     def _auto_fit_ranges(self) -> None:
         """Fit x_range and y_range to all plotted signals if not yet set.
@@ -1623,3 +1652,121 @@ class GraphPanelVM(Observable):
     def _invalidate_cache(self) -> None:
         """Clear the render cache so the next render_data call recomputes."""
         self._cache.clear()
+
+    def _report_read_error(self, signal_key: str, sig: Signal) -> None:
+        """Record ONE diagnostic for *signal_key*'s failed lazy read (Task 7).
+
+        Deduped per signal_key: render runs every frame, so without this a
+        broken signal would flood the Diagnostics dock. No-op after the first
+        report until :meth:`refresh` clears the mark (a reload may fix it).
+        The sink (injected by GraphAreaVM → MainWindow's DiagnosticsViewModel)
+        being absent still leaves the empty-curve degrade intact — only the
+        diagnostic is skipped.
+        """
+        if signal_key in self._read_error_reported:
+            return
+        self._read_error_reported.add(signal_key)
+        if self._diagnostic_sink is None:
+            return
+        name = signal_key.split(KEY_SEPARATOR, 1)[-1]
+        source = (
+            Path(sig.source_file).name
+            if sig.source_file
+            else signal_key.split(KEY_SEPARATOR, 1)[0]
+        )
+        self._diagnostic_sink(
+            source,
+            Diagnostic(
+                level="error",
+                message=S.SAMPLE_READ_ERROR_TMPL.format(name=name),
+                signal_name=name,
+            ),
+        )
+
+
+class _OffsetOverlay(Mapping[str, Signal]):
+    """base map の上に時間オフセットをルックアップ時適用する読み取り専用ビュー.
+
+    base を丸ごとコピーしないので O(offset信号)。列キーを遅延解決する base map
+    (E-1) とも両立する — 列挙は base に委譲し、鋳造を誘発しない。
+
+    **列挙系は構造的に封じる** (下の keys/items/values): ``Mapping`` ABC の既定実装は
+    すべて ``__getitem__`` 経由なので、``dict(overlay)`` / ``.items()`` は物理チャンネル
+    1 本につき ``Session.apply_offset`` を 1 回呼び、**全長 float64 タイムスタンプ配列を
+    1 本ずつ新規確保**する (prod 264k 本)。base 側 (``_ResolvingMap``) の非対称性は
+    「列挙が不完全」なだけだが、こちらは「列挙が高価」— docstring の禁止だけでは
+    ``dict(sig_map)`` 1 行で再導入されるので TypeError で落とす。
+    ``Mapping.__eq__`` も ``dict(self)`` を通るため同じ TypeError になる (大量確保より
+    loud-fail が望ましい・overlay を比較する呼び出し側は無い)。
+    """
+
+    __slots__ = ("_base", "_cache", "_file_offsets", "_session", "_signal_offsets")
+
+    # 列挙が要るのは「キーが欲しい」ときで、オフセットはキー集合を変えない。
+    _NO_ENUMERATION = (
+        "_OffsetOverlay は列挙できない (keys()/items()/values()/dict()): "
+        "1 キーごとに apply_offset が全長 float64 タイムスタンプ配列を確保するため、"
+        "物理チャンネル数 (prod 264k) ぶんの確保になる。キーだけなら "
+        "session.signal_map() を列挙し、値は必要なキーだけ [] / get() で引くこと。"
+    )
+
+    def __init__(
+        self,
+        base: Mapping[str, Signal],
+        file_offsets: dict[str, float],
+        signal_offsets: dict[str, float],
+        session: Session,
+    ) -> None:
+        self._base = base
+        self._file_offsets = file_offsets
+        self._signal_offsets = signal_offsets
+        self._session = session
+        # 同一 overlay 内での再ルックアップを償却する (render→autofit→cursor が
+        # 同じキーを何度も引く)。offset 変更は set_offsets 経由で新しい overlay を
+        # 生むため、ここに stale は溜まらない。
+        self._cache: dict[str, Signal] = {}
+
+    def _offset_for(self, key: str) -> tuple[float, float]:
+        group_key = key.split(KEY_SEPARATOR, 1)[0]
+        return (
+            self._file_offsets.get(group_key, 0.0),
+            self._signal_offsets.get(key, 0.0),
+        )
+
+    def __getitem__(self, key: str) -> Signal:
+        hit = self._cache.get(key)
+        if hit is not None:
+            return hit
+        sig = self._base[key]
+        file_off, sig_off = self._offset_for(key)
+        if file_off or sig_off:
+            sig = self._session.apply_offset(
+                sig, file_offset=file_off, signal_offset=sig_off
+            )
+        self._cache[key] = sig
+        return sig
+
+    def __contains__(self, key: object) -> bool:
+        """メンバシップは base へ委譲する (Signal を 1 個も作らない).
+
+        ``Mapping`` 既定の ``__contains__`` は ``self[key]`` を試すので、**存在を
+        尋ねるだけ**で apply_offset が走り全長タイムスタンプ配列が 1 本増える
+        (``key in overlay`` が最も鋭い刃)。オフセットはキー集合を変えない
+        (overlay は base とキー空間を共有する) ので、委譲しても真偽値は同一。
+        """
+        return key in self._base
+
+    def keys(self) -> NoReturn:
+        raise TypeError(self._NO_ENUMERATION)
+
+    def items(self) -> NoReturn:
+        raise TypeError(self._NO_ENUMERATION)
+
+    def values(self) -> NoReturn:
+        raise TypeError(self._NO_ENUMERATION)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._base)
+
+    def __len__(self) -> int:
+        return len(self._base)

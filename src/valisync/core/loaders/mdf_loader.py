@@ -9,8 +9,11 @@ from typing import Any, ClassVar
 import numpy as np
 from asammdf import MDF
 
+from valisync.core.loaders.column_names import ColumnSpec, spec_from_probe
+from valisync.core.loaders.mdf_handle import MdfHandle
 from valisync.core.models import Diagnostic, LoadResult, Signal, SignalGroup
 from valisync.core.models.load_result import LoadCancelled
+from valisync.core.models.sample_source import LazyMdfValues
 
 EXPANSION_COLUMN_LIMIT = 1024  # per-channel の展開後リーフ列数の上限 (LD-14)
 
@@ -75,15 +78,20 @@ def _flatten(name: str, arr: np.ndarray) -> list[tuple[str, np.ndarray]]:
 def _leaf_column_count(arr: np.ndarray) -> int:
     """arr を _flatten したときのリーフ列数 (1 レコードの samples でも可・LD-14).
 
-    ``_flatten`` と同じ規則: 構造化はフィールド再帰合算、多次元は非サンプル軸
-    (shape[1:]) の積。プローブ (record_count=1) と本読みで shape[1:] は一致する
-    ため 1 レコードから正確な展開列数が得られる。
+    1024 ガードの母数なので **dtype 非依存に全リーフを数える** (数値のみを数える
+    column_names.leaf_count とは意図的に別物)。構造は column_names の ColumnSpec に
+    委譲し、規則の二重実装を避ける。
     """
-    if arr.dtype.names:
-        return sum(_leaf_column_count(arr[f]) for f in arr.dtype.names)
-    if arr.ndim <= 1:
-        return 1
-    return int(np.prod(arr.shape[1:]))
+    return _all_leaf_count(spec_from_probe(arr))
+
+
+def _all_leaf_count(spec: ColumnSpec) -> int:
+    if spec.kind == "struct":
+        return sum(_all_leaf_count(sub) for _n, sub in spec.fields)
+    if spec.kind == "array":
+        assert spec.child is not None
+        return spec.axis_len * _all_leaf_count(spec.child)
+    return 1
 
 
 def _explode_samples(
@@ -167,8 +175,13 @@ def _extract_metadata(asammdf_sig: Any, raw_conversion: Any = None) -> dict[str,
         meta["channel_group_name"] = getattr(source, "path", "") or ""
         meta["source_bus_type"] = getattr(source, "bus_type", 0)
         meta["source_name"] = getattr(source, "name", "") or ""
-    # select() の戻り Signal は conversion が常に None のため、互換キー
-    # conversion_info も生チャンネル側 (raw_conversion) から生成する (spec §3.3)
+    # conversion_info は spec §3.3 の互換キー。呼び出し元の形状プローブは非 raw で
+    # 引くため asammdf_sig.conversion は常に None (実測) — 実体は raw_conversion
+    # (生チャンネルの ChannelConversion) から来る。asammdf_sig 側の取得は raw な
+    # Signal を渡す呼び出し用に残す (この経路では実質フォールバックのみが効く)。
+    # 帰結: 展開リーフは raw_conversion を None にして継承を止めているので
+    # conversion_info も載らない = 「配列成分は value_labels も conversion_info も
+    # 持たない」(LD-07) の設計どおり。
     conversion = getattr(asammdf_sig, "conversion", None) or raw_conversion
     if conversion is not None:
         meta["conversion_info"] = str(conversion)
@@ -184,16 +197,36 @@ class MdfLoader:
     _READ_OPTIONS: ClassVar[dict[str, Any]] = {
         "time_from_zero": False,
     }
-    # ignore_value2text_conversions は MDF() には無効な dead オプションだった
-    # (LD-13)。select() では有効 — enum は生値で届き、変換表は conversion に残る。
-    _SELECT_OPTIONS: ClassVar[dict[str, Any]] = {
-        "ignore_value2text_conversions": True,
-        "copy_master": False,  # マスタ複製の排除 (LD-10)
-    }
-    # 形状スキャン専用: 1 レコードだけ raw で読む (変換不要・形状は変換非依存)。
+    # 唯一のプローブ: 1 レコードだけ **遅延読みと同じ非 raw の正準オプション**
+    # (raw=False / ignore_value2text_conversions=True (LD-13) / copy_master=False
+    # (LD-10) — LazyMdfValues.array() と同一セット) で読む。値の全読みは遅延。
+    #
+    # 非 raw 1 本で全用途 (形状・ColumnSpec・selector・metadata・展開列数・数値性
+    # ゲート) を賄える根拠:
+    #   - 形状 / _flatten のリーフ名 / metadata (unit・comment・display_name・
+    #     source) は変換非依存。prod_demo.mf4 の全 4,324 チャンネルで raw と非 raw の
+    #     shape・リーフ名・dtype.kind・上記 metadata が完全一致し、select コストも
+    #     同等 (raw 0.75s / 非 raw 0.74s) と実測。
+    #   - 数値性 (dtype.kind) のゲートだけは **非 raw 側でなければ誤る**。asammdf は
+    #     ignore_value2text_conversions で TABX/RTABX/TRANS/BITFIELD を短絡するが
+    #     CONVERSION_TYPE_TTAB (text→value) には同ガードが無く (v4_blocks.py:4337)、
+    #     raw=テキスト / 物理値=数値になる。本読みは非 raw で行われるので raw の
+    #     dtype でゲートすると「数値なのに非数値としてスキップ」する (回帰テスト:
+    #     test_ttab_channel_survives_with_physical_numeric_values)。
+    # 以前は raw プローブと非 raw の dtype プローブを 2 本 select していたが、上記の
+    # とおり非 raw 1 本に統合できる (2 本目は prod 実測で load wall +1.35s の純粋な
+    # 重複読み — 12.11s → 13.46s)。
     _PROBE_OPTIONS: ClassVar[dict[str, Any]] = {
         "record_count": 1,
-        "raw": True,
+        "raw": False,
+        "ignore_value2text_conversions": True,
+        "copy_master": False,
+    }
+    # master 読み専用 (_load_group): 遅延読みと同じ正準オプションで 1 チャンネル
+    # だけ select し timestamps を取る。get_master(gi) と違い開いたハンドルに
+    # 生レコードブロックを残さない (詳細は _load_group のコメント)。
+    _MASTER_OPTIONS: ClassVar[dict[str, Any]] = {
+        "raw": False,
         "ignore_value2text_conversions": True,
         "copy_master": False,
     }
@@ -220,6 +253,10 @@ class MdfLoader:
         1024 超のチャンネルを集約して返す。呼び出しはグループ単位 (仮想グループ数
         ぶん) の極小読みで済む。戻り値は表示用 OversizedChannel 列と、対応する
         (物理gi, ci) キー列 (本読みでの除外照合用) の並列リスト。
+
+        列**数**は変換非依存なので _load_group と同じ統合プローブを共有する
+        (_PROBE_OPTIONS のコメント参照 — raw と非 raw でリーフ名/構造が一致する
+        ことは prod 全チャンネルで実測済み)。
         """
         oversized: list[OversizedChannel] = []
         keys: list[tuple[int, int]] = []
@@ -257,6 +294,7 @@ class MdfLoader:
         try:
             mdf = MDF(str(file_path), **self._READ_OPTIONS)
         except Exception as exc:
+            # ハンドル未生成のためリークなし (close 不要)。
             return LoadResult(
                 signal_group=None,
                 diagnostics=(
@@ -267,9 +305,15 @@ class MdfLoader:
                 ),
             )
 
+        # 遅延読みのため MDF を開いたまま MdfHandle で保持する。成功経路では
+        # SignalGroup がハンドルを所有し unload まで close しない。エラー/キャンセル
+        # 経路でのみ明示的に close して決定的にハンドル/ロックを解放する (M3)。
+        resolved_path = file_path.resolve()
+        # source_path は Signal.source_file と同一の文字列にする — 遅延読みが失敗
+        # したとき、診断ラベルが render 境界 (Signal 経由) と食い違わないため。
+        handle = MdfHandle(mdf, str(resolved_path))
         signals: list[Signal] = []
         diagnostics: list[Diagnostic] = []
-        resolved_path = file_path.resolve()
         # mdf.close() 後は版が読めない恐れがあるため、ここで確定させる (LD-02)。
         format_label = self._format_label(mdf)
         try:
@@ -320,13 +364,17 @@ class MdfLoader:
                     diagnostics,
                     cancel,
                     skip_keys,
+                    handle,
                 )
         except LoadCancelled:
             # Must not be swallowed by the broad except below (LoadCancelled is
             # an Exception too) — propagate so the caller sees a cancel, not a
-            # generic "failed to read channels" diagnostic.
+            # generic "failed to read channels" diagnostic. キャンセルでも
+            # ハンドルはリークさせない (成功経路のみ close を省く)。
+            handle.close()
             raise
         except Exception as exc:
+            handle.close()
             return LoadResult(
                 signal_group=None,
                 diagnostics=(
@@ -336,8 +384,6 @@ class MdfLoader:
                     ),
                 ),
             )
-        finally:
-            mdf.close()
 
         if not signals:
             diagnostics.append(
@@ -352,6 +398,7 @@ class MdfLoader:
             source_path=resolved_path,
             file_format=format_label,
             loaded_at=datetime.datetime.now(),
+            handle=handle,
         )
         return LoadResult(signal_group=signal_group, diagnostics=tuple(diagnostics))
 
@@ -395,6 +442,7 @@ class MdfLoader:
         diagnostics: list[Diagnostic],
         cancel: Callable[[], bool] | None,
         skip_keys: set[tuple[int, int]],
+        handle: MdfHandle,
     ) -> None:
         # skip_keys の (gi, ci) は上限超で展開しないと決まったチャンネル — 本読み
         # entries から外し select にも渡さない (LD-14)。
@@ -405,33 +453,28 @@ class MdfLoader:
             return
         if cancel is not None and cancel():
             raise LoadCancelled(f"load cancelled: {resolved_path.name}")
-        asigs = mdf.select(entries, **self._SELECT_OPTIONS)
 
-        master: np.ndarray | None = None
-        master_bad = False
-        master_diffs_warn: tuple[int, int] | None = None  # (非単調, 重複) を1回だけ計算
-        for (base_name, _g, _c), asig in zip(entries, asigs, strict=True):
-            if cancel is not None and cancel():
-                raise LoadCancelled(f"load cancelled: {resolved_path.name}")
-            idx = name_seen.get(base_name, 0)
-            name_seen[base_name] = idx + 1
-            deduplicated = name_total[base_name] > 1
-            signal_name = f"{base_name}[{idx}]" if deduplicated else base_name
-
-            if master is None and not master_bad:
-                ts64 = asig.timestamps.astype(np.float64, copy=False)
-                if len(ts64) > 0 and not np.all(np.isfinite(ts64)):
-                    master_bad = True
-                else:
-                    ts64.flags.writeable = False
-                    master = ts64
-                    diffs = np.diff(master)
-                    master_diffs_warn = (
-                        int(np.sum(diffs < 0)),
-                        int(np.sum(diffs == 0)),
-                    )
-            if master_bad:
-                # 文言は現行と同一 (チャンネルごとに emit — 既存テスト互換)
+        # master を仮想グループ単位で単体読みする (値は読まない)。診断・同一性・
+        # 長さの土台。
+        #
+        # get_master(gi) は使えない: 遅延読みのためハンドルを開いたままにする本
+        # ローダーでは、get_master がグループの生レコードブロック全体を開いた
+        # ハンドル上にキャッシュし、ハンドルが生きている限り解放されない
+        # (prod_demo.mf4 1.36GB で +1,296MB 保持・master 実体は全グループ計
+        # 0.20MB)。select はフラグメントをストリームし何も保持しない
+        # (同条件で +197MB) — 得られる master 列は get_master と完全一致する
+        # (実測・tests/core/loaders/test_mdf_loader_lazy.py で固定)。
+        #
+        # entries[0] はこのグループの実チャンネル (マスタは included_channels が
+        # 除外済み)。オプションは LazyMdfValues.array() と同じ正準セット。
+        # timestamps は copy_master=False で asammdf 内部を指しうるため、
+        # 参照を残さないよう必ずコピーしてから凍結する。
+        asig = mdf.select([entries[0]], **self._MASTER_OPTIONS)[0]
+        master = np.array(asig.timestamps, dtype=np.float64, copy=True)
+        del asig  # 値サンプルを即時に解放 (master だけを持ち越す)
+        if len(master) > 0 and not np.all(np.isfinite(master)):
+            # 文言は現行と同一 (チャンネルごとに emit — 既存テスト互換)。
+            for base_name, _g, _c in entries:
                 diagnostics.append(
                     Diagnostic(
                         level="error",
@@ -442,47 +485,78 @@ class MdfLoader:
                         signal_name=base_name,
                     )
                 )
-                continue
+            return
+        master.flags.writeable = False
+        diffs = np.diff(master)
+        # (非単調, 重複) を1回だけ計算 — グループ内の全列で共有する。
+        n_backward, n_dup = int(np.sum(diffs < 0)), int(np.sum(diffs == 0))
 
-            samples = asig.samples
+        # 形状のみ 1 レコードプローブで取る (値の全読みは遅延)。列名 (=selector)・
+        # dtype・source は 1 レコードから確定する (shape[1:]/dtype/metadata は
+        # record_count に依存しない)。プローブは非 raw = 本読み
+        # (LazyMdfValues.array()) と同じ側なので、その dtype がそのまま数値性
+        # ゲートの根拠になる (_PROBE_OPTIONS のコメント参照)。
+        probes = mdf.select(entries, **self._PROBE_OPTIONS)
+        for (base_name, _g, _c), probe in zip(entries, probes, strict=True):
+            if cancel is not None and cancel():
+                raise LoadCancelled(f"load cancelled: {resolved_path.name}")
+            idx = name_seen.get(base_name, 0)
+            name_seen[base_name] = idx + 1
+            deduplicated = name_total[base_name] > 1
+            signal_name = f"{base_name}[{idx}]" if deduplicated else base_name
+
+            samples = probe.samples
             exploded = samples.ndim != 1 or bool(samples.dtype.names)
             # 多次元/構造化は展開して複数列に、通常 1D は単一要素のペアに正規化
-            # してから同じ astype/警告/Signal 構築ループへ流す (LD-12)。展開後
-            # の各列名は "曖昧化済みベース名から派生" (spec §3.2 — 例 M[0][i]):
-            # signal_name (name[idx] 済み) を _explode_samples の base に渡す。
+            # してから同じ dtype 検査/警告/Signal 構築ループへ流す (LD-12)。
+            #   out_name: 曖昧化済み signal_name 由来 (spec §3.2 — 例 M[0][i])。
+            #   selector: LazyMdfValues は base_name で _flatten してリーフを引く
+            #     ため base_name 由来のリーフキーにする。out_leaves と sel_leaves
+            #     は同一構造の走査で順序一致し prefix のみ相違する (signal_name が
+            #     曖昧化された場合でも遅延読みが正しいリーフを抽出できる)。
+            #   col_probe: 1 レコードの該当リーフ (dtype 検査用)。
             if exploded:
-                pairs = _explode_samples(signal_name, samples, diagnostics)
+                out_leaves = _explode_samples(signal_name, samples, diagnostics)
+                sel_leaves = _flatten(base_name, samples)
+                pairs: list[tuple[str, tuple[str, ...] | None, np.ndarray]] = [
+                    (out_name, (sel_name,), col)
+                    for (out_name, _o), (sel_name, col) in zip(
+                        out_leaves, sel_leaves, strict=True
+                    )
+                ]
             else:
-                pairs = [(signal_name, samples)]
+                pairs = [(signal_name, None, samples)]
 
             # value_labels (value2text) は 1D 通常チャンネルのみ継承する —
             # value2text はスカラー enum の概念で、展開後の列 (2D/構造化の
-            # 各成分) には意味を持たない (LD-07 spec 注記)。select() の戻り
-            # asig.conversion は常に None (Task 2 実測) なので生チャンネル
-            # (mdf.groups[gi].channels[ci]) から取得する。
+            # 各成分) には意味を持たない (LD-07 spec 注記)。取得元を生チャンネル
+            # (mdf.groups[gi].channels[ci]) にしているのは、展開時に None を
+            # 渡して継承を止められる唯一の口だから。probe (非 raw) の conversion は
+            # 常に None なので (実測)、この生チャンネル経由が唯一の取得口でもある。
             raw_conversion = (
                 None if exploded else mdf.groups[_g].channels[_c].conversion
             )
 
-            for out_name, col in pairs:
+            for out_name, selector, col_probe in pairs:
                 # FU-20: native dtype を保持し float64 膨張 (wide uint8 の 8x) を避ける。
                 # 数値 (int/uint/float/bool) 以外は Signal が扱えないため従来どおり skip。
+                # col_probe は **非 raw プローブ (= 本読みと同じ側) の該当リーフ**
+                # なので、その dtype がそのままゲートの根拠になる (値の全読みは不要・
+                # raw 側で判定すると TTAB が消える。_PROBE_OPTIONS のコメント参照)。
                 # float64 化は計算境界 Signal.sorted_view() で行う。
-                if col.dtype.kind not in "iufb":
+                gate_dtype = col_probe.dtype
+                if gate_dtype.kind not in "iufb":
                     diagnostics.append(
                         Diagnostic(
                             level="warning",
                             message=(
                                 f"信号 '{out_name}': 非数値型のためスキップ"
-                                f"（dtype {col.dtype}）"  # noqa: RUF001
+                                f"（dtype {gate_dtype}）"  # noqa: RUF001
                             ),
                         )
                     )
                     continue
-                values = col
-                values.flags.writeable = False
 
-                n_backward, n_dup = master_diffs_warn or (0, 0)
                 if n_backward or n_dup:
                     diagnostics.append(
                         Diagnostic(
@@ -496,10 +570,13 @@ class MdfLoader:
                         )
                     )
 
-                assert (
-                    master is not None
-                )  # unreachable: master_bad already continue'd above
-                out_metadata = _extract_metadata(asig, raw_conversion)
+                out_metadata = _extract_metadata(probe, raw_conversion)
+                # ブラウザの「1 行=1 物理チャンネル」グループ化キー。文字列解析では
+                # ACC.Speed (チャンネル名) と P.x (構造化フィールド) を区別できない。
+                # 生 base_name ではなく signal_name を使う: LD-08 で name_total>1 のとき
+                # base_name は別の物理チャンネル (別 gi/ci・別 shape/unit) と共有され
+                # 同一性を失う。selector 側の生名は LazyMdfValues が別に保持している。
+                out_metadata["physical_channel"] = signal_name
                 if deduplicated:
                     # E-2b: this name involved a LD-08 [idx] disambiguation —
                     # the ONLY basis cross-file same-name matching uses to
@@ -513,11 +590,18 @@ class MdfLoader:
                     Signal(
                         name=out_name,
                         timestamps=master,
-                        values=values,
+                        values_source=LazyMdfValues(
+                            handle,
+                            base_name,
+                            _g,
+                            _c,
+                            length=len(master),
+                            selector=selector,
+                        ),
                         file_format=self._format_label(
                             mdf
                         ),  # LD-02: 版に応じ MDF3/MDF4
-                        bus_type=_detect_bus_type(getattr(asig, "source", None)),
+                        bus_type=_detect_bus_type(getattr(probe, "source", None)),
                         source_file=str(resolved_path),
                         metadata=out_metadata,
                     )

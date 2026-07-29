@@ -180,6 +180,102 @@ def write_mdf4_value2text(tmp_path: Path) -> Path:
     return path
 
 
+def write_mdf4_ttab(tmp_path: Path) -> Path:
+    """TTAB (text→value) 変換付きチャンネル + 通常チャンネル.
+
+    TTAB は value2text の**逆向き** — raw 表現がテキスト、物理値が数値。asammdf は
+    ``ignore_value2text_conversions`` で TABX/RTABX/TRANS/BITFIELD を短絡するが
+    ``CONVERSION_TYPE_TTAB`` には同ガードが無く (v4_blocks.py:4337)、常に
+    テキスト→数値へ写す。よって ``raw=True`` プローブの dtype は ``|S8``、
+    ``raw=False`` (= 本読みと同じ側) の dtype は ``float64`` になる。
+
+    ローダーの数値性ゲートを raw プローブ側で判定すると、このチャンネルは
+    「非数値型のためスキップ」で消滅する (物理サンプルは数値なので誤り)。
+    ``from_dict`` は TTAB を作れないため ``ChannelConversion`` を直接組む。
+    """
+    from asammdf.blocks import v4_constants as v4c
+    from asammdf.blocks.v4_blocks import ChannelConversion
+
+    texts = (b"OFF", b"LEFT", b"RIGHT")
+    kwargs: dict[str, Any] = {
+        "conversion_type": v4c.CONVERSION_TYPE_TTAB,
+        "links_nr": 4 + len(texts),  # 共通リンク 4 + text_i
+        "val_default": -1.0,
+    }
+    for i in range(len(texts)):
+        kwargs[f"text_{i}"] = 0  # リンクアドレスは save 時に解決される
+        kwargs[f"val_{i}"] = float(i) * 10.0
+    conv = ChannelConversion(**kwargs)
+    for i, text in enumerate(texts):
+        conv.referenced_blocks[f"text_{i}"] = text
+
+    ts = np.array([0.0, 0.1, 0.2, 0.3])
+    mdf = MDF()
+    try:
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([b"OFF", b"LEFT", b"RIGHT", b"LEFT"], dtype="S8"),
+                    timestamps=ts,
+                    name="StateTxt",
+                    conversion=conv,
+                    encoding="latin-1",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([1.0, 2.0, 3.0, 4.0]), timestamps=ts, name="Clean"
+                )
+            ]
+        )
+        path = tmp_path / "ttab.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
+def write_mdf4_linear_conversion(tmp_path: Path) -> Path:
+    """線形変換 (phys = 0.01 * raw) 付き int16 チャンネル + 通常チャンネル.
+
+    値の本読みが ``raw=False`` を落とすと生カウントが 100 倍ずれて返る — その
+    サイレント破損を **CI が実行できる** 形で捕まえるための fixture
+    (demo_data 依存の `test_mdf_loader_lazy` は gitignore 済みで CI では skip)。
+    既存の唯一の変換 fixture ``write_mdf4_value2text`` は TABX なので
+    ``ignore_value2text_conversions`` で短絡され、raw フラグに構造的に鈍感。
+    """
+    from asammdf.blocks.conversion_utils import from_dict
+
+    ts = np.array([0.0, 0.1, 0.2, 0.3])
+    mdf = MDF()
+    try:
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([0, 7980, -1234, 32767], dtype=np.int16),
+                    timestamps=ts,
+                    name="Scaled",
+                    unit="km/h",
+                    conversion=from_dict({"a": 0.01, "b": 0.0}),
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([1.0, 2.0, 3.0, 4.0]), timestamps=ts, name="Clean"
+                )
+            ]
+        )
+        path = tmp_path / "linconv.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
 def write_mdf4_shared_group(tmp_path: Path) -> Path:
     """同一チャンネルグループに 2ch (A/B, 同一時刻軸) — 共有マスタ検証用."""
     ts = np.arange(0.0, 1.0, 0.1)
@@ -239,6 +335,174 @@ def write_mdf4_wide_2d(tmp_path: Path, cols: int = 1025) -> Path:
             [ASignal(samples=np.array([1.0, 2.0, 3.0]), timestamps=ts, name="Clean")]
         )
         path = tmp_path / "wide2d.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
+def write_mdf4_single_column_shapes(tmp_path: Path) -> Path:
+    """「展開したのに列が 1 本」になる 3 形状 + スカラー — C1 の RED fixture.
+
+    ローダー実測: Mono[0] (形状 (N,1) の 2D) / P.x (単一数値フィールド構造化) /
+    Q.x (数値+文字列の混在構造化 — 非数値リーフは dtype ゲートで落ちる) / Clean。
+    いずれも column_count == 1 かつ orig != physical_channel なので、合成した
+    base_key (g::Mono / g::P / g::Q) を葉キーにすると「見えるのに永久に
+    描かれない行」になる (実 Signal として存在しない)。
+    """
+    ts = np.array([0.0, 0.1, 0.2, 0.3])
+    mdf = MDF()
+    try:
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.arange(4, dtype=np.uint8).reshape(4, 1),
+                    timestamps=ts,
+                    name="Mono",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array(
+                        [(1.0,), (2.0,), (3.0,), (4.0,)], dtype=[("x", "<f8")]
+                    ),
+                    timestamps=ts,
+                    name="P",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array(
+                        [(1.0, b"ab"), (2.0, b"cd"), (3.0, b"ef"), (4.0, b"gh")],
+                        dtype=[("x", "<f8"), ("tag", "S2")],
+                    ),
+                    timestamps=ts,
+                    name="Q",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([1.0, 2.0, 3.0, 4.0]), timestamps=ts, name="Clean"
+                )
+            ]
+        )
+        path = tmp_path / "single_cols.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
+def write_mdf4_interleaved_arrays(tmp_path: Path) -> Path:
+    """配列 / スカラー / 配列 の順 — 列 span が連続性に依存しないことの pin.
+
+    ローダー実測: A[0], A[1], S, B[0], B[1]。
+    """
+    ts = np.array([0.0, 0.1, 0.2, 0.3])
+    mdf = MDF()
+    try:
+        for name, samples in (
+            ("A", np.array([[0, 1], [2, 3], [4, 5], [6, 7]], dtype=np.uint8)),
+            ("S", np.array([1.0, 2.0, 3.0, 4.0])),
+            ("B", np.array([[8, 9], [10, 11], [12, 13], [14, 15]], dtype=np.uint8)),
+        ):
+            mdf.append([ASignal(samples=samples, timestamps=ts, name=name)])
+        path = tmp_path / "interleaved.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
+def write_mdf4_flatten_fixture(tmp_path: Path) -> Path:
+    """平坦化 realgui (E-2 Task 5) の fixture — 5 物理チャンネル / 9 列.
+
+    ローダー実測 (実 asammdf ラウンドトリップで確認済み):
+    ``ACC.Speed``, ``ACC.Accel``, ``Mat[0..2]``, ``Pos.xa``, ``Pos.xb``,
+    ``Pos.yc``, ``Scalar`` — 物理チャンネルは
+    ``ACC.Speed / ACC.Accel / Mat / Pos / Scalar`` の 5 本。
+
+    狙う mutation は **_base_of によるドット分割グルーピングの復活**
+    (E-2 前は orig の最初の ``[`` / ``.`` までを base にしていた)。接頭辞を共有する
+    2 本 (``ACC.Speed`` / ``ACC.Accel``) が無いと SignalTreeModel._rebuild の
+    単一リーフ畳み込みで旧実装でも ``"ACC.Speed"`` がトップ行に見えてしまい、
+    オラクルが mutation を殺せない。2 本あれば旧実装のトップ行は ``"ACC"`` に
+    なるので、期待値 ``["ACC.Speed", "ACC.Accel", ...]`` が確実に RED になる。
+
+    ``Pos`` は「英数字だけの実打鍵で一部の列だけを絞り込む」ための構造化チャンネル
+    (``x`` は他のどのチャンネル名にも現れないので 1 打鍵で ``Pos.xa`` / ``Pos.xb``
+    だけが残り ``Pos.yc`` は落ちる)。記号打鍵を避けるのは
+    ``ord('[') == 0x5B == VK_LWIN`` でスタートメニューが開き、以後の実クリックが
+    別ウィンドウへ流れるため (共有マシン上の不透明なフレーク)。
+    """
+    ts = np.array([0.0, 0.1, 0.2, 0.3])
+    mdf = MDF()
+    try:
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([1.0, 2.0, 3.0, 4.0]),
+                    timestamps=ts,
+                    name="ACC.Speed",
+                    unit="km/h",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([5.0, 6.0, 7.0, 8.0]),
+                    timestamps=ts,
+                    name="ACC.Accel",
+                    unit="m/s2",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array(
+                        [[0, 1, 2], [10, 11, 12], [20, 21, 22], [30, 31, 32]],
+                        dtype=np.uint8,
+                    ),
+                    timestamps=ts,
+                    name="Mat",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array(
+                        [
+                            (1.0, 2.0, 3.0),
+                            (4.0, 5.0, 6.0),
+                            (7.0, 8.0, 9.0),
+                            (10.0, 11.0, 12.0),
+                        ],
+                        dtype=[("xa", "<f8"), ("xb", "<f8"), ("yc", "<f8")],
+                    ),
+                    timestamps=ts,
+                    name="Pos",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([9.0, 8.0, 7.0, 6.0]),
+                    timestamps=ts,
+                    name="Scalar",
+                )
+            ]
+        )
+        path = tmp_path / "flatten.mf4"
         mdf.save(path, overwrite=True)
     finally:
         mdf.close()

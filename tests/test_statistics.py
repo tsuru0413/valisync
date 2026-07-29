@@ -18,13 +18,13 @@ from valisync.core.statistics import RangeStatistics
 
 def _sig(ts: list[float], vs: list[float]) -> Signal:
     return Signal(
-        "s",
-        np.array(ts, dtype=np.float64),
-        np.array(vs, dtype=np.float64),
-        "Derived",
-        "",
-        "",
-        {},
+        name="s",
+        timestamps=np.array(ts, dtype=np.float64),
+        values=np.array(vs, dtype=np.float64),
+        file_format="Derived",
+        bus_type="",
+        source_file="",
+        metadata={},
     )
 
 

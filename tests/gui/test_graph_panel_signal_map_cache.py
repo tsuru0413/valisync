@@ -1,5 +1,5 @@
+from collections.abc import Mapping
 from pathlib import Path
-from types import MappingProxyType
 
 import numpy as np
 import pytest
@@ -37,8 +37,12 @@ def test_no_offset_returns_base_wrappers(tmp_path: Path) -> None:
     sm = vm._signal_map()
     # ゼロコピー: オフセット無しでは Session のキャッシュ済み読取専用ビューを
     # そのまま返す(毎回の dict 再構築をしない=FU-08)。旧実装は plain dict を
-    # 作り直して返したため、この isinstance が「再構築へ revert」検出のガードになる。
-    assert isinstance(sm, MappingProxyType)
+    # 作り直して返したため、この型ガードが「再構築へ revert」検出点になる。
+    # E-1 で具体型は MappingProxyType から遅延解決 Mapping (_ResolvingMap) へ
+    # 変わったので、型そのものでなく「変異可能な dict を作り直していない」ことを見る。
+    assert isinstance(sm, Mapping)
+    assert not isinstance(sm, dict)
+    assert not hasattr(sm, "__setitem__")
     assert sm[keys[0]] is session.signal_map()[keys[0]]  # 同一ラッパー
 
 
@@ -78,8 +82,8 @@ def test_autofit_loop_avoids_full_signal_walk(
     # 返し、旧実装のような session.signals() の全信号 list-walk をしない。autofit
     # ループ(reset_y/reset_axis_y を5回)で signals() が一度も呼ばれないことを spy で
     # 保証する。旧 _signal_map(signals() を回す実装)へ revert するとここが RED になる。
-    # test_no_offset_returns_base_wrappers の isinstance ガードと相補的
-    # (あちらは「dict でなく MappingProxyType を返す」、こちらは「全走査を呼ばない」)。
+    # test_no_offset_returns_base_wrappers の型ガードと相補的
+    # (あちらは「作り直した dict でない」、こちらは「全走査を呼ばない」)。
     vm, _keys, _ = _vm_two(tmp_path)
     calls: list[str] = []
     orig = Session.signals
