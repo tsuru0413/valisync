@@ -237,6 +237,45 @@ def write_mdf4_ttab(tmp_path: Path) -> Path:
     return path
 
 
+def write_mdf4_linear_conversion(tmp_path: Path) -> Path:
+    """線形変換 (phys = 0.01 * raw) 付き int16 チャンネル + 通常チャンネル.
+
+    値の本読みが ``raw=False`` を落とすと生カウントが 100 倍ずれて返る — その
+    サイレント破損を **CI が実行できる** 形で捕まえるための fixture
+    (demo_data 依存の `test_mdf_loader_lazy` は gitignore 済みで CI では skip)。
+    既存の唯一の変換 fixture ``write_mdf4_value2text`` は TABX なので
+    ``ignore_value2text_conversions`` で短絡され、raw フラグに構造的に鈍感。
+    """
+    from asammdf.blocks.conversion_utils import from_dict
+
+    ts = np.array([0.0, 0.1, 0.2, 0.3])
+    mdf = MDF()
+    try:
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([0, 7980, -1234, 32767], dtype=np.int16),
+                    timestamps=ts,
+                    name="Scaled",
+                    unit="km/h",
+                    conversion=from_dict({"a": 0.01, "b": 0.0}),
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([1.0, 2.0, 3.0, 4.0]), timestamps=ts, name="Clean"
+                )
+            ]
+        )
+        path = tmp_path / "linconv.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
 def write_mdf4_shared_group(tmp_path: Path) -> Path:
     """同一チャンネルグループに 2ch (A/B, 同一時刻軸) — 共有マスタ検証用."""
     ts = np.arange(0.0, 1.0, 0.1)

@@ -25,6 +25,7 @@ from .mdf4_helpers import (
     write_mdf4,
     write_mdf4_2d,
     write_mdf4_all_channels_bad,
+    write_mdf4_linear_conversion,
     write_mdf4_non_finite_ts,
     write_mdf4_non_monotonic,
     write_mdf4_shared_group,
@@ -547,6 +548,30 @@ def test_ttab_channel_survives_with_physical_numeric_values(tmp_path: Path) -> N
     assert not any(
         "非数値型" in d.message and "StateTxt" in d.message for d in result.diagnostics
     )
+
+
+def test_linear_conversion_values_are_physical_not_raw(tmp_path: Path) -> None:
+    """線形変換つきチャンネルの値がスケール済み物理値で返る (CI 実行可能なオラクル).
+
+    遅延読みの select オプションから ``raw=False`` が落ちると、生カウントが
+    そのまま返り値が 100 倍ずれる (無言のデータ破損)。demo_data 依存の
+    ``tests/core/loaders/test_mdf_loader_lazy.py`` は gitignore 済みデータを
+    必要とするため CI では skip される — このテストが CI 側の防波堤。
+    """
+    path = write_mdf4_linear_conversion(tmp_path)
+    result = MdfLoader().load(path)
+    sg = result.signal_group
+    assert sg is not None
+    scaled = next(s for s in sg.signals if s.name == "Scaled")
+
+    # 反空虚ガード: ラウンドトリップ後も変換が本当に付いている。これが無いと
+    # 「変換の無いチャンネルを検査しているだけ」に無言で劣化しうる。
+    src = scaled._values_source
+    assert sg.handle is not None
+    channel = sg.handle.mdf.groups[src._gi].channels[src._ci]  # type: ignore[union-attr]
+    assert channel.conversion is not None, "変換が round-trip で失われている"
+
+    np.testing.assert_allclose(scaled.values, [0.0, 79.8, -12.34, 327.67])
 
 
 def test_same_group_signals_share_master(tmp_path: Path) -> None:
