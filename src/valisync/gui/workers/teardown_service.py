@@ -133,7 +133,11 @@ class TeardownService(QObject):
         O(1) 契約は維持する: ``list(group.signals)`` も ``extend(columns)`` も C レベルの
         ポインタコピーだけで、信号の配列には一切触れない (nbytes 走査と解放は _drain の
         担当のまま)。``columns`` は解決済み列 = プロット/読み値/エクスポートで触れた列だけで、
-        全論理列ではない。
+        全論理列ではない。**ただし「常に少ない」と読まないこと** — 反転後は
+        ``group.signals`` が物理チャンネル数 (prod 4,324) まで縮む一方、``_resolved_by_key``
+        は全列を選ぶワークフロー (全選択エクスポート等) で論理列数 (prod 264k) へ向かって
+        伸びうるので、``columns`` が支配項になりうる。O(1) 契約自体はポインタコピーのみ
+        なので成立し続ける。
         """
         sigs = list(group.signals)  # single C-level copy -- no per-signal loop
         # extend は**空判定より前**に置く。後ろだと「signals が空で列だけ残る」グループが

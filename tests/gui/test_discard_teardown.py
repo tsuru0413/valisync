@@ -187,7 +187,9 @@ def test_discard_also_hands_the_minted_columns(qtbot, tmp_path) -> None:  # type
     配線では 1 バイトもカバーされない。
     """
     win, outcome, n_signals, discard = _loaded_but_discarded_setup(qtbot, tmp_path)
-    win.teardown_service._timer.stop()  # ドレインを止めて手渡しだけを見る
+    # 注意: enqueue はタイマーを再始動する (teardown_service.py の start)。ここが
+    # 決定的なのは stop() ではなく「assert までイベントループを回さない」ことによる。
+    win.teardown_service._timer.stop()
     column = _minted_column(f"{outcome.key}::Sig0[1]")
     resolved = win.app_vm.session._groups._resolved_by_key
     resolved.setdefault(outcome.key, {})[column.name] = column
@@ -195,3 +197,8 @@ def test_discard_also_hands_the_minted_columns(qtbot, tmp_path) -> None:  # type
     discard(outcome)
 
     assert win.teardown_service.pending_signals() == n_signals + 1
+    # 件数だけでは「その列が渡ったか」も「1 キー 1 エントリか」も pin できない。
+    # _discard は tripwire を持たない唯一の経路なので、実体で押さえる。
+    entries = win.teardown_service._groups
+    assert len(entries) == 1, f"1 キー = 1 エントリのはず ({len(entries)} エントリ)"
+    assert column in entries[-1][1]
