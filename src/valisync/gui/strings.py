@@ -112,6 +112,13 @@ EXPORT_RANGE_CURSOR_TMPL: Final = "カーソル A–B（{lo:.3f}–{hi:.3f} s）
 EXPORT_RANGE_OFFSET_TOOLTIP: Final = "オフセットをリセットすると範囲指定が使えます"
 EXPORT_SELECTION_COUNT_TMPL: Final = "{n} 信号を選択中"
 
+# ── ダイアログ: CSV エクスポート — 列の遅延展開 (E-3・U1) ────────────────────
+# 未展開の物理チャンネル行に置くダミー子。展開した瞬間に実列へ置換されるので
+# ユーザーにはほぼ見えないが、これが無いと Qt が展開矢印を描かない
+# (= 列があることに気付けない)。
+EXPORT_COLUMN_PLACEHOLDER: Final = "…"
+EXPORT_UNRESOLVED_ERROR_TMPL: Final = "選択した列を読み出せません（{n} 件・例: {name}）"
+
 # ── ダイアログ: 展開確認 (expansion_dialog・R-02 半角括弧) ────────────────────
 EXPANSION_OVER_LIMIT_TMPL: Final = (
     "以下の信号は展開すると列数が上限 ({limit}) を超えます。\n"
