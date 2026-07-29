@@ -8,11 +8,15 @@ data, empty file, column-count mismatch.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
+from unittest.mock import patch
 
 import numpy as np
 import pytest
 
+from valisync.core.loaders import mdf_loader
 from valisync.core.loaders.csv_loader import CsvLoader
+from valisync.core.loaders.mdf_handle import MdfHandle
 from valisync.core.loaders.mdf_loader import MdfLoader
 from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.session import LoadCancelled
@@ -494,8 +498,60 @@ def test_mdf_loader_cancel_raises(tmp_path: Path) -> None:
             }
         ],
     )
-    with pytest.raises(LoadCancelled):
-        MdfLoader().load(path, cancel=lambda: True)
+    # キャンセルでもハンドルはリークさせない (except LoadCancelled の close)。
+    # この経路だけは in-session の回収手段が無い: グループが 1 つも登録されない
+    # ため loaded_file_keys に載らず unload 導線が存在しない = 閉じ損ねると
+    # プロセス終了までファイルが mmap でロックされたままになる。close の有無を
+    # assert しないと handle.close() を消しても全テストが緑のままだった。
+    created: list[MdfHandle] = []
+
+    def _spy_handle(*args: Any, **kwargs: Any) -> MdfHandle:
+        handle = MdfHandle(*args, **kwargs)
+        created.append(handle)
+        return handle
+
+    with patch.object(mdf_loader, "MdfHandle", _spy_handle):
+        with pytest.raises(LoadCancelled):
+            MdfLoader().load(path, cancel=lambda: True)
+    try:
+        assert created, "MdfHandle が生成されていない (setup 失敗)"
+        assert created[0].is_closed, (
+            "キャンセル経路で handle が閉じられていない (リーク・回収導線なし)"
+        )
+    finally:
+        for handle in created:  # sabotage 時に mmap を残さない (tmp_path 後片付け)
+            handle.close()
+
+
+def test_mdf_loader_cancel_during_group_load_closes_handle(tmp_path: Path) -> None:
+    """本読み中のキャンセル (``_load_group`` 内の cancel 判定) でも close される。
+
+    ``test_mdf_loader_cancel_raises`` はスキャン段でのキャンセルを見るので、
+    実運用で最も長い「本読みループ中に押される」入口を別に押さえる
+    (``test_load_error_path_closes_handle_no_leak`` と同じ patch 形)。
+    """
+    path = write_mdf4(
+        tmp_path / "cancel_mid.mf4",
+        [{"name": "a", "timestamps": [0.0, 1.0], "values": [1.0, 2.0]}],
+    )
+    captured: list[MdfHandle] = []
+
+    def _cancel_in_group(*args: Any, **kwargs: Any) -> None:
+        captured.append(args[-1])  # handle は最後の位置引数
+        raise LoadCancelled("cancelled mid-load")
+
+    with patch.object(MdfLoader, "_load_group", _cancel_in_group):
+        with pytest.raises(LoadCancelled):
+            MdfLoader().load(path)
+    try:
+        assert captured, "_load_group が呼ばれていない (setup 失敗)"
+        assert isinstance(captured[0], MdfHandle), "最後の位置引数が handle でない"
+        assert captured[0].is_closed, (
+            "本読み中キャンセルで handle が閉じられていない (リーク)"
+        )
+    finally:
+        for handle in captured:
+            handle.close()
 
 
 # ─── MdfLoader: select() ベース読み取りパス (LD-13/LD-10, 第3弾 Task 2) ──────

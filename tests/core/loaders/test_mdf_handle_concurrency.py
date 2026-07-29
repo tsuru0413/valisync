@@ -248,6 +248,35 @@ def test_lazy_array_if_materialized_probes_without_materializing() -> None:
     assert src.array_if_materialized() is got  # `==` では dedup の証明にならない
 
 
+# ─── 長さ不変条件: 宣言 length と実読み列 ────────────────────────────────────
+
+
+def test_lazy_read_length_mismatch_raises_sample_read_error() -> None:
+    """実読み列が宣言 length と食い違ったら SampleReadError (黙って通さない)。
+
+    ``Signal.__post_init__`` の長さ検証は展開を避けるため ``source.length`` しか
+    見ない。遅延側では length は **宣言値** (``len(master)``) なので、follower の
+    レコード数が master とずれる仮想グループ (v4.20+ remote-master/column-storage)
+    では構築時検証を通り抜ける。render の ``ts[lo:hi]`` / ``vs[lo:hi]`` は numpy が
+    黙って clamp するため、検出しなければ「エラーにならない誤った波形」になる。
+    ここで SampleReadError にしてブランチ既設の degrade 機構 (診断 + ステータス)
+    へ流す。
+
+    このファイルへ置く理由は module docstring と同じ — ``test_lazy_mdf_values.py`` /
+    ``test_mdf_loader_lazy.py`` は demo_data gate で CI では丸ごと skip される。
+    """
+    handle, mdf, _lock = _fake_handle(n=3)  # select は 3 サンプル返す
+    src = LazyMdfValues(handle, "ch", 0, 1, length=4)  # 宣言は 4
+
+    with pytest.raises(SampleReadError, match="サンプル数"):
+        src.array()
+
+    assert mdf.select_calls == 1, "select が呼ばれていない (setup 失敗)"
+    # 壊れた列をキャッシュに焼き付けない (再読みの余地を残す・展開会計も汚さない)
+    assert src.array_if_materialized() is None
+    assert src.is_materialized is False
+
+
 # ─── 並行契約: close と in-flight read ───────────────────────────────────────
 
 

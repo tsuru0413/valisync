@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from tests.lazy_stubs import CountingLazy
 from valisync.core.models.sample_source import EagerValues, SampleReadError
 from valisync.core.models.signal import Signal
 
@@ -97,6 +98,20 @@ def test_signal_length_invariant_uses_source_length_not_values() -> None:
             bus_type="",
             source_file="",
         )
+    # values= 版だけだと source.length == len(values) なのでテスト名が主張する
+    # 区別 (values を**展開せず** source.length で検証する) が観測できない。
+    # 遅延ソースで「読まずに落ちる」ことまで見る。
+    lazy = CountingLazy(2)
+    with pytest.raises(ValueError, match="same length"):
+        Signal(
+            name="s",
+            timestamps=ts,
+            values_source=lazy,
+            file_format="MDF4",
+            bus_type="",
+            source_file="",
+        )
+    assert lazy.reads == 0, "長さ検証が値を展開している (遅延契約が壊れている)"
 
 
 def test_signal_requires_exactly_one_of_values_or_source() -> None:

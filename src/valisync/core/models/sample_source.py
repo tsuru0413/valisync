@@ -183,6 +183,22 @@ class LazyMdfValues:
                     col = leaf[self._selector[-1]]
                 else:
                     col = np.ascontiguousarray(samples)
+                if len(col) != self._length:
+                    # 長さ不変条件の**唯一の執行点**: Signal.__post_init__ は展開を
+                    # 避けるため source.length (= 宣言値 len(master)) しか見ないので、
+                    # follower のレコード数が master とずれる仮想グループ (v4.20+
+                    # remote-master/column-storage) は構築時検証を通り抜ける。render の
+                    # ts[lo:hi] / vs[lo:hi] は numpy が黙って clamp するため、ここで
+                    # 止めないと「エラーにならない誤った波形」になる。キャッシュ前に
+                    # 投げて壊れた列を焼き付けない。try 内に置くのは、想定外の形状
+                    # (0-d 等) で len() が TypeError になっても下の except Exception が
+                    # SampleReadError へ包み、degrade 機構の外へ漏らさないため。
+                    raise SampleReadError(
+                        f"信号 '{self._name}' のサンプル数が宣言と一致しません "
+                        f"(宣言 {self._length} / 読み取り {len(col)})",
+                        signal_key=self._name,
+                        source_file=self._handle.source_path,
+                    )
             except SampleReadError:
                 raise
             except Exception as exc:  # I/O・破損・閉鎖後アクセス等
