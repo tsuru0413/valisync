@@ -175,14 +175,13 @@ def _extract_metadata(asammdf_sig: Any, raw_conversion: Any = None) -> dict[str,
         meta["channel_group_name"] = getattr(source, "path", "") or ""
         meta["source_bus_type"] = getattr(source, "bus_type", 0)
         meta["source_name"] = getattr(source, "name", "") or ""
-    # conversion_info は spec §3.3 の互換キー。呼び出し元の形状プローブは
-    # raw=True で引くため asammdf_sig.conversion には**そのチャンネルの
-    # ChannelConversion** が入る (raw=False の戻りは None — 実測)。raw_conversion
-    # フォールバックは非 raw 経路/生チャンネル渡しのために残す (消すと
-    # conversion_info が欠ける)。
-    # 既知の副作用 (増分B で是正予定): 展開リーフでは raw_conversion を意図的に
-    # None にして継承を止めているが、raw=True プローブ側が非 None のため
-    # conversion_info だけはリーフにも載る。現状 src 内に読み手はゼロ。
+    # conversion_info は spec §3.3 の互換キー。呼び出し元の形状プローブは非 raw で
+    # 引くため asammdf_sig.conversion は常に None (実測) — 実体は raw_conversion
+    # (生チャンネルの ChannelConversion) から来る。asammdf_sig 側の取得は raw な
+    # Signal を渡す呼び出し用に残す (この経路では実質フォールバックのみが効く)。
+    # 帰結: 展開リーフは raw_conversion を None にして継承を止めているので
+    # conversion_info も載らない = 「配列成分は value_labels も conversion_info も
+    # 持たない」(LD-07) の設計どおり。
     conversion = getattr(asammdf_sig, "conversion", None) or raw_conversion
     if conversion is not None:
         meta["conversion_info"] = str(conversion)
@@ -198,20 +197,26 @@ class MdfLoader:
     _READ_OPTIONS: ClassVar[dict[str, Any]] = {
         "time_from_zero": False,
     }
-    # 形状スキャン専用: 1 レコードだけ raw で読む (変換不要・形状は変換非依存)。
-    # 値の本読みは遅延 — LazyMdfValues.array() が非 raw の正準オプション
-    # raw=False / ignore_value2text_conversions=True (LD-13) / copy_master=False
-    # (LD-10) で単一チャンネル select する。
+    # 唯一のプローブ: 1 レコードだけ **遅延読みと同じ非 raw の正準オプション**
+    # (raw=False / ignore_value2text_conversions=True (LD-13) / copy_master=False
+    # (LD-10) — LazyMdfValues.array() と同一セット) で読む。値の全読みは遅延。
+    #
+    # 非 raw 1 本で全用途 (形状・ColumnSpec・selector・metadata・展開列数・数値性
+    # ゲート) を賄える根拠:
+    #   - 形状 / _flatten のリーフ名 / metadata (unit・comment・display_name・
+    #     source) は変換非依存。prod_demo.mf4 の全 4,324 チャンネルで raw と非 raw の
+    #     shape・リーフ名・dtype.kind・上記 metadata が完全一致し、select コストも
+    #     同等 (raw 0.75s / 非 raw 0.74s) と実測。
+    #   - 数値性 (dtype.kind) のゲートだけは **非 raw 側でなければ誤る**。asammdf は
+    #     ignore_value2text_conversions で TABX/RTABX/TRANS/BITFIELD を短絡するが
+    #     CONVERSION_TYPE_TTAB (text→value) には同ガードが無く (v4_blocks.py:4337)、
+    #     raw=テキスト / 物理値=数値になる。本読みは非 raw で行われるので raw の
+    #     dtype でゲートすると「数値なのに非数値としてスキップ」する (回帰テスト:
+    #     test_ttab_channel_survives_with_physical_numeric_values)。
+    # 以前は raw プローブと非 raw の dtype プローブを 2 本 select していたが、上記の
+    # とおり非 raw 1 本に統合できる (2 本目は prod 実測で load wall +1.35s の純粋な
+    # 重複読み — 12.11s → 13.46s)。
     _PROBE_OPTIONS: ClassVar[dict[str, Any]] = {
-        "record_count": 1,
-        "raw": True,
-        "ignore_value2text_conversions": True,
-        "copy_master": False,
-    }
-    # 数値性 (dtype.kind) 判定専用: 1 レコードを **遅延読みと同じ非 raw の正準
-    # オプション** で読む。raw プローブの dtype では判定できない — 変換次第で
-    # raw と物理値の dtype.kind が食い違う (下の _load_group のゲート参照)。
-    _DTYPE_PROBE_OPTIONS: ClassVar[dict[str, Any]] = {
         "record_count": 1,
         "raw": False,
         "ignore_value2text_conversions": True,
@@ -248,6 +253,10 @@ class MdfLoader:
         1024 超のチャンネルを集約して返す。呼び出しはグループ単位 (仮想グループ数
         ぶん) の極小読みで済む。戻り値は表示用 OversizedChannel 列と、対応する
         (物理gi, ci) キー列 (本読みでの除外照合用) の並列リスト。
+
+        列**数**は変換非依存なので _load_group と同じ統合プローブを共有する
+        (_PROBE_OPTIONS のコメント参照 — raw と非 raw でリーフ名/構造が一致する
+        ことは prod 全チャンネルで実測済み)。
         """
         oversized: list[OversizedChannel] = []
         keys: list[tuple[int, int]] = []
@@ -482,20 +491,11 @@ class MdfLoader:
 
         # 形状のみ 1 レコードプローブで取る (値の全読みは遅延)。列名 (=selector)・
         # dtype・source は 1 レコードから確定する (shape[1:]/dtype/metadata は
-        # record_count に依存しない)。
+        # record_count に依存しない)。プローブは非 raw = 本読み
+        # (LazyMdfValues.array()) と同じ側なので、その dtype がそのまま数値性
+        # ゲートの根拠になる (_PROBE_OPTIONS のコメント参照)。
         probes = mdf.select(entries, **self._PROBE_OPTIONS)
-        # 数値性ゲートだけは物理値 (非 raw) 側の dtype で判定する — raw と物理値で
-        # dtype.kind が食い違う変換が実在するため。asammdf は
-        # ignore_value2text_conversions で TABX/RTABX/TRANS/BITFIELD を短絡するが
-        # CONVERSION_TYPE_TTAB (text→value) には同ガードが無く
-        # (v4_blocks.py:4337)、raw=テキスト / 物理値=数値になる。値の本読みは
-        # LazyMdfValues.array() が非 raw で行うので、ゲートも同じ側で見ないと
-        # 「数値なのに非数値としてスキップ」する (形状/ColumnSpec/metadata は
-        # 変換非依存なので raw プローブのまま)。
-        dtype_probes = mdf.select(entries, **self._DTYPE_PROBE_OPTIONS)
-        for (base_name, _g, _c), probe, dtype_probe in zip(
-            entries, probes, dtype_probes, strict=True
-        ):
+        for (base_name, _g, _c), probe in zip(entries, probes, strict=True):
             if cancel is not None and cancel():
                 raise LoadCancelled(f"load cancelled: {resolved_path.name}")
             idx = name_seen.get(base_name, 0)
@@ -522,23 +522,15 @@ class MdfLoader:
                         out_leaves, sel_leaves, strict=True
                     )
                 ]
-                # リーフ単位のゲート用に物理値側も同じ規則で 1 度だけ展開する
-                # (ペアごとに _flatten を呼ぶと O(リーフ数^2) になる)。
-                phys_leaf_dtypes = {
-                    sel_name: col.dtype
-                    for sel_name, col in _flatten(base_name, dtype_probe.samples)
-                }
             else:
                 pairs = [(signal_name, None, samples)]
-                phys_leaf_dtypes = {}
 
             # value_labels (value2text) は 1D 通常チャンネルのみ継承する —
             # value2text はスカラー enum の概念で、展開後の列 (2D/構造化の
             # 各成分) には意味を持たない (LD-07 spec 注記)。取得元を生チャンネル
             # (mdf.groups[gi].channels[ci]) にしているのは、展開時に None を
-            # 渡して継承を止められる唯一の口だから — probe は raw=True なので
-            # probe.conversion にも同じ ChannelConversion が入っており
-            # (raw=False なら None・実測)、そちらではリーフ単位に殺せない。
+            # 渡して継承を止められる唯一の口だから。probe (非 raw) の conversion は
+            # 常に None なので (実測)、この生チャンネル経由が唯一の取得口でもある。
             raw_conversion = (
                 None if exploded else mdf.groups[_g].channels[_c].conversion
             )
@@ -546,16 +538,11 @@ class MdfLoader:
             for out_name, selector, col_probe in pairs:
                 # FU-20: native dtype を保持し float64 膨張 (wide uint8 の 8x) を避ける。
                 # 数値 (int/uint/float/bool) 以外は Signal が扱えないため従来どおり skip。
-                # 判定は **物理値プローブ (非 raw = 本読みと同じ側) の該当リーフ**
-                # で行う (値の全読みは不要)。リーフが物理値側で引けない場合のみ
-                # raw リーフへフォールバックする (変換で形が変わる想定は無いが、
-                # 引けないことを理由にチャンネルを落とさない)。float64 化は計算境界
-                # Signal.sorted_view() で行う。
-                gate_dtype = (
-                    dtype_probe.samples.dtype
-                    if selector is None
-                    else phys_leaf_dtypes.get(selector[-1], col_probe.dtype)
-                )
+                # col_probe は **非 raw プローブ (= 本読みと同じ側) の該当リーフ**
+                # なので、その dtype がそのままゲートの根拠になる (値の全読みは不要・
+                # raw 側で判定すると TTAB が消える。_PROBE_OPTIONS のコメント参照)。
+                # float64 化は計算境界 Signal.sorted_view() で行う。
+                gate_dtype = col_probe.dtype
                 if gate_dtype.kind not in "iufb":
                     diagnostics.append(
                         Diagnostic(
