@@ -169,6 +169,10 @@ def test_column_records_are_one_to_one_with_emitted_signals(tmp_path: Path) -> N
     session, key, _d = _loaded(write_mdf4_single_column_shapes(tmp_path))
     assert set(session._groups.column_records(key)) == {"Mono", "P", "Q", "Clean"}
     assert set(session._groups.column_records(key)) == set(_orig_names(session, key))
+    # 集合等価だけでは**同名 Signal の重複発行**に盲目 (dedup 名が実チャンネル名と
+    # 衝突する配置で到達しうる)。1:1 は今や「record キーの表示名が _mint_column へ
+    # 降りない」ことの唯一の防波堤なので、多重集合の強さで押さえる。
+    assert len(session.group_signals(key)) == len(session._groups.column_records(key))
 
     bad_session = Session()
     bad_key = bad_session.load(write_mdf4_all_channels_bad(tmp_path)).key

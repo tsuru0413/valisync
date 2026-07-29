@@ -349,6 +349,8 @@ def _assert_production_is_inverted(app_vm: AppViewModel, key: str) -> None:
     records = set(app_vm.session._groups.column_records(key))
     assert records, "前提: MDF グループには ColumnRecord 表がある"
     assert names == records, (names, records)
+    # 集合等価は同名 Signal の重複発行に盲目 — 1:1 は多重集合で押さえる
+    assert len(app_vm.session.group_signals(key)) == len(records)
 
 
 def _mint_count(app_vm: AppViewModel) -> int:

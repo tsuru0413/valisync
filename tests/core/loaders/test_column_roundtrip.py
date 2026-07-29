@@ -600,6 +600,14 @@ def test_deduplicated_exploded_channel_pins_both_name_spaces(loaded: _Loaded) ->
     # 全数ラウンドトリップ (値・dtype・master identity・metadata) は別テストが保持する。
     for i in range(4):
         assert loaded.session.has_column(loaded.key, f"Mat2[{i}]") is False, i
+    # **ただし置換は 0/1 の腕だけに留める**: 2/3 は反転後も `None` のままで、元の述語を
+    # 満たせる (レビュー指摘)。`has_column` は代替にならない — 2 つは別実装で連動しない。
+    # has_column は表示名キーの記録だけを見る (raw_base_name を一切参照しない) のに対し、
+    # ここで狙っている変異クラス「生 selector 空間が表示空間へ漏れる」を橋渡しするのは
+    # `_mint_column` の raw_base_name 経路。つまり当該変異は resolve を動かしても
+    # has_column を動かさない。両方を残して初めて元の歯が保たれる。
+    for i in (2, 3):
+        assert loaded.resolve(f"Mat2[{i}]") is None, i
     # 漏れていれば「1-D の列」が返るはず — 実際に返るのは 2-D の容器であることを直接押さえる
     # (単に「何か返る」で済ませると、生名由来の列が返る壊れ方を見逃す)。
     for i, unit in ((0, "A"), (1, "Nm")):
