@@ -604,7 +604,6 @@ class MainWindow(QMainWindow):
         mark = (source_file or "", signal_key or msg)
         if mark in self._read_error_reported:
             return
-        self._read_error_reported.add(mark)
         source = Path(source_file).name if source_file else S.SAMPLE_READ_ERROR_SOURCE
         try:
             self.diagnostics_vm.add(
@@ -614,6 +613,11 @@ class MainWindow(QMainWindow):
             self.set_status_message(S.STATUS_SAMPLE_READ_ERROR_TMPL.format(msg=msg))
         except Exception:
             pass  # excepthook 内 — 二次例外で握り経路を壊さない
+        else:
+            # dedup マークは記録に**成功してから**立てる。先に立てると、シンクが
+            # 例外を投げたときその信号は診断ゼロのまま恒久的に無音になる (握りが
+            # 「1 回ぶんの抑制」ではなく「全抑制」に化ける)。
+            self._read_error_reported.add(mark)
 
     # ─── Load pipeline ─────────────────────────────────────────────────────────
 
@@ -640,6 +644,10 @@ class MainWindow(QMainWindow):
             # なお本経路はエクスポートガードの対象外: このグループは register_loaded を
             # 通らず、エクスポートツリーの唯一のソース (app_vm.loaded_file_keys ->
             # export_csv_dialog.py:114) に載らないためエクスポート中になり得ない。
+            # E-3 の 2 サイト目: 鋳造列が生きたら result.removed_columns もここで
+            # TeardownService へ渡すこと (今は必ず空)。tripwire は
+            # AppViewModel.unload_file 側にしか無いので、この経路だけを編集する人には
+            # 何の信号も届かない — 無音でペーシングを迂回させないための逆参照。
             result = session.remove_group(outcome.key, force=True)
             if result.removed_group is not None:
                 self.teardown_service.enqueue(outcome.key, result.removed_group)

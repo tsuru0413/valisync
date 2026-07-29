@@ -102,12 +102,16 @@ def test_concurrent_close_calls_mdf_close_once() -> None:
     b.start()
     time.sleep(0.05)  # 壊れた実装なら B がここで mdf.close() まで走り抜ける
     resumed.set()
-    a.join(timeout=0.5)
-    b.join(timeout=0.5)
+    a.join(timeout=_BOUND_S)
+    b.join(timeout=_BOUND_S)
 
+    # 「専用 lock を使っているか」はこの assert では検出できない — check-and-set を
+    # handle.lock 下へ入れた変異は A が lock を握ったまま gate で止まり B が待つだけで、
+    # 再開後は calls == 1 になり **PASS する**。専用 lock の検証は
+    # test_close_during_in_flight_reads_never_crashes が担う (in-flight read が
+    # handle.lock を握ったまま is_closed が True になることを見る)。
     assert not a.is_alive() and not b.is_alive(), (
-        "デッドロック — check-and-set を handle.lock 下に入れていないか "
-        "(専用の小さい lock を使うこと)"
+        "引き渡しがハングした — 有界待ちが効いていない"
     )
     assert spy.calls == 1, f"mdf.close() が {spy.calls} 回"
 
@@ -259,7 +263,9 @@ def _channel_entries(mdf: MDF) -> list[tuple[str, int, int, int]]:
     return out
 
 
-def test_close_during_in_flight_reads_never_crashes(tmp_path: Path) -> None:
+def test_close_during_in_flight_reads_never_crashes(
+    tmp_path: Path, request: Any
+) -> None:
     """close() は mdf.close() を handle.lock 下で呼ぶので in-flight select を中断しない。
 
     待機中の reader は is_closed を **lock 内で** 見て SampleReadError。array() の
@@ -301,6 +307,17 @@ def test_close_during_in_flight_reads_never_crashes(tmp_path: Path) -> None:
         return real_select(*a, **k)
 
     mdf.select = _gated_select  # type: ignore[assignment]
+
+    def _cleanup() -> None:
+        # 4 つの setup assert のどれかで落ちると closer スレッドまで到達せず、
+        # 実 mf4 が mmap されたまま残って tmp_path の後片付けが Windows で失敗し、
+        # 1 件の正直な失敗が別のエラーに埋もれる。release を先に解放してから
+        # close する (close は handle.lock を取るので、gated select を止めたままだと
+        # 後片付け自身が待たされる)。close は冪等。
+        release.set()
+        handle.close()
+
+    request.addfinalizer(_cleanup)
 
     outcomes: list[tuple[str, BaseException | None]] = []
     outcomes_lock = threading.Lock()

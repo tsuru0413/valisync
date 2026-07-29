@@ -164,6 +164,35 @@ def test_hook_falls_back_to_generic_label_without_context(qtbot: QtBot) -> None:
     assert entry.message == "読めません"
 
 
+def test_hook_does_not_dedupe_when_recording_failed(qtbot: QtBot) -> None:
+    """記録に失敗した回は dedup マークを立てない (握りが全抑制に化けない)。
+
+    マークを try の**前**で立てると、シンクが投げた瞬間にその信号は診断ゼロのまま
+    恒久的に無音になる — `except` は「1 回ぶんの抑制」のために置いてあるのに
+    「全抑制」へ意味が変わる。変更前は診断 0 件で緑になった。
+    """
+    window = _make_window(qtbot)
+    before = window.diagnostics_vm.counts()[0]
+    calls: list[str] = []
+    real_add = window.diagnostics_vm.add
+
+    def _flaky_add(source, diags):  # type: ignore[no-untyped-def]
+        calls.append(source)
+        if len(calls) == 1:
+            raise RuntimeError("シンクが一時的に死んだ")
+        real_add(source, diags)
+
+    window.diagnostics_vm.add = _flaky_add  # type: ignore[method-assign]
+
+    sys.excepthook(SampleReadError, _read_error("spd", "/net/logs/a.mf4"), None)
+    assert window.diagnostics_vm.counts()[0] == before, "1 回目は記録できていない前提"
+
+    sys.excepthook(SampleReadError, _read_error("spd", "/net/logs/a.mf4"), None)
+
+    assert len(calls) == 2, "2 回目が dedup で弾かれた (マークを早く立てている)"
+    assert window.diagnostics_vm.counts()[0] == before + 1
+
+
 def test_hook_dedup_marks_clear_on_load(qtbot: QtBot) -> None:
     """ロード完了はデータが変わりうる機会なので報告済みマークを解く。
 
