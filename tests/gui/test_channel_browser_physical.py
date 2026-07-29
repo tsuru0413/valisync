@@ -510,6 +510,12 @@ def test_tooltip_resolves_a_column_key_after_inversion(tmp_path: Path) -> None:
     テスト被覆つきで生きているメソッドなので、反転で無言の空文字に変わる罠を
     ここで閉じる。
     sabotage: _signal_by_key の resolve フォールバックを外すと空文字で RED。
+
+    **このテストは resolve 経由を「推奨形」として祝福していない** — resolve は
+    鋳造列を _resolved_by_key へ恒久登録する (C-g で LRU なし) ので、ホバーごとに
+    列 Signal が滞留する。許容できるのは production 消費者がゼロだからで、
+    PC-19 を復活させるときは鋳造しないメタデータ取得口が要る
+    (_signal_by_key の docstring 参照)。
     """
     vm, app_vm = _vm_for(write_mdf4_2d(tmp_path))
     key = app_vm.active_file_key or ""

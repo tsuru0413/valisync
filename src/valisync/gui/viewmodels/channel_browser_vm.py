@@ -456,6 +456,14 @@ class ChannelBrowserVM(Observable):
         ため、走査で外れたら session.resolve_signal へ落とす — 列キーはそこで
         要求時に鋳造される (E-1)。値は読まないので遅延契約は保たれる
         (tooltip が見るのは timestamps の長さと metadata だけ)。
+
+        **警告 — この形を他所へ複製しないこと**: ``resolve_signal`` は鋳造した列を
+        ``_resolved_by_key`` へ**恒久登録**する (E-3 決定 C-g で LRU は入れない)。
+        つまりホバー 1 回ごとに列 Signal が寿命いっぱい滞留する。ここで許容できるのは
+        ``tooltip_for`` に production の呼出元が 1 つも無い (FU-22 B で ToolTipRole が
+        SignalTreeModel から外れた) からであって、設計として正しいからではない。
+        **PC-19 を復活させるならこの経路は使えない** — 鋳造しないメタデータ取得口が要る
+        (``has_column`` は真偽しか返さないので代用にならない)。
         """
         active_key = self._app_vm.active_file_key
         if not active_key:
