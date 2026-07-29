@@ -4,8 +4,16 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QTreeWidgetItem
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import QKeyEvent
+from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QStyle,
+    QStyleOptionViewItem,
+    QTreeWidget,
+    QTreeWidgetItem,
+)
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from tests.mdf4_helpers import write_mdf4_2d
@@ -483,6 +491,34 @@ def _child_texts(item: QTreeWidgetItem) -> list[str]:
     return [item.child(i).text(0) for i in range(item.childCount())]
 
 
+def _delegate_toggle(tree: QTreeWidget, item: QTreeWidgetItem) -> bool:
+    """チェックボックスを 1 回「クリック」する (実クリックと同じ Qt の経路)。
+
+    `QStyledItemDelegate.editorEvent` は `ItemIsUserTristate` の無いアイテムに対し
+    ``state = (state == Checked) ? Unchecked : Checked`` — つまり **今表示されて
+    いる状態から** 次の状態を決める。テストが Checked/Unchecked を自分で決めて
+    `setCheckState` すると、この決定規則ごと迂回してしまい「PartiallyChecked に
+    貼り付いたチェックボックスが 2 回目以降も Checked を書き続ける = 一方通行に
+    なる」というクラスのバグ (E-3 レビュー Important) を構造的に観測できない。
+    ここでは Qt の実装をそのまま呼ぶ (規則を書き写さない)。
+
+    入力は Key_Space — `editorEvent` が受理する入力の一つで、マウス版と違って
+    チェックボックス矩形の座標計算 (スタイル依存) に結果が左右されない。
+    戻り値は「トグルが受理されたか」= ItemIsUserCheckable の有無がそのまま出る
+    ので、C-a (コンテナ行はクリックで変えられない) の検証にも同じ口を使える。
+    """
+    index = tree.indexFromItem(item, 0)
+    option = QStyleOptionViewItem()
+    option.rect = tree.visualRect(index)
+    option.state |= QStyle.StateFlag.State_Enabled
+    event = QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_Space, Qt.KeyboardModifier.NoModifier
+    )
+    delegate = tree.itemDelegateForIndex(index)
+    assert delegate is not None
+    return bool(delegate.editorEvent(event, tree.model(), option, index))
+
+
 @pytest.mark.parametrize("expanded", [True, False])
 def test_container_row_synthesizes_columns_on_expand(
     qtbot: QtBot, expanded: bool
@@ -581,8 +617,18 @@ def test_file_row_check_cannot_fake_container_selection(
     QTreeWidgetItem が「CheckState を持つ子」を **チェック可能かどうかに関係なく**
     書き換える。コンテナから ItemIsUserCheckable を外してもこの経路は塞げない
     ので、放置すると「親は Checked に見えるのに選択集合は空」という嘘になる
-    (実測: guard 無しで Mat=Checked / _checked_keys()=['mf4_1::Clean'])。
-    表示は常に選択の写像であること。
+    (実測: 受け口が無いと Mat=Checked / _checked_keys()=['mf4_1::Clean'])。
+    表示は常に選択の写像であること — これが本テストの不変条件。
+
+    **supersede (E-3 レビュー Important)**: 旧版はこの伝播を「コンテナ行の表示を
+    Unchecked へ引き戻す」ことで塞ぎ、`Mat == Unchecked` /
+    `_checked_keys() == ['mf4_1::Clean']` を pin していた。それは写像としては
+    正しいがファイル行を PartiallyChecked に貼り付かせ、チェックボックスを
+    一方通行 (二度と Checked にならず解除にも使えない) にしていた。正しい塞ぎ方は
+    伝播を **選択そのもの** へ翻訳すること = ファイル行チェックはそのファイルの
+    全列を選ぶ。写像であることの検証は弱めず、両方向 (表示 -> 選択集合、
+    選択集合 -> 表示) で見る。往復の pin は
+    test_file_row_checkbox_toggles_both_ways_through_the_delegate。
     """
     dlg = ExportCsvDialog(_array_app_vm(expanded=expanded), initial_selected=set())
     qtbot.addWidget(dlg)
@@ -591,9 +637,166 @@ def test_file_row_check_cannot_fake_container_selection(
 
     top.setCheckState(0, Qt.CheckState.Checked)  # ファイル行のチェックボックス
 
-    assert _row_named(dlg, "Mat").checkState(0) == Qt.CheckState.Unchecked
-    assert dlg._checked_keys() == ["mf4_1::Clean"]  # 1 列行だけが選択される
-    assert dlg._selection_label.text() == S.EXPORT_SELECTION_COUNT_TMPL.format(n=1)
+    mat = _row_named(dlg, "Mat")
+    assert mat.checkState(0) == Qt.CheckState.Checked
+    # Checked と見えている以上、その 3 列は本当に選択集合に入っていること
+    # (旧版が禁じていた「見た目だけ Checked」は依然として不可)。
+    assert dlg._checked_keys() == [
+        "mf4_1::Mat[0]",
+        "mf4_1::Mat[1]",
+        "mf4_1::Mat[2]",
+        "mf4_1::Clean",
+    ]
+    assert dlg._selection_label.text() == S.EXPORT_SELECTION_COUNT_TMPL.format(n=4)
+
+
+@pytest.mark.parametrize("expanded", [True, False])
+def test_file_row_checkbox_toggles_both_ways_through_the_delegate(
+    qtbot: QtBot, expanded: bool
+) -> None:
+    """ファイル行のチェックボックスは **二方向** に効く (押せば全選択・もう一度で全解除)。
+
+    1 クリックだけでは正常と故障を区別できない。故障形は「1 回目は選ばれたように
+    見えるが、ファイル行が PartiallyChecked に貼り付いて 2 回目以降も Checked を
+    書き続ける = 解除に使えない一方通行」だったので、**2 回押して往復する** ことが
+    このテストの核心 (E-3 レビュー Important)。
+
+    配列/構造体チャンネル (コンテナ) と スカラー が混在するファイルでのみ再現する:
+    スカラーだけのファイルは全ての葉がチェック可能なのでファイル行が Checked に
+    到達でき、壊れていても往復してしまう。
+
+    C-b も同時に固定する — 往復のどちらでも列 Signal は 1 本も鋳造しない。
+    """
+    app_vm = _array_app_vm(expanded=expanded)
+    dlg = ExportCsvDialog(app_vm, initial_selected=set())
+    qtbot.addWidget(dlg)
+    top = dlg._tree.topLevelItem(0)
+    assert top is not None
+    mat = _row_named(dlg, "Mat")  # 3 列コンテナ
+    clean = _row_named(dlg, "Clean")  # 1 列 (葉)
+    all_keys = [
+        "mf4_1::Mat[0]",
+        "mf4_1::Mat[1]",
+        "mf4_1::Mat[2]",
+        "mf4_1::Clean",
+    ]
+
+    assert _delegate_toggle(dlg._tree, top) is True  # 1 回目
+
+    assert top.checkState(0) == Qt.CheckState.Checked
+    assert mat.checkState(0) == Qt.CheckState.Checked  # 全列が選ばれた表示
+    assert clean.checkState(0) == Qt.CheckState.Checked
+    assert dlg._checked_keys() == all_keys
+    assert dlg._selection_label.text() == S.EXPORT_SELECTION_COUNT_TMPL.format(n=4)
+    assert app_vm.session.resolve_calls == 0  # C-b: 名前だけで組む
+
+    assert _delegate_toggle(dlg._tree, top) is True  # 2 回目 = 解除
+
+    assert top.checkState(0) == Qt.CheckState.Unchecked
+    assert mat.checkState(0) == Qt.CheckState.Unchecked
+    assert clean.checkState(0) == Qt.CheckState.Unchecked
+    assert dlg._checked_keys() == []
+    assert dlg._selection_label.text() == S.EXPORT_SELECTION_COUNT_TMPL.format(n=0)
+    assert app_vm.session.resolve_calls == 0
+
+
+@pytest.mark.parametrize("expanded", [True, False])
+def test_file_row_check_from_partial_selects_everything(
+    qtbot: QtBot, expanded: bool
+) -> None:
+    """部分選択のファイル行を押すと全列が選択される (途中状態からの復帰)。
+
+    Qt の罠: `QTreeWidgetItem.setData` は保存済みの値と同じ値を書かれると
+    **自分の itemChanged を出さずに return する** — が、子への伝播はその前に
+    済んでいる。ファイル行自身の itemChanged に処理をぶら下げる実装はこの経路
+    (保存値 Checked / 表示 PartiallyChecked で押された瞬間) だけ沈黙し、
+    コンテナが Checked に見えるのに選択集合が空、という嘘が残る。
+    """
+    app_vm = _array_app_vm(expanded=expanded)
+    dlg = ExportCsvDialog(app_vm, initial_selected=set())
+    qtbot.addWidget(dlg)
+    top = dlg._tree.topLevelItem(0)
+    assert top is not None
+    mat = _row_named(dlg, "Mat")
+
+    _delegate_toggle(dlg._tree, top)  # 全選択 (ファイル行の保存値 = Checked)
+    dlg._tree.expandItem(mat)
+    mat.child(1).setCheckState(0, Qt.CheckState.Unchecked)  # 1 列だけ外す
+    assert mat.checkState(0) == Qt.CheckState.PartiallyChecked
+    assert top.checkState(0) == Qt.CheckState.PartiallyChecked
+
+    assert _delegate_toggle(dlg._tree, top) is True  # 部分状態から押し直す
+
+    assert top.checkState(0) == Qt.CheckState.Checked
+    assert mat.checkState(0) == Qt.CheckState.Checked
+    assert dlg._checked_keys() == [
+        "mf4_1::Mat[0]",
+        "mf4_1::Mat[1]",
+        "mf4_1::Mat[2]",
+        "mf4_1::Clean",
+    ]
+    assert app_vm.session.resolve_calls == 0
+
+
+@pytest.mark.parametrize("expanded", [True, False])
+def test_offset_guard_follows_bulk_select_and_deselect(
+    qtbot: QtBot, expanded: bool
+) -> None:
+    """I2 オフセットガードは一括操作 (ファイル行 / すべて選択 / 解除) にも追随する。
+
+    `_offset_active_for_checked` は「毎回 `_selected` を走査」から「キーが入る
+    瞬間に 1 度だけ問い合わせて覚える」へ変わった (ファイル行 1 クリックは行ごとに
+    `_validate()` を通るので、走査したままだと prod で 行数 x 列数 回の
+    `offset_for` 呼び出しになる)。覚え書きの取りこぼし / 消し忘れは、まとめて
+    入れてまとめて出す経路にだけ現れる。
+    """
+    app_vm = _array_app_vm(expanded=expanded)
+    dlg = ExportCsvDialog(
+        app_vm,
+        initial_selected=set(),
+        x_range=(2.0, 9.0),
+        cursor_a=3.0,
+        cursor_b=6.0,
+        offset_for=lambda k: 1.0 if k == "mf4_1::Mat[1]" else 0.0,
+    )
+    qtbot.addWidget(dlg)
+    top = dlg._tree.topLevelItem(0)
+    assert top is not None
+    assert dlg._range_visible.isEnabled() is True  # 未選択 = ガード非作動
+
+    _delegate_toggle(dlg._tree, top)  # ファイル行で全選択 (未展開の列も入る)
+    assert dlg._range_visible.isEnabled() is False
+    assert dlg._range_cursor.isEnabled() is False
+
+    _delegate_toggle(dlg._tree, top)  # もう一度押して全解除
+    assert dlg._range_visible.isEnabled() is True
+    assert dlg._range_cursor.isEnabled() is True
+
+    dlg._select_all()
+    assert dlg._range_visible.isEnabled() is False
+
+    dlg._select_none()
+    assert dlg._range_visible.isEnabled() is True
+
+
+@pytest.mark.parametrize("expanded", [True, False])
+def test_container_row_checkbox_click_is_refused(qtbot: QtBot, expanded: bool) -> None:
+    """C-a: 物理チャンネル行のチェックボックスは **直接クリックしても変わらない**。
+
+    ファイル行経由の一括選択 (上の 2 テスト) を通した後も、コンテナ行そのものを
+    押す経路は塞がれたままであること — `ItemIsUserCheckable` が無いので
+    `editorEvent` が受理しない (False) = 選択集合も表示も動かない。
+    """
+    app_vm = _array_app_vm(expanded=expanded)
+    dlg = ExportCsvDialog(app_vm, initial_selected=set())
+    qtbot.addWidget(dlg)
+    mat = _row_named(dlg, "Mat")
+
+    assert _delegate_toggle(dlg._tree, mat) is False
+
+    assert mat.checkState(0) == Qt.CheckState.Unchecked
+    assert dlg._checked_keys() == []
+    assert app_vm.session.resolve_calls == 0
 
 
 @pytest.mark.parametrize("expanded", [True, False])
@@ -715,7 +918,8 @@ def test_dialog_never_materializes_signal_values(qtbot: QtBot, tmp_path: Path) -
     行や列の判定に sig.values が混ざると prod (4,324 行 / 264,004 列) では
     「ダイアログを開く = ファイル全体を読む」に化ける。honest observable は
     `_values_source.is_materialized` (ロード直後は全て False)。開く/展開する/
-    絞り込む/すべて選択の全経路を通しても False のままであること。
+    絞り込む/すべて選択/**ファイル行の往復クリック** の全経路を通しても False の
+    ままであること (最後の経路は E-3 レビュー Important の修正で追加)。
     """
     app_vm = AppViewModel()
     key = app_vm.request_load(write_mdf4_2d(tmp_path))
@@ -728,6 +932,10 @@ def test_dialog_never_materializes_signal_values(qtbot: QtBot, tmp_path: Path) -
     dlg._tree.expandItem(_row_named(dlg, "Mat"))
     dlg._filter.setText("mat")
     dlg._select_all()
+    top = dlg._tree.topLevelItem(0)
+    assert top is not None
+    _delegate_toggle(dlg._tree, top)  # ファイル行で全解除
+    _delegate_toggle(dlg._tree, top)  # もう一度押して全選択
 
     assert not any(
         s._values_source.is_materialized for s in app_vm.session.group_signals(key)

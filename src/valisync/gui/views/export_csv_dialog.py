@@ -155,6 +155,12 @@ class ExportCsvDialog(QDialog):
         # 行ごとの選択列数。三態表示を O(1) で出すため (未展開の 262k 列を
         # 数え直さない唯一の手段)。
         self._selected_per_row: dict[int, int] = {}
+        # 選択中でオフセットを持つキー。_offset_active_for_checked を O(1) にする
+        # ためだけの覚え書き (_selected_per_row と同じ考え方)。ファイル行 1 クリックは
+        # 行ごとに 1 回ずつ _validate() を通るので、そこで毎回 _selected 全体を
+        # 走査すると prod (4,324 行 / 264,004 列) では行数 x 列数 = 10 億回の
+        # offset_for 呼び出しになる。キーは追加時に 1 度だけ問い合わせる。
+        self._offset_keys: set[str] = set()
         self._rows: list[_ChannelRow] = []
         # 表示同期中フラグ: 自分で setCheckState/setFlags した分を「ユーザー操作」
         # として拾い戻さないための門。複数経路から入るので受け口 1 箇所で弾く。
@@ -444,12 +450,15 @@ class ExportCsvDialog(QDialog):
             return
         self._selected[key] = (row_index, col_index)
         self._selected_per_row[row_index] = self._selected_per_row.get(row_index, 0) + 1
+        if self._offset_for is not None and self._offset_for(key) != 0.0:
+            self._offset_keys.add(key)
 
     def _drop_selection(self, key: str) -> None:
         pos = self._selected.pop(key, None)
         if pos is None:
             return
         self._selected_per_row[pos[0]] -= 1
+        self._offset_keys.discard(key)
 
     def _set_state(self, item: QTreeWidgetItem, state: Qt.CheckState) -> None:
         was, self._syncing = self._syncing, True
@@ -471,25 +480,55 @@ class ExportCsvDialog(QDialog):
             state = Qt.CheckState.PartiallyChecked
         self._set_state(item, state)
 
+    def _sync_row_children(self, row_item: QTreeWidgetItem) -> None:
+        """1 行ぶんの表示 (合成済みの列 + 行自身の三態) を _selected から作り直す。"""
+        for j in range(row_item.childCount()):
+            child = row_item.child(j)
+            assert child is not None
+            key = child.data(0, _KEY_ROLE)
+            if key is None:
+                continue  # プレースホルダ
+            self._set_state(
+                child,
+                Qt.CheckState.Checked
+                if key in self._selected
+                else Qt.CheckState.Unchecked,
+            )
+        self._refresh_row_state(row_item)
+
     def _sync_widget_states(self) -> None:
         """実在するアイテムの表示だけを _selected から作り直す。
 
         未展開の列にはアイテムが無い — そこが「ウィジェットは表示専用」の所以。
         """
         for row_item in self._iter_rows():
-            for j in range(row_item.childCount()):
-                child = row_item.child(j)
-                assert child is not None
-                key = child.data(0, _KEY_ROLE)
-                if key is None:
-                    continue  # プレースホルダ
-                self._set_state(
-                    child,
-                    Qt.CheckState.Checked
-                    if key in self._selected
-                    else Qt.CheckState.Unchecked,
-                )
-            self._refresh_row_state(row_item)
+            self._sync_row_children(row_item)
+
+    def _toggle_row(self, item: QTreeWidgetItem, row_index: int) -> None:
+        """ファイル行のチェックが降ってきた物理チャンネル行を丸ごと選択/解除する。
+
+        ファイル行は ItemIsAutoTristate なので、そのチェックボックスを押すと
+        QTreeWidgetItem が「CheckState を持つ子」を **チェック可能かどうかに関係
+        なく** 書き換える。コンテナから ItemIsUserCheckable を外してもこの経路は
+        塞げない (C-a が塞ぐのはコンテナ行 *自身* のクリックだけ) ので、ここが
+        ファイル行チェックの唯一の受け口になる。
+
+        受け口で表示だけを引き戻す (コンテナを Unchecked へ戻す) と、ファイル行は
+        `childrenCheckState()` = Unchecked ∧ Checked = PartiallyChecked に貼り付き、
+        `QStyledItemDelegate.editorEvent` の二値トグル (Checked 以外は Checked へ)
+        と噛み合って **二度と Checked にならず解除にも使えない一方通行** になる。
+        なので表示を戻すのではなく、伝播を選択そのものへ翻訳する — 「ファイル行を
+        チェック = そのファイルの全列」。列キーは `_select_all` と同じく **名前だけ**
+        で組む (C-b: resolve は呼ばない) ので 264k 鋳造にはならない。
+        """
+        if item.checkState(0) == Qt.CheckState.Checked:
+            for col_index, key in enumerate(self._column_keys(row_index)):
+                self._add_selection(row_index, col_index, key)
+        else:
+            for key in self._column_keys(row_index):
+                self._drop_selection(key)
+        self._sync_row_children(item)
+        self._validate()
 
     def _on_item_changed(self, item: QTreeWidgetItem, _column: int) -> None:
         """ユーザーがチェックを触ったときだけ選択集合へ反映する。"""
@@ -497,13 +536,10 @@ class ExportCsvDialog(QDialog):
             return
         key = item.data(0, _KEY_ROLE)
         if key is None:
-            # ファイル行 (Qt の三態伝播) / コンテナ行 (C-a: 選択できない)。
-            # コンテナはファイル行チェックボックスの下方向伝播 (ItemIsAutoTristate)
-            # で書き換えられうる — ItemIsUserCheckable を外してもこの経路は塞げない
-            # ので、表示を選択数カウンタから引き戻して「表示は選択の写像」を保つ
-            # (でないと列を 1 本も選ばずに親だけチェック済みに見える)。
-            if item.data(0, _ROW_ROLE) is not None:
-                self._refresh_row_state(item)
+            # ファイル行 (自身は何も持たない) / コンテナ行 (C-a: 直接は選択できない)。
+            row_index = item.data(0, _ROW_ROLE)
+            if row_index is not None:
+                self._toggle_row(item, row_index)
             return
         if item.checkState(0) == Qt.CheckState.Checked:
             self._add_selection(item.data(0, _ROW_ROLE), item.data(0, _COL_ROLE), key)
@@ -539,6 +575,7 @@ class ExportCsvDialog(QDialog):
     def _select_none(self) -> None:
         self._selected.clear()
         self._selected_per_row.clear()
+        self._offset_keys.clear()
         self._sync_widget_states()
         self._validate()
 
@@ -651,12 +688,14 @@ class ExportCsvDialog(QDialog):
         to the selection in-dialog must be able to (re)trigger this guard.
         ``offset_for is None`` means the caller injected nothing (back-compat
         default) — treated as "no offsets exist" for every key.
+
+        オフセットの有無はキーが選択集合へ入る瞬間に 1 度だけ問い合わせて
+        `_offset_keys` に覚える (_add_selection/_drop_selection)。ここで毎回
+        `_selected` を走査すると、ファイル行 1 クリック (行ごとに _validate() を
+        通る) が prod で 行数 x 列数 = 10 億回の offset_for 呼び出しになる。
+        リアクティブ性 (選択集合の変化に追随) は集合の出入りで保たれる。
         """
-        if self._offset_for is None:
-            return False
-        # 走査は _selected を直接 — _checked_keys() のソートを毎 _validate() で
-        # 払わない (選択順は結果に無関係)。
-        return any(self._offset_for(k) != 0.0 for k in self._selected)
+        return bool(self._offset_keys)
 
     def _update_range_radios(self) -> None:
         """Re-apply [現在の表示範囲]/[カーソル A-B] enabled+tooltip state.
