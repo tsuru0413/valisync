@@ -31,6 +31,14 @@ class SampleSource(Protocol):
         """展開済みなら値配列の nbytes、未展開なら 0 (teardown 会計用)."""
         ...
 
+    def array_if_materialized(self) -> np.ndarray | None:
+        """展開済みなら値配列、未展開なら None (**展開は誘発しない**).
+
+        nbytes_if_materialized は数値しか返さないので id-dedup ができない。
+        teardown 会計が共有配列を二重計上しないために同一性が要る。
+        """
+        ...
+
     def array(self) -> np.ndarray:
         """値配列を返す (初回で展開+キャッシュ・read-only 凍結)。失敗時 SampleReadError."""
         ...
@@ -64,6 +72,10 @@ class EagerValues:
     @property
     def nbytes_if_materialized(self) -> int:
         return int(self._array.nbytes)
+
+    def array_if_materialized(self) -> np.ndarray | None:
+        """常に展開済み (eager) なので値配列そのものを返す."""
+        return self._array
 
     def array(self) -> np.ndarray:
         return self._array
@@ -105,6 +117,10 @@ class LazyMdfValues:
     @property
     def nbytes_if_materialized(self) -> int:
         return 0 if self._cache is None else int(self._cache.nbytes)
+
+    def array_if_materialized(self) -> np.ndarray | None:
+        """キャッシュ済みの値配列 (未展開なら None — 読みで展開を誘発しない)."""
+        return self._cache
 
     def array(self) -> np.ndarray:
         # 遅延 import: sample_source(model) -> loaders の循環を避ける

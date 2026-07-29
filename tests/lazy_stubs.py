@@ -34,6 +34,9 @@ class CountingLazy:
     def nbytes_if_materialized(self) -> int:
         return 0 if self._cache is None else self._cache.nbytes
 
+    def array_if_materialized(self) -> np.ndarray | None:
+        return self._cache
+
     def array(self) -> np.ndarray:
         self.reads += 1
         self._cache = np.zeros(self._n, dtype=np.float64)

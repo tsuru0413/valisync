@@ -53,6 +53,9 @@ class _FailingSource:
     length = 3
     nbytes_if_materialized = 0
 
+    def array_if_materialized(self) -> None:
+        return None
+
     def array(self) -> np.ndarray:
         raise SampleReadError(
             "信号「z_bad」のサンプル読み取りに失敗しました: I/O error"

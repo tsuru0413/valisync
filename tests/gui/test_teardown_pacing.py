@@ -137,6 +137,113 @@ def test_tick_stops_at_the_deadline_with_a_fake_clock(qtbot) -> None:  # type: i
     assert 0 < freed < 10_000, f"デッドラインで止まっていない (freed={freed})"
 
 
+def test_shared_master_is_counted_once_per_group(qtbot) -> None:  # type: ignore[no-untyped-def]
+    """master はグループ内で identity 共有。信号ごとに数えると 5 万倍過大になる。"""
+    svc = TeardownService()
+    group = _lazy_group(100)
+    assert len({id(s.timestamps) for s in group.signals}) == 1, (
+        "fixture premise broken: master が凍結されておらず共有されていない"
+    )
+    m = group.signals[0].timestamps.nbytes
+    svc.enqueue("k", group)
+    assert svc.pending_bytes() == m  # 0 も 100*m も不合格
+
+
+def test_distinct_masters_are_each_counted(qtbot) -> None:  # type: ignore[no-untyped-def]
+    """CSV 形状 (writeable master => 信号ごとにコピー) では dedup が効かないこと。
+
+    csv_loader は master を凍結せず writeable な配列を全 Signal に渡す
+    (csv_loader.py:234/281) ので、Signal.__init__ が信号ごとにコピーする。
+    CSV の会計は今日すでに正直 — 「CSV も dedup されていない」と後から
+    直してはならない。
+    """
+    svc = TeardownService()
+    group = _lazy_group(10, freeze_master=False)
+    assert len({id(s.timestamps) for s in group.signals}) == 10, "前提が壊れている"
+    m = group.signals[0].timestamps.nbytes
+    svc.enqueue("k", group)
+    assert svc.pending_bytes() == 10 * m
+
+
+def test_materialized_value_is_added_to_the_master(qtbot) -> None:  # type: ignore[no-untyped-def]
+    """共有 master + 展開済み値 1 本の合算を pin (timestamps 項の脱落を落とす)。"""
+    ts = np.arange(1024, dtype=np.float64)
+    ts.flags.writeable = False
+    src = EagerValues(np.zeros(1024, dtype=np.float64))
+    sig = Signal(
+        name="s",
+        timestamps=ts,
+        values_source=src,
+        file_format="MDF4",
+        bus_type="",
+        source_file="/x.mf4",
+    )
+    svc = TeardownService()
+    svc.enqueue("k", _group_of((sig,)))
+    assert svc.pending_bytes() == ts.nbytes + src.nbytes_if_materialized
+
+
+def test_shared_value_array_is_counted_once(qtbot) -> None:  # type: ignore[no-untyped-def]
+    """同一 EagerValues を共有する 2 信号の値配列は 1 回だけ計上される。
+
+    array_if_materialized() を getattr フォールバックで書くと実ソースで dedup が
+    無言で消えるが、master dedup テストは sig.timestamps しか見ないので検知できない。
+    このテストがその穴を塞ぐ。
+    """
+    src = EagerValues(np.zeros(4096, dtype=np.float64))
+    ts = np.arange(4096, dtype=np.float64)
+    ts.flags.writeable = False
+    sigs = tuple(
+        Signal(
+            name=f"s{i}",
+            timestamps=ts,
+            values_source=src,
+            file_format="MDF4",
+            bus_type="",
+            source_file="/x.mf4",
+        )
+        for i in range(2)
+    )
+    svc = TeardownService()
+    svc.enqueue("k", _group_of(sigs))
+    assert svc.pending_bytes() == ts.nbytes + src.nbytes_if_materialized
+
+
+def test_master_is_charged_every_tick_not_once_per_service(qtbot) -> None:  # type: ignore[no-untyped-def]
+    """`seen` はティック単位 — サービス寿命にすると 2 ティック目が 0 バイトになる。
+
+    id は生存中のオブジェクト間でのみ一意なので、記録した配列より長生きする set は
+    以後の全確保をエイリアスする (実測 100% 再利用・memory
+    gui_id_reuse_flake_object_recreation)。この assert は id 再利用に依存せず
+    決定的に RED になる。
+    """
+    svc = TeardownService(signal_budget=10, byte_budget=1 << 62, now=lambda: 0.0)
+    group = _lazy_group(35)  # 4 ティック必要
+    m = group.signals[0].timestamps.nbytes
+    svc.enqueue("k", group)
+    charged: list[int] = []
+    while svc.pending_signals() > 0:
+        svc._drain()
+        charged.append(svc.last_tick_bytes)
+    assert len(charged) >= 3
+    assert all(b >= m for b in charged), (
+        f"{charged} — master を計上しないティックがある"
+    )
+
+
+def test_a_later_group_is_charged_in_full(qtbot) -> None:  # type: ignore[no-untyped-def]
+    """A を完走ドレイン後に確保した B が 0 バイト計上にならない (id 再利用ガード)。"""
+    svc = TeardownService(signal_budget=10_000, byte_budget=1 << 62, now=lambda: 0.0)
+    svc.enqueue("a", _lazy_group(200))
+    svc._drain()
+    assert svc.pending_signals() == 0
+    group_b = _lazy_group(5)
+    expected = group_b.signals[0].timestamps.nbytes  # 共有 master 1 本ぶん
+    svc.enqueue("b", group_b)
+    svc._drain()
+    assert svc.last_tick_bytes == expected
+
+
 def test_one_tick_stops_over_materialized_signals_too(qtbot) -> None:  # type: ignore[no-untyped-def]
     """展開済み値 + sorted/finite/range_stat_index を持つ信号でも上限で止まる。
 

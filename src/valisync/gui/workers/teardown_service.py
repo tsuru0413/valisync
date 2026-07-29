@@ -71,6 +71,7 @@ class TeardownService(QObject):
         # pops from each list's end (O(1), no shifting).
         self._groups: deque[tuple[str, list[Signal]]] = deque()
         self._pending_signals = 0
+        self._last_tick_bytes = 0
         self._timer = QTimer(self)
         self._timer.setInterval(0)
         self._timer.timeout.connect(self._drain)
@@ -78,14 +79,18 @@ class TeardownService(QObject):
     def pending_signals(self) -> int:
         return self._pending_signals
 
+    @property
+    def last_tick_bytes(self) -> int:
+        """直近ティックで計上したバイト数 (バイト軸の唯一の観測点)."""
+        return self._last_tick_bytes
+
     def pending_bytes(self) -> int:
         # Computed lazily over the still-held signals rather than tracked from
         # enqueue, so enqueue stays O(1). O(remaining) per call -- fine for the
         # small groups in tests; the prod drain-wait polls pending_signals().
+        seen: set[int] = set()  # 呼び出しごとに新規 (寿命規約は _drain と同じ)
         return sum(
-            s.timestamps.nbytes + _materialized_value_bytes(s)
-            for _key, sigs in self._groups
-            for s in sigs
+            _retained_bytes(s, seen) for _key, sigs in self._groups for s in sigs
         )
 
     def enqueue(self, key: str, group: SignalGroup) -> None:
@@ -103,6 +108,14 @@ class TeardownService(QObject):
 
     def _drain(self) -> None:
         t0 = self._now()
+        # seen はティック単位 (freed_bytes と同じ寿命)。id は生存中のオブジェクト間で
+        # のみ一意なので、記録した配列より長生きする set は以後の全確保をエイリアス
+        # する (実測 100% 再利用・memory gui_id_reuse_flake_object_recreation) —
+        # ティックを跨ぐと後続グループが 0 バイト計上になりバイト軸が黙って死ぬ。
+        # ティック内は安全: 会計対象の配列は全て live な Signal が保持しており、
+        # _drain 内で ndarray を新規確保する経路も無い。共有 master がティックごと
+        # 1 回計上される過大分は prod_demo で 64MiB 予算の 0.3% (direction-safe)。
+        seen: set[int] = set()
         freed_bytes = 0
         freed_signals = 0
         deadline_hit = False
@@ -123,7 +136,7 @@ class TeardownService(QObject):
                 # pending_signals() が乖離しないための安価な保険。
                 self._pending_signals -= 1
                 freed_signals += 1
-                freed_bytes += sig.timestamps.nbytes + _materialized_value_bytes(sig)
+                freed_bytes += _retained_bytes(sig, seen)
                 del sig  # drop the last strong ref -> the arrays free here
                 # クロックは 256 信号ごとにだけ見る: 未展開シェル 1 本の解放は
                 # ~1.6us なので、毎回 perf_counter を呼ぶとその自体が無視できない。
@@ -134,19 +147,42 @@ class TeardownService(QObject):
                 self._groups.popleft()
                 if self._on_finished is not None:
                     self._on_finished(key)
+        # バイト軸を直接 assert できる唯一の観測点。pending_bytes は生存集合から
+        # 都度再計算するため、共有配列があると _drain の会計と乖離しても差分に現れない。
+        self._last_tick_bytes = freed_bytes
         if not self._groups:
             self._timer.stop()
 
 
-def _materialized_value_bytes(sig: Signal) -> int:
-    """未展開の値は 0。展開済み値+Signal 上の派生キャッシュ (float64 昇格等) を計上.
+def _retained_bytes(sig: Signal, seen: set[int]) -> int:
+    """この Signal が保持しているバイト数 (既に数えた配列は id で除外).
 
-    未展開信号の sig.values を絶対に読まない (読むと遅延ロードを再誘発する)."""
-    total = sig._values_source.nbytes_if_materialized
-    seen: set[int] = set()
-    sv = getattr(sig, "_sorted_view_cache", None)
-    fv = getattr(sig, "_finite_view_cache", None)
-    for pair in (sv, fv):
+    master はグループ内で identity 共有されるので、信号ごとに数えると prod_demo で
+    実体 0.2 MiB に対し 10,316 MiB (約 5 万倍) を計上してしまう。
+    未展開信号の sig.values は絶対に読まない (読むと遅延ロードを再誘発する) —
+    値は array_if_materialized() で「展開済みのときだけ」取る。
+
+    `_range_stat_index_cache` (RangeStatIndex のブロック配列 5 本) は計上しない:
+    ブロック配列は √n スケールで小さく、元の ts/vs は finite_view と共有されるため
+    二重計上になる。ただしこれは時間問題の解決ではない — 実測で RSI を持たせても
+    バイト計上は変わらないままティックが 24→36ms に増える (だから第 3 軸の
+    デッドラインが要る)。
+    """
+    total = 0
+    ts = sig.timestamps
+    if id(ts) not in seen:
+        seen.add(id(ts))
+        total += int(ts.nbytes)
+    # getattr フォールバックは使わない — 名前がドリフトしたら実ソースで dedup が
+    # 無言で消えるので、AttributeError で loud-fail させる。
+    val = sig._values_source.array_if_materialized()
+    if val is not None and id(val) not in seen:
+        seen.add(id(val))
+        total += int(val.nbytes)
+    for pair in (
+        getattr(sig, "_sorted_view_cache", None),
+        getattr(sig, "_finite_view_cache", None),
+    ):
         if pair is None:
             continue
         for arr in pair:  # (timestamps, values) タプル

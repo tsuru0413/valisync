@@ -46,7 +46,9 @@ def test_drains_in_byte_budget_slices(qtbot) -> None:
     def _spy() -> None:
         before = svc.pending_bytes()
         orig()
-        slice_bytes.append(before - svc.pending_bytes())
+        after = svc.pending_bytes()
+        slice_bytes.append(before - after)
+        assert svc.last_tick_bytes == before - after
 
     svc._drain = _spy  # type: ignore[method-assign]
     svc.enqueue("g", _group(sigs))
@@ -125,6 +127,11 @@ class _CountingSource:
     def nbytes_if_materialized(self) -> int:
         self._c[0] += 1
         return self._n
+
+    def array_if_materialized(self) -> None:
+        # None を返して「未展開」を装い、バイト数の観測点を nbytes スパイ
+        # (_CountingArr) 側に残す。
+        return None
 
 
 class _SpySignal:
