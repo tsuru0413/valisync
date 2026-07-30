@@ -481,7 +481,7 @@ def test_prod_tiny_structure_loads(tmp_path):
         n_100ms_arrays=2,
         n_500ms_arrays=2,
         cols=6,
-        wide_cols=1100,  # >1024 を維持 (FU-01 対象)
+        wide_cols=1100,  # >1024 を維持 (E-3 T8 の退役後も載ることの確認に使う)
         n_scalars=3,
     )
     prof = gen.Profile(duration_s=0.5, chunk_s=0.5, groups_builder=builder)
@@ -511,12 +511,26 @@ def test_prod_tiny_structure_loads(tmp_path):
     )
     assert session.resolve_signal(f"{outcome.key}::Prod10_0000[0]") is not None
     assert session.resolve_signal(f"{outcome.key}::Prod10_0000[5]") is not None
-    # >1024 列の広幅アレイはヘッドレスでは展開されない (LD-14 全スキップ=FU-01 対象)
-    assert not any(n.startswith("Prod10Wide_0000") for n in names)
-    # 非展開だけでは「無関係な理由で消えた」場合も緑になる。LD-14 の >1024 ガードが
-    # 実際に発火し警告診断を出した (=FU-01 の展開ダイアログ候補になる) ことを弁別する。
-    assert any(
+    # **E-3 T8 で 1024 ガードを退役** (ユーザー決定 2)。退役前の契約はここで
+    # 「Prod10Wide_0000 は names に居ない + スキップ warning が 1 件出る」だった —
+    # 反転後は広幅チャンネルも物理チャンネル 1 行として普通に載り、列は鋳造で引ける。
+    # prod_demo ではこれで今まで一覧に出ていなかった 60 本が初めて使える。
+    assert "Prod10Wide_0000" in names
+    assert session.total_column_count(outcome.key) > len(names), (
+        "反 vacuous: 広幅を数えていないなら列数が行数を大きく上回らない"
+    )
+    assert len(session.column_names_of(outcome.key, "Prod10Wide_0000")) == 1100
+    # 端の列まで鋳造できる (1024 を跨いだ先が本当に引けることの弁別)
+    assert session.resolve_signal(f"{outcome.key}::Prod10Wide_0000[1099]") is not None
+    # スキップ warning は消え、代わりに「N 本に展開」info が出る (T8 の置換)。
+    assert not any(
         d.level == "warning" and "Prod10Wide_0000" in (d.message or "")
+        for d in outcome.diagnostics
+    )
+    assert any(
+        d.level == "info"
+        and "Prod10Wide_0000" in (d.message or "")
+        and "1100" in (d.message or "")
         for d in outcome.diagnostics
     )
     # error 診断はゼロ

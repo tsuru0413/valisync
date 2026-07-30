@@ -46,7 +46,7 @@ def main() -> None:
     # (prune の遅さは「セッション全走査」に支配され、プロット数には支配されない)。
     names: list[str] = []
     for sig in app_vm.session.signals():
-        display = sig.name.split(KEY_SEPARATOR, 1)[1]
+        display = sig.name.split(KEY_SEPARATOR, 1)[-1]
         for col in app_vm.session.column_names_of(key, display):
             names.append(f"{key}{KEY_SEPARATOR}{col}")
         if len(names) >= SIGNALS_PER_PANEL:

@@ -703,6 +703,10 @@ def column_read_latency(win: object, key: str) -> None:
     assert len(widest_keys) == widest_n, (len(widest_keys), widest_n, widest_display)
     already = mgr.resolved_keys(key)
     fresh = [k for k in widest_keys if k not in already][:LATENCY_COLUMNS]
+    # E-4 の要否はこの数値 1 本で決まる。呼び出し位置が動いて先頭列が既に鋳造済みに
+    # なるとループが 0 回になり「TOTAL 0 columns = 0 ms」を刷って**黙って合格**する。
+    # 上の 2 つの前提 assert と同じ基準で loud-fail させる。
+    assert len(fresh) == LATENCY_COLUMNS, (len(fresh), widest_display, len(already))
 
     mint_before = mgr.mint_count
     per_column: list[float] = []
@@ -879,7 +883,7 @@ def main() -> None:
     print(f"  PEAK during load     = {r1.peak_mb:,.0f} MB", flush=True)
     print(f"  steady RSS (settled) = {r1.steady_mb:,.0f} MB", flush=True)
     print(
-        f"  steady USS  [main]   = {r1.steady_uss_mb:,.0f} MB  "
+        f"  steady USS [PRIMARY] = {r1.steady_uss_mb:,.0f} MB  "
         f"(vs baseline +{r1.steady_uss_mb - after_win_uss:,.0f} MB)",
         flush=True,
     )
@@ -888,7 +892,7 @@ def main() -> None:
     print(f"  PEAK during 2nd load = {r2.peak_mb:,.0f} MB", flush=True)
     print(f"  steady RSS (settled) = {r2.steady_mb:,.0f} MB", flush=True)
     print(
-        f"  steady USS  [main]   = {r2.steady_uss_mb:,.0f} MB  "
+        f"  steady USS [PRIMARY] = {r2.steady_uss_mb:,.0f} MB  "
         f"(vs baseline +{r2.steady_uss_mb - after_win_uss:,.0f} MB)",
         flush=True,
     )
@@ -903,8 +907,9 @@ def main() -> None:
         flush=True,
     )
     print(
-        "  E-3 target: core 590 -> ~310 MB / objects 264,004 -> 4,324 / "
-        "USS +281 MiB -> +15 MiB",
+        "  E-3 target (HEADLESS-CORE scope -- run with --core to compare on the\n"
+        "  same footing; the GUI USS delta above is a different, larger scope):\n"
+        "    core 590 -> ~310 MB / objects 264,004 -> 4,324 / USS +281 MiB -> +15 MiB",
         flush=True,
     )
 
