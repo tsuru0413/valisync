@@ -7,16 +7,15 @@ from pathlib import Path
 import numpy as np
 
 from valisync.core.downsampler.downsampler import Downsampler
-from valisync.core.export.csv_exporter import CsvExporter, CsvExportOptions
+from valisync.core.export.csv_exporter import (
+    EXPORT_CONTAINER_CHANNEL_ERROR_TMPL,
+    CsvExporter,
+    CsvExportOptions,
+)
 from valisync.core.formula.engine import FormulaEngine
 from valisync.core.interpolation.interpolator import InterpolationMethod, Interpolator
 from valisync.core.loaders.csv_loader import CsvLoader
-from valisync.core.loaders.mdf_loader import (
-    ConfirmExpansion,
-    ExpansionRequest,
-    MdfLoader,
-    OversizedChannel,
-)
+from valisync.core.loaders.mdf_loader import MdfLoader
 from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR, SignalGroupManager
 from valisync.core.models import FormatDefinition, Signal, SignalGroup
 from valisync.core.models.load_result import Diagnostic, LoadCancelled
@@ -24,13 +23,10 @@ from valisync.core.statistics.range_stats import RangeStatistics, StatisticsResu
 from valisync.core.sync.synchronizer import TimeSynchronizer
 
 __all__ = [
-    "ConfirmExpansion",
-    "ExpansionRequest",
     "LoadCancelled",
     "LoadError",
     "LoadManyResult",
     "LoadOutcome",
-    "OversizedChannel",
     "RemovalResult",
     "Session",
     "SourceInfo",
@@ -139,7 +135,6 @@ class Session:
         file_path: Path,
         format_def: FormatDefinition | None = None,
         cancel: Callable[[], bool] | None = None,
-        confirm_expansion: ConfirmExpansion | None = None,
     ) -> LoadOutcome:
         """Load a file and return the group key plus any loader diagnostics.
 
@@ -147,9 +142,7 @@ class Session:
         the loader reports failure. ``cancel`` is a cooperative callback the
         loader polls at checkpoints; when it returns True the loader raises
         LoadCancelled and no group is registered (FB-04 — user-initiated, not
-        an error). ``confirm_expansion`` は多次元チャンネルの展開列数が上限を
-        超えるとき MDF4 ローダーから呼ばれ、展開するチャンネルの選択を返す
-        コールバック (LD-14・CSV では無視)。
+        an error).
         """
         file_path = Path(file_path)
         if self._csv_loader.supports(file_path):
@@ -157,9 +150,7 @@ class Session:
                 raise ValueError("CSV の読み込みにはフォーマット定義が必要です")
             result = self._csv_loader.load(file_path, format_def, cancel=cancel)
         elif self._mdf_loader.supports(file_path):
-            result = self._mdf_loader.load(
-                file_path, cancel=cancel, confirm_expansion=confirm_expansion
-            )
+            result = self._mdf_loader.load(file_path, cancel=cancel)
         else:
             raise ValueError(f"対応していないファイル形式です: {file_path}")
 
@@ -167,7 +158,9 @@ class Session:
             messages = [d.message for d in result.diagnostics]
             raise LoadError(file_path, messages, diagnostics=result.diagnostics)
         try:
-            key = self._groups.add(result.signal_group)
+            key = self._groups.add(
+                result.signal_group, column_records=result.column_records
+            )
         except Exception:
             # 登録に失敗したグループは誰も所有しない。handle を閉じないと
             # トレースバックが生かし続け、GUI のエラーダイアログ表示中ずっと
@@ -258,6 +251,36 @@ class Session:
         """名前空間つきキーを Signal へ解決する (列キーは要求時に鋳造・E-1)."""
         return self._groups.resolve(key)
 
+    def column_names_of(self, key: str, display_name: str) -> tuple[str, ...]:
+        """物理チャンネル 1 本の列名を順序どおり返す (名前空間なし・E-3)。
+
+        GUI が「その物理チャンネルにどんな列があるか」を知る唯一の口。
+        鋳造 (``resolve_signal``) を誘発しないので、展開していない親にも使える。
+        """
+        return self._groups.column_names_of(key, display_name)
+
+    def total_column_count(self, key: str) -> int:
+        """グループの数値列総数 (KeyError if unknown)。表示件数の母数 (U2)。"""
+        return self._groups.total_column_count(key)
+
+    def has_column(self, key: str, display_name: str) -> bool:
+        """*display_name* の列がこのグループに実在するか (鋳造しない存在判定)。
+
+        ``resolve_signal`` と違い副テーブルへ何も残さない — 「表示のためだけに列を
+        恒久登録する」経路を作らないための口 (E-3 C-g)。
+        """
+        return self._groups.has_column(key, display_name)
+
+    def is_container_channel(self, key: str, display_name: str) -> bool:
+        """*display_name* が複数列 (または改名列) へ展開される「親」チャンネルか。
+
+        判定は ColumnRecord の列構造から引く — ``sig.values.ndim`` を見ると
+        チャンネル全読み (prod で 1 本 96 MB) を誘発し、遅延展開の利得をその場で
+        捨てることになる。列キー・スカラー・未知名は ``(display_name,)`` が返るので
+        いずれも False (E-3 C-d)。
+        """
+        return self.column_names_of(key, display_name) != (display_name,)
+
     def source_info(self, key: str) -> SourceInfo:
         """Return read-only metadata for the group under *key* (KeyError if unknown)."""
         group = self._groups.group(key)
@@ -280,7 +303,12 @@ class Session:
             size_bytes=size,
             t_min=t_min,
             t_max=t_max,
-            n_channels=len(group.signals),
+            # U2: 単位は **列数**。E-3 反転で len(group.signals) は物理チャンネル数
+            # (prod 4,324) になったので、そのまま使うとファイル情報だけが別の母数を
+            # 名乗る (ブラウザヘッダ/エクスポートは列数 264,004)。表を持たない
+            # CSV/Derived では total_column_count が len(group.signals) に落ちるので
+            # 従来値のまま。
+            n_channels=self._groups.total_column_count(key),
             file_format=group.file_format,
         )
 
@@ -375,7 +403,33 @@ class Session:
         use_unified_timeline: bool = False,
         options: CsvExportOptions | None = None,
     ) -> None:
+        self._reject_container_channels(signals)
         self._exporter.export(signals, output_path, use_unified_timeline, options)
+
+    def _reject_container_channels(self, signals: list[Signal]) -> None:
+        """配列/構造体チャンネルの親を、値を読む前に拒否する (E-3 C-d)。
+
+        GUI のダイアログは親行をチェック不可にしている (C-a) が、scripted /
+        realgui は ``session.export_csv`` を直呼びするため、ここが実効的な唯一の
+        防波堤になる。所属グループが引けない Signal (Derived・アンロード済み) は
+        列構造を知りようがないので通す — 判定不能を拒否に倒すと Derived_Signal の
+        エクスポートが全滅する (最後の砦は CsvExporter 側の 1 時刻 1 値検査)。
+        """
+        loaded = set(self.group_keys())
+        for sig in signals:
+            group_key, sep, bare = sig.name.partition(KEY_SEPARATOR)
+            if not sep or group_key not in loaded:
+                continue
+            # 述語は is_container_channel と同一 — ここでインライン展開するのは、
+            # エラー文の「例: Mat[0]」に列名そのものが要るため (二度引きしない)。
+            columns = self.column_names_of(group_key, bare)
+            if columns == (bare,):
+                continue
+            raise ValueError(
+                EXPORT_CONTAINER_CHANNEL_ERROR_TMPL.format(
+                    name=bare, example=columns[0] if columns else bare
+                )
+            )
 
     # ─── Calcbar operations (Req 26 / 15) ─────────────────────────────────────
 

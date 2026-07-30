@@ -112,11 +112,17 @@ EXPORT_RANGE_CURSOR_TMPL: Final = "カーソル A–B（{lo:.3f}–{hi:.3f} s）
 EXPORT_RANGE_OFFSET_TOOLTIP: Final = "オフセットをリセットすると範囲指定が使えます"
 EXPORT_SELECTION_COUNT_TMPL: Final = "{n} 信号を選択中"
 
-# ── ダイアログ: 展開確認 (expansion_dialog・R-02 半角括弧) ────────────────────
-EXPANSION_OVER_LIMIT_TMPL: Final = (
-    "以下の信号は展開すると列数が上限 ({limit}) を超えます。\n"
-    "展開するものを選択してください（未選択はスキップ）。"
-)
+# ── ダイアログ: CSV エクスポート — 列の遅延展開 (E-3・U1) ────────────────────
+# 未展開の物理チャンネル行に置くダミー子。展開した瞬間に実列へ置換されるので
+# ユーザーにはほぼ見えないが、これが無いと Qt が展開矢印を描かない
+# (= 列があることに気付けない)。
+EXPORT_COLUMN_PLACEHOLDER: Final = "…"
+# 複数列の物理チャンネル行のチェックボックスは C-a で押しても変わらない (親を
+# チェック = 全列 は prod で 264k 鋳造の一撃)。ただし行は enabled のまま三態を
+# 描くので、理由が無いと「押しても無反応」の無音拒否になる — 増分B が敷いた
+# 「拒否は disabled 表示 + ツールチップ」の規約に合わせて理由を出す。
+EXPORT_CONTAINER_ROW_TOOLTIP: Final = "展開して列を選択してください"
+EXPORT_UNRESOLVED_ERROR_TMPL: Final = "選択した列を読み出せません（{n} 件・例: {name}）"
 
 # ── ダイアログ: 信号プレビュー (signal_preview_window・R-05 em ダッシュ) ─────
 PREVIEW_UNAVAILABLE: Final = "この信号はプレビューできません"
@@ -181,6 +187,9 @@ OVERLAY_CLAUSE_NO_MATCH_TMPL: Final = "同名なし {n}"
 OVERLAY_CLAUSE_UNIT_MISMATCH_TMPL: Final = "単位不一致 {n}"
 OVERLAY_CLAUSE_ALREADY_TMPL: Final = "済み {n}"
 OVERLAY_CLAUSE_AMBIGUOUS_TMPL: Final = "曖昧 {n}"
+# E-3: 対象ファイル側の候補が配列/構造体チャンネル**本体**だった件数
+# (スカラー vs 配列の構造ミスマッチ — 単位不一致と同じ粒度の語彙に揃える)。
+OVERLAY_CLAUSE_CONTAINER_TMPL: Final = "構造不一致 {n}"
 STATUS_OVERLAY_ALL_DONE: Final = "すべて重ね済みです"
 STATUS_OVERLAY_NO_REFERENCE_SIGNALS: Final = "基準の信号がプロットされていません"
 

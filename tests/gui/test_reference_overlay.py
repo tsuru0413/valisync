@@ -1,3 +1,4 @@
+# ruff: noqa: RUF002
 """Tests for reference_overlay (E-2b — reference-file same-name auto-overlay).
 
 Pure-Python VM-level logic (spec §3): the 5-step matching/skip-counting
@@ -11,7 +12,9 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+import pytest
 
+from tests.mdf4_helpers import write_mdf4, write_mdf4_2d
 from valisync.core.models import Signal, SignalGroup
 from valisync.core.session import Session
 from valisync.gui.reference_overlay import (
@@ -381,3 +384,212 @@ def test_file_display_name_qualifies_on_basename_collision(tmp_path: Path) -> No
         SignalGroup((), (tmp_path / "a.csv").absolute(), "CSV", datetime.now())
     )
     assert file_display_name(session, [k1, k2], k2) == f"a.csv ({k2})"
+
+
+# ─── E-3: 列レベルのマッチ (spec C-c) ───────────────────────────────────────
+
+
+def _mat2d_in(tmp_path: Path, sub: str) -> Path:
+    """write_mdf4_2d は固定名 mat2d.mf4 を書くので 2 本目は別ディレクトリへ置く。"""
+    directory = tmp_path / sub
+    directory.mkdir()
+    return write_mdf4_2d(directory)
+
+
+def test_overlay_matches_expanded_column_across_files(tmp_path: Path) -> None:
+    """反転後 group_signals は物理チャンネルしか返さない。列レベルで引かないと
+    Mat[0] が全て no_match になり「0 件重ねました（同名なし 1）」という
+    **正常に見える嘘**が出る (真の不一致と区別できない)。"""
+    session = Session()
+    ref_key = session.load(_mat2d_in(tmp_path, "ref")).key
+    tgt_key = session.load(_mat2d_in(tmp_path, "tgt")).key
+    ref_col = f"{ref_key}::Mat[0]"
+
+    panel = GraphPanelVM(session)
+    panel.add_signal_to_axis(ref_col, 0)
+
+    result = overlay_reference_signals(panel, session, ref_key, tgt_key)
+
+    assert result.added == 1
+    assert result.no_match == 0
+    assert {(sk, ax) for _eid, sk, ax in panel.plotted_entries()} == {
+        (ref_col, 0),
+        (f"{tgt_key}::Mat[0]", 0),
+    }
+
+
+def test_overlay_rerun_is_idempotent_for_minted_columns(tmp_path: Path) -> None:
+    """同じ重ねを 2 回走らせても列は増えない (T7 レビュー: 議論のみで未 test-lock)。
+
+    ``already_present`` は plotted entries の **列キー** で作られる (C-c)。1 回目で
+    鋳造された列キーが 2 回目に別表記で戻ってくる、あるいは物理チャンネル単位で
+    突き合わせるようになると、2 回目が ``added=1`` になって同じ列が二重に載る。
+    ここが崩れても 1 回目のテストは全て緑のままなので、**再実行**そのものを固定する。
+    """
+    session = Session()
+    ref_key = session.load(_mat2d_in(tmp_path, "ref")).key
+    tgt_key = session.load(_mat2d_in(tmp_path, "tgt")).key
+    ref_col = f"{ref_key}::Mat[0]"
+
+    panel = GraphPanelVM(session)
+    panel.add_signal_to_axis(ref_col, 0)
+
+    first = overlay_reference_signals(panel, session, ref_key, tgt_key)
+    assert first == OverlayResult(
+        total=1, added=1, no_match=0, unit_mismatch=0, already_present=0, ambiguous=0
+    )
+    after_first = {(sk, ax) for _eid, sk, ax in panel.plotted_entries()}
+
+    second = overlay_reference_signals(panel, session, ref_key, tgt_key)
+    assert second == OverlayResult(
+        total=1, added=0, no_match=0, unit_mismatch=0, already_present=1, ambiguous=0
+    ), f"再実行が冪等でない: {second}"
+    assert {(sk, ax) for _eid, sk, ax in panel.plotted_entries()} == after_first, (
+        "再実行でエントリが増えた (同じ列が二重に載っている)"
+    )
+    # 母数は基準エントリのみ — 1 回目で追加した対象側の列を数え始めると total が
+    # 実行ごとに増える (「重ねるほど仕事が増える」自己増殖)。
+    assert second.total == 1
+
+
+def test_overlay_column_key_collision_prefers_real_channel(tmp_path: Path) -> None:
+    """`Mat[0]` 衝突の pin: 参照側の配列列 `Mat[0]` は、対象ファイルに実在する
+    1-D チャンネル `Mat[0]` と単位一致で偶然ペアリングされる。どちらが選ばれるかは
+    parse_leaf の最長一致規則 (実チャンネルが展開列に優先) で決まる — 規則を変えると
+    重ねる相手が黙って別物になるので、値まで含めて固定する。"""
+    session = Session()
+    ref_key = session.load(_mat2d_in(tmp_path, "ref")).key
+    tgt_path = write_mdf4(
+        tmp_path / "tgt.mf4",
+        [
+            {
+                "name": "Mat[0]",
+                "timestamps": [0.0, 0.1, 0.2, 0.3],
+                "values": [7.0, 8.0, 9.0, 10.0],
+            }
+        ],
+    )
+    tgt_key = session.load(tgt_path).key
+    ref_col = f"{ref_key}::Mat[0]"
+
+    panel = GraphPanelVM(session)
+    panel.add_signal_to_axis(ref_col, 0)
+
+    result = overlay_reference_signals(panel, session, ref_key, tgt_key)
+
+    added_key = f"{tgt_key}::Mat[0]"
+    assert result.added == 1
+    assert (added_key, 0) in {(sk, ax) for _eid, sk, ax in panel.plotted_entries()}
+    # 実チャンネル (物理) が勝つ — 鋳造された展開列ではない
+    assert added_key in {s.name for s in session.group_signals(tgt_key)}
+    got = session.resolve_signal(added_key)
+    assert got is not None
+    assert got.sorted_view()[1].tolist() == [7.0, 8.0, 9.0, 10.0]
+
+
+def test_overlay_does_not_touch_the_resolver_for_refusals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M-7: 鋳造せずに決まる却下 (同名なし / 構造不一致 / 済み) は解決器に触らない。
+
+    ``resolve_signal`` は鋳造の入口で、ヒットした列は ``_resolved_by_key`` へ
+    **恒久登録**される (E-3 C-g で LRU なし)。存在判定に使うと「重ねなかった候補」
+    までセッション寿命いっぱい滞留するので、存在は ``has_column`` /
+    ``is_container_channel`` が答え、鋳造は metadata (曖昧フラグ・単位) が本当に
+    必要になるまで遅らせる。
+
+    観測点は ``SignalGroupManager.resolve`` — ``session.resolve_signal`` も
+    ``signal_map()`` のフォールスルーも通る**唯一の鋳造の扉**なので、呼び出し方を
+    別 API へ差し替える「直し方」でも逃げられない。
+    sabotage: 3 つの却下判定を ``resolve_signal`` の後ろへ戻すと呼び出しが 3 件
+    記録されて RED。
+    """
+    ref_path = write_mdf4(
+        tmp_path / "ref.mf4",
+        [
+            {"name": "Solo", "timestamps": [0.0, 0.1], "values": [1.0, 2.0]},
+            {"name": "Mat", "timestamps": [0.0, 0.1], "values": [3.0, 4.0]},
+            {"name": "Clean", "timestamps": [0.0, 0.1], "values": [5.0, 6.0]},
+        ],
+    )
+    session = Session()
+    ref_key = session.load(ref_path).key
+    tgt_key = session.load(_mat2d_in(tmp_path, "tgt")).key  # Mat は 2-D 容器
+
+    panel = GraphPanelVM(session)
+    panel.add_signal_to_axis(f"{ref_key}::Solo", 0)  # tgt に同名なし
+    panel.add_signal_to_axis(f"{ref_key}::Mat", 1)  # tgt の Mat は容器
+    panel.add_signal_to_axis(f"{ref_key}::Clean", 2)
+    panel.add_signal_to_axis(f"{tgt_key}::Clean", 2)  # 既に重ね済み
+
+    calls: list[str] = []
+    original = session._groups.resolve
+
+    def counting(key: str) -> Signal | None:
+        calls.append(key)
+        return original(key)
+
+    monkeypatch.setattr(session._groups, "resolve", counting)
+
+    result = overlay_reference_signals(panel, session, ref_key, tgt_key)
+
+    assert result == OverlayResult(
+        total=3,
+        added=0,
+        no_match=1,
+        unit_mismatch=0,
+        already_present=1,
+        ambiguous=0,
+        container=1,
+    )
+    assert calls == [], f"却下だけの重ねが解決器 (鋳造の扉) を叩いた: {calls}"
+
+    # 反 vacuous: スパイは実際に配線されている (metadata が要る経路では鋳造が起こる)
+    assert session.resolve_signal(f"{tgt_key}::Mat[0]") is not None
+    assert calls == [f"{tgt_key}::Mat[0]"]
+
+
+def test_overlay_skips_container_channel_candidate(tmp_path: Path) -> None:
+    """参照が 1-D スカラー `Mat`、対象が 2-D 配列チャンネル `Mat` のとき、候補は列
+    ではなく **配列の親**。載せると sorted_view() が float64 へ 8 倍膨張した 2-D 配列を
+    恒久キャッシュし (prod で 96 MB/本)、そもそも描画できない。"""
+    session = Session()
+    ref_path = write_mdf4(
+        tmp_path / "ref.mf4",
+        [
+            {
+                "name": "Mat",
+                "timestamps": [0.0, 0.1, 0.2, 0.3],
+                "values": [1.0, 2.0, 3.0, 4.0],
+            }
+        ],
+    )
+    ref_key = session.load(ref_path).key
+    tgt_key = session.load(_mat2d_in(tmp_path, "tgt")).key
+
+    panel = GraphPanelVM(session)
+    panel.add_signal_to_axis(f"{ref_key}::Mat", 0)
+
+    result = overlay_reference_signals(panel, session, ref_key, tgt_key)
+
+    assert result.container == 1
+    assert result.added == 0
+    assert len(panel.plotted_entries()) == 1  # 親は載らない
+    # 拒否は **値を読まずに** 決める (チャンネル全読みは遅延展開の利得を捨てる)
+    parent = session.resolve_signal(f"{tgt_key}::Mat")
+    assert parent is not None
+    assert parent._values_source.is_materialized is False
+
+
+def test_format_summary_container_clause() -> None:
+    result = OverlayResult(
+        total=1,
+        added=0,
+        no_match=0,
+        unit_mismatch=0,
+        already_present=0,
+        ambiguous=0,
+        container=1,
+    )
+    msg = format_overlay_summary(result, "b.mf4")
+    assert msg == "b.mf4 の同名信号を 0 件重ねました（構造不一致 1）"

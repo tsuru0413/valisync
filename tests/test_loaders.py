@@ -19,7 +19,7 @@ from valisync.core.loaders.csv_loader import CsvLoader
 from valisync.core.loaders.mdf_handle import MdfHandle
 from valisync.core.loaders.mdf_loader import MdfLoader
 from valisync.core.models import Delimiter, FormatDefinition
-from valisync.core.session import LoadCancelled
+from valisync.core.session import LoadCancelled, Session
 
 from .mdf4_helpers import (
     CAN,
@@ -36,7 +36,6 @@ from .mdf4_helpers import (
     write_mdf4_structured,
     write_mdf4_ttab,
     write_mdf4_value2text,
-    write_mdf4_wide_2d,
 )
 
 
@@ -537,15 +536,22 @@ def test_mdf_loader_cancel_during_group_load_closes_handle(tmp_path: Path) -> No
     captured: list[MdfHandle] = []
 
     def _cancel_in_group(*args: Any, **kwargs: Any) -> None:
-        captured.append(args[-1])  # handle は最後の位置引数
+        # handle を **位置** で拾わない: E-3 T1 が column_records を末尾へ足した
+        # 時点で args[-1] は dict になり、この setup が黙って壊れていた
+        # (isinstance 判定が RED になるまで誰も気づかなかった)。引数の並びは
+        # 実装都合なので、型で拾って「handle が 1 つだけ渡る」を setup の pin にする。
+        captured.extend(
+            a for a in (*args, *kwargs.values()) if isinstance(a, MdfHandle)
+        )
         raise LoadCancelled("cancelled mid-load")
 
     with patch.object(MdfLoader, "_load_group", _cancel_in_group):
         with pytest.raises(LoadCancelled):
             MdfLoader().load(path)
     try:
-        assert captured, "_load_group が呼ばれていない (setup 失敗)"
-        assert isinstance(captured[0], MdfHandle), "最後の位置引数が handle でない"
+        assert len(captured) == 1, (
+            f"_load_group へ MdfHandle が 1 つ渡っていない (setup 失敗): {captured!r}"
+        )
         assert captured[0].is_closed, (
             "本読み中キャンセルで handle が閉じられていない (リーク)"
         )
@@ -716,20 +722,26 @@ def test_helper_2d_roundtrip(tmp_path: Path) -> None:
 # ─── MdfLoader: 多次元/構造化チャンネルの要素展開 (LD-12, 第3弾 Task 3) ──────
 
 
-def test_2d_channel_explodes_into_columns(tmp_path: Path) -> None:
-    """LD-12: 2D (Nx3) が Mat[0..2] の 1D 信号群へ展開され共有マスタを参照する."""
-    result = MdfLoader().load(write_mdf4_2d(tmp_path))
-    names = {s.name for s in result.signal_group.signals}
-    assert {"Mat[0]", "Mat[1]", "Mat[2]", "Clean"} <= names
-    m0 = next(s for s in result.signal_group.signals if s.name == "Mat[0]")
-    m2 = next(s for s in result.signal_group.signals if s.name == "Mat[2]")
+def test_2d_channel_is_one_signal_with_minted_columns(tmp_path: Path) -> None:
+    """LD-12/E-3: 2D (Nx3) は Signal 1 個 — 列 Mat[0..2] は鋳造で引ける.
+
+    旧 test_2d_channel_explodes_into_columns の等価移送。値・共有 master・info 1 件・
+    skip 無しは全て保存し、**列 Signal がどこに居るか**だけが変わる。
+    """
+    session = Session()
+    outcome = session.load(write_mdf4_2d(tmp_path))
+    names = {s.name.split("::", 1)[1] for s in session.group_signals(outcome.key)}
+    assert names == {"Mat", "Clean"}
+    m0 = session.resolve_signal(f"{outcome.key}::Mat[0]")
+    m2 = session.resolve_signal(f"{outcome.key}::Mat[2]")
+    assert m0 is not None and m2 is not None
     assert np.array_equal(m0.values, [0.0, 10.0, 20.0, 30.0])
     assert np.array_equal(m2.values, [2.0, 12.0, 22.0, 32.0])
     assert np.shares_memory(m0.timestamps, m2.timestamps)
-    infos = [d for d in result.diagnostics if d.level == "info" and "Mat" in d.message]
+    infos = [d for d in outcome.diagnostics if d.level == "info" and "Mat" in d.message]
     assert len(infos) == 1 and "3 本に展開" in infos[0].message
     assert not any(
-        "スキップ" in d.message and "Mat" in d.message for d in result.diagnostics
+        "スキップ" in d.message and "Mat" in d.message for d in outcome.diagnostics
     )
 
 
@@ -739,35 +751,29 @@ def test_2d_channel_expansion_names_are_not_flagged_deduplicated(
     """E-2b: LD-14 array-expansion names ("Mat[0]" etc.) look textually like a
     LD-08 dedup suffix but must NOT carry metadata["name_deduplicated"] — they
     are deterministic/cross-file comparable, unlike the per-file [idx]
-    disambiguation (spec §3 step 5's judgment mechanism: the flag, not the
-    "[i]" string shape, is the only exclusion basis)."""
-    result = MdfLoader().load(write_mdf4_2d(tmp_path))
-    by_name = {s.name: s for s in result.signal_group.signals}
-    assert "name_deduplicated" not in by_name["Mat[0]"].metadata
-    assert "name_deduplicated" not in by_name["Mat[1]"].metadata
-    assert "name_deduplicated" not in by_name["Mat[2]"].metadata
-    assert "name_deduplicated" not in by_name["Clean"].metadata
+    disambiguation. E-3: 鋳造列と親の両方で確認する (旗の継承点が増えたため)。"""
+    session = Session()
+    key = session.load(write_mdf4_2d(tmp_path)).key
+    for orig in ("Mat", "Mat[0]", "Mat[1]", "Mat[2]", "Clean"):
+        sig = session.resolve_signal(f"{key}::{orig}")
+        assert sig is not None, orig
+        assert "name_deduplicated" not in sig.metadata
 
 
 def test_structured_channel_fields_visible(tmp_path: Path) -> None:
-    """LD-12: 構造化 (x,y) がフィールド単位で見える (Pt.x / Pt.y ないし成分ch)."""
-    result = MdfLoader().load(write_mdf4_structured(tmp_path))
-    names = {s.name for s in result.signal_group.signals}
-    # 実装時確認 (Task 1 Task2-Step2 と本タスク Step1 で確定): select() 結果には
-    # 構造化チャンネルの親 (Pt) のみが届き成分 (x/y) は included_channels から
-    # 除外されている — フィールド展開は Pt.x/Pt.y として現れる。
-    xs = [
-        s
-        for s in result.signal_group.signals
-        if np.array_equal(s.values, [1.0, 2.0, 3.0])
-    ]
-    assert xs, f"x 成分が信号として見えない: {sorted(names)}"
-    assert not any(d.level == "error" for d in result.diagnostics)
+    """LD-12: 構造化 (x,y) がフィールド単位で見える (Pt.x / Pt.y の列キーで引ける)."""
+    session = Session()
+    outcome = session.load(write_mdf4_structured(tmp_path))
+    x = session.resolve_signal(f"{outcome.key}::Pt.x")
+    assert x is not None, "x 成分が列として引けない"
+    assert np.array_equal(x.values, [1.0, 2.0, 3.0])
+    assert not any(d.level == "error" for d in outcome.diagnostics)
 
 
-def test_leaf_column_count_matches_flatten() -> None:
-    """任意形状で _leaf_column_count は _flatten のリーフ数と一致する (LD-14)."""
-    from valisync.core.loaders.mdf_loader import _flatten, _leaf_column_count
+def test_all_leaf_count_matches_flatten() -> None:
+    """任意形状で _all_leaf_count は _flatten のリーフ数と一致する (LD-14)."""
+    from valisync.core.loaders.column_names import spec_from_probe
+    from valisync.core.loaders.mdf_loader import _all_leaf_count, _flatten
 
     cases = [
         np.zeros(3),  # 1D scalar -> 1
@@ -777,36 +783,33 @@ def test_leaf_column_count_matches_flatten() -> None:
         np.zeros(3, dtype=[("x", "<f8"), ("y", "<f8", (4,))]),  # struct -> 1+4=5
     ]
     for arr in cases:
-        assert _leaf_column_count(arr) == len(_flatten("x", arr))
+        assert _all_leaf_count(spec_from_probe(arr)) == len(_flatten("x", arr))
 
-    assert _leaf_column_count(np.zeros((3, 4))) == 4
-    assert _leaf_column_count(np.zeros((3, 2, 5))) == 10
-    assert _leaf_column_count(np.zeros(3)) == 1
+    assert _all_leaf_count(spec_from_probe(np.zeros((3, 4)))) == 4
+    assert _all_leaf_count(spec_from_probe(np.zeros((3, 2, 5)))) == 10
+    assert _all_leaf_count(spec_from_probe(np.zeros(3))) == 1
 
 
-def test_explode_samples_subarray_field_one_level() -> None:
+def test_flatten_subarray_field_one_level() -> None:
     """構造化フィールドが (N,k) サブ配列のとき Name.field[i] に1段展開される."""
-    from valisync.core.loaders.mdf_loader import _explode_samples
+    from valisync.core.loaders.mdf_loader import _flatten
 
     rec = np.zeros(3, dtype=[("mat", "<f8", (2,)), ("s", "<f8")])
     rec["mat"] = [[1, 2], [3, 4], [5, 6]]
     rec["s"] = [7, 8, 9]
-    diags: list = []
-    pairs = _explode_samples("Obj", rec, diags)
-    names = [n for n, _ in pairs]
-    assert names == ["Obj.mat[0]", "Obj.mat[1]", "Obj.s"]
+    pairs = _flatten("Obj", rec)
+    assert [n for n, _ in pairs] == ["Obj.mat[0]", "Obj.mat[1]", "Obj.s"]
     assert np.array_equal(dict(pairs)["Obj.mat[1]"], [2.0, 4.0, 6.0])
 
 
-def test_explode_samples_over_nested_field_expands() -> None:
+def test_flatten_over_nested_field_expands() -> None:
     """ndim>2 のネストフィールドは Name.field[i][j] へ多段展開される (LD-14)."""
-    from valisync.core.loaders.mdf_loader import _explode_samples
+    from valisync.core.loaders.mdf_loader import _flatten
 
     rec = np.zeros(2, dtype=[("deep", "<f8", (2, 2)), ("s", "<f8")])
     rec["deep"] = np.arange(2 * 2 * 2).reshape(2, 2, 2)
     rec["s"] = [7.0, 8.0]
-    diags: list = []
-    pairs = _explode_samples("Obj", rec, diags)
+    pairs = _flatten("Obj", rec)
     assert [n for n, _ in pairs] == [
         "Obj.deep[0][0]",
         "Obj.deep[0][1]",
@@ -818,13 +821,22 @@ def test_explode_samples_over_nested_field_expands() -> None:
     assert np.array_equal(dict(pairs)["Obj.deep[1][1]"], [3.0, 7.0])
 
 
-def test_explode_samples_plain_3d_expands() -> None:
-    """素の 3D 配列は Cube[i][j] へ多段展開される (LD-14・従来は skip だった)."""
-    from valisync.core.loaders.mdf_loader import _explode_samples
+def test_flatten_plain_3d_expands_and_reports_one_info() -> None:
+    """素の 3D は Cube[i][j] へ多段展開され、info は物理チャンネル 1 件 (LD-14/E-3).
+
+    旧 test_explode_samples_plain_3d_expands の等価移送: 名前/値は _flatten が、
+    「本に展開」診断は _expansion_diagnostic が担うようになった (E-3 で
+    _explode_samples は列を作らなくなったため 2 つに分離)。
+    """
+    from valisync.core.loaders.column_names import leaf_count, spec_from_probe
+    from valisync.core.loaders.mdf_loader import (
+        _all_leaf_count,
+        _expansion_diagnostic,
+        _flatten,
+    )
 
     arr = np.arange(4 * 2 * 2).reshape(4, 2, 2).astype(np.float64)
-    diags: list = []
-    pairs = _explode_samples("Cube", arr, diags)
+    pairs = _flatten("Cube", arr)
     assert [n for n, _ in pairs] == [
         "Cube[0][0]",
         "Cube[0][1]",
@@ -832,77 +844,28 @@ def test_explode_samples_plain_3d_expands() -> None:
         "Cube[1][1]",
     ]
     assert np.array_equal(dict(pairs)["Cube[1][1]"], arr[:, 1, 1])
-    assert any("本に展開" in d.message for d in diags)
 
-
-def test_scan_oversized_flags_wide_channel(tmp_path: Path) -> None:
-    """1 レコードプローブで 1024 超チャンネルのみ検出する (LD-14)."""
-    from asammdf import MDF
-
-    path = write_mdf4_wide_2d(tmp_path, cols=1025)
-    loader = MdfLoader()
-    with MDF(str(path)) as mdf:
-        oversized, keys = loader._scan_oversized(mdf, None)
-    assert [o.name for o in oversized] == ["Wide"]
-    assert oversized[0].column_count == 1025
-    assert len(keys) == 1  # (gi, ci) キーが 1 件
-
-
-def test_oversized_expands_only_when_confirmed(tmp_path: Path) -> None:
-    """confirm_expansion が選んだ超過チャンネルのみ展開される (LD-14)."""
-    from valisync.core.loaders.mdf_loader import ExpansionRequest
-
-    path = write_mdf4_wide_2d(tmp_path, cols=1025)
-
-    seen: list[ExpansionRequest] = []
-
-    def confirm(req: ExpansionRequest) -> set[int]:
-        seen.append(req)
-        return {0}  # Wide を展開する
-
-    result = MdfLoader().load(path, confirm_expansion=confirm)
-    names = {s.name for s in result.signal_group.signals}
-    assert "Clean" in names
-    assert "Wide[0]" in names and "Wide[1024]" in names  # 1025 列 (0..1024)
-    assert len(seen) == 1 and seen[0].channels[0].name == "Wide"
-
-
-def test_oversized_skipped_when_declined(tmp_path: Path) -> None:
-    """空集合を返すと超過チャンネルはスキップ・警告診断が出る・他は生存 (LD-14)."""
-    path = write_mdf4_wide_2d(tmp_path, cols=1025)
-    result = MdfLoader().load(path, confirm_expansion=lambda req: set())
-    names = {s.name for s in result.signal_group.signals}
-    assert "Clean" in names
-    assert not any(n.startswith("Wide") for n in names)
-    warns = [
-        d for d in result.diagnostics if d.level == "warning" and "Wide" in d.message
-    ]
-    assert len(warns) == 1 and "1024" in warns[0].message
-
-
-def test_oversized_skipped_headless_without_callback(tmp_path: Path) -> None:
-    """コールバック不在 (ヘッドレス) は超過を全スキップ+警告 (LD-14 既定)."""
-    path = write_mdf4_wide_2d(tmp_path, cols=1025)
-    result = MdfLoader().load(path)  # confirm_expansion 無し
-    names = {s.name for s in result.signal_group.signals}
-    assert "Clean" in names and not any(n.startswith("Wide") for n in names)
-    assert any(d.level == "warning" and "Wide" in d.message for d in result.diagnostics)
+    diags: list = []
+    spec = spec_from_probe(arr)
+    # 全リーフが数値なので D1 の「うち数値列 M 本」併記は付かない (文言不変)。
+    _expansion_diagnostic("Cube", arr, _all_leaf_count(spec), leaf_count(spec), diags)
+    assert len(diags) == 1
+    assert diags[0].message == "信号 'Cube': 2x2 配列を 4 本に展開"
 
 
 # ─── MdfLoader: native dtype 保持 (FU-20 Task 2) ─────────────────────────────
 
 
 def test_loader_preserves_native_uint8_dtype(tmp_path: Path) -> None:
-    # write_mdf4_2d: 4x3 uint8 の "Mat" (3 列に展開) + float64 の "Clean"。
-    path = write_mdf4_2d(tmp_path)
-    result = MdfLoader().load(path)
-    sigs = {s.name: s for s in result.signal_group.signals}
-    mat_cols = [s for name, s in sigs.items() if name.startswith("Mat")]
-    assert len(mat_cols) == 3
-    # native uint8 を保持 — 現行の astype(float64) なら float64 になり FAIL。
+    # write_mdf4_2d: 4x3 uint8 の "Mat" (3 列) + float64 の "Clean"。
+    session = Session()
+    key = session.load(write_mdf4_2d(tmp_path)).key
+    mat_cols = [session.resolve_signal(f"{key}::Mat[{i}]") for i in range(3)]
+    assert all(s is not None for s in mat_cols)
+    # native uint8 を保持 — astype(float64) なら float64 になり FAIL。
     assert all(s.values.dtype == np.uint8 for s in mat_cols)
-    # float64 元データ (Clean) は float64 のまま。
-    assert sigs["Clean"].values.dtype == np.float64
+    clean = session.resolve_signal(f"{key}::Clean")
+    assert clean is not None and clean.values.dtype == np.float64
 
 
 def test_loader_skips_non_numeric_channel_with_warning(tmp_path: Path) -> None:
@@ -956,11 +919,11 @@ def test_lazy_selector_column_matches_eager_flatten_synthetic(tmp_path: Path) ->
     from valisync.core.loaders.mdf_loader import _flatten
 
     path = write_mdf4_2d(tmp_path)
-    result = MdfLoader().load(path)
-    sg = result.signal_group
-    assert sg is not None
-    mat1 = next(s for s in sg.signals if s.name == "Mat[1]")
-    assert mat1._values_source.is_materialized is False  # 未展開で待機
+    session = Session()
+    key = session.load(path).key
+    mat1 = session.resolve_signal(f"{key}::Mat[1]")  # E-3: 列は鋳造で得る
+    assert mat1 is not None
+    assert mat1._values_source.is_materialized is False  # 鋳造直後は未展開で待機
 
     got = mat1.values  # 遅延展開 (selector リーフ抽出)
     assert got.dtype == np.uint8  # native dtype 保持 (selector 経路でも)

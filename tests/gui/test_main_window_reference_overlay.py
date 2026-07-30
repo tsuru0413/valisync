@@ -13,7 +13,7 @@ from pathlib import Path
 
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
-from tests.mdf4_helpers import CAN, write_mdf4
+from tests.mdf4_helpers import CAN, write_mdf4, write_mdf4_2d
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.views.main_window import MainWindow
 
@@ -98,3 +98,29 @@ def test_overlay_request_unit_mismatch_is_reported_in_summary(
     mw.file_browser_view.overlay_reference_requested.emit(key2)
 
     assert mw.status_message() == "b.mf4 の同名信号を 0 件重ねました（単位不一致 1）"
+
+
+def _mat2d_in(tmp_path: Path, sub: str) -> Path:
+    directory = tmp_path / sub
+    directory.mkdir()
+    return write_mdf4_2d(directory)
+
+
+def test_overlay_request_matches_expanded_columns(qtbot: QtBot, tmp_path: Path) -> None:
+    """実配線 (FileBrowserView.overlay_reference_requested -> MainWindow) の上で、
+    展開列が重なることを確認する (Layer A は Session 直叩き)。"""
+    mw = MainWindow(AppViewModel())
+    qtbot.addWidget(mw)
+
+    key1 = mw.app_vm.request_load(_mat2d_in(tmp_path, "a"))
+    key2 = mw.app_vm.request_load(_mat2d_in(tmp_path, "b"))
+
+    vm = mw.graph_area_vm
+    panel = vm.panels(vm.active_tab_index)[vm.active_panel_index()]
+    panel.add_signal(f"{key1}::Mat[0]")
+
+    mw.file_browser_view.overlay_reference_requested.emit(key2)
+
+    entries = {(sk, ax) for _eid, sk, ax in panel.plotted_entries()}
+    assert (f"{key2}::Mat[0]", 0) in entries
+    assert "1 件重ねました" in mw.status_message()

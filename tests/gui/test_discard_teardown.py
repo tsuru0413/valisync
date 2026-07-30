@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pytest
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from tests.mdf4_helpers import CAN, write_mdf4
@@ -85,7 +84,7 @@ def _loaded(tmp_path: Path) -> tuple[AppViewModel, str, MdfHandle]:
         ],
     )
     session = Session()
-    key = session.load(path, confirm_expansion=None).key
+    key = session.load(path).key
     app_vm = AppViewModel(session=session)
     app_vm.register_loaded(key)
     handle = session._groups.group(key).handle
@@ -107,13 +106,15 @@ def _minted_column(name: str) -> Signal:
 
 
 class _DummyTeardown:
-    """duck-typed teardown (enqueue(key, group)) — 呼ばれたら記録する。"""
+    """duck-typed teardown — enqueue(key, group, columns=...) の実引数をそのまま記録する。"""
 
     def __init__(self) -> None:
-        self.calls: list[str] = []
+        self.calls: list[tuple[str, SignalGroup, tuple[Signal, ...]]] = []
 
-    def enqueue(self, key: str, group: SignalGroup) -> None:
-        self.calls.append(key)
+    def enqueue(
+        self, key: str, group: SignalGroup, columns: tuple[Signal, ...] = ()
+    ) -> None:
+        self.calls.append((key, group, columns))
 
 
 def test_discard_hands_the_group_to_the_teardown_service(qtbot, tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -155,12 +156,12 @@ def test_discard_never_shows_a_releasing_row(qtbot, tmp_path) -> None:  # type: 
     assert "releasing" not in tags
 
 
-def test_minted_columns_trip_the_e3_wire(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """E-3 の未配線を無音にしない (m2)。
+def test_minted_columns_are_handed_to_the_teardown_service(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """E-3 本命: 鋳造列も同じ enqueue で TeardownService へ渡る。
 
-    鋳造列は enqueue(key, group)=group.signals を通らないため GUI スレッドで
-    同期解放される (プロット済み列は実体化済みでバイトが重い)。配線は E-3 だが、
-    鋳造が生きた瞬間に無音でペーシングを迂回しないよう loud-fail を置く。
+    渡さないと result のスコープアウトで GUI スレッドの同期解放になる (プロット済み列は
+    実体化済み = バイトが重い → FU-16 のフリーズが戻る)。E-1 では loud-fail の tripwire で
+    代用していたが、本タスクで実配線に置き換える。
     """
     # _loaded は tests/gui/test_unload_export_guard.py と同型
     app_vm, key, _handle = _loaded(tmp_path)
@@ -169,9 +170,35 @@ def test_minted_columns_trip_the_e3_wire(tmp_path) -> None:  # type: ignore[no-u
     column = _minted_column(f"{key}::Spd[7]")
     app_vm.session._groups._resolved_by_key.setdefault(key, {})[column.name] = column
 
-    with pytest.raises(AssertionError, match="E-3"):
-        app_vm.unload_file(key)
+    app_vm.unload_file(key)
 
-    # raise だけを見ると `enqueue` の**後**に raise を移しても緑のままで、守りたい方向
-    # (鋳造列が無音でペーシングを迂回しない) が壊れる。迂回そのものを pin する。
-    assert dummy.calls == []
+    assert len(dummy.calls) == 1  # 同一 key を 2 エントリに割らない
+    got_key, got_group, got_columns = dummy.calls[0]
+    assert got_key == key
+    assert got_group is not None  # グループ本体は従来どおり渡る
+    assert got_columns == (column,)  # 鋳造列が同じ呼び出しに乗る
+
+
+def test_discard_also_hands_the_minted_columns(qtbot, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """2 サイト目 (_discard) も列を渡す。
+
+    session.load はグループ登録 (session.py:170) の**後**にキャンセルが確定するので、その窓で
+    resolve された列は実在しうる。_discard は AppViewModel を経由しないため、unload_file 側の
+    配線では 1 バイトもカバーされない。
+    """
+    win, outcome, n_signals, discard = _loaded_but_discarded_setup(qtbot, tmp_path)
+    # 注意: enqueue はタイマーを再始動する (teardown_service.py の start)。ここが
+    # 決定的なのは stop() ではなく「assert までイベントループを回さない」ことによる。
+    win.teardown_service._timer.stop()
+    column = _minted_column(f"{outcome.key}::Sig0[1]")
+    resolved = win.app_vm.session._groups._resolved_by_key
+    resolved.setdefault(outcome.key, {})[column.name] = column
+
+    discard(outcome)
+
+    assert win.teardown_service.pending_signals() == n_signals + 1
+    # 件数だけでは「その列が渡ったか」も「1 キー 1 エントリか」も pin できない。
+    # _discard は tripwire を持たない唯一の経路なので、実体で押さえる。
+    entries = win.teardown_service._groups
+    assert len(entries) == 1, f"1 キー = 1 エントリのはず ({len(entries)} エントリ)"
+    assert column in entries[-1][1]

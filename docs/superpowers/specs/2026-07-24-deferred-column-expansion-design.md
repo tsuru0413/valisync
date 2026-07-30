@@ -248,6 +248,113 @@ E-4 の位置ベース selector では緩和できない（`mdf.select()` が無
 E-3 は一時的に幅閾値を高く置いて着地 → prod_demo で広幅を検証 → 閾値を 1 に下げて二重経路を
 **同増分内で削除**する安全弁を許容する（**閾値は出荷しない**）。
 
+### E-3 着手時の確定事項（2026-07-29・実測コンテキスト調査＋ユーザー決定）
+
+反転前のコンテキスト調査（消費者面 6 分割・全て `file:line` 実測）で、本 spec の E-3 行が
+**名指していない必須項目 2 件**と、**書かれていない前提 1 件**が判明した。以下を E-3 の確定
+スコープとする。
+
+**S1（spec 追補・必須）: `ChannelBrowserVM` の列ソース。** E-2 はツリーを平坦化したが
+**列の出所は `session.group_signals()` の列挙のまま**（`channel_browser_vm.py:137-140` の
+コメントが明言）。反転すると全行が `column_count == 1` の葉になり、`Mat[0]` / `Pos.x` が
+**UI から完全に消える**（ツリー・フィルタ・D&D・プレビュー・エクスポートが同時に失う）。
+さらに 2-D 親が `ItemIsDragEnabled` を得てプロット可能になり、`sorted_view()` の
+`astype(float64)` が **8 倍膨張して恒久キャッシュ**される。列の出所を `ColumnSpec` 由来へ
+移すことを E-3 の必須項目に含める。
+
+**S2（spec 追補・必須）: 数値ゲートをリーフ単位へ移す。** 構造化チャンネルの親 probe は
+`dtype.kind == 'V'` なので、現行の列単位ゲート（`mdf_loader.py:547-558`）を親に当てると
+**全構造化チャンネルが「非数値型のためスキップ」で消滅**する。`column_names.leaf_count`
+（数値リーフのみ）で判定する。なお `_leaf_column_count`（dtype-blind）は「N 本に展開」info
+診断の byte-identical 維持に必要なので**残す**（両者は別物）。
+
+**S3（前提・反転より前に必須）: 全数ラウンドトリップ・オラクルは存在しない。**
+spec §テスト方針は「eager 実装が同居する間に固定」と指示しているが、実際には書かれていない
+（現存最近似は `parse_leaf` レベルのみ／値一致だが 1 キーのみ／demo-gate で CI 未実行）。
+**独立参照を eager ローダーではなく asammdf `select` + `_flatten` の直叩きに置く**ことで、
+`_flatten` は `LazyMdfValues.array()` が使い続ける（`sample_source.py:164-165`）ため
+**反転を跨いで同一のオラクルが使える**。これを E-3 の最初のタスクとする。
+
+**ユーザー決定（2026-07-29）**
+
+| # | 論点 | 決定 |
+|---|---|---|
+| U1 | `ExportCsvDialog` の作り | **遅延展開（`QTreeWidget` 維持）**。親＝物理チャンネル行にプレースホルダ子を置き `itemExpanded` で列を合成、`expandAll()` は廃止、チェック状態は VM 側の集合で保持。3 案（遅延展開／モデル・ビュー全面移行／列を出さない）を実イメージで比較したうえでの選択。**案B（モデル/ビュー）は完成後の見た目・操作が案A と同一**であり、E-3 最大の工数と凍結カタログ 06 の両テーマ再ベースラインを伴うため不採用。**案C（列を出さない）は配列要素を CSV に出す手段を失う機能後退**のため不採用 |
+| U2 | `source_info.n_channels` の単位 | **列数を維持**（264,004）。ChannelBrowser ヘッダの「N ch 中 M ch を表示」と同一単位に揃える（既存のユーザー決定「列数を ch 数として扱う」との一貫性）。物理チャンネル数へは変えない |
+
+**コントローラ決定（推奨に基づき確定・上記に従属）**
+
+| # | 論点 | 決定 |
+|---|---|---|
+| C-a | 物理チャンネル行のチェック意味 | **チェック不可の三態コンテナ**。子の選択状態を部分チェックで表示するのみ。「親をチェック＝全列エクスポート」は 264k 鋳造の一撃になるため採らない |
+| C-b | 「すべて選択」の意味 | **未展開の親の子を鋳造しない**。選択は列キーの集合で持ち、キーは `ColumnSpec` から**名前だけ**生成する（`resolve()` を呼ばない）。実際の読みはエクスポート実行時に列ごとに走る |
+| C-c | `reference_overlay` のマッチ粒度 | **列レベル**（`resolve_signal` で最長一致を再利用）。物理レベルにすると `already_present` 判定（`reference_overlay.py:87-90`）が plotted entries の**列キー**で作られているため再実行で重複追加になる |
+| C-d | 2-D 親の拒否点 | **core**（`Session.export_csv` / `CsvExporter`）。scripted / realgui の直呼び（`tests/realgui/test_export_range_realclick.py:181,214`）まで守れる唯一の層。現状は numpy の生 `TypeError` が `QMessageBox` に出る |
+| C-e | `mint_count` / `resolved_keys` の公開 | **`Session` には公開しない**。realgui は既に `session._groups` へ直接触れている先例がある（`test_close_release_spinner.py:66` 等） |
+| C-f | `W[0]`→`W[1]` の永続キー移行 | **意図的リネーム・移行パスなし**として記録し test-lock する（プロット/軸/オフセットのセッション永続化は未実装＝F-1 defer 中のため実害なし） |
+| C-g | `_resolved_by_key` の上限 / LRU | **E-3 では入れない**（C-b で一撃の footgun を塞ぐため）。E-4 へ送る |
+| C-h | 安全弁（幅閾値の二重経路） | **採らない**。現行コードに seam が無く A4 の diff が 2 倍になる。S3 のオラクルがあれば不要 |
+| C-i | 1024 ガード退役の順序 | **反転の後**。前にやると eager 経路が 330,004 列に膨らみ（+66,000 Signal）、LD-08 インデックスずれと反転の失敗要因が混ざる |
+
+### E-3 反転で確定した診断の副作用（2026-07-30・実装レビューで顕在化）
+
+**D1: 「N 本に展開」info の N は数値列数と一致しない（意図的・記録）。**
+info 診断は `_all_leaf_count`（**dtype-blind**）を母数にする — これは
+「混在構造 `Q` が『2 本』→『1 本』に変わってしまう」ことを避けるための明示的な決定
+（本 spec の S2）。一方、反転で per-column の「非数値型のためスキップ」warning は
+物理チャンネル 1 件へ集約され、混在構造では**消える**（supersede #2）。
+
+結果、混在構造 `Q`（`x: f8` ＋ `tag: S2`）では **info が「2 本に展開」と言い、ブラウザは
+1 列しか見せる**。反転前はこの差を第 2 の warning（`Q.tag`: 非数値型のためスキップ）が
+説明していたが、それが集約で消えたため**説明のない不一致**になった。
+
+- 両半分はそれぞれ個別に mandate されたもので、実装の逸脱ではない。
+- `test_expansion_info_counts_all_leaves_not_only_numeric_ones` が「2 本」の文言と
+  `column_names_of(key, "Q") == ("Q.x",)` を**同一テストで**assert しており、不一致は
+  test-lock 済み（黙って広がることはない）。
+- prod_demo は影響なし（info 320 件 / warning 0 件）。
+
+**D1 の決定（T7・確定）: 併記して説明を復活させる（据え置かない）。**
+`N`（`_all_leaf_count`・dtype-blind）は S2 の mandate ゆえ**据え置く**。そのうえで
+**数値リーフ数 `M` が `N` と食い違うときだけ**「（うち数値列 M 本）」を併記する
+（`mdf_loader._expansion_diagnostic`）。
+
+| 入力 | 文言 |
+|---|---|
+| 全リーフ数値（`M == N`） | `信号 'P': 構造化チャンネルを 1 本に展開` — **完全不変** |
+| 混在（`Q`: x=f8 / tag=S2） | `信号 'Q': 構造化チャンネルを 2 本に展開（うち数値列 1 本）` |
+| 全リーフ非数値（`R`・D2） | `信号 'R': 構造化チャンネルを 2 本に展開（うち数値列 0 本）` |
+
+- 「reword して N を到達可能な数にする」は採らない — S2（`_all_leaf_count` を残す理由）
+  そのものを覆すため。併記なら N を保ったまま「ユーザーが到達できる本数」が文面に出る。
+- **prod_demo は文言が 1 件も変わらない**（`M == N` が全件・info 320 / warning 0）。
+  発火するのは今日まさに誤解を生んでいた混在／全非数値の場合だけ。
+- 保存契約「1-D チャンネルの診断は byte-identical」は不変（1-D は `exploded` でないため
+  この info を出さない）。
+- test-lock: `test_expansion_info_counts_all_leaves_not_only_numeric_ones`（混在＋
+  `P` の不変ケース）／`test_all_non_numeric_container_is_one_parent_level_warning`（`R`）。
+
+**D2: 全リーフが非数値の容器という第 3 の supersede クラスが未 pin（記録）。**
+新コードは info を出したうえで親レベルの warning を 1 件
+（`信号 'Q': 非数値型のためスキップ（dtype <compound>）`）出す。旧コードはリーフごとに
+各リーフの scalar dtype で warning を出していた。**16 fixture のどれもこの形状を持たない**
+ため機械比較は構造的に盲目で、テストも無い。T7 で fixture 1 本を足すか、
+仕様として明記すること。
+
+**D2 の決定（T7・確定）: fixture を足して test-lock（仕様として据え置かない）。**
+`tests/mdf4_helpers.write_mdf4_all_non_numeric_struct`（`R`: `tag` S2 ＋ `code` S3 の
+構造化チャンネル ＋ 通常チャンネル `Clean`）を新設し、
+`test_all_non_numeric_container_is_one_parent_level_warning` が実測を固定する:
+
+- Signal ゼロ・`ColumnRecord` ゼロ（`resolve_signal(f"{key}::R")` / `::R.tag` とも None）。
+- warning は**親レベル 1 件**・`signal_name is None`・dtype は**親の複合 dtype**
+  （`[('tag', 'S2'), ('code', 'S3')]`）。旧コードのリーフ単位 2 件（`R.tag`: `|S2` /
+  `R.code`: `|S3`）からの**意図的 supersede**。
+- info は 1 件出る（D1 の併記で「うち数値列 0 本」）。
+
+混在容器 `Q` は `numeric > 0` のためこのクラスを構造的に再現できない ＝ 専用 fixture が
+必要だった、というのが D2 の「機械比較が盲目」の中身。
+
 ## 保存すべき契約（違反＝サイレント破壊）
 
 - **LD-14 リーフ名の文法**（`Name.field` / `Name[i]` / `Name[i][j]` / `Name.field[i]`・構造化を

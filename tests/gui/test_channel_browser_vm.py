@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests.gui._physical_fixtures import inject_physical_channels
 from valisync.core.models import Delimiter, FormatDefinition, Signal
 from valisync.gui import strings as S
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
@@ -445,30 +446,6 @@ def test_active_file_switch_invalidates_prep_no_leak(tmp_path: Path) -> None:
     }  # alpha/gamma を漏らさない
 
 
-def _synth_sig(name: str, phys: str | None = None) -> Signal:
-    """合成 Signal 1 本。
-
-    E-2: 展開列はローダーが metadata['physical_channel'] を付けるので、合成
-    フィクスチャでも *親を立てたいときは* phys を明示する。付けないと fallback
-    (physical_channel 欠落 = 1 列 1 物理チャンネル) で各列が自分自身の物理
-    チャンネルになり、親が 1 つも生まれず assert が vacuous 化する。
-    """
-    import numpy as np
-
-    metadata: dict[str, object] = {"unit": "V"}
-    if phys is not None:
-        metadata["physical_channel"] = phys
-    return Signal(
-        name=name,
-        timestamps=np.array([0.0]),
-        values=np.array([1.0]),
-        file_format="MDF4",
-        bus_type="",
-        source_file="",
-        metadata=metadata,
-    )
-
-
 def test_tree_groups_buckets_arrays_under_base(tmp_path: Path) -> None:
     """E-2: 列を metadata['physical_channel'] でグルーピング (1 行 = 1 物理チャンネル)。
 
@@ -479,13 +456,15 @@ def test_tree_groups_buckets_arrays_under_base(tmp_path: Path) -> None:
     app_vm = AppViewModel()
     vm = ChannelBrowserVM(app_vm)
 
-    app_vm.session.group_signals = lambda key: [
-        _synth_sig("g::Arr[0]", phys="Arr"),
-        _synth_sig("g::Arr[1]", phys="Arr"),
-        _synth_sig("g::Arr[2]", phys="Arr"),
-        _synth_sig("g::Scalar", phys="Scalar"),
-        _synth_sig("g::Struct.field", phys="Struct"),
-    ]
+    inject_physical_channels(
+        app_vm,
+        "g",
+        [
+            ("Arr", "V", ("Arr[0]", "Arr[1]", "Arr[2]")),
+            ("Scalar", "V", ("Scalar",)),
+            ("Struct", "V", ("Struct.field",)),
+        ],
+    )
     app_vm.set_active_file("g")
 
     rows = vm.tree_groups()
@@ -522,12 +501,15 @@ def test_tree_groups_honors_filter(tmp_path: Path) -> None:
     app_vm = AppViewModel()
     vm = ChannelBrowserVM(app_vm)
 
-    app_vm.session.group_signals = lambda k: [
-        _synth_sig("g::Arr[0]", phys="Arr"),
-        _synth_sig("g::Arr[1]", phys="Arr"),
-        _synth_sig("g::Speed", phys="Speed"),
-        _synth_sig("g::Brake", phys="Brake"),
-    ]
+    inject_physical_channels(
+        app_vm,
+        "g",
+        [
+            ("Arr", "V", ("Arr[0]", "Arr[1]")),
+            ("Speed", "V", ("Speed",)),
+            ("Brake", "V", ("Brake",)),
+        ],
+    )
     app_vm.set_active_file("g")
 
     # no filter -> all rows
@@ -559,21 +541,19 @@ def test_tree_groups_honors_filter(tmp_path: Path) -> None:
 
 
 def test_non_contiguous_columns_stay_in_their_own_row(tmp_path: Path) -> None:
-    """m1: 1 物理チャンネルの列が **非隣接** でも span が実測どおり分かれる。
+    """m1: 1 物理チャンネルの列は必ず **自分の ColumnRecord** から来る。
 
-    実 mf4 は今のところ列を連続で並べるが、連続性を仮定した実装 (span を常に
-    伸ばす) はここで割り込んだ別チャンネルを巻き込む。
-    sabotage: _ensure_prep の span 分岐を `spans[-1] = (last_start, i + 1)` 固定に
-    すると X が Y を飲み込んで RED。
+    E-3 前は列 Signal の並びから span を切り出していたため、割り込んだ別チャンネル
+    を巻き込む壊れ方があった (旧 sabotage: span を常に伸ばす)。反転後は行ごとに
+    列名表を引くので構造的に起きないが、「行が他行の列を返さない」不変条件自体は
+    ドラッグ/フィルタ/エクスポートの土台なのでここで固定し続ける。
     """
     app_vm = AppViewModel()
     vm = ChannelBrowserVM(app_vm)
 
-    app_vm.session.group_signals = lambda k: [
-        _synth_sig("g::X[0]", phys="X"),
-        _synth_sig("g::Y", phys="Y"),  # 割り込み
-        _synth_sig("g::X[1]", phys="X"),
-    ]
+    inject_physical_channels(
+        app_vm, "g", [("X", "V", ("X[0]", "X[1]")), ("Y", "V", ("Y",))]
+    )
     app_vm.set_active_file("g")
 
     rows = {r[0]: r for r in vm.tree_groups()}
@@ -594,11 +574,11 @@ def test_shown_count_matches_matched_column_total(tmp_path: Path) -> None:
     app_vm = AppViewModel()
     vm = ChannelBrowserVM(app_vm)
 
-    app_vm.session.group_signals = lambda k: [
-        _synth_sig("g::a"),
-        _synth_sig("g::b"),
-        _synth_sig("g::ab"),
-    ]
+    inject_physical_channels(
+        app_vm,
+        "g",
+        [("a", "V", ("a",)), ("b", "V", ("b",)), ("ab", "V", ("ab",))],
+    )
     app_vm.set_active_file("g")
 
     def _matched_columns() -> int:

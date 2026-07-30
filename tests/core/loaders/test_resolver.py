@@ -13,6 +13,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from tests.mdf4_helpers import write_mdf4_2d
+from valisync.core.loaders.mdf_loader import MdfLoader
 from valisync.core.loaders.signal_group_manager import SignalGroupManager
 from valisync.core.models import Signal, SignalGroup
 
@@ -38,18 +40,25 @@ def _group(*names: str) -> SignalGroup:
     )
 
 
-class _MintingManager(SignalGroupManager):
-    """テスト専用: E-3 でローダーが per-channel Signal を出す状態を先取りする。
+def _add_real(mgr: SignalGroupManager, tmp_path: Path) -> str:
+    """実 mf4 (物理チャンネル Mat / Clean) を **表ごと** 登録する。
 
-    E-1 の本体 ``_mint_column`` は ColumnSpec 未配線ゆえ常に None を返す (ローダーが
-    まだ列を展開しているため、実キーは全て既存 map で解決できる)。しかし守るべき規則
-    (Critical 1) は「**鋳造済み** Signal が ``_invalidate_namespaced()`` を生き延びる」
-    ことなので、鋳造経路が無い実装のままでは寿命そのものを実証できない。ここで最小の
-    鋳造だけを与え、副テーブルの寿命を単独で固定する。
+    T6 反転前の eager ローダーは全列を発行したので、代表列 1 本だけを残す細工で
+    ``Mat[1]``/``Mat[2]`` を「map に無い実在の列キー」に仕立てていた。反転後は
+    production がそのままその形なので細工は不要 (むしろ細工を残すと signals が
+    空になり、鋳造が「親が居ないから None」で偽緑になる)。副テーブルの寿命は
+    **実装の鋳造** で検証する — テストダブルで鋳造を偽装すると、寿命は緑のまま
+    鋳造の中身が壊れていても気づけない。
+
+    ``column_records`` を渡すのが要点: 表は manager 側にあり、渡さないと
+    ``_mint_column`` の先頭で表が空になって**正しい実装でも常に None** を返す
+    (寿命テストが「鋳造できないから空」で通ってしまう)。
     """
-
-    def _mint_column(self, group_key: str, key: str) -> Signal:
-        return _sig(key)
+    result = MdfLoader().load(write_mdf4_2d(tmp_path))
+    sg = result.signal_group
+    assert sg is not None
+    assert {s.name for s in sg.signals} == {"Mat", "Clean"}, "反転後の形 (setup 前提)"
+    return mgr.add(sg, column_records=result.column_records)
 
 
 def test_resolve_returns_existing_signal_without_minting() -> None:
@@ -65,13 +74,53 @@ def test_resolve_returns_none_for_unloaded_group() -> None:
     assert mgr.resolve("mf4_9::Nope") is None
 
 
-def test_e1_mint_is_not_wired_yet() -> None:
-    """E-1 では ColumnSpec 未配線 — 未知の列キーは鋳造されず None (挙動不変)。"""
+def test_synthetic_group_without_records_never_mints() -> None:
+    """ColumnRecord 表もハンドルも無いグループ (CSV / 合成) は列を鋳造しない。
+
+    E-1 では「実装が常に None を返す」ことの pin だったが、鋳造が配線された今は
+    「MDF の列文法を持たないグループには当てない」という契約になる。
+    """
     mgr = SignalGroupManager()
     key = mgr.add(_group("Mat[0]"))
     assert mgr.resolve(f"{key}::Mat[7]") is None
     assert mgr.mint_count == 0
     assert mgr.resolved_keys(key) == frozenset()
+
+
+def test_minting_requires_a_handle_even_with_column_records(tmp_path: Path) -> None:
+    """``handle is None`` ガード単独の pin (CSV/Derived は LD-14 の列文法を持たない)。
+
+    M-6: 既存の pin (``test_synthetic_group_without_records_never_mints`` /
+    ``test_signal_map_unresolvable_lookup_returns_none``) は **表も持たない** グループを
+    使うので、ガードを消しても空の records ループが同じ ``None`` に落ち **全部緑のまま**
+    だった = docstring が名指しする契約が実は無防備。表を持たせると、ガードだけが
+    「ハンドル無しのグループから列を鋳造しない」唯一の防波堤になる。
+
+    sabotage: ``if handle is None: return None`` を落とすと、``LazyMdfValues(None, ...)``
+    を抱えた Signal が鋳造されて RED (値を読んだ瞬間に落ちる遅延爆弾)。
+    """
+    result = MdfLoader().load(write_mdf4_2d(tmp_path))
+    sg = result.signal_group
+    assert sg is not None
+    handle = sg.handle
+    assert handle is not None  # setup 前提: 実ロードはハンドルを持つ
+    try:
+        mgr = SignalGroupManager()
+        # 反 vacuous: 同じ表・同じ signals でも **ハンドルがあれば** 鋳造できる
+        with_handle = mgr.add(sg, column_records=result.column_records)
+        assert mgr.resolve(f"{with_handle}::Mat[1]") is not None
+
+        headless = SignalGroup(
+            signals=sg.signals,
+            source_path=sg.source_path,
+            file_format=sg.file_format,
+            loaded_at=sg.loaded_at,
+        )
+        key = mgr.add(headless, column_records=result.column_records)
+        assert mgr.resolve(f"{key}::Mat[1]") is None
+        assert mgr.resolved_keys(key) == frozenset()
+    finally:
+        handle.close()
 
 
 def test_namespaced_wrapper_is_rebuilt_by_unrelated_add() -> None:
@@ -88,26 +137,32 @@ def test_namespaced_wrapper_is_rebuilt_by_unrelated_add() -> None:
     assert mgr.resolve(f"{k1}::Mat[0]") is not first  # ラッパーは作り直される
 
 
-def test_resolved_table_survives_unrelated_add_and_remove() -> None:
+def test_resolved_table_survives_unrelated_add_and_remove(tmp_path: Path) -> None:
     # Critical 1: 無関係なファイルの load/remove で副テーブルを捨ててはならない
-    mgr = _MintingManager()
-    k1 = mgr.add(_group("Mat[0]"))
-    col_key = f"{k1}::Mat[7]"  # 既存 map に無い列キー -> 鋳造経路
+    mgr = SignalGroupManager()
+    k1 = _add_real(mgr, tmp_path)
+    col_key = f"{k1}::Mat[2]"  # 既存 map に無い列キー -> 鋳造経路
     first = mgr.resolve(col_key)
     assert first is not None
     assert mgr.mint_count == 1
+    _ = first.values  # 実際に読ませる (再鋳造されると読み直しになる)
+    assert first._values_source.is_materialized is True
+
     k2 = mgr.add(_group("Other"))  # 2 ファイル目ロード相当
-    assert mgr.resolve(col_key) is first  # 同一オブジェクト
+    again = mgr.resolve(col_key)
+    assert again is first  # 同一オブジェクト
+    assert again._values_source.is_materialized is True  # 読み直していない
     assert mgr.mint_count == 1  # 再鋳造していない
+
     mgr.remove(k2)  # 2 ファイル目 unload 相当
     assert mgr.resolve(col_key) is first
     assert mgr.mint_count == 1
 
 
-def test_removing_own_group_drops_its_resolved_table() -> None:
-    mgr = _MintingManager()
-    k1 = mgr.add(_group("Mat[0]"))
-    col_key = f"{k1}::Mat[7]"
+def test_removing_own_group_drops_its_resolved_table(tmp_path: Path) -> None:
+    mgr = SignalGroupManager()
+    k1 = _add_real(mgr, tmp_path)
+    col_key = f"{k1}::Mat[2]"
     mgr.resolve(col_key)
     assert mgr.resolved_keys(k1) == frozenset({col_key})
     mgr.remove(k1)
@@ -115,20 +170,20 @@ def test_removing_own_group_drops_its_resolved_table() -> None:
     assert mgr.resolved_keys(k1) == frozenset()
 
 
-def test_remove_returns_minted_columns_for_teardown() -> None:
+def test_remove_returns_minted_columns_for_teardown(tmp_path: Path) -> None:
     """列 Signal は SignalGroup.signals の外に居るため remove() が返さないと
     TeardownService の会計・解放から漏れる。"""
-    mgr = _MintingManager()
-    k1 = mgr.add(_group("Mat[0]"))
-    minted = mgr.resolve(f"{k1}::Mat[7]")
+    mgr = SignalGroupManager()
+    k1 = _add_real(mgr, tmp_path)
+    minted = mgr.resolve(f"{k1}::Mat[2]")
     group, columns = mgr.remove(k1)
-    assert group.signals[0].name == "Mat[0]"
-    assert columns == (minted,)
+    assert {s.name for s in group.signals} == {"Mat", "Clean"}  # 行は物理チャンネル
+    assert columns == (minted,)  # 鋳造列は signals の外 = ここでしか返せない
 
 
-def test_resolved_keys_does_not_mint() -> None:
-    mgr = _MintingManager()
-    k1 = mgr.add(_group("Mat[0]"))
+def test_resolved_keys_does_not_mint(tmp_path: Path) -> None:
+    mgr = SignalGroupManager()
+    k1 = _add_real(mgr, tmp_path)
     before = mgr.mint_count
     _ = mgr.resolved_keys(k1)
     assert mgr.mint_count == before
@@ -137,24 +192,19 @@ def test_resolved_keys_does_not_mint() -> None:
 # ─── signal_map() の非対称 Mapping 契約 (Task 6) ────────────────────────────────
 
 
-def test_signal_map_lookup_falls_through_to_resolver() -> None:
-    """`[]`/`get` は既存 map に無いキーを解決器へ落とす (約20箇所の呼出を無改造にする要)。
-
-    E-1 本体の `_mint_column` は常に None を返すため、フォールスルーが**実際に起きている**
-    ことは鋳造可能な `_MintingManager` でしか観測できない。素の Manager で書くと
-    「MappingProxy が None を返しただけ」でも通ってしまい、退行を捕捉できない。
-    """
-    mgr = _MintingManager()
-    key = mgr.add(_group("Mat[0]"))
+def test_signal_map_lookup_falls_through_to_resolver(tmp_path: Path) -> None:
+    """`[]`/`get` は既存 map に無いキーを解決器へ落とす (約20箇所の呼出を無改造にする要)。"""
+    mgr = SignalGroupManager()
+    key = _add_real(mgr, tmp_path)
     m = mgr.signal_map()
 
-    assert m.get(f"{key}::Mat[0]") is not None  # 物理キー
+    assert m.get(f"{key}::Mat") is not None  # 物理キー (E-3: 2-D の親チャンネル)
     assert mgr.mint_count == 0  # 物理キーは解決器を通さない
 
-    minted = m.get(f"{key}::Mat[7]")  # 既存 map に無い列キー
+    minted = m.get(f"{key}::Mat[2]")  # 既存 map に無い列キー
     assert minted is not None
     assert mgr.mint_count == 1  # 解決器を通った
-    assert m[f"{key}::Mat[7]"] is minted  # `[]` も同じ経路・同一オブジェクト
+    assert m[f"{key}::Mat[2]"] is minted  # `[]` も同じ経路・同一オブジェクト
     assert mgr.mint_count == 1
 
 
@@ -174,44 +224,49 @@ def test_signal_map_unresolvable_lookup_returns_none() -> None:
         m[f"{key}::Nope"]
 
 
-def test_signal_map_contains_falls_through_but_not_for_physical_keys() -> None:
-    mgr = _MintingManager()
-    key = mgr.add(_group("Mat[0]"))
+def test_signal_map_contains_falls_through_but_not_for_physical_keys(
+    tmp_path: Path,
+) -> None:
+    mgr = SignalGroupManager()
+    key = _add_real(mgr, tmp_path)
     m = mgr.signal_map()
 
-    assert f"{key}::Mat[0]" in m
+    assert f"{key}::Mat" in m
     assert mgr.mint_count == 0  # 既存キーの `in` は鋳造しない
-    assert f"{key}::Mat[7]" in m  # 列キーは解決器へ落ちる
+    assert f"{key}::Mat[2]" in m  # 列キーは解決器へ落ちる
     assert mgr.mint_count == 1
     assert "mf4_9::Nope" not in m  # 未ロードグループ
 
 
-def test_signal_map_enumeration_does_not_mint() -> None:
+def test_signal_map_enumeration_does_not_mint(tmp_path: Path) -> None:
     # 列挙は物理のみ: dict(m) が 330k 列を鋳造したら 390 MB を再導入してしまう
-    mgr = _MintingManager()
-    key = mgr.add(_group("Mat[0]"))
+    mgr = SignalGroupManager()
+    key = _add_real(mgr, tmp_path)
     m = mgr.signal_map()
     before = mgr.mint_count
-    assert list(m) == [f"{key}::Mat[0]"]
-    assert len(m) == 1
-    assert set(m.keys()) == {f"{key}::Mat[0]"}
-    assert set(dict(m)) == {f"{key}::Mat[0]"}
+    physical = [f"{key}::Mat", f"{key}::Clean"]
+    assert list(m) == physical
+    assert len(m) == 2
+    assert set(m.keys()) == set(physical)
+    assert set(dict(m)) == set(physical)
     assert mgr.mint_count == before
 
 
-def test_signal_map_enumeration_excludes_already_minted_columns() -> None:
+def test_signal_map_enumeration_excludes_already_minted_columns(
+    tmp_path: Path,
+) -> None:
     """鋳造済みの列も列挙には現れない (物理キーのみ)。
 
     列挙を「物理 + 鋳造済み」に広げると、プロット中の列が増えるほど列挙結果が
     実行履歴に依存して揺れる。契約は「物理のみ」で固定する。
     """
-    mgr = _MintingManager()
-    key = mgr.add(_group("Mat[0]"))
+    mgr = SignalGroupManager()
+    key = _add_real(mgr, tmp_path)
     m = mgr.signal_map()
-    assert m.get(f"{key}::Mat[7]") is not None  # 鋳造させる
+    assert m.get(f"{key}::Mat[2]") is not None  # 鋳造させる
     assert mgr.mint_count == 1
-    assert list(m) == [f"{key}::Mat[0]"]
-    assert len(m) == 1
+    assert list(m) == [f"{key}::Mat", f"{key}::Clean"]
+    assert len(m) == 2
 
 
 def test_signal_map_is_read_only() -> None:

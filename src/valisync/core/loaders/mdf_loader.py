@@ -2,40 +2,22 @@ from __future__ import annotations
 
 import datetime
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
 import numpy as np
 from asammdf import MDF
 
-from valisync.core.loaders.column_names import ColumnSpec, spec_from_probe
+from valisync.core.loaders.column_names import (
+    ColumnRecord,
+    ColumnSpec,
+    leaf_count,
+    spec_from_probe,
+)
 from valisync.core.loaders.mdf_handle import MdfHandle
 from valisync.core.models import Diagnostic, LoadResult, Signal, SignalGroup
 from valisync.core.models.load_result import LoadCancelled
 from valisync.core.models.sample_source import LazyMdfValues
-
-EXPANSION_COLUMN_LIMIT = 1024  # per-channel の展開後リーフ列数の上限 (LD-14)
-
-
-@dataclass(frozen=True)
-class OversizedChannel:
-    """展開列数が上限を超えるチャンネル (確認ダイアログ提示用)."""
-
-    name: str
-    column_count: int
-
-
-@dataclass(frozen=True)
-class ExpansionRequest:
-    """上限超チャンネルの集約 — confirm_expansion コールバックへ渡す."""
-
-    channels: tuple[OversizedChannel, ...]
-
-
-# confirm_expansion(request) -> 展開する channels のインデックス集合。
-# 返らなかったインデックスはスキップ。空集合は全スキップ。
-ConfirmExpansion = Callable[[ExpansionRequest], set[int]]
 
 # Maps asammdf BusType int values to Signal.bus_type strings.
 # asammdf v4_constants.BusType: CAN=2, ETHERNET=7.
@@ -75,17 +57,12 @@ def _flatten(name: str, arr: np.ndarray) -> list[tuple[str, np.ndarray]]:
     ]
 
 
-def _leaf_column_count(arr: np.ndarray) -> int:
-    """arr を _flatten したときのリーフ列数 (1 レコードの samples でも可・LD-14).
-
-    1024 ガードの母数なので **dtype 非依存に全リーフを数える** (数値のみを数える
-    column_names.leaf_count とは意図的に別物)。構造は column_names の ColumnSpec に
-    委譲し、規則の二重実装を避ける。
-    """
-    return _all_leaf_count(spec_from_probe(arr))
-
-
 def _all_leaf_count(spec: ColumnSpec) -> int:
+    """展開後の全リーフ列数 — **dtype 非依存に数える** (LD-14 の列名文法).
+
+    「N 本に展開」info 診断の母数 (spec S2)。数値リーフだけを数える
+    column_names.leaf_count とは意図的に別物である。
+    """
     if spec.kind == "struct":
         return sum(_all_leaf_count(sub) for _n, sub in spec.fields)
     if spec.kind == "array":
@@ -94,30 +71,41 @@ def _all_leaf_count(spec: ColumnSpec) -> int:
     return 1
 
 
-def _explode_samples(
-    base_name: str,
+def _expansion_diagnostic(
+    display_name: str,
     samples: np.ndarray,
+    leaf_total: int,
+    numeric_total: int,
     diagnostics: list[Diagnostic],
-) -> list[tuple[str, np.ndarray]]:
-    """多次元/構造化 samples を 1D 列へ多段展開 (LD-14).
+) -> None:
+    """「N 本に展開」info を物理チャンネル 1 件だけ emit する (E-3 反転).
 
-    ``_flatten`` に一本化。展開できたら透明化のため info 診断を 1 件 emit する。
-    展開不能な列 (0 幅など) は自然に空リストになる。
+    列を実際に作らなくなったので、件数は **dtype 非依存の全リーフ数**
+    (_all_leaf_count) を渡す — 数値リーフだけを数える column_names.leaf_count に
+    替えると混在構造 (Q.x + Q.tag) の表示が「2 本」->「1 本」に変わり、列展開
+    時代の文言と非互換になる。文言と signal_name は旧 _explode_samples と同一。
+
+    **D1 (T7 決定)**: その dtype 非依存の N は、混在構造ではユーザーが到達できる
+    列数と食い違う (Q は「2 本」だがブラウザ/エクスポートに出るのは Q.x の 1 本)。
+    反転前はその差を per-column の「非数値型のためスキップ」warning が説明していたが、
+    集約 (意図的 supersede) で消えた。N そのものは S2 の mandate ゆえ据え置き、
+    **食い違うときだけ**到達可能な本数を併記して説明を復活させる。数値==全数の
+    通常ケース (prod_demo は全件そう: info 320 / warning 0) では文言完全不変。
     """
-    pairs = _flatten(base_name, samples)
-    if pairs:
-        if samples.dtype.names:
-            shape_desc = "構造化チャンネル"
-        else:
-            shape_desc = "x".join(str(d) for d in samples.shape[1:]) + " 配列"
-        diagnostics.append(
-            Diagnostic(
-                level="info",
-                message=f"信号 '{base_name}': {shape_desc}を {len(pairs)} 本に展開",
-                signal_name=base_name,
-            )
+    if samples.dtype.names:
+        shape_desc = "構造化チャンネル"
+    else:
+        shape_desc = "x".join(str(d) for d in samples.shape[1:]) + " 配列"
+    message = f"信号 '{display_name}': {shape_desc}を {leaf_total} 本に展開"
+    if numeric_total != leaf_total:
+        message += f"（うち数値列 {numeric_total} 本）"  # noqa: RUF001
+    diagnostics.append(
+        Diagnostic(
+            level="info",
+            message=message,
+            signal_name=display_name,
         )
-    return pairs
+    )
 
 
 def _extract_value_labels(conversion: Any) -> dict[float, str] | None:
@@ -243,42 +231,10 @@ class MdfLoader:
         version = str(getattr(mdf, "version", "4"))
         return "MDF4" if version.startswith("4") else "MDF3"
 
-    def _scan_oversized(
-        self,
-        mdf: Any,
-        cancel: Callable[[], bool] | None,
-    ) -> tuple[list[OversizedChannel], list[tuple[int, int]]]:
-        """本読み前に各チャンネルの展開列数を 1 レコードプローブで算出する (LD-14).
-
-        1024 超のチャンネルを集約して返す。呼び出しはグループ単位 (仮想グループ数
-        ぶん) の極小読みで済む。戻り値は表示用 OversizedChannel 列と、対応する
-        (物理gi, ci) キー列 (本読みでの除外照合用) の並列リスト。
-
-        列**数**は変換非依存なので _load_group と同じ統合プローブを共有する
-        (_PROBE_OPTIONS のコメント参照 — raw と非 raw でリーフ名/構造が一致する
-        ことは prod 全チャンネルで実測済み)。
-        """
-        oversized: list[OversizedChannel] = []
-        keys: list[tuple[int, int]] = []
-        for gi in mdf.virtual_groups:
-            if cancel is not None and cancel():
-                raise LoadCancelled("load cancelled during expansion scan")
-            entries = self._group_entries(mdf, gi)
-            if not entries:
-                continue
-            probes = mdf.select(entries, **self._PROBE_OPTIONS)
-            for (name, phys_gi, ci), probe in zip(entries, probes, strict=True):
-                cols = _leaf_column_count(probe.samples)
-                if cols > EXPANSION_COLUMN_LIMIT:
-                    oversized.append(OversizedChannel(name=name, column_count=cols))
-                    keys.append((phys_gi, ci))
-        return oversized, keys
-
     def load(
         self,
         file_path: Path,
         cancel: Callable[[], bool] | None = None,
-        confirm_expansion: ConfirmExpansion | None = None,
     ) -> LoadResult:
         if not file_path.exists() or not file_path.is_file():
             return LoadResult(
@@ -314,36 +270,11 @@ class MdfLoader:
         handle = MdfHandle(mdf, str(resolved_path))
         signals: list[Signal] = []
         diagnostics: list[Diagnostic] = []
+        # 物理チャンネル 1 本につき 1 レコード (列数ではない) — prod 4,324 件。
+        column_records: dict[str, ColumnRecord] = {}
         # mdf.close() 後は版が読めない恐れがあるため、ここで確定させる (LD-02)。
         format_label = self._format_label(mdf)
         try:
-            # 本読み前に展開列数をスキャンし、1024 超は確認 (無ければ全スキップ)。
-            # 承認されなかった超過チャンネルは skip_keys で本読み entries からも
-            # 除外する (本読みすらしない = メモリ/時間も節約・LD-14)。
-            oversized, over_keys = self._scan_oversized(mdf, cancel)
-            skip_keys: set[tuple[int, int]] = set()
-            if oversized:
-                if confirm_expansion is not None:
-                    chosen = confirm_expansion(
-                        ExpansionRequest(channels=tuple(oversized))
-                    )
-                else:
-                    chosen = set()  # ヘッドレス: 確認できないので全スキップ (安全側)
-                skip_keys = {key for i, key in enumerate(over_keys) if i not in chosen}
-                for i, key in enumerate(over_keys):
-                    if key in skip_keys:
-                        diagnostics.append(
-                            Diagnostic(
-                                level="warning",
-                                message=(
-                                    f"信号 '{oversized[i].name}': 展開列数 "
-                                    f"{oversized[i].column_count} が上限 "
-                                    f"{EXPANSION_COLUMN_LIMIT} を超えるためスキップ"
-                                ),
-                                signal_name=oversized[i].name,
-                            )
-                        )
-
             name_total = self._count_names(mdf)
             name_seen: dict[str, int] = {}
             # mdf.virtual_groups (物理グループ数ではない) を走査 — v4.20+ の
@@ -363,8 +294,8 @@ class MdfLoader:
                     signals,
                     diagnostics,
                     cancel,
-                    skip_keys,
                     handle,
+                    column_records,
                 )
         except LoadCancelled:
             # Must not be swallowed by the broad except below (LoadCancelled is
@@ -400,7 +331,11 @@ class MdfLoader:
             loaded_at=datetime.datetime.now(),
             handle=handle,
         )
-        return LoadResult(signal_group=signal_group, diagnostics=tuple(diagnostics))
+        return LoadResult(
+            signal_group=signal_group,
+            diagnostics=tuple(diagnostics),
+            column_records=column_records,
+        )
 
     @staticmethod
     def _group_entries(mdf: Any, gi: int) -> list[tuple[str, int, int]]:
@@ -441,14 +376,10 @@ class MdfLoader:
         signals: list[Signal],
         diagnostics: list[Diagnostic],
         cancel: Callable[[], bool] | None,
-        skip_keys: set[tuple[int, int]],
         handle: MdfHandle,
+        column_records: dict[str, ColumnRecord],
     ) -> None:
-        # skip_keys の (gi, ci) は上限超で展開しないと決まったチャンネル — 本読み
-        # entries から外し select にも渡さない (LD-14)。
-        entries = [
-            e for e in self._group_entries(mdf, gi) if (e[1], e[2]) not in skip_keys
-        ]
+        entries = self._group_entries(mdf, gi)
         if not entries:
             return
         if cancel is not None and cancel():
@@ -504,105 +435,127 @@ class MdfLoader:
             name_seen[base_name] = idx + 1
             deduplicated = name_total[base_name] > 1
             signal_name = f"{base_name}[{idx}]" if deduplicated else base_name
+            if signal_name in column_records:
+                # 1:1 不変条件 (表のキー集合 == 発行された Signal 名) の loud-fail。
+                # LD-08 の [i] 曖昧化は **生チャンネル名としても合法な形** なので、
+                # 別の物理チャンネルの名前と字面で衝突しうる (同名 'A' 2 本 ->
+                # A[0]/A[1] と、文字どおり 'A[0]' という第 3 のチャンネルが同居)。
+                # 表への代入は last-wins・signals への append は上書きしないため、
+                # 黙って通すと表と Signal が 1:1 でなくなり、いずれも**例外を出さずに**
+                # 壊れる: (a) 列数の母数が 1 チャンネル分丸ごと過少になる
+                # (b) ブラウザが 2 本を 1 行へ畳み、物理チャンネルが木/フィルタ/
+                # D&D/プレビュー/エクスポートから同時に消える (c) 生き残った表の
+                # 側が配列なら _mint_column が表示名の最長一致で **別チャンネルの
+                # 列** を鋳造し、値は一方から・timestamps/unit/bus_type/source_file は
+                # もう一方から来る (長さが偶然一致すると sample_source の長さ検証も
+                # 通るので、時間軸だけ別チャンネルの「普通に見える曲線」になる)。
+                # 誤データより見える拒否を選ぶ。
+                diagnostics.append(
+                    Diagnostic(
+                        level="error",
+                        message=(
+                            f"信号 '{signal_name}': 同名の別チャンネルが既にあるため"
+                            "スキップ（列名が一意になりません）"  # noqa: RUF001
+                        ),
+                        signal_name=signal_name,
+                    )
+                )
+                continue
 
             samples = probe.samples
+            spec = spec_from_probe(samples)
             exploded = samples.ndim != 1 or bool(samples.dtype.names)
-            # 多次元/構造化は展開して複数列に、通常 1D は単一要素のペアに正規化
-            # してから同じ dtype 検査/警告/Signal 構築ループへ流す (LD-12)。
-            #   out_name: 曖昧化済み signal_name 由来 (spec §3.2 — 例 M[0][i])。
-            #   selector: LazyMdfValues は base_name で _flatten してリーフを引く
-            #     ため base_name 由来のリーフキーにする。out_leaves と sel_leaves
-            #     は同一構造の走査で順序一致し prefix のみ相違する (signal_name が
-            #     曖昧化された場合でも遅延読みが正しいリーフを抽出できる)。
-            #   col_probe: 1 レコードの該当リーフ (dtype 検査用)。
-            if exploded:
-                out_leaves = _explode_samples(signal_name, samples, diagnostics)
-                sel_leaves = _flatten(base_name, samples)
-                pairs: list[tuple[str, tuple[str, ...] | None, np.ndarray]] = [
-                    (out_name, (sel_name,), col)
-                    for (out_name, _o), (sel_name, col) in zip(
-                        out_leaves, sel_leaves, strict=True
+            # E-3 反転: 展開列は Signal にしない。作るのは **物理チャンネル 1 本に
+            # つき Signal 1 個** で、列は SignalGroupManager が ColumnRecord から
+            # 要求時に鋳造する (264,004 -> 4,324)。
+            all_leaves = _all_leaf_count(spec)
+            numeric_leaves = leaf_count(spec)
+            if exploded and all_leaves:
+                _expansion_diagnostic(
+                    signal_name, samples, all_leaves, numeric_leaves, diagnostics
+                )
+            if all_leaves == 0:
+                # 0 幅軸の展開不能列。列展開時代も pairs が空でループが 1 度も回らず
+                # Signal も診断も出なかった — その沈黙をそのまま保つ。
+                continue
+
+            # 数値性は **リーフ単位** で判定する (spec S2)。構造化チャンネルの親
+            # probe は dtype.kind == 'V' なので、親の dtype をゲートに使うと全ての
+            # 構造化チャンネルが「非数値型のためスキップ」で消滅する。probe は非 raw
+            # (= 本読みと同じ側) なので、その dtype がそのままゲートの根拠になる
+            # (raw 側で判定すると TTAB が消える・_PROBE_OPTIONS のコメント参照)。
+            if numeric_leaves == 0:
+                # signal_name を Diagnostic に載せないのは列展開時代と同一
+                # (1-D 非数値の診断を byte-identical に保つ)。
+                diagnostics.append(
+                    Diagnostic(
+                        level="warning",
+                        message=(
+                            f"信号 '{signal_name}': 非数値型のためスキップ"
+                            f"（dtype {samples.dtype}）"  # noqa: RUF001
+                        ),
                     )
-                ]
-            else:
-                pairs = [(signal_name, None, samples)]
+                )
+                continue
+
+            # 非単調/重複はグループ master の性質なので **物理チャンネル 1 件**。
+            # 列ごとの emit は prod で 1 グループ最大 96,000 件の水増しだった
+            # (配列/構造化チャンネルの列単位 warning 集約は意図的 supersede・
+            # 1-D チャンネルの文言/件数/signal_name は不変)。
+            if n_backward or n_dup:
+                diagnostics.append(
+                    Diagnostic(
+                        level="warning",
+                        message=(
+                            f"信号 '{signal_name}': 非単調 {n_backward} 箇所・"
+                            f"重複タイムスタンプ {n_dup} 点"
+                            "（表示/演算は整列ビューで補正）"  # noqa: RUF001
+                        ),
+                        signal_name=signal_name,
+                    )
+                )
 
             # value_labels (value2text) は 1D 通常チャンネルのみ継承する —
-            # value2text はスカラー enum の概念で、展開後の列 (2D/構造化の
-            # 各成分) には意味を持たない (LD-07 spec 注記)。取得元を生チャンネル
-            # (mdf.groups[gi].channels[ci]) にしているのは、展開時に None を
-            # 渡して継承を止められる唯一の口だから。probe (非 raw) の conversion は
-            # 常に None なので (実測)、この生チャンネル経由が唯一の取得口でもある。
+            # value2text はスカラー enum の概念で、展開対象チャンネル (2D/構造化)
+            # には意味を持たない (LD-07)。取得元を生チャンネルにしているのは、
+            # 展開時に None を渡して継承を止められる唯一の口だから (probe は非 raw
+            # なので conversion が常に None)。
             raw_conversion = (
                 None if exploded else mdf.groups[_g].channels[_c].conversion
             )
-
-            for out_name, selector, col_probe in pairs:
-                # FU-20: native dtype を保持し float64 膨張 (wide uint8 の 8x) を避ける。
-                # 数値 (int/uint/float/bool) 以外は Signal が扱えないため従来どおり skip。
-                # col_probe は **非 raw プローブ (= 本読みと同じ側) の該当リーフ**
-                # なので、その dtype がそのままゲートの根拠になる (値の全読みは不要・
-                # raw 側で判定すると TTAB が消える。_PROBE_OPTIONS のコメント参照)。
-                # float64 化は計算境界 Signal.sorted_view() で行う。
-                gate_dtype = col_probe.dtype
-                if gate_dtype.kind not in "iufb":
-                    diagnostics.append(
-                        Diagnostic(
-                            level="warning",
-                            message=(
-                                f"信号 '{out_name}': 非数値型のためスキップ"
-                                f"（dtype {gate_dtype}）"  # noqa: RUF001
-                            ),
-                        )
-                    )
-                    continue
-
-                if n_backward or n_dup:
-                    diagnostics.append(
-                        Diagnostic(
-                            level="warning",
-                            message=(
-                                f"信号 '{out_name}': 非単調 {n_backward} 箇所・"
-                                f"重複タイムスタンプ {n_dup} 点"
-                                "（表示/演算は整列ビューで補正）"  # noqa: RUF001
-                            ),
-                            signal_name=out_name,
-                        )
-                    )
-
-                out_metadata = _extract_metadata(probe, raw_conversion)
-                # ブラウザの「1 行=1 物理チャンネル」グループ化キー。文字列解析では
-                # ACC.Speed (チャンネル名) と P.x (構造化フィールド) を区別できない。
-                # 生 base_name ではなく signal_name を使う: LD-08 で name_total>1 のとき
-                # base_name は別の物理チャンネル (別 gi/ci・別 shape/unit) と共有され
-                # 同一性を失う。selector 側の生名は LazyMdfValues が別に保持している。
-                out_metadata["physical_channel"] = signal_name
-                if deduplicated:
-                    # E-2b: this name involved a LD-08 [idx] disambiguation —
-                    # the ONLY basis cross-file same-name matching uses to
-                    # exclude a signal from automatic overlay (spec §3 step 5).
-                    # Array-expansion names (LD-14, e.g. "Mat[0]") look the
-                    # same textually but are NOT flagged: deduplicated is keyed
-                    # off name_total[base_name] (occurrences of the ORIGINAL
-                    # channel name), not the "[i]" suffix pattern itself.
-                    out_metadata["name_deduplicated"] = True
-                signals.append(
-                    Signal(
-                        name=out_name,
-                        timestamps=master,
-                        values_source=LazyMdfValues(
-                            handle,
-                            base_name,
-                            _g,
-                            _c,
-                            length=len(master),
-                            selector=selector,
-                        ),
-                        file_format=self._format_label(
-                            mdf
-                        ),  # LD-02: 版に応じ MDF3/MDF4
-                        bus_type=_detect_bus_type(getattr(probe, "source", None)),
-                        source_file=str(resolved_path),
-                        metadata=out_metadata,
-                    )
+            metadata = _extract_metadata(probe, raw_conversion)
+            # ブラウザの「1 行=1 物理チャンネル」グループ化キー。生 base_name では
+            # なく signal_name を使う: LD-08 で name_total>1 のとき base_name は別の
+            # 物理チャンネル (別 gi/ci・別 shape/unit) と共有され同一性を失う。
+            metadata["physical_channel"] = signal_name
+            if deduplicated:
+                # E-2b: LD-08 の [idx] 曖昧化を経た名前だけに立てる旗 (cross-file の
+                # 同名重ねから除外する唯一の根拠)。展開名 "Mat[0]" は文字列として
+                # 同じ形でも立てない — 判定は name_total[base_name] だから。
+                metadata["name_deduplicated"] = True
+            # E-3: 鋳造 (要求時の列生成) の材料はここでしか確定できない。表示名からは
+            # 生名も (gi, ci) も復元できず、後から引き直すとファイル全体の再走査に
+            # なる。spec は既に読んだ 1 レコードプローブ由来で値を持たない。
+            # **Signal を作る分岐の内側** に置くこと — skip したチャンネルを表に
+            # 残すと「行はあるが Signal が無い」死にキーが復活する。
+            column_records[signal_name] = ColumnRecord(
+                raw_base_name=base_name,
+                group_index=_g,
+                channel_index=_c,
+                spec=spec,
+            )
+            signals.append(
+                Signal(
+                    name=signal_name,
+                    timestamps=master,
+                    # selector=None: 物理チャンネル全体を読む器。列は鋳造側が
+                    # ColumnRecord から selector 付き LazyMdfValues で作る (LD-14)。
+                    values_source=LazyMdfValues(
+                        handle, base_name, _g, _c, length=len(master)
+                    ),
+                    file_format=self._format_label(mdf),  # LD-02: MDF3/MDF4
+                    bus_type=_detect_bus_type(getattr(probe, "source", None)),
+                    source_file=str(resolved_path),
+                    metadata=metadata,
                 )
+            )

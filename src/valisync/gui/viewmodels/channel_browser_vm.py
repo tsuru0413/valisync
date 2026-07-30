@@ -1,9 +1,13 @@
 """ChannelBrowserVM — physical-channel browser for the active file.
 
-Presents the currently selected file as one row per **physical channel** (E-2):
-the loader still explodes arrays/structs into per-column Signals, so the columns
-are folded back here and synthesized on demand by the tree model. Supports
-incremental substring filtering (matched against *column* names) and selection.
+Presents the currently selected file as one row per **physical channel** (E-2).
+その行が提示する **列** (LD-14 の ``Name[i]`` / ``.field``) の出所は
+``session.column_names_of()`` — ローダーの ``ColumnRecord`` が唯一の正典で、
+列 Signal の列挙には依存しない (E-3 / spec 追補 S1)。反転後 (T6) はローダーが
+列 Signal を発行しないため、列を group_signals から数える実装は全行が 1 列の葉に
+潰れ ``Mat[1]`` 以降が木・フィルタ・D&D・プレビュー・エクスポートから同時に消える。
+Supports incremental substring filtering (matched against *column* names) and
+selection.
 """
 
 from __future__ import annotations
@@ -15,13 +19,13 @@ from valisync.gui import strings as S
 from valisync.gui.viewmodels.observable import Observable
 
 if TYPE_CHECKING:
-    from valisync.core.models import Signal
     from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 
-# (physical_name, unit, base_key, column_count, first_column, spans) — filter
-# independent. spans index into _group_sigs; first_column is the real identity
-# (orig, namespaced key) of the first column seen, never the synthetic base_key.
-_PrepRow = tuple[str, str, str, int, tuple[str, str], list[tuple[int, int]]]
+# (physical_name, unit, base_key, columns) — filter independent。columns はその
+# 物理チャンネルが提示する列の表示名タプル (ColumnRecord 由来、記録の無い
+# グループでは観測した Signal 名)。**列 Signal への参照は一切持たない** —
+# 反転後は列 Signal 自体が存在しない。
+_PrepRow = tuple[str, str, str, tuple[str, ...]]
 
 # (physical_name, unit, base_key, column_count, single_column) — what the tree
 # model consumes. column_count stays the *real* column count (filter
@@ -93,8 +97,6 @@ class ChannelBrowserVM(Observable):
         self._prep_key: str | None = None
         self._prep_valid: bool = False
         self._prep: list[_PrepRow] = []
-        # _prep と同じ寿命で掴む列 Signal 列 (防御コピーを展開のたびに取り直さない)。
-        self._group_sigs: list[Signal] = []
         self._row_by_base_key: dict[str, int] = {}
         # フィルタ 1 パス分の結果メモ (フィルタ文字列, 生存行, 一致列総数)。
         # 無効化は prep のライフサイクルと不可分 (_invalidate_prep)。
@@ -105,37 +107,72 @@ class ChannelBrowserVM(Observable):
     def _invalidate_prep(self) -> None:
         """prep とフィルタメモをまとめて捨てる (両者は不可分)。
 
-        メモは prep が指す列 Signal 列の上でしか意味を持たない。_ensure_prep も
+        メモは prep が指す列名タプルの上でしか意味を持たない。_ensure_prep も
         再構築時にメモを落とすので**現状はどちらか一方でも結果は正しい**が、
         それは「_ensure_filter_memo が必ず _ensure_prep の後にメモを読む」という
         順序への暗黙依存で、順序が変われば静かに stale を配り始める。無効化点
         (refresh / active_file 切替) を単一の入口に寄せ、「_prep_valid が False
         なのにメモが生きている」中間状態自体を作らない。
 
-        **列 Signal への強参照もここで手放す**: _group_sigs はファイル 1 本ぶんの列
-        Signal 実体を掴む (main には無かった参照 — 旧 _prep は文字列だけを持っていた)。
-        今日の production では unload の notify カスケードが必ず
-        _ensure_prep(active_key=None) を再入させ、teardown.enqueue が走る前に空へ
-        するので実害は無い。だがそれは「購読中の view が居る」ことに依存した**創発的な**
-        保証でしかなく、破れると TeardownService._drain が何も解放できないまま
-        pending_signals() だけが正常に減る (ドレインは健全に見えたままメモリが残る)。
-        無効化点で無条件に手放し、保証を構造にする。
+        E-3: 旧 _group_sigs (ファイル 1 本ぶんの列 Signal 実体への強参照) は
+        廃止した。列は ColumnRecord 由来の文字列なので、VM は Signal を **一度も
+        掴まない** — TeardownService._drain が「何も解放できないのに
+        pending_signals() だけ減る」最も観測しづらい壊れ方が構造的に起きない。
         """
         self._prep_valid = False
         self._filter_memo = None
         self._prep = []
-        self._group_sigs = []
         self._row_by_base_key = {}
 
-    def _ensure_prep(self) -> None:
-        """物理チャンネル単位の (name, unit, base_key, column_count, first_column,
-        spans) を active file ごとに 1 度だけ作る。
+    def _columns_of(self, group_key: str, display_name: str) -> tuple[str, ...] | None:
+        """物理チャンネル *display_name* の列名 (ColumnRecord 由来)。記録が無ければ None。
 
-        グループ化キーはローダー由来の metadata['physical_channel'] — 文字列解析では
-        ACC.Speed (チャンネル名) と P.x (構造化フィールド) を区別できないため。
-        E-2 時点ではローダーがまだ列を展開するので、ここで列を物理チャンネルへ畳む。
-        小文字化した列名は **持たない** (旧 _prep の 68 MB の本体) — フィルタは
-        _ensure_filter_memo が 1 パスで解決しメモする。
+        ``session.column_names_of()`` は「記録が無い」を返り値で表現できない —
+        記録を持たないローダー (CSV/Derived) と真のスカラーは、どちらも
+        ``(display_name,)`` になる。**両者を区別する必要はない**: どちらの場合も
+        「観測した Signal がそのまま 1 列」なので、呼び出し側が観測列名を使えば
+        必ず正しい (真のスカラーでは観測名 == display_name で一致する)。
+
+        逆に記録から実リーフ名が出た場合 (``Mat`` -> ``Mat[0]…`` / ``Mono`` ->
+        ``Mono[0]``) は記録が正典で、観測より優先しなければならない。反転後は
+        観測が物理チャンネル 1 本しか無いため、観測を優先すると ``Mono`` /
+        ``P`` / ``Q`` のような「展開したのに 1 列」の行が、実在しない合成キーを
+        葉として晒す (C1 のバグそのもの)。
+
+        KeyError を握るのは**注入セッション**のため — production の
+        ``Session.column_names_of`` は表を ``dict.get`` で引くので未知 key でも
+        ``(display_name,)`` を返し、ここへ KeyError は来ない。一方
+        ``column_names_of`` を差し替えた単体テストの偽 session は投げうるので、
+        その場合も行を作れるように握る (観測列がそのまま列になる)。
+        """
+        try:
+            cols = self._app_vm.session.column_names_of(group_key, display_name)
+        except KeyError:
+            return None
+        if not cols or cols == (display_name,):
+            return None
+        return cols
+
+    def _ensure_prep(self) -> None:
+        """物理チャンネル単位の (name, unit, base_key, columns) を active file ごとに
+        1 度だけ作る。
+
+        行のグループ化キーはローダー由来の metadata['physical_channel'] — 文字列
+        解析では ACC.Speed (チャンネル名) と P.x (構造化フィールド) を区別できない。
+        **列は session.column_names_of() (ColumnRecord) から取る**: 反転後は
+        1 物理チャンネル = Signal 1 個になり、列 Signal を数える実装は全行が
+        1 列の葉に潰れる (S1)。
+
+        列名タプルは prep と同寿命で保持する。E-2 が拒否したのは「Signal.name が
+        別に存在する状態で作る **小文字化した重複コピー**」(旧 _prep の 68 MB /
+        名前キャッシュ案の ≈33 MB) であって、反転後はこのタプルが列名の唯一の
+        実体になる。捨てると入力停止のたびに全列ぶんの f-string を作り直すことに
+        なり、フィルタ 1 回のコストが構造的に悪化する (実測は T9)。フィルタは
+        _matches() が都度 lower() するので、小文字化コピーは今後も持たない。
+
+        記録を持たない行 (CSV/Derived・注入セッション) だけが観測列名を溜める。
+        prod の配列行は記録が最初の 1 本で確定するので、264k 本の一時リストは
+        作らない。
 
         session.group_signals は遅延アクセス時に読むので、monkeypatch した session
         (テスト) も初回アクセスで尊重される。
@@ -146,19 +183,16 @@ class ChannelBrowserVM(Observable):
         self._filter_memo = None  # prep が変われば絞り込み結果も無効
         if not active_key:
             self._prep = []
-            self._group_sigs = []
             self._row_by_base_key = {}
             self._prep_key = active_key
             self._prep_valid = True
             return
-        # 防御コピー list(cached) は prod で ~2 ms / 2.1 MB (264k ポインタ・Signal 実体
-        # は共有)。column_names_for が展開のたびに再取得しないよう _prep と同寿命で持つ。
-        group_sigs = self._app_vm.session.group_signals(active_key)
         prep: list[_PrepRow] = []
         row_by_base_key: dict[str, int] = {}
-        for i, sig in enumerate(group_sigs):
-            ns_name = sig.name
-            orig = _orig_of(ns_name)
+        # row -> 観測列名。_columns_of が None を返した行だけが入る。
+        observed: dict[int, list[str]] = {}
+        for sig in self._app_vm.session.group_signals(active_key):
+            orig = _orig_of(sig.name)
             md = sig.metadata or {}
             # CSV/Derived は physical_channel を持たない = 1 列 1 物理チャンネル
             # (意図的逸脱・コントローラ決定 2)。直接添字は CSV で KeyError になる。
@@ -168,26 +202,39 @@ class ChannelBrowserVM(Observable):
             base_key = f"{active_key}{KEY_SEPARATOR}{phys}"
             row = row_by_base_key.get(base_key)
             if row is None:
-                row_by_base_key[base_key] = len(prep)
-                unit = str(md.get("unit", ""))
-                prep.append((phys, unit, base_key, 1, (orig, ns_name), [(i, i + 1)]))
-            else:
-                name, unit, bk, n, first, spans = prep[row]
-                last_start, last_stop = spans[-1]
-                # 連続なら区間を伸ばし、そうでなければ新区間 (連続性は仮定でなく実測 —
-                # LD-08 や配列/スカラー interleave で非隣接ブロックになりうる)
-                if last_stop == i:
-                    spans[-1] = (last_start, i + 1)
-                else:
-                    spans.append((i, i + 1))
-                # unit は「最初に見た列」のもの。集約しない — 親行の Unit は空
-                # (UX-29: 親は空・実体は子。混在単位の P.x=m / P.t=s で誤表示になる)。
-                prep[row] = (name, unit, bk, n + 1, first, spans)
+                row = len(prep)
+                row_by_base_key[base_key] = row
+                cols = self._columns_of(active_key, phys)
+                if cols is None:
+                    observed[row] = [orig]
+                    cols = ()  # ループ後に観測列で差し替える
+                # unit は物理チャンネル 1 本につき 1 つ — ローダーは同一プローブの
+                # metadata を全列へ配る (mdf_loader の pairs ループ) ので「列ごとの
+                # unit」は存在しない。親行の Unit を空にするのは tree model の責務
+                # (UX-29)。
+                prep.append((phys, str(md.get("unit", "")), base_key, cols))
+            elif row in observed:
+                observed[row].append(orig)
+        for row, names in observed.items():
+            phys, unit, base_key, _placeholder = prep[row]
+            prep[row] = (phys, unit, base_key, tuple(names))
         self._prep = prep
-        self._group_sigs = group_sigs
         self._row_by_base_key = row_by_base_key
         self._prep_key = active_key
         self._prep_valid = True
+
+    def _column_key(self, column_name: str) -> str:
+        """列の表示名を名前空間つき Signal キーへ。
+
+        反転後は「Signal がまだ存在しない時点」で組み立てるので、Signal から
+        読み出すことはできない (鋳造は session.resolve_signal が要求時に行う)。
+        _prep_key は _ensure_prep 後は必ず active_file_key と一致する。
+        """
+        return f"{self._prep_key}{KEY_SEPARATOR}{column_name}"
+
+    def _total_columns(self) -> int:
+        """prep が提示する列の総数 (フィルタ非依存)。"""
+        return sum(len(row[3]) for row in self._prep)
 
     def _ensure_filter_memo(self) -> tuple[list[_TreeRow], int]:
         """現在のフィルタでの (生存行, 一致列総数) を 1 パスで求め、フィルタ文字列を
@@ -206,10 +253,10 @@ class ChannelBrowserVM(Observable):
         3 回走っていた (prod 264k 列で実測 3.00 パス)。間に結果を変えるものは無いので
         フィルタ文字列キーのメモ 1 個で 3 -> 1 に畳める。
 
-        追加メモリは実質ゼロ: 保持するのは生存行のタプル (prod 4,324 行) と int だけで、
-        **列ごとの小文字名は持たない** (それが旧 _prep の 68 MB / 名前キャッシュ案の
-        ≈33 MB の本体)。子行は column_names_for がその行の span を展開時に再走査して
-        賄うので名前キャッシュは要らない。
+        追加メモリは実質ゼロ: 保持するのは生存行のタプル (prod 4,324 行) と int
+        だけで、**列ごとの小文字名は持たない** (それが旧 _prep の 68 MB /
+        名前キャッシュ案の ≈33 MB の本体)。列名そのものは prep が 1 部だけ持ち
+        (_ensure_prep の docstring)、子行も件数もそこから賄う。
         """
         self._ensure_prep()
         fl = self._filter_text.lower()
@@ -223,42 +270,37 @@ class ChannelBrowserVM(Observable):
     def _scan_filter(self, fl: str) -> tuple[list[_TreeRow], int]:
         """メモが無いときの実走査 (生存行, 一致列総数)。fl は小文字化済み。"""
         rows: list[_TreeRow] = []
+        single: tuple[str, str] | None
         if not fl:
-            # フィルタ空 = 実列数がそのまま提示列数。prep だけで完結する (列走査ゼロ)。
-            rows = [
-                (name, unit, base_key, n, first if n == 1 else None)
-                for name, unit, base_key, n, first, _spans in self._prep
-            ]
-            return rows, sum(row[3] for row in self._prep)
-        # ここから先だけが列名走査 (prod 264k 列で ~170ms)。メモが効いていれば
-        # 入力停止 1 回につき 1 度しか増えない — テストはこの数を見る。
+            # フィルタ空 = 実列数がそのまま提示列数 (列名の照合はしない)。
+            for name, unit, base_key, cols in self._prep:
+                single = (
+                    (cols[0], self._column_key(cols[0])) if len(cols) == 1 else None
+                )
+                rows.append((name, unit, base_key, len(cols), single))
+            return rows, self._total_columns()
+        # ここから先だけが列名走査。メモが効いていれば入力停止 1 回につき 1 度しか
+        # 増えない — テストはこの数を見る。
         self._filter_scans += 1
         matched_total = 0
-        for name, unit, base_key, n, _first, spans in self._prep:
+        for name, unit, base_key, cols in self._prep:
             hits = 0
-            single: tuple[str, str] | None = None
-            single_unit = ""
-            for start, stop in spans:
-                for sig in self._group_sigs[start:stop]:
-                    orig = _orig_of(sig.name)
-                    if not _matches(orig, fl):
-                        continue
-                    hits += 1
-                    if hits == 1:
-                        single = (orig, sig.name)
-                        # 提示列が 1 本に落ちた行は葉として描かれるので、Unit も
-                        # その列のもの (先頭列のではない) でなければ嘘になる。
-                        single_unit = str((sig.metadata or {}).get("unit", ""))
+            single = None
+            for col in cols:
+                if not _matches(col, fl):
+                    continue
+                hits += 1
+                if hits == 1:
+                    single = (col, self._column_key(col))
             if hits == 0:
                 continue  # 一致列 0 の行は出さない
             matched_total += hits
             # column_count は **フィルタ非依存の実列数** のまま (_group_total の供給元)。
             # 葉/親の判定に使わないこと — 使うと「絞って 1 列に落ちた行」がドラッグ
             # 不能な親のままになり、今日できる「絞って→ドラッグ」を壊す。
-            if hits == 1:
-                rows.append((name, single_unit, base_key, n, single))
-            else:
-                rows.append((name, unit, base_key, n, None))
+            rows.append(
+                (name, unit, base_key, len(cols), single if hits == 1 else None)
+            )
         return rows, matched_total
 
     def shown_count(self) -> int:
@@ -291,10 +333,11 @@ class ChannelBrowserVM(Observable):
     def column_names_for(self, base_key: str) -> list[tuple[str, str, str]]:
         """base_key の物理チャンネルの列を (orig, unit, key) で返す。
 
-        走査はその行の span (最大でそのチャンネルの列数) だけ — group_signals 全走査
-        (prod 264,004) を展開のたびに走らせない (O(n^2) 回避)。返すのは **現在の
-        フィルタに一致する列だけ** (フィルタ空なら全列) で、述語は _matches() に
-        一本化 — 件数と子行が乖離できない構造にする (C3)。
+        走査はその行の列名タプルだけ — group_signals 全走査 (prod 264,004) を
+        展開のたびに走らせない (O(n^2) 回避)。返すのは **現在のフィルタに一致する
+        列だけ** (フィルタ空なら全列) で、述語は _matches() に一本化 — 件数と
+        子行が乖離できない構造にする (C3)。unit は行 (物理チャンネル) のもの —
+        列ごとの unit は存在しない (_ensure_prep の docstring)。
         """
         try:
             self._ensure_prep()
@@ -308,16 +351,9 @@ class ChannelBrowserVM(Observable):
         row = self._row_by_base_key.get(base_key)
         if row is None:
             return []
+        _name, unit, _bk, cols = self._prep[row]
         fl = self._filter_text.lower()
-        out: list[tuple[str, str, str]] = []
-        for start, stop in self._prep[row][5]:
-            for sig in self._group_sigs[start:stop]:
-                ns_name = sig.name
-                orig = _orig_of(ns_name)
-                if not _matches(orig, fl):
-                    continue
-                out.append((orig, str((sig.metadata or {}).get("unit", "")), ns_name))
-        return out
+        return [(c, unit, self._column_key(c)) for c in cols if _matches(c, fl)]
 
     # ─── Header / empty-state (FB-05/09) ────────────────────────────────────
 
@@ -325,6 +361,18 @@ class ChannelBrowserVM(Observable):
         """Return the active file's filter-independent total **column** count, or
         None (no file active, or its key was already dropped from the session —
         FU-22 B).
+
+        値は prep の列数和。T1 の ``session.total_column_count()`` を production
+        から**直接は呼ばない**: (a) shown_count() と別ソースにすると「total <
+        shown」の自己矛盾を構造的に許してしまう (C2 — prod で「4,324 ch 中
+        264,004 ch を表示」に相当する壊れ方)、(b) 全チャンネル skip の 0ch
+        グループや、group_signals だけを差し替えた単体セッションで total と行が
+        食い違う。両者が一致することは実ファイルの契約テスト
+        (test_group_total_agrees_with_session_total_column_count) が pin する。
+
+        shown_count() が列を数える以上 total も列で数える (C2)。empty_state() の
+        total == 0 分岐は変更不要 — チャンネルは必ず 1 列以上持つので「列 0」と
+        「チャンネル 0」は同値。
 
         #14: this no longer resolves the file's display name — the header
         (the only former consumer of it) dropped the filename prefix, and
@@ -338,11 +386,7 @@ class ChannelBrowserVM(Observable):
             self._ensure_prep()  # prep hit なら追加 fetch なし
         except KeyError:
             return None
-        # shown_count() が列を数える以上 total も列で数える (C2)。行数のままだと
-        # prod で「4,324 ch 中 264,004 ch を表示」= shown > total の自己矛盾になる
-        # (ユーザー決定 2)。empty_state() の total == 0 分岐は変更不要 —
-        # チャンネルは必ず 1 列以上持つので「列 0」と「チャンネル 0」は同値。
-        return sum(row[3] for row in self._prep)
+        return self._total_columns()
 
     def header_text(self) -> str:
         """One-line context header: how many signals are shown of how many.
@@ -406,17 +450,32 @@ class ChannelBrowserVM(Observable):
     # ─── Tooltip (PC-19/DP14) ────────────────────────────────────────────────
 
     def _signal_by_key(self, key: str) -> Any | None:
-        """Look up the active file's Signal whose namespaced name == key."""
+        """Look up the Signal for *key* (namespaced column key)。
+
+        反転後は列 Signal が group_signals に居ない (1 物理チャンネル = Signal 1 個)
+        ため、走査で外れたら session.resolve_signal へ落とす — 列キーはそこで
+        要求時に鋳造される (E-1)。値は読まないので遅延契約は保たれる
+        (tooltip が見るのは timestamps の長さと metadata だけ)。
+
+        **警告 — この形を他所へ複製しないこと**: ``resolve_signal`` は鋳造した列を
+        ``_resolved_by_key`` へ**恒久登録**する (E-3 決定 C-g で LRU は入れない)。
+        つまりホバー 1 回ごとに列 Signal が寿命いっぱい滞留する。ここで許容できるのは
+        ``tooltip_for`` に production の呼出元が 1 つも無い (FU-22 B で ToolTipRole が
+        SignalTreeModel から外れた) からであって、設計として正しいからではない。
+        **PC-19 を復活させるならこの経路は使えない** — 鋳造しないメタデータ取得口が要る
+        (``has_column`` は真偽しか返さないので代用にならない)。
+        """
         active_key = self._app_vm.active_file_key
         if not active_key:
             return None
+        session = self._app_vm.session
         try:
-            for sig in self._app_vm.session.group_signals(active_key):
+            for sig in session.group_signals(active_key):
                 if sig.name == key:
                     return sig
         except KeyError:
             return None
-        return None
+        return session.resolve_signal(key)
 
     def tooltip_for(self, key: str) -> str:
         """Lazily assemble a multi-line tooltip for *key* (PC-19).

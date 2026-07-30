@@ -9,15 +9,16 @@ dict を作り直していた (prod 264k エントリ)。列キーを遅延解�
 
 from __future__ import annotations
 
-import datetime
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+from tests.mdf4_helpers import write_mdf4_2d
+from valisync.core.loaders.mdf_loader import MdfLoader
 from valisync.core.loaders.signal_group_manager import SignalGroupManager
-from valisync.core.models import Signal, SignalGroup
+from valisync.core.models import Signal
 
 
 class _CountingMap(Mapping[str, Signal]):
@@ -210,70 +211,82 @@ def test_signal_map_fast_path_returns_base_object_when_no_offsets() -> None:
 # ─── 遅延解決 base map (_ResolvingMap) との合成 (Task 6) ────────────────────────
 
 
-class _MintingManager(SignalGroupManager):
-    """テスト専用: E-3 でローダーが per-channel Signal を出す状態を先取りする。
+def _resolving_manager(tmp_path: Path) -> tuple[SignalGroupManager, str]:
+    """実 mf4 を読んだ manager (物理チャンネル Mat / Clean・Mat[i] が鋳造経路)。
 
-    E-1 本体の `_mint_column` は常に None を返すため、overlay 越しに鋳造経路が
-    通っていることは鋳造可能なサブクラスでしか観測できない。
+    E-1 のテストダブル (常に Signal を返す `_mint_column` の上書き) は overlay の
+    合成しか見ておらず、鋳造そのものが壊れても緑のままだった。T2 で実装が入ったので
+    実 mf4 の鋳造へ差し替える。T6 の反転前は「代表列 1 本だけ残す」細工で列キーを
+    map から外していたが、反転後は production がそのままその形 (細工を残すと
+    signals が空になり、親不在で鋳造が None になって偽緑)。
+
+    ``column_records`` を渡し忘れると表が空になり、正しい実装でも `_mint_column` が
+    常に None を返す (overlay 側のテストが「解決できないだけ」で緑にならず全 RED)。
     """
-
-    def _mint_column(self, group_key: str, key: str) -> Signal:
-        return _sig(key)
-
-
-def _manager_with(*names: str) -> tuple[_MintingManager, str]:
-    mgr = _MintingManager()
-    key = mgr.add(
-        SignalGroup(
-            signals=tuple(_sig(n) for n in names),
-            source_path=Path("/x.mf4").resolve(),
-            file_format="MDF4",
-            loaded_at=datetime.datetime.now(),
-        )
-    )
+    result = MdfLoader().load(write_mdf4_2d(tmp_path))
+    sg = result.signal_group
+    assert sg is not None
+    assert {s.name for s in sg.signals} == {"Mat", "Clean"}, "反転後の形 (setup 前提)"
+    mgr = SignalGroupManager()
+    key = mgr.add(sg, column_records=result.column_records)
     return mgr, key
 
 
-def test_overlay_over_resolving_base_enumerates_physical_keys_only() -> None:
-    """`len()`/`iter()` は overlay 越しでも「物理キー」のままで鋳造しない。
-
-    overlay は列挙を base へ委譲する。base が遅延解決 Mapping になった今、その委譲が
-    「全論理キーの列挙」に化けると 330k 列を鋳造して ~390 MB を再導入する。
-    """
-    mgr, key = _manager_with("Mat[0]")
+def test_overlay_over_resolving_base_enumerates_physical_keys_only(
+    tmp_path: Path,
+) -> None:
+    """`len()`/`iter()` は overlay 越しでも「物理キー」のままで鋳造しない。"""
+    mgr, key = _resolving_manager(tmp_path)
     vm, _session = _vm(mgr.signal_map(), {key: 1.0}, {})
     sm = vm._signal_map()  # type: ignore[attr-defined]
 
     before = mgr.mint_count
-    assert len(sm) == 1
-    assert list(sm) == [f"{key}::Mat[0]"]
+    physical = [f"{key}::Mat", f"{key}::Clean"]  # E-3: 行は物理チャンネル
+    assert len(sm) == 2
+    assert list(sm) == physical
     assert mgr.mint_count == before  # 列挙は鋳造しない
 
     # 鋳造済みの列があっても列挙は物理キーのみ
-    assert sm[f"{key}::Mat[7]"] is not None
+    assert sm[f"{key}::Mat[2]"] is not None
     assert mgr.mint_count == before + 1
-    assert len(sm) == 1
-    assert list(sm) == [f"{key}::Mat[0]"]
+    assert len(sm) == 2
+    assert list(sm) == physical
 
 
-def test_overlay_over_resolving_base_applies_offset_to_minted_column() -> None:
+def test_overlay_over_resolving_base_applies_offset_to_minted_column(
+    tmp_path: Path,
+) -> None:
     """overlay 越しのルックアップは列を解決し、その列にもオフセットを適用する。"""
-    mgr, key = _manager_with("Mat[0]")
+    mgr, key = _resolving_manager(tmp_path)
     vm, session = _vm(mgr.signal_map(), {key: 1.0}, {})
     sm = vm._signal_map()  # type: ignore[attr-defined]
 
-    col_key = f"{key}::Mat[7]"
+    col_key = f"{key}::Mat[2]"
     col = sm.get(col_key)
     assert col is not None  # 解決器へフォールスルーした
-    np.testing.assert_allclose(col.timestamps, np.arange(3, dtype=np.float64) + 1.0)
+    np.testing.assert_allclose(col.timestamps, np.array([0.0, 0.1, 0.2, 0.3]) + 1.0)
     assert session.offset_calls == [(col_key, 1.0, 0.0)]
 
 
-def test_overlay_over_resolving_base_returns_none_for_unresolvable_key() -> None:
-    """解決不能キーは overlay 越しでも None (KeyError を漏らさない)。"""
-    mgr, key = _manager_with("Mat[0]")
+def test_overlay_over_resolving_base_returns_none_for_unresolvable_key(
+    tmp_path: Path,
+) -> None:
+    """解決不能キーは overlay 越しでも None (KeyError を漏らさない)。
+
+    M-6: 未ロードグループのキーだけでは ``resolve()`` の
+    ``group_key not in self._groups`` で抜けてしまい **_mint_column に一度も入らない**
+    (``_mint_column`` の最終 ``return None`` をでたらめな Signal に差し替える変異が
+    生き延びる)。ロード済みグループの解決不能な列キーも並べて、鋳造ループを実際に
+    走らせたうえで None を要求する。
+    """
+    mgr, key = _resolving_manager(tmp_path)
     vm, _session = _vm(mgr.signal_map(), {key: 1.0}, {})
     sm = vm._signal_map()  # type: ignore[attr-defined]
 
-    assert sm.get("mf4_9::Nope") is None  # 未ロードグループ
+    assert sm.get("mf4_9::Nope") is None  # 未ロードグループ (resolve の早期 return)
     assert "mf4_9::Nope" not in sm
+    # ロード済みグループ内の解決不能キー = _mint_column の全走査を抜けた末の None。
+    # (Mat / Clean のどの記録にも接頭辞一致しないので最長一致ループが空振りする)
+    assert sm.get(f"{key}::Nope") is None
+    assert f"{key}::Nope" not in sm
+    assert mgr.mint_count == 0  # 失敗した鋳造は数に入らない

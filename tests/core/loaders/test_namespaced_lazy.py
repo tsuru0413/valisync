@@ -54,7 +54,7 @@ def test_namespaced_wrapper_shares_lazy_source_without_reading() -> None:
 
 
 def _loaded_manager() -> tuple[SignalGroupManager, str]:
-    sg = MdfLoader().load(DEMO, confirm_expansion=None).signal_group
+    sg = MdfLoader().load(DEMO).signal_group
     assert sg is not None
     mgr = SignalGroupManager()
     key = mgr.add(sg)
@@ -78,7 +78,7 @@ def test_signals_and_signal_map_do_not_materialize() -> None:
 
 @demo_only
 def test_wrapper_shares_origin_source_identity() -> None:
-    sg = MdfLoader().load(DEMO, confirm_expansion=None).signal_group
+    sg = MdfLoader().load(DEMO).signal_group
     assert sg is not None
     mgr = SignalGroupManager()
     key = mgr.add(sg)

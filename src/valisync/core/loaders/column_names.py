@@ -1,6 +1,6 @@
 """LD-14 の列名文法の単一の真実 (ColumnSpec とその上の生成).
 
-従来は mdf_loader の ``_flatten`` と ``_leaf_column_count`` が同じ規則を 2 箇所で
+従来は mdf_loader の ``_flatten`` と展開列数カウンタが同じ規則を 2 箇所で
 手写ししており、共有コードも突合 assert も無かった。列展開を遅延化すると
 「名前を生成する側」と「名前から列を引く側」が分離するため、乖離はサイレントに
 誤った列を返す。本モジュールを唯一の実装とし、順序は _flatten と一致させる。
@@ -28,6 +28,22 @@ class ColumnSpec:
     axis_len: int = 0  # array のみ: 先頭の非サンプル軸の長さ
     child: ColumnSpec | None = None  # array のみ: 1 段剥がした後の構造
     fields: tuple[tuple[str, ColumnSpec], ...] = ()  # struct のみ (順序保存)
+
+
+@dataclass(frozen=True, slots=True)
+class ColumnRecord:
+    """物理チャンネル 1 本の鋳造に必要な最小情報 (値は持たない)。
+
+    ローダーが持つ 2 つのキー空間を橋渡しする唯一の置き場: 列キー / 表示名は
+    LD-08 dedup 済み (同名 2 本なら ``sig[0]`` / ``sig[1]``) だが、asammdf の
+    ``select`` は**生チャンネル名と (gi, ci)** を要求する。表示名からは生名も
+    位置も復元できない (dedup は非可逆) ため、ロード時にここへ残す。
+    """
+
+    raw_base_name: str  # asammdf のチャンネル名 (LD-08 dedup 前の生名)
+    group_index: int
+    channel_index: int
+    spec: ColumnSpec
 
 
 def spec_from_probe(arr: np.ndarray) -> ColumnSpec:
@@ -102,6 +118,17 @@ def parse_leaf(
     チャンネルの spec を誤って返しうる。これは呼び出し側の前提条件であり
     ``parse_leaf`` 自身では検出できない — 呼び出し側は生名の一意性を保証するか、
     (gi, ci) ごとに解決した spec を渡す必要がある。
+
+    **E-3 以降の正しい呼び方 (鋳造経路)**: 列キーは *表示空間* にある
+    (``Signal.name`` 由来・dedup 済みチャンネルなら ``sig[1][2]``)。それを全チャンネル
+    分の生名キー ``Mapping`` へそのまま渡してはならない — 上の限界にそのまま落ちる。
+    ``SignalGroupManager.column_records`` (キー = LD-08 dedup 済み表示名) で
+    **先に物理チャンネルを確定**し、生名は当該 ``ColumnRecord.raw_base_name`` から
+    取る。そのうえで本関数へ渡すのは
+    ``parse_leaf(raw_base_name + 残余, {raw_base_name: record.spec})`` の
+    **単一エントリ Mapping** — これが上で言う「(gi, ci) ごとに解決した spec」であり、
+    エントリが 1 本しかないので衝突は構造的に起こり得ない。失敗モードは例外でなく
+    **別チャンネルのデータ**なので、この順序は守ること。
 
     ルックアップは O(len(key)) (specs 全体の O(number of channels) 走査ではない)。
     """

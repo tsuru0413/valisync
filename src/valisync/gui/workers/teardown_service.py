@@ -119,15 +119,39 @@ class TeardownService(QObject):
             _retained_bytes(s, seen) for _key, sigs in self._groups for s in sigs
         )
 
-    def enqueue(self, key: str, group: SignalGroup) -> None:
+    def enqueue(
+        self, key: str, group: SignalGroup, columns: tuple[Signal, ...] = ()
+    ) -> None:
+        """*key* のグループ信号 + 鋳造列 (E-3) を 1 エントリとして積む。
+
+        ``columns`` は ``SignalGroup.signals`` の外に居る鋳造列
+        (``RemovalResult.removed_columns``)。**同一エントリへ連結する**のが要点:
+        ``on_finished`` はエントリごとに発火し、その宛先の ``AppViewModel.mark_released``
+        は初回 pop で確定するため、同じ key を 2 エントリに分けると 1 本目の完了で
+        releasing 行が消え、列がまだ残っているのに「解放完了」に見える。
+
+        O(1) 契約は維持する: ``list(group.signals)`` も ``extend(columns)`` も C レベルの
+        ポインタコピーだけで、信号の配列には一切触れない (nbytes 走査と解放は _drain の
+        担当のまま)。``columns`` は解決済み列 = プロット/読み値/エクスポートで触れた列だけで、
+        全論理列ではない。**ただし「常に少ない」と読まないこと** — 反転後は
+        ``group.signals`` が物理チャンネル数 (prod 4,324) まで縮む一方、``_resolved_by_key``
+        は全列を選ぶワークフロー (全選択エクスポート等) で論理列数 (prod 264k) へ向かって
+        伸びうるので、``columns`` が支配項になりうる。O(1) 契約自体はポインタコピーのみ
+        なので成立し続ける。
+        """
         sigs = list(group.signals)  # single C-level copy -- no per-signal loop
+        # extend は**空判定より前**に置く。後ろだと「signals が空で列だけ残る」グループが
+        # 下の即時 finish 分岐に落ち、列がペーシングを迂回して同期解放される (実体化済みの
+        # 列はバイトが重い)。エントリ内の順序は無関係 — _drain は末尾から pop する。
+        sigs.extend(columns)
         if not sigs:
             if self._on_finished is not None:
                 self._on_finished(key)
             return
         self._pending_signals += len(sigs)
         self._groups.append((key, sigs))
-        # NOTE: caller must not keep a ref to `group` after this (it does not);
+        # NOTE: caller must not keep a ref to `group` / `columns` after this (it does
+        # not -- both hang off the RemovalResult local that falls out of scope);
         # `sigs` becomes the sole owner, so popping from it frees the arrays.
         if not self._timer.isActive():
             self._timer.start()

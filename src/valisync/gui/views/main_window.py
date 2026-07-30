@@ -53,6 +53,7 @@ from valisync.core.models.sample_source import SampleReadError
 from valisync.core.session import LoadOutcome
 from valisync.gui import reference_overlay
 from valisync.gui import strings as S
+from valisync.gui.display_names import split_key
 from valisync.gui.strings import mn
 from valisync.gui.theme import apply as theme_apply
 from valisync.gui.theme import icons, tokens
@@ -82,7 +83,6 @@ from valisync.gui.views.recent_files import RecentFiles
 from valisync.gui.views.shell_actions import ShellActions
 from valisync.gui.views.signal_preview_window import SignalPreviewWindow
 from valisync.gui.views.welcome_view import WelcomeView
-from valisync.gui.workers.expansion_confirmer import ExpansionConfirmer
 from valisync.gui.workers.export_worker import ExportController
 from valisync.gui.workers.load_worker import LoadController
 from valisync.gui.workers.teardown_service import TeardownService
@@ -202,8 +202,6 @@ class MainWindow(QMainWindow):
         self.app_vm.set_busy_predicate(self._export_controller.is_busy)
         # 拒否モーダルは DI (テストから差し替え可能 — _default_confirm と同規約)。
         self._notify_blocked: Callable[[str], None] = self._default_blocked_modal
-        # GUI スレッド所属 — ワーカーからの展開確認をモーダルへ marshal (LD-14)。
-        self._expansion_confirmer = ExpansionConfirmer(self)
         # LD-01: CSV フォーマット解決 (検出して確認ダイアログ)。テストで差し替え可能。
         self._csv_format_resolver: Callable[[Path], FormatDefinition | None] = (
             self._default_csv_format_resolver
@@ -644,20 +642,19 @@ class MainWindow(QMainWindow):
             # なお本経路はエクスポートガードの対象外: このグループは register_loaded を
             # 通らず、エクスポートツリーの唯一のソース (app_vm.loaded_file_keys ->
             # export_csv_dialog.py:114) に載らないためエクスポート中になり得ない。
-            # E-3 の 2 サイト目: 鋳造列が生きたら result.removed_columns もここで
-            # TeardownService へ渡すこと (今は必ず空)。tripwire は
-            # AppViewModel.unload_file 側にしか無いので、この経路だけを編集する人には
-            # 何の信号も届かない — 無音でペーシングを迂回させないための逆参照。
+            # 鋳造列も渡す (E-3 の 2 サイト目): session.load はグループ登録の**後**に
+            # キャンセルが確定するので、その窓で resolve された列は実在しうる。
             result = session.remove_group(outcome.key, force=True)
             if result.removed_group is not None:
-                self.teardown_service.enqueue(outcome.key, result.removed_group)
+                self.teardown_service.enqueue(
+                    outcome.key, result.removed_group, columns=result.removed_columns
+                )
 
         self._load_controller.submit(
             lambda: session.load(
                 target,
                 fmt,
                 cancel=cancel_event.is_set,
-                confirm_expansion=self._expansion_confirmer.confirm,
             ),
             busy=self.busy_overlay,
             cancel_event=cancel_event,
@@ -740,12 +737,28 @@ class MainWindow(QMainWindow):
         # Defensive: no current emitter sends a signal name here, but this
         # fallback stays ready for a future signal-name emit / signal-row
         # selection without another _on_diagnostic_activated rewrite.
+        #
+        # E-3: 診断が載せる signal_name は **素の列名** ("Mat[0]")。反転後
+        # group_signals は物理チャンネルしか返さないので、名前の線形比較では
+        # 列名の診断が二度と一致しない (ダブルクリックしても無反応)。名前空間つき
+        # キーがそのまま来た場合は所属グループへ絞ってから引く (二重接頭辞にしない)。
+        #
+        # T7 レビュー Minor: ここは「その名前がこのファイルに在るか」しか訊いて
+        # いないので **resolve_signal を使ってはならない** — ヒットした列は
+        # `_resolved_by_key` へ *恒久的に* 登録され (LRU は E-3 では入れない = C-g)、
+        # 「どのファイルを active にするか」を決めるためだけに列 Signal がセッション
+        # 寿命いっぱい滞留する。has_column / is_container_channel はどちらも
+        # ColumnRecord の構造だけを見るので鋳造しない。2 つ必要なのは、両者の
+        # 被覆が相補的だから: 列キーとスカラーは has_column が True・配列/構造体の
+        # **親** (E-3 の集約「N 本に展開」info が載せる名前そのもの) は
+        # has_column が False で is_container_channel が True。片方だけにすると
+        # どちらかの診断のジャンプが無音で死ぬ。
+        session = self.app_vm.session
+        group_key, bare = split_key(target)
         for key in self.app_vm.loaded_file_keys:
-            try:
-                group_sigs = self.app_vm.session.group_signals(key)
-            except KeyError:
+            if group_key and group_key != key:
                 continue
-            if any(sig.name == target for sig in group_sigs):
+            if session.has_column(key, bare) or session.is_container_channel(key, bare):
                 self.app_vm.set_active_file(key)
                 return
 

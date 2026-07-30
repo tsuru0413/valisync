@@ -432,8 +432,6 @@ def test_quick_demo_top_rows_are_physical_channels(
         pytest.xfail(f"補助オラクル用の mf4 が無い (skip ではなく xfail): {_QUICK_MF4}")
 
     window = _build_window(qtbot)
-    # 配列展開の確認モーダルはワーカーからの呼び出し — 全スキップで非ブロック化。
-    window._expansion_confirmer.confirm = lambda request: set()  # type: ignore[assignment]
     window._load_file(_QUICK_MF4)
     qtbot.waitUntil(
         lambda: bool(window.app_vm.loaded_file_keys), timeout=_LOAD_TIMEOUT_MS
@@ -452,8 +450,12 @@ def test_quick_demo_top_rows_are_physical_channels(
         f"トップ行数 {model.rowCount()} != 物理チャンネル数 {len(phys)} "
         f"(列 {len(group_sigs)})。{shot}"
     )
-    assert len(phys) < len(group_sigs), (
-        f"列が畳まれていない (物理 {len(phys)} == 列 {len(group_sigs)})。{shot}"
+    # E-3 反転で group_signals は物理チャンネルそのもの (len(phys) == len(group_sigs))
+    # になったため、旧オラクル (列 Signal 数との差) は構造的に成立不能。独立オラクルを
+    # ColumnSpec 由来の**列総数**へ照準変更する — 「畳まれている」の意味は変わらない。
+    total_cols = window.app_vm.session.total_column_count(key)
+    assert len(phys) < total_cols, (
+        f"列が畳まれていない (物理 {len(phys)} == 列 {total_cols})。{shot}"
     )
     # 旧 _base_of なら別の (より少ない) 行数になるはず — 本番相当データでも
     # 「ドット分割の復活」が RED になることを担保する。

@@ -12,6 +12,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDockWidget
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
+from tests.mdf4_helpers import write_mdf4_2d
 from valisync.core.models import Delimiter, FormatDefinition
 from valisync.core.models.load_result import Diagnostic
 from valisync.core.session import LoadError, LoadOutcome
@@ -541,6 +542,59 @@ class TestDiagnosticActivatedJump:
 
         assert window.app_vm.active_file_key == key
 
+    def test_jumps_by_expanded_column_name(self, qtbot, tmp_path):
+        """診断が載せる signal_name は素の列名 ("Mat[0]")。反転後 group_signals は
+        物理チャンネルしか返さないので、名前の線形比較では二度と一致せず、行を
+        ダブルクリックしても無反応になる (無音の機能喪失)。"""
+        window = _make_window(qtbot)
+        key_csv = window.app_vm.request_load(_write_csv(tmp_path), _csv_format())
+        key_mf4 = window.app_vm.request_load(write_mdf4_2d(tmp_path))
+        window.app_vm.set_active_file(key_csv)
+
+        window._on_diagnostic_activated("Mat[0]")
+
+        assert window.app_vm.active_file_key == key_mf4
+
+    def test_jumps_by_container_channel_name_without_minting(self, qtbot, tmp_path):
+        """E-3 の集約 info 診断が載せるのは **親** の名前 ("Mat") — 列ではない。
+
+        T7 レビュー Minor の修正 (resolve_signal -> has_column/is_container_channel)
+        で親の腕が落ちると、列展開 info のダブルクリックだけが無音で死ぬ
+        (has_column は容器を False にする)。そして存在判定のために鋳造しては
+        ならない: ヒットした列は _resolved_by_key へ恒久登録され (C-g: LRU なし)、
+        表示のためだけに列 Signal がセッション寿命いっぱい滞留する。
+        """
+        window = _make_window(qtbot)
+        key_csv = window.app_vm.request_load(_write_csv(tmp_path), _csv_format())
+        key_mf4 = window.app_vm.request_load(write_mdf4_2d(tmp_path))
+        window.app_vm.set_active_file(key_csv)
+        mgr = window.app_vm.session._groups
+        assert mgr.mint_count == 0
+
+        window._on_diagnostic_activated("Mat")  # 容器 (親) の名前
+
+        assert window.app_vm.active_file_key == key_mf4, (
+            "容器チャンネル名の診断からジャンプできない (親の腕が落ちている)"
+        )
+        assert mgr.mint_count == 0, (
+            f"存在判定で列を鋳造した (恒久滞留・C-g): {mgr.mint_count}"
+        )
+
+    def test_column_name_jump_does_not_mint(self, qtbot, tmp_path):
+        """列名の腕も鋳造しない (resolve_signal 経路への回帰ガード)。"""
+        window = _make_window(qtbot)
+        key_csv = window.app_vm.request_load(_write_csv(tmp_path), _csv_format())
+        window.app_vm.request_load(write_mdf4_2d(tmp_path))
+        window.app_vm.set_active_file(key_csv)
+        mgr = window.app_vm.session._groups
+
+        window._on_diagnostic_activated("Mat[0]")
+
+        assert mgr.mint_count == 0, (
+            f"列名の存在判定で鋳造した (has_column でなく resolve_signal を"
+            f"使っている疑い): {mgr.mint_count}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Real dblclick on the Diagnostics dock's table jumps the active file
@@ -676,17 +730,18 @@ def test_load_file_wires_cancel_event_and_adapter(qtbot, monkeypatch, tmp_path):
     # (欠けるとハードキャンセルが無音で無効化される - 本タスクの肝の配線ガード)
     seen = {}
 
-    def fake_load(path, fmt, cancel=None, confirm_expansion=None):
+    def fake_load(path, fmt, cancel=None):
         seen["cancel"] = cancel
-        seen["confirm"] = confirm_expansion
         raise RuntimeError("stop before real load")
 
     monkeypatch.setattr(window.app_vm.session, "load", fake_load)
     with contextlib.suppress(RuntimeError):
         captured["load_callable"]()
     assert seen["cancel"] == event.is_set  # 同一 Event の bound method
-    # confirm_expansion に confirmer.confirm を渡すこと (LD-14 の展開確認配線ガード)
-    assert seen["confirm"] == window._expansion_confirmer.confirm
+    # 1024 ガード退役 (E-3): 展開確認モーダルは存在しない。fake_load が
+    # confirm_expansion を受け取らないこと自体が「production が渡していない」の
+    # 証明 (渡していれば TypeError で RED)。confirmer が残っていないことも見る。
+    assert not hasattr(window, "_expansion_confirmer")
 
     # on_discard 本体(手遅れ完走の巻き戻し)が正しい key/force で remove_group
     # を呼ぶこと — 「callable であること」だけでは中身の配線ミスを拾えない
@@ -729,7 +784,7 @@ def test_load_file_csv_uses_resolver_format(qtbot, monkeypatch, tmp_path):
 
     seen: dict = {}
 
-    def fake_load(path, f, cancel=None, confirm_expansion=None):
+    def fake_load(path, f, cancel=None):
         seen["fmt"] = f
         raise RuntimeError("stop")
 

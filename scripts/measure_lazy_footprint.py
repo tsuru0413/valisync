@@ -13,8 +13,17 @@ build + real ``_load_file`` reaches the true working set (memory
 ``gui_perf_e2e_repro_must_drive_real_load_path``).
 
 - QT_QPA_PLATFORM defaults to "windows" — a real window is shown on screen.
-- Array expansion is skipped (the user's "arrays skipped" condition; keeps the
-  dialog non-blocking) so nothing plotted stays lazy.
+- E-3 T8/T9: the 1024 expansion guard and its confirmation modal are retired, so
+  there is no longer an "arrays skipped" knob to set here. Columns are no longer
+  Signals at all; they are minted on demand, which is why every count below is
+  split into TWO axes — physical channels (``group_signals``) and columns
+  (``total_column_count``). Reading ``len(group_signals)`` as "columns" is a 61x
+  misread post-inversion, and minted columns live OUTSIDE that enumeration (in
+  ``SignalGroupManager._resolved_by_key``), so any materialization accounting
+  that only walks ``group_signals`` silently reports zero (``_materialized_names``
+  is the one that walks both).
+- USS (``memory_full_info().uss``) is the PRIMARY metric: RSS includes the shared
+  mmap pages of the opened file, so the lazy win drowns in an ~mmap floor.
 - QSettings is isolated to a Measure org (never touches the real registry).
 - The 2-file number loads prod_demo a second time into the SAME window (a
   compare-mode journey: keys mf4_1, mf4_2), so its steady RSS is the true
@@ -54,6 +63,17 @@ def rss_mb() -> float:
     return PROC.memory_info().rss / MB
 
 
+def uss_mb() -> float:
+    """Unique Set Size (このプロセス固有の物理メモリ) = **E-3 の主指標**。
+
+    RSS は mmap 済みの共有ページ (asammdf が開いたファイルのページキャッシュ) を
+    含むので、遅延化の勝ち負けを RSS だけで読むと mmap フロア (~205 MiB) に埋もれる。
+    memory_full_info() は working set を歩くぶん高価 — 20ms 周期の peak サンプラーでは
+    使わず、settle 済みの計測点でだけ読む。
+    """
+    return PROC.memory_full_info().uss / MB
+
+
 class PeakSampler(threading.Thread):
     """Background thread tracking the max process RSS while a load runs."""
 
@@ -78,8 +98,10 @@ class LoadResult:
     n_files: int
     peak_mb: float
     steady_mb: float
+    steady_uss_mb: float
     load_wall_s: float
-    signals: int
+    physical: int
+    columns: int
 
 
 def _pump(app: object, seconds: float) -> None:
@@ -95,7 +117,7 @@ def load_one_more(app: object, win: object, expect_files: int) -> LoadResult:
 
     Waits until ``loaded_file_keys`` reaches *expect_files* (the off-thread
     load has completed and been registered on the GUI thread), lets the model
-    reset / paint settle, then reads the settled RSS after a gc.
+    reset / paint settle, then reads the settled RSS/USS after a gc.
     """
     sampler = PeakSampler()
     sampler.start()
@@ -117,16 +139,21 @@ def load_one_more(app: object, win: object, expect_files: int) -> LoadResult:
 
     gc.collect()
     steady = rss_mb()
+    steady_uss = uss_mb()
     keys = win.app_vm.loaded_file_keys  # type: ignore[attr-defined]
-    signals = (
-        len(win.app_vm.session.group_signals(keys[-1])) if keys else 0  # type: ignore[attr-defined]
-    )
+    session = win.app_vm.session  # type: ignore[attr-defined]
+    # 反転後 group_signals() は物理チャンネルのみ。列数は総数 API で別に取る
+    # (この 2 つが 1 桁以上ずれるのが E-3 の勝ちそのもの)。
+    physical = len(session.group_signals(keys[-1])) if keys else 0
+    columns = session.total_column_count(keys[-1]) if keys else 0
     return LoadResult(
         n_files=expect_files,
         peak_mb=sampler.peak,
         steady_mb=steady,
+        steady_uss_mb=steady_uss,
         load_wall_s=load_wall,
-        signals=signals,
+        physical=physical,
+        columns=columns,
     )
 
 
@@ -154,6 +181,49 @@ def load_one_more(app: object, win: object, expect_files: int) -> LoadResult:
 # vs 94.1 ms for 'a' (both scans=1) -- that additional per-hit work is why
 # 'o', not 'a', is used as the reported worst-case timing figure.
 BROWSER_FILTER_QUERY = "o"
+
+
+def _orig(ns_name: str) -> str:
+    """``mf4_1::Prod10_0000`` -> ``Prod10_0000`` (namespaced 名 → 表示名)。"""
+    from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
+
+    return ns_name.split(KEY_SEPARATOR, 1)[1] if KEY_SEPARATOR in ns_name else ns_name
+
+
+def _column_keys_of(session: object, key: str, display: str) -> list[str]:
+    """物理チャンネル *display* の列キー (**名前だけで作る = 鋳造しない**)。
+
+    ExportCsvDialog の「すべて選択」(C-b) と同じ規約: 列の列挙は ColumnSpec 由来の
+    名前で行い、``resolve()`` は実際に値が要るときまで呼ばない。ここで鋳造すると
+    計測器自身が測ろうとしている 264k オブジェクトを再導入する。
+    """
+    from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
+
+    return [
+        f"{key}{KEY_SEPARATOR}{col}"
+        for col in session.column_names_of(key, display)  # type: ignore[attr-defined]
+    ]
+
+
+def _materialized_names(session: object, key: str) -> list[str]:
+    """値が展開済みの Signal 名 (**物理チャンネル + 鋳造列**)。
+
+    鋳造列は ``SignalGroup.signals`` の外 (``_resolved_by_key``) に居るので、
+    ``group_signals()`` だけを走査すると「8,000 列を展開したのに materialized=0」と
+    いう静かに嘘の会計になる。副テーブルの列挙は ``resolved_keys()`` (非鋳造)、
+    実体取得は ``resolve()`` (鋳造済みキーなのでキャッシュヒット)。
+    """
+    mgr = session._groups  # type: ignore[attr-defined]
+    names = [
+        s.name
+        for s in session.group_signals(key)  # type: ignore[attr-defined]
+        if s._values_source.is_materialized
+    ]
+    for col_key in mgr.resolved_keys(key):
+        col = mgr.resolve(col_key)
+        if col is not None and col._values_source.is_materialized:
+            names.append(col.name)
+    return names
 
 
 def browser_residue(win: object, key: str) -> None:
@@ -197,7 +267,10 @@ def browser_residue(win: object, key: str) -> None:
     s2 = rss_mb()
 
     group_sigs = session.group_signals(key)
-    n_columns = len(group_sigs)
+    n_physical = len(group_sigs)
+    # 反転後は列 Signal が存在しない — 列数は ColumnSpec 由来の総数 API から取る
+    # (len(group_sigs) を「列数」と読むと 61 倍の取り違えになる)。
+    n_columns = session.total_column_count(key)
     gc.collect()
     s3 = rss_mb()
 
@@ -234,16 +307,21 @@ def browser_residue(win: object, key: str) -> None:
     gc.collect()
     s6 = rss_mb()
 
+    # ブラウザの列数はローダーの列総数と一致していなければならない。ずれたら
+    # ヘッダーの「N ch 中 M ch を表示」が静かに嘘になっている (U2 の単位契約)。
+    assert n_prep_columns == n_columns, (n_prep_columns, n_columns)
+    # ブラウザ行 = 物理チャンネル = group_signals の要素数 (反転後は 1:1)。
+    assert n_rows == n_physical == n_top, (n_rows, n_physical, n_top)
+
     print("\n=== CHANNEL BROWSER residue (fresh VM+model over loaded session) ===")
     print(
-        f"  columns={n_columns:,}  physical rows={n_rows:,}  model top rows={n_top:,}"
+        f"  columns={n_columns:,}  physical channels={n_physical:,}  "
+        f"rows={n_rows:,}  model top rows={n_top:,}"
     )
-    print(
-        f"  prep column total={n_prep_columns:,}  signal_map keys={n_physical_keys:,}"
-    )
+    print(f"  signal_map keys (physical only)={n_physical_keys:,}")
     print(f"  1 loaded (settled)          = {s1:,.0f} MB")
     print(f"  2 + signal_map()            = {s2:,.0f} MB   (+{s2 - s1:,.1f} MB)")
-    print(f"  3 + group_signals()         = {s3:,.0f} MB   (+{s3 - s2:,.1f} MB)")
+    print(f"  3 + group_signals() [phys]  = {s3:,.0f} MB   (+{s3 - s2:,.1f} MB)")
     print(f"  4a+ VM prep/tree_groups()   = {s4a:,.0f} MB   (+{s4a - s3:,.1f} MB)")
     print(f"  4 + SignalTreeModel         = {s4:,.0f} MB   (+{s4 - s4a:,.1f} MB)")
     print(
@@ -268,7 +346,8 @@ def browser_residue(win: object, key: str) -> None:
 @dataclass
 class DrainResult:
     label: str
-    signals: int
+    physical: int
+    minted: int
     materialized: int
     sync_close_ms: float
     ticks: int
@@ -362,10 +441,14 @@ def _select_samples(handle: object, name: str, gi: int, ci: int) -> object:
 
 
 def materialize_leaves(win: object, key: str, target: int) -> int:
-    """Bring >= *target* leaves to the plotted+range-stats state; return the count.
+    """>= *target* 列を「プロット済み + 範囲統計」状態にし、その列数を返す。
+
+    反転後 (E-3) は列 Signal がロード時に存在しないので、まず production の解決器
+    (``Session.resolve_signal``) で列を **鋳造** してから値を入れる。列キーは
+    ColumnSpec の名前だけから作る (``_column_keys_of``) — 列挙のために鋳造しない。
 
     WHY not one ``sig.values`` per leaf (the literal production route): prod_demo's
-    array channels carry 1,000 leaves each and ``LazyMdfValues.array()`` re-selects
+    array channels carry 1,000+ leaves each and ``LazyMdfValues.array()`` re-selects
     (and re-decompresses) the WHOLE channel per leaf -- measured 383 ms per leaf,
     i.e. ~51 minutes for 8,000. Here each physical channel is selected ONCE and its
     leaves are built from that one read through the same ``_flatten``/``_freeze``
@@ -379,25 +462,33 @@ def materialize_leaves(win: object, key: str, target: int) -> int:
     import numpy as np
 
     session = win.app_vm.session  # type: ignore[attr-defined]
-    signals = session.group_signals(key)
-    by_channel: dict[tuple[str, int, int], list[object]] = {}
-    for sig in signals:
-        src = sig._values_source
-        by_channel.setdefault((src._name, src._gi, src._ci), []).append(sig)
-    handle = signals[0]._values_source._handle
+    physical = session.group_signals(key)
+    handle = physical[0]._values_source._handle
+
+    # 等価性の対照実験用の候補を 2 分岐ぶんだけ先に拾う (全チャンネルぶんの列キーを
+    # 事前生成すると 330k 文字列を計測中ずっと抱えることになる)。
+    single_col: str | None = None
+    multi_col: str | None = None
+    for sig in physical:
+        cols = _column_keys_of(session, key, _orig(sig.name))
+        if single_col is None and len(cols) == 1:
+            single_col = cols[0]
+        if multi_col is None and len(cols) > 1:
+            multi_col = cols[0]
+        if single_col is not None and multi_col is not None:
+            break
 
     # Equivalence control: one signal per branch goes through the REAL lazy read
     # and the bulk route must reproduce that array exactly. Without it the fast
     # route could silently retain a differently shaped/typed array and the drain
     # numbers would describe a state the app never reaches.
-    probes = {}
-    for sig in signals:
-        branch = "scalar" if sig._values_source._selector is None else "ld14-leaf"
-        probes.setdefault(branch, sig)
-        if len(probes) == 2:
-            break
-    for branch, probe in probes.items():
+    for col_key in (single_col, multi_col):
+        if col_key is None:
+            continue
+        probe = session.resolve_signal(col_key)  # production の鋳造経路
+        assert probe is not None, f"列キーが解決できない: {col_key}"
         src = probe._values_source
+        branch = "scalar" if src._selector is None else "ld14-leaf"
         prod_arr = probe.values  # production LazyMdfValues.array()
         table = _bulk_columns(
             src._name, _select_samples(handle, src._name, src._gi, src._ci)
@@ -424,27 +515,35 @@ def materialize_leaves(win: object, key: str, target: int) -> int:
 
     done = 0
     t0 = time.perf_counter()
-    for (name, gi, ci), sibs in by_channel.items():
+    for sig in physical:
         if done >= target:
             break
-        table = _bulk_columns(name, _select_samples(handle, name, gi, ci))
-        for sig in sibs:
-            src = sig._values_source
+        psrc = sig._values_source
+        col_keys = _column_keys_of(session, key, _orig(sig.name))
+        table = _bulk_columns(
+            psrc._name, _select_samples(handle, psrc._name, psrc._gi, psrc._ci)
+        )
+        for col_key in col_keys:
+            col = session.resolve_signal(col_key)
+            if col is None:
+                continue
+            src = col._values_source
             if src._cache is None:
                 src._cache = table[None if src._selector is None else src._selector[-1]]
-            sig.range_stat_index()  # production API: sorted_view + finite_view + RSI
+            col.range_stat_index()  # production API: sorted_view + finite_view + RSI
             done += 1
-        del table
+        del table, col_keys
     wall = time.perf_counter() - t0
 
-    materialized = sum(1 for sig in signals if sig._values_source.is_materialized)
+    materialized = len(_materialized_names(session, key))
     print(
-        f"  materialized {materialized:,} / {len(signals):,} leaves "
+        f"  materialized {materialized:,} / {session.total_column_count(key):,} columns "
+        f"(minted {len(session._groups.resolved_keys(key)):,}) "
         f"(+range_stat_index) in {wall:,.1f}s"
     )
     # 参照は関数の return で全て落ちるが、下の集計と gc を正しい状態で行うため
     # 明示的に落とす (ドレインは唯一の参照者でなければならない)。
-    del by_channel, probes
+    del physical
     gc.collect()
     return materialized
 
@@ -457,10 +556,12 @@ def drain_after_unload(app: object, win: object, key: str, label: str) -> DrainR
     real event loop, exactly as the running app does between user events.
     """
     session = win.app_vm.session  # type: ignore[attr-defined]
-    signals = session.group_signals(key)
-    n_signals = len(signals)
-    materialized = sum(1 for sig in signals if sig._values_source.is_materialized)
-    del signals  # holding the list would keep every array alive -> free ticks
+    mgr = session._groups
+    # リストを名前に束縛しない: 束縛すると全 Signal を掴んだままになり、ドレインが
+    # 何も解放できない (ティックが不当に速く見える)。
+    n_physical = len(session.group_signals(key))
+    n_minted = len(mgr.resolved_keys(key))
+    materialized = len(_materialized_names(session, key))
     gc.collect()
 
     ticks: list[tuple[float, int, int, int]] = win._tick_log  # type: ignore[attr-defined]
@@ -482,7 +583,8 @@ def drain_after_unload(app: object, win: object, key: str, label: str) -> DrainR
     top = sorted(enumerate(ticks), key=lambda pair: pair[1][0], reverse=True)[:5]
     return DrainResult(
         label=label,
-        signals=n_signals,
+        physical=n_physical,
+        minted=n_minted,
         materialized=materialized,
         sync_close_ms=sync_close * 1000.0,
         ticks=len(ticks),
@@ -513,7 +615,10 @@ def report_drain(results: list[DrainResult]) -> None:
     for r in results:
         verdict = "OK" if r.max_tick_ms <= allowance_ms else "OVER"
         print(f"  --- {r.label} ---")
-        print(f"  signals={r.signals:,}  materialized at unload={r.materialized:,}")
+        print(
+            f"  physical={r.physical:,}  minted columns={r.minted:,}  "
+            f"materialized at unload={r.materialized:,}"
+        )
         print(f"  sync close (UI thread)  = {r.sync_close_ms:,.1f} ms")
         print(f"  ticks                   = {r.ticks:,}")
         print(f"  MAX tick                = {r.max_tick_ms:,.1f} ms   [{verdict}]")
@@ -537,6 +642,11 @@ def report_drain(results: list[DrainResult]) -> None:
     )
 
     print(
+        "  NOTE: E-3 反転後、(a) は 264k の未展開シェルではなく **4.3k の物理チャンネル**\n"
+        "        ぶんしか無い (シェル 1 本 1.6us regime の母数が 61 分の 1)。ペーシングの\n"
+        "        証拠は (b) — 鋳造列 + range stats — 側でしか取れない。"
+    )
+    print(
         "  NOTE: a deadline-bound tick can overrun by up to _CLOCK_CHECK_EVERY-1\n"
         f"        ({_CLOCK_CHECK_EVERY - 1}) signals' worth of work. Measured per-signal\n"
         "        free cost: 1.6 us (lazy shell) .. 8-27 us (materialized prod leaf\n"
@@ -555,7 +665,158 @@ def report_drain(results: list[DrainResult]) -> None:
     )
 
 
+LATENCY_COLUMNS = 5
+
+
+def column_read_latency(win: object, key: str) -> None:
+    """同一チャンネルの 5 列を production 経路で読み、対話コストを実測する。
+
+    E-4 (チャンネル単位デコード済みキャッシュ + 位置ベース selector) の要否を
+    判断するための数値。E-3 は「オブジェクト数」を削るが **読み方は変えない**:
+    ``LazyMdfValues.array()`` は列ごとに全チャンネル select + 全リーフ flatten を
+    やり直す (sample_source.py)。したがって想定は「メモリは勝ち・対話レイテンシは
+    据え置き (鋳造ぶん微増)」であり、その据え置きの実測値そのものを残す。
+
+    未鋳造の列だけを測る — 既に触れた列はキャッシュヒットで 0 ms になり測定が
+    無意味になる。
+    """
+    from valisync.core.loaders.column_names import leaf_count
+
+    session = win.app_vm.session  # type: ignore[attr-defined]
+    mgr = session._groups
+    # 最も列数の多い物理チャンネル (1024 ガード退役で初めて開ける広幅チャンネル)。
+    # 探索は ColumnRecord の spec を **数えるだけ** (leaf_count は名前を 1 本も
+    # 生成しない)。ここで column_names_of を全チャンネルに回すと prod では 330k 本の
+    # 文字列を作って捨てることになり、計測器自身が測ろうとしているコストを踏む。
+    # 鋳造は 1 本もしない。
+    records = mgr.column_records(key)
+    widest_n, widest_display = 0, ""
+    for display, record in records.items():
+        n = leaf_count(record.spec)
+        if n > widest_n:
+            widest_n, widest_display = n, display
+    assert widest_display, "ロード済みグループに列レコードが無い"
+    widest_keys = _column_keys_of(session, key, widest_display)
+    # 安い数え方 (leaf_count) と、列キーを実際に作る唯一の真実 (column_names_of →
+    # leaf_names) が食い違ったら「勝者チャンネル」の主張が黙って嘘になる。勝者 1 本
+    # だけは突き合わせる (名前生成はここでしか起きない)。
+    assert len(widest_keys) == widest_n, (len(widest_keys), widest_n, widest_display)
+    already = mgr.resolved_keys(key)
+    fresh = [k for k in widest_keys if k not in already][:LATENCY_COLUMNS]
+    # E-4 の要否はこの数値 1 本で決まる。呼び出し位置が動いて先頭列が既に鋳造済みに
+    # なるとループが 0 回になり「TOTAL 0 columns = 0 ms」を刷って**黙って合格**する。
+    # 上の 2 つの前提 assert と同じ基準で loud-fail させる。
+    assert len(fresh) == LATENCY_COLUMNS, (len(fresh), widest_display, len(already))
+
+    mint_before = mgr.mint_count
+    per_column: list[float] = []
+    for col_key in fresh:
+        t0 = time.perf_counter()
+        col = session.resolve_signal(col_key)  # 鋳造 (production 経路)
+        assert col is not None, f"列キーが解決できない: {col_key}"
+        arr = col.values  # 実読み: select -> _flatten -> _freeze
+        per_column.append((time.perf_counter() - t0) * 1000.0)
+        assert len(arr) > 0
+
+    print("\n=== COLUMN READ latency (E-4 の要否判断のための実測) ===")
+    print(f"  channel={widest_display}  columns in channel={widest_n:,}")
+    print(f"  minted here = {mgr.mint_count - mint_before} columns")
+    for i, ms in enumerate(per_column):
+        print(f"    column #{i}  {ms:,.0f} ms")
+    print(f"  TOTAL {len(per_column)} columns = {sum(per_column):,.0f} ms")
+    print(
+        "  reference (spec 列読みコスト): 333-386 ms/col, 5 cols 2,105 ms.\n"
+        "  E-4 (per-channel decoded cache + positional selector) targets 448 ms\n"
+        "  for 5 columns. E-3 does not change HOW values are read, so the\n"
+        "  expectation is: unchanged (plus the minting overhead) => E-4 still needed.",
+        flush=True,
+    )
+
+
+def core_footprint() -> None:
+    """spec の **core 常駐** 表を反転後に再実測する (``--core``)。
+
+    docs/superpowers/specs/2026-07-24-deferred-column-expansion-design.md の
+    到達目標 (``core 590 MB -> ~310 MB`` / ``USS +281 MiB -> +15 MiB``) は
+    **Qt を一切構築しないヘッドレス core** で測った 4 段の表:
+
+        baseline 87 MB / Session.load 後 471 MB / signal_map() 後 532 MB /
+        group_signals() 後 590 MB
+
+    下の GUI 計測 (``main()``) はチャンネルブラウザの列名タプル等 GUI 側の残渣を
+    含むので、その数値を core の 590 MB と並べると別物の比較になる。到達判定を
+    同じ土俵で行うためにこの段だけを別プロセスで測る (``--core``)。
+    """
+    from valisync.core.session import Session
+
+    if not TARGET.exists():
+        print(f"MISSING: {TARGET} (run scripts/generate_demo_mf4.py --profile hils)")
+        raise SystemExit(1)
+
+    gc.collect()
+    base_rss, base_uss = rss_mb(), uss_mb()
+
+    session = Session()
+    t0 = time.perf_counter()
+    outcome = session.load(TARGET)
+    load_wall = time.perf_counter() - t0
+    key = outcome.key
+    gc.collect()
+    s1_rss, s1_uss = rss_mb(), uss_mb()
+
+    smap = session.signal_map()
+    n_keys = len(smap)  # 列挙は物理キーのみ (非対称 Mapping・鋳造しない)
+    gc.collect()
+    s2_rss, s2_uss = rss_mb(), uss_mb()
+
+    sigs = session.group_signals(key)
+    n_physical = len(sigs)
+    n_columns = session.total_column_count(key)
+    mgr = session._groups
+    n_records = len(mgr.column_records(key))
+    gc.collect()
+    s3_rss, s3_uss = rss_mb(), uss_mb()
+
+    print("\n=== CORE resident (headless, no Qt) -- spec の 4 段表と同じ土俵 ===")
+    print(f"  target={TARGET.name}  load wall={load_wall:.2f} s")
+    print(f"  physical Signals   = {n_physical:,}   (eager baseline 264,004)")
+    print(f"  columns            = {n_columns:,}")
+    print(f"  column_records     = {n_records:,}   (= physical, 1:1)")
+    print(f"  signal_map keys    = {n_keys:,}   (physical only, by contract)")
+    print(f"  mint_count         = {mgr.mint_count}   (after load: must be 0)")
+    print(f"  baseline               = {base_rss:,.0f} MB RSS / {base_uss:,.0f} MB USS")
+    print(
+        f"  + Session.load         = {s1_rss:,.0f} MB RSS / {s1_uss:,.0f} MB USS "
+        f"(+{s1_rss - base_rss:,.0f} / +{s1_uss - base_uss:,.0f})"
+    )
+    print(
+        f"  + signal_map()         = {s2_rss:,.0f} MB RSS / {s2_uss:,.0f} MB USS "
+        f"(+{s2_rss - s1_rss:,.0f} / +{s2_uss - s1_uss:,.0f})"
+    )
+    print(
+        f"  + group_signals()      = {s3_rss:,.0f} MB RSS / {s3_uss:,.0f} MB USS "
+        f"(+{s3_rss - s2_rss:,.0f} / +{s3_uss - s2_uss:,.0f})"
+    )
+    print(
+        f"  CORE RESIDENT (final)  = {s3_rss:,.0f} MB RSS  "
+        f"[eager 590 MB -> target ~310 MB]"
+    )
+    print(
+        f"  CORE USS delta         = +{s3_uss - base_uss:,.0f} MB  "
+        f"[eager +281 MiB -> target +15 MiB]  **primary metric**",
+        flush=True,
+    )
+    del sigs, smap
+    session.remove_group(
+        key
+    )  # ハンドルを閉じる (計測プロセスがファイルを掴んだまま終わらない)
+
+
 def main() -> None:
+    if "--core" in sys.argv:
+        core_footprint()
+        return
+
     # QSettings isolation (never touch the real registry) — must happen before
     # build_main_window reads any setting.
     from valisync.gui.views import main_window as mw
@@ -584,20 +845,22 @@ def main() -> None:
     win.show()
     app.processEvents()
     after_win = rss_mb()
+    after_win_uss = uss_mb()
 
-    # Skip every oversized array expansion (empty set = skip all).
-    win._expansion_confirmer.confirm = lambda request: set()  # type: ignore[assignment]
+    # E-3: 1024 ガード (展開確認モーダル) は退役済み — 差し替える confirmer は無く、
+    # 全チャンネルが無条件にロードされる (そもそも列は展開されない)。
 
     disk_mb = TARGET.stat().st_size / MB
     print(
-        f"baseline={base:,.0f}MB  after window+show={after_win:,.0f}MB  "
-        f"target={TARGET.name} ({disk_mb:,.0f}MB on disk)",
+        f"baseline={base:,.0f}MB  after window+show={after_win:,.0f}MB "
+        f"(USS {after_win_uss:,.0f}MB)  target={TARGET.name} ({disk_mb:,.0f}MB on disk)",
         flush=True,
     )
 
     r1 = load_one_more(app, win, expect_files=1)
     print(
-        f"[1 file ] loaded signals={r1.signals:,}  load_wall={r1.load_wall_s:.2f}s",
+        f"[1 file ] physical={r1.physical:,} columns={r1.columns:,}  "
+        f"load_wall={r1.load_wall_s:.2f}s",
         flush=True,
     )
     # E-2: the browser-side residue, measured on the 1-file state (the objects
@@ -607,19 +870,32 @@ def main() -> None:
 
     r2 = load_one_more(app, win, expect_files=2)
     print(
-        f"[2 files] loaded signals(2nd)={r2.signals:,}  load_wall={r2.load_wall_s:.2f}s",
+        f"[2 files] physical(2nd)={r2.physical:,} columns={r2.columns:,}  "
+        f"load_wall={r2.load_wall_s:.2f}s",
         flush=True,
     )
 
-    print("\n=== REAL GUI process RSS (prod_demo.mf4, real load path) ===", flush=True)
-    print(f"  Qt+window baseline   = {after_win:,.0f} MB", flush=True)
+    print(
+        "\n=== REAL GUI process memory (prod_demo.mf4, real load path) ===", flush=True
+    )
+    print(f"  Qt+window baseline   = {after_win:,.0f} MB (USS {after_win_uss:,.0f} MB)")
     print("  --- 1 file ---", flush=True)
     print(f"  PEAK during load     = {r1.peak_mb:,.0f} MB", flush=True)
-    print(f"  steady (settled)     = {r1.steady_mb:,.0f} MB", flush=True)
+    print(f"  steady RSS (settled) = {r1.steady_mb:,.0f} MB", flush=True)
+    print(
+        f"  steady USS [PRIMARY] = {r1.steady_uss_mb:,.0f} MB  "
+        f"(vs baseline +{r1.steady_uss_mb - after_win_uss:,.0f} MB)",
+        flush=True,
+    )
     print(f"  load wall            = {r1.load_wall_s:.2f} s", flush=True)
     print("  --- 2 files (compare) ---", flush=True)
     print(f"  PEAK during 2nd load = {r2.peak_mb:,.0f} MB", flush=True)
-    print(f"  steady (settled)     = {r2.steady_mb:,.0f} MB", flush=True)
+    print(f"  steady RSS (settled) = {r2.steady_mb:,.0f} MB", flush=True)
+    print(
+        f"  steady USS [PRIMARY] = {r2.steady_uss_mb:,.0f} MB  "
+        f"(vs baseline +{r2.steady_uss_mb - after_win_uss:,.0f} MB)",
+        flush=True,
+    )
     print(f"  2nd load wall        = {r2.load_wall_s:.2f} s", flush=True)
     print(
         "\n  OLD eager baseline (pre-lazy, 1 file): "
@@ -630,6 +906,18 @@ def main() -> None:
         "  pre-E-2 baseline   (1 file): steady   868 MB / peak 1,366 MB / load 13.1s",
         flush=True,
     )
+    print(
+        "  E-3 target (HEADLESS-CORE scope -- run with --core to compare on the\n"
+        "  same footing; the GUI USS delta above is a different, larger scope):\n"
+        "    core 590 -> ~310 MB / objects 264,004 -> 4,324 / USS +281 MiB -> +15 MiB",
+        flush=True,
+    )
+
+    keys = list(win.app_vm.loaded_file_keys)
+
+    # E-4 判断材料: 広幅チャンネルの 5 列を production 経路で読む実時間。
+    # ドレイン計測より前に置く (ドレインはグループを消すため)。
+    column_read_latency(win, keys[0])
 
     # ── 増分B: unload -> teardown ドレインの最大ティック時間 (2 入力必須) ──
     #
@@ -637,9 +925,8 @@ def main() -> None:
     # (a) は「全信号が未展開シェル」= 1 信号 1.6us regime しか踏まない。展開済み
     # 信号は 3 倍重く、かつ**バイト予算と信号数予算を両方満たしたまま**デッドラインを
     # 超えうる — 第 3 軸 (経過時間) が存在する理由そのものなので、両方測る。
-    keys = list(win.app_vm.loaded_file_keys)
     drains = [
-        drain_after_unload(app, win, keys[1], "(a) loaded only (all leaves lazy)")
+        drain_after_unload(app, win, keys[1], "(a) loaded only (all columns lazy)")
     ]
     _pump(app, 0.5)
 
@@ -649,7 +936,7 @@ def main() -> None:
             app,
             win,
             keys[0],
-            f"(b) >= {MATERIALIZE_TARGET:,} leaves materialized (+range stats)",
+            f"(b) >= {MATERIALIZE_TARGET:,} columns minted+materialized (+range stats)",
         )
     )
     report_drain(drains)

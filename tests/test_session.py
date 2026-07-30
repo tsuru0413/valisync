@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from tests.mdf4_helpers import write_mdf4_2d
 from valisync.core.interpolation import InterpolationMethod
 from valisync.core.models import Delimiter, FormatDefinition, Signal, SignalGroup
 from valisync.core.session import (
@@ -332,21 +333,6 @@ def test_load_without_cancel_is_unchanged(tmp_path):
     assert outcome.key == "csv_1"
 
 
-def test_session_load_passes_confirm_expansion(tmp_path):
-    """Session.load が confirm_expansion を MDF4 ローダーへ委譲する (LD-14)."""
-    from .mdf4_helpers import write_mdf4_wide_2d
-
-    called: list[int] = []
-
-    def confirm(req) -> set[int]:
-        called.append(len(req.channels))
-        return set()
-
-    session = Session()
-    session.load(write_mdf4_wide_2d(tmp_path, cols=1025), confirm_expansion=confirm)
-    assert called == [1]  # Wide 1 件が確認に回った
-
-
 # ─── SourceInfo (FB-10 tooltip data) ─────────────────────────────────────────
 
 
@@ -433,6 +419,16 @@ def test_source_info_ignores_empty_signals_but_counts_them(tmp_path):
     info = session.source_info(key)
     assert info.t_min == 1.0 and info.t_max == 4.0
     assert info.n_channels == 2  # 空信号も channel 数には数える
+
+
+def test_source_info_n_channels_counts_expanded_columns(tmp_path):
+    """U2: 表示件数の単位は **列数**。反転後 group.signals は物理チャンネルのみ
+    なので len(group.signals) では Mat の 3 列が 1 と数えられ、ChannelBrowser の
+    「N ch 中 M ch を表示」と単位が食い違う (FileBrowser ツールチップも同様)。"""
+    session = Session()
+    key = session.load(write_mdf4_2d(tmp_path)).key
+    info = session.source_info(key)
+    assert info.n_channels == 4  # Mat[0..2] + Clean
 
 
 def test_source_info_time_range_none_when_all_empty(tmp_path):

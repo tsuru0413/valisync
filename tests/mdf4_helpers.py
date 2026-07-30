@@ -341,6 +341,146 @@ def write_mdf4_wide_2d(tmp_path: Path, cols: int = 1025) -> Path:
     return path
 
 
+def write_mdf4_duplicate_wide(tmp_path: Path, cols: int = 1025) -> Path:
+    """同名 "W" の 2 チャンネル (先=幅 cols の 2D / 後=スカラー) + Clean — C-f 用.
+
+    1024 ガードが生きている間は先頭の広幅 "W" がヘッドレスで丸ごとスキップされ、
+    生き残るスカラー側が LD-08 の idx 0 を取って ``W[0]`` になる。ガード退役後は
+    両方が載るのでスカラーは ``W[1]`` へ動く — この永続キーの移動 (spec C-f:
+    意図的リネーム・移行パスなし) を固定するための fixture。prod_demo には重複名が
+    無い (scripts/generate_demo_mf4.py の全チャンネル名は一意) ため、実データでは
+    この組み合わせを作れず、合成 fixture が唯一の観測点になる。
+
+    列 j の値は j % 256 (write_mdf4_wide_2d と同じ規則) で列ごとに識別できる。
+    先に append したチャンネルが小さい gi を取ることに依存する — 順序が入れ替わると
+    dedup インデックスが逆になり、テストは (無言の pass ではなく) FAIL する。
+    """
+    ts = np.array([0.0, 0.1, 0.2], dtype=np.float64)
+    mat = np.tile(np.arange(cols, dtype=np.uint8), (3, 1))  # (3, cols)
+    mdf = MDF()
+    try:
+        mdf.append([ASignal(samples=mat, timestamps=ts, name="W")])
+        mdf.append(
+            [ASignal(samples=np.array([7.0, 8.0, 9.0]), timestamps=ts, name="W")]
+        )
+        mdf.append(
+            [ASignal(samples=np.array([1.0, 2.0, 3.0]), timestamps=ts, name="Clean")]
+        )
+        path = tmp_path / "dupwide.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
+def write_mdf4_non_monotonic_2d(tmp_path: Path) -> Path:
+    """非単調/重複タイムスタンプの 2D (Nx3) チャンネル + 同時刻軸の通常チャンネル.
+
+    診断 fan-out 集約 (E-3) の RED fixture。列展開時代は Mat[0..2] の 3 件へ増幅
+    されていた非単調警告が物理チャンネル 1 件へ畳まれること、同じ時刻軸を持つ
+    1-D チャンネル (Clean) の 1 件は文言ごと不変であることを、1 ファイルで対に
+    固定する (prod では 1 グループ最大 96,000 件の増幅だった)。
+    """
+    ts = np.array([0.0, 2.0, 1.0, 1.0], dtype=np.float64)
+    mat = np.array(
+        [[0, 1, 2], [10, 11, 12], [20, 21, 22], [30, 31, 32]], dtype=np.uint8
+    )
+    mdf = MDF()
+    try:
+        mdf.append([ASignal(samples=mat, timestamps=ts, name="Mat")])
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([1.0, 2.0, 3.0, 4.0]), timestamps=ts, name="Clean"
+                )
+            ]
+        )
+        path = tmp_path / "messy2d.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
+def write_mdf4_dup_2d(tmp_path: Path) -> Path:
+    """同名 (W) の 2D uint8 チャンネル 2 本 — LD-08 dedup と LD-14 展開の合成.
+
+    ローダーの規則から、表示名は dedup 済みの ``W[0]`` / ``W[1]``、selector 側の
+    リーフ名は生名由来の ``W[0]`` / ``W[1]`` (= 列インデックス) になる。**2 つのキー
+    空間が同じ文字列に見えて別物**になる唯一のケースであり、鋳造がキー空間を
+    取り違えると解決不能になるか別チャンネルの列を返す。
+
+    列の値は
+    ``W[0][0]=[0,2,4,6]`` / ``W[0][1]=[1,3,5,7]`` /
+    ``W[1][0]=[100,102,104,106]`` / ``W[1][1]=[101,103,105,107]``
+    で、どのチャンネルのどの列を読んだかが値だけで判別できる。
+    """
+    ts = np.array([0.0, 0.1, 0.2, 0.3])
+    mdf = MDF()
+    try:
+        for base in (0, 100):
+            samples = np.array(
+                [
+                    [base + 0, base + 1],
+                    [base + 2, base + 3],
+                    [base + 4, base + 5],
+                    [base + 6, base + 7],
+                ],
+                dtype=np.uint8,
+            )
+            mdf.append([ASignal(samples=samples, timestamps=ts, name="W", unit="m")])
+        path = tmp_path / "dup2d.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
+def write_mdf4_display_name_collision(tmp_path: Path) -> Path:
+    """LD-08 の ``[i]`` 曖昧化が **実チャンネル名** と衝突する配置 — I-1 の RED fixture.
+
+    ① 文字どおり ``W[0]`` という 1-D チャンネル (時刻軸 10..13 s・値 5..8)
+    ② 同名 ``W`` の 2D uint8 チャンネル 2 本 (時刻軸 0.0..0.3 s)
+
+    ローダーの規則から ② は ``W[0]`` / ``W[1]`` へ曖昧化され、先に登録される ① と
+    表示名が衝突する。**時刻軸をわざと別にし、長さは揃える**のが要点: 衝突を通すと
+    鋳造列 ``W[0][1]`` が「値は ② の列 / 時刻は ① の軸」になり、``LazyMdfValues`` の
+    長さ検証 (``len(col) != length``) もすり抜ける = 例外なしの誤データ (時間軸だけ
+    別チャンネル) が観測できる。
+
+    ① を先に append するのは gi の順序 = ローダーの登録順を決めるため。列の値は
+    ``write_mdf4_dup_2d`` と同じ base+offset 規則 (どの配列のどの列かが値で分かる)。
+    """
+    mdf = MDF()
+    try:
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([5.0, 6.0, 7.0, 8.0]),
+                    timestamps=np.array([10.0, 11.0, 12.0, 13.0]),
+                    name="W[0]",
+                )
+            ]
+        )
+        ts = np.array([0.0, 0.1, 0.2, 0.3])
+        for base in (0, 100):
+            samples = np.array(
+                [
+                    [base + 0, base + 1],
+                    [base + 2, base + 3],
+                    [base + 4, base + 5],
+                    [base + 6, base + 7],
+                ],
+                dtype=np.uint8,
+            )
+            mdf.append([ASignal(samples=samples, timestamps=ts, name="W")])
+        path = tmp_path / "namecollide.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
 def write_mdf4_single_column_shapes(tmp_path: Path) -> Path:
     """「展開したのに列が 1 本」になる 3 形状 + スカラー — C1 の RED fixture.
 
@@ -393,6 +533,45 @@ def write_mdf4_single_column_shapes(tmp_path: Path) -> Path:
             ]
         )
         path = tmp_path / "single_cols.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
+def write_mdf4_all_non_numeric_struct(tmp_path: Path) -> Path:
+    """全リーフが非数値の**構造化**チャンネル + 通常チャンネル — D2 の第 3 クラス.
+
+    E-3 の診断 supersede は 3 クラスある: (1) 全リーフ数値の容器 (warning なし)、
+    (2) 混在容器 ``Q`` (旧: リーフ単位 warning 1 件 → 新: 0 件)、(3) **全リーフ
+    非数値の容器**。(3) は旧コードがリーフごとに各リーフの scalar dtype で warning を
+    出していたのに対し、新コードは親レベルの warning を **1 件**、しかも親の複合
+    dtype で出す。既存 16 fixture のどれもこの形状を持たないため機械比較は構造的に
+    盲目だった (spec D2)。``Q`` (混在) では numeric>0 なので (3) は再現できない。
+    """
+    ts = np.array([0.0, 0.1, 0.2, 0.3])
+    mdf = MDF()
+    try:
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array(
+                        [(b"ab", b"xyz"), (b"cd", b"uvw")] * 2,
+                        dtype=[("tag", "S2"), ("code", "S3")],
+                    ),
+                    timestamps=ts,
+                    name="R",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([1.0, 2.0, 3.0, 4.0]), timestamps=ts, name="Clean"
+                )
+            ]
+        )
+        path = tmp_path / "allnonnum.mf4"
         mdf.save(path, overwrite=True)
     finally:
         mdf.close()
