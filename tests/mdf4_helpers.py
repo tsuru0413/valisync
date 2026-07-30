@@ -436,6 +436,51 @@ def write_mdf4_dup_2d(tmp_path: Path) -> Path:
     return path
 
 
+def write_mdf4_display_name_collision(tmp_path: Path) -> Path:
+    """LD-08 の ``[i]`` 曖昧化が **実チャンネル名** と衝突する配置 — I-1 の RED fixture.
+
+    ① 文字どおり ``W[0]`` という 1-D チャンネル (時刻軸 10..13 s・値 5..8)
+    ② 同名 ``W`` の 2D uint8 チャンネル 2 本 (時刻軸 0.0..0.3 s)
+
+    ローダーの規則から ② は ``W[0]`` / ``W[1]`` へ曖昧化され、先に登録される ① と
+    表示名が衝突する。**時刻軸をわざと別にし、長さは揃える**のが要点: 衝突を通すと
+    鋳造列 ``W[0][1]`` が「値は ② の列 / 時刻は ① の軸」になり、``LazyMdfValues`` の
+    長さ検証 (``len(col) != length``) もすり抜ける = 例外なしの誤データ (時間軸だけ
+    別チャンネル) が観測できる。
+
+    ① を先に append するのは gi の順序 = ローダーの登録順を決めるため。列の値は
+    ``write_mdf4_dup_2d`` と同じ base+offset 規則 (どの配列のどの列かが値で分かる)。
+    """
+    mdf = MDF()
+    try:
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([5.0, 6.0, 7.0, 8.0]),
+                    timestamps=np.array([10.0, 11.0, 12.0, 13.0]),
+                    name="W[0]",
+                )
+            ]
+        )
+        ts = np.array([0.0, 0.1, 0.2, 0.3])
+        for base in (0, 100):
+            samples = np.array(
+                [
+                    [base + 0, base + 1],
+                    [base + 2, base + 3],
+                    [base + 4, base + 5],
+                    [base + 6, base + 7],
+                ],
+                dtype=np.uint8,
+            )
+            mdf.append([ASignal(samples=samples, timestamps=ts, name="W")])
+        path = tmp_path / "namecollide.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
 def write_mdf4_single_column_shapes(tmp_path: Path) -> Path:
     """「展開したのに列が 1 本」になる 3 形状 + スカラー — C1 の RED fixture.
 

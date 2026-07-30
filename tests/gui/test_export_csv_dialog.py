@@ -179,7 +179,19 @@ def test_leaf_text_shows_bare_name_no_collision(qtbot: QtBot) -> None:
     dlg = ExportCsvDialog(_app_vm(), initial_selected=set())
     qtbot.addWidget(dlg)
     assert _leaf_texts(dlg) == {"a", "b"}  # not "csv_1::a"/"csv_1::b"
-    assert set(dlg._checked_keys()) <= {"csv_1::a", "csv_1::b"}  # UserRole 不変
+    # M-3: 旧形の `set(_checked_keys()) <= {...}` は initial_selected=set() ゆえ
+    # 空集合に対する部分集合判定 = 無条件に真だった。狙っていた契約 (表示名化が
+    # 選択キーを汚さない) は _KEY_ROLE を **直接** 読み、かつアイテム駆動の
+    # 選択経路 (ユーザーのクリックが通る唯一の経路) で確かめる。
+    # sabotage: _KEY_ROLE に表示テキストを書くと 1 つ目の assert が RED
+    # (_checked_keys() は _rows 由来なので、キーの等号だけでは捕まらない)。
+    assert {c.data(0, Qt.ItemDataRole.UserRole) for c in dlg._iter_children()} == {
+        "csv_1::a",
+        "csv_1::b",
+    }
+    leaf = next(c for c in dlg._iter_children() if c.text(0) == "a")
+    leaf.setCheckState(0, Qt.CheckState.Checked)
+    assert dlg._checked_keys() == ["csv_1::a"]
 
 
 def test_leaf_text_qualified_on_collision(qtbot: QtBot) -> None:
@@ -594,6 +606,11 @@ def test_channel_row_is_a_tristate_container_not_checkable(
     """C-a: 物理チャンネル行はチェック **不可**。三態表示だけを持つ。
 
     「親をチェック = 全列エクスポート」を許すと 264k 鋳造の一撃になる。
+
+    I-2: ただし行は enabled のままチェック標識を普通の見た目で描くので、理由が
+    無いと「押しても無反応」の無音拒否になる (`ItemIsUserCheckable` は
+    `editorEvent` からしか参照されない)。増分B の規約 (拒否は理由つき) に合わせて
+    ツールチップで説明する。sabotage: setToolTip を落とすと当該 assert が RED。
     """
     dlg = ExportCsvDialog(_array_app_vm(expanded=expanded), initial_selected=set())
     qtbot.addWidget(dlg)
@@ -602,9 +619,12 @@ def test_channel_row_is_a_tristate_container_not_checkable(
     assert not (mat.flags() & Qt.ItemFlag.ItemIsUserCheckable)
     assert mat.data(0, Qt.ItemDataRole.UserRole) is None  # 親は列キーを持たない
     assert mat.checkState(0) == Qt.CheckState.Unchecked  # 三態表示自体は持つ
+    assert mat.flags() & Qt.ItemFlag.ItemIsEnabled  # 灰色にはしない (展開できる行)
+    assert mat.toolTip(0) == S.EXPORT_CONTAINER_ROW_TOOLTIP
     # 1 列の物理チャンネルは従来どおり葉 (チェック可能・実列キー)
     assert clean.flags() & Qt.ItemFlag.ItemIsUserCheckable
     assert clean.data(0, Qt.ItemDataRole.UserRole) == "mf4_1::Clean"
+    assert clean.toolTip(0) == ""  # 押せる行に理由は要らない (assert の非空虚化)
 
 
 @pytest.mark.parametrize("expanded", [True, False])

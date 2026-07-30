@@ -96,13 +96,41 @@ def test_exporter_rejects_multi_column_values_unified_timeline(tmp_path: Path) -
         )
 
 
-def test_exporter_writes_nothing_when_rejected(tmp_path: Path) -> None:
+def test_exporter_writes_nothing_when_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """拒否したら 1 行も組み立てず、ファイルも残さない (**ガードの位置** の pin)。
+
+    ``assert not out.exists()`` **だけでは落ちない**: ``_atomic_write`` は mkstemp の
+    兄弟ファイルへ書いて ``BaseException`` で unlink するので、ガードを
+    ``os.replace`` の直前まで下げても出力ファイルは現れない。それでも 2-D 親の
+    全行を組み立てる = ガードが防いでいるコストそのものを払っている (M-2)。
+    なので位置を直接観測する: 行組み立ては ``Signal.sorted_view()`` を通るので、
+    拒否時にその呼び出しが **1 度も無い** ことを見る (拒否判定自体は ``.values``
+    を読むので、この観測点は判定と混ざらない)。
+    sabotage: ``_require_single_value_columns`` の呼び出しを ``export`` 冒頭から
+    ``_atomic_write`` の ``os.replace`` 直前へ移すと sorted_view が呼ばれて RED。
+    """
+    seen: list[str] = []
+    original = Signal.sorted_view
+
+    def spy(self: Signal) -> tuple[np.ndarray, np.ndarray]:
+        seen.append(self.name)
+        return original(self)
+
+    monkeypatch.setattr(Signal, "sorted_view", spy)
+
     out = tmp_path / "out.csv"
     # match 無しの裸 raises が「別の ValueError で偶然緑」を生んだ (fixture の時間軸を
     # 揃える前は修正なしでも pass した)。時間軸を揃えたうえで文言も縛り、クラスごと潰す。
     with pytest.raises(ValueError, match="配列チャンネル"):
         CsvExporter().export([_2d_signal(), _scalar_signal()], out)
     assert not out.exists()
+    assert seen == [], f"拒否前に行を組み立てている (ガードが下がった): {seen}"
+
+    # 反 vacuous: この観測点は健全な経路では実際に発火する (恒真の空リストではない)
+    CsvExporter().export([_scalar_signal()], tmp_path / "ok.csv")
+    assert seen == ["Plain"]
 
 
 def test_session_rejects_container_channel_without_reading_values(

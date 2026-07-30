@@ -435,6 +435,32 @@ class MdfLoader:
             name_seen[base_name] = idx + 1
             deduplicated = name_total[base_name] > 1
             signal_name = f"{base_name}[{idx}]" if deduplicated else base_name
+            if signal_name in column_records:
+                # 1:1 不変条件 (表のキー集合 == 発行された Signal 名) の loud-fail。
+                # LD-08 の [i] 曖昧化は **生チャンネル名としても合法な形** なので、
+                # 別の物理チャンネルの名前と字面で衝突しうる (同名 'A' 2 本 ->
+                # A[0]/A[1] と、文字どおり 'A[0]' という第 3 のチャンネルが同居)。
+                # 表への代入は last-wins・signals への append は上書きしないため、
+                # 黙って通すと表と Signal が 1:1 でなくなり、いずれも**例外を出さずに**
+                # 壊れる: (a) 列数の母数が 1 チャンネル分丸ごと過少になる
+                # (b) ブラウザが 2 本を 1 行へ畳み、物理チャンネルが木/フィルタ/
+                # D&D/プレビュー/エクスポートから同時に消える (c) 生き残った表の
+                # 側が配列なら _mint_column が表示名の最長一致で **別チャンネルの
+                # 列** を鋳造し、値は一方から・timestamps/unit/bus_type/source_file は
+                # もう一方から来る (長さが偶然一致すると sample_source の長さ検証も
+                # 通るので、時間軸だけ別チャンネルの「普通に見える曲線」になる)。
+                # 誤データより見える拒否を選ぶ。
+                diagnostics.append(
+                    Diagnostic(
+                        level="error",
+                        message=(
+                            f"信号 '{signal_name}': 同名の別チャンネルが既にあるため"
+                            "スキップ（列名が一意になりません）"  # noqa: RUF001
+                        ),
+                        signal_name=signal_name,
+                    )
+                )
+                continue
 
             samples = probe.samples
             spec = spec_from_probe(samples)

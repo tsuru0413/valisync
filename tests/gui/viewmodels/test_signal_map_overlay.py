@@ -271,10 +271,22 @@ def test_overlay_over_resolving_base_applies_offset_to_minted_column(
 def test_overlay_over_resolving_base_returns_none_for_unresolvable_key(
     tmp_path: Path,
 ) -> None:
-    """解決不能キーは overlay 越しでも None (KeyError を漏らさない)。"""
+    """解決不能キーは overlay 越しでも None (KeyError を漏らさない)。
+
+    M-6: 未ロードグループのキーだけでは ``resolve()`` の
+    ``group_key not in self._groups`` で抜けてしまい **_mint_column に一度も入らない**
+    (``_mint_column`` の最終 ``return None`` をでたらめな Signal に差し替える変異が
+    生き延びる)。ロード済みグループの解決不能な列キーも並べて、鋳造ループを実際に
+    走らせたうえで None を要求する。
+    """
     mgr, key = _resolving_manager(tmp_path)
     vm, _session = _vm(mgr.signal_map(), {key: 1.0}, {})
     sm = vm._signal_map()  # type: ignore[attr-defined]
 
-    assert sm.get("mf4_9::Nope") is None  # 未ロードグループ
+    assert sm.get("mf4_9::Nope") is None  # 未ロードグループ (resolve の早期 return)
     assert "mf4_9::Nope" not in sm
+    # ロード済みグループ内の解決不能キー = _mint_column の全走査を抜けた末の None。
+    # (Mat / Clean のどの記録にも接頭辞一致しないので最長一致ループが空振りする)
+    assert sm.get(f"{key}::Nope") is None
+    assert f"{key}::Nope" not in sm
+    assert mgr.mint_count == 0  # 失敗した鋳造は数に入らない

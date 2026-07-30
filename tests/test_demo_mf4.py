@@ -517,7 +517,9 @@ def test_prod_tiny_structure_loads(tmp_path):
     # prod_demo ではこれで今まで一覧に出ていなかった 60 本が初めて使える。
     assert "Prod10Wide_0000" in names
     assert session.total_column_count(outcome.key) > len(names), (
-        "反 vacuous: 広幅を数えていないなら列数が行数を大きく上回らない"
+        "反 vacuous: 母数が列単位である (行数 = 物理チャンネル数を上回る)。"
+        "**広幅の弁別ではない** — このプロファイルの 6 列アレイ 4 本だけでも成り立つ。"
+        "1024 を跨いだ先まで数えている根拠は直後の 1100 列 assert が担う。"
     )
     assert len(session.column_names_of(outcome.key, "Prod10Wide_0000")) == 1100
     # 端の列まで鋳造できる (1024 を跨いだ先が本当に引けることの弁別)

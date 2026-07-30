@@ -87,6 +87,42 @@ def test_synthetic_group_without_records_never_mints() -> None:
     assert mgr.resolved_keys(key) == frozenset()
 
 
+def test_minting_requires_a_handle_even_with_column_records(tmp_path: Path) -> None:
+    """``handle is None`` ガード単独の pin (CSV/Derived は LD-14 の列文法を持たない)。
+
+    M-6: 既存の pin (``test_synthetic_group_without_records_never_mints`` /
+    ``test_signal_map_unresolvable_lookup_returns_none``) は **表も持たない** グループを
+    使うので、ガードを消しても空の records ループが同じ ``None`` に落ち **全部緑のまま**
+    だった = docstring が名指しする契約が実は無防備。表を持たせると、ガードだけが
+    「ハンドル無しのグループから列を鋳造しない」唯一の防波堤になる。
+
+    sabotage: ``if handle is None: return None`` を落とすと、``LazyMdfValues(None, ...)``
+    を抱えた Signal が鋳造されて RED (値を読んだ瞬間に落ちる遅延爆弾)。
+    """
+    result = MdfLoader().load(write_mdf4_2d(tmp_path))
+    sg = result.signal_group
+    assert sg is not None
+    handle = sg.handle
+    assert handle is not None  # setup 前提: 実ロードはハンドルを持つ
+    try:
+        mgr = SignalGroupManager()
+        # 反 vacuous: 同じ表・同じ signals でも **ハンドルがあれば** 鋳造できる
+        with_handle = mgr.add(sg, column_records=result.column_records)
+        assert mgr.resolve(f"{with_handle}::Mat[1]") is not None
+
+        headless = SignalGroup(
+            signals=sg.signals,
+            source_path=sg.source_path,
+            file_format=sg.file_format,
+            loaded_at=sg.loaded_at,
+        )
+        key = mgr.add(headless, column_records=result.column_records)
+        assert mgr.resolve(f"{key}::Mat[1]") is None
+        assert mgr.resolved_keys(key) == frozenset()
+    finally:
+        handle.close()
+
+
 def test_namespaced_wrapper_is_rebuilt_by_unrelated_add() -> None:
     """副テーブルを namespaced 寿命に相乗りさせてはならない理由 (計測済み回帰の機序)。
 

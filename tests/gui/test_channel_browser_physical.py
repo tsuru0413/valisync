@@ -10,6 +10,7 @@ from tests.mdf4_helpers import (
     write_mdf4_2d,
     write_mdf4_interleaved_arrays,
     write_mdf4_single_column_shapes,
+    write_mdf4_wide_2d,
 )
 from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
 from valisync.core.models import Delimiter, FormatDefinition, Signal
@@ -86,16 +87,20 @@ def test_group_total_counts_columns_not_rows(tmp_path: Path) -> None:
     行数を total にすると prod で「4,324 ch 中 264,004 ch を表示」= shown > total
     の自己矛盾になる (ユーザー決定 2)。
     sabotage: _group_total() を len(self._prep) に戻すと RED。
+
+    M-4: フィルタごとの shown は **実測値で** 縛る。旧形の
+    ``0 <= shown_count() <= total_cols`` は構成上必ず成り立つ帯で、ヘッダーと木が
+    乖離する現実的な誤実装 (``matched_total += len(cols)`` = 一致列でなく実列数を
+    足す) でも ``0 <= 3 <= 4`` で通っていた。
     """
     vm = _vm(tmp_path)  # Mat 3 列 + Clean 1 列 = 2 行 / 4 列
     rows = vm.tree_groups()
     total_cols = sum(r[3] for r in rows)
     assert total_cols > len(rows)  # fixture が配列を含む担保 (assert の vacuous 化防止)
     assert vm._group_total() == total_cols
-    for q in ("", "mat", "mat[1", "zzz"):
+    for q, expected_shown in (("", 4), ("mat", 3), ("mat[1", 1), ("zzz", 0)):
         vm.set_filter(q)
-        # 不変条件: 0 <= shown <= total (単位混在なら成り立たない)
-        assert 0 <= vm.shown_count() <= total_cols
+        assert vm.shown_count() == expected_shown, q
         assert vm._group_total() == total_cols  # total はフィルタ非依存
 
 
@@ -195,15 +200,19 @@ def test_header_counts_columns_in_ch_units(tmp_path: Path) -> None:
 
 
 def test_header_total_is_columns_not_rows(tmp_path: Path) -> None:
-    """C2: total も shown も「列」。行数を total にすると shown > total になる。"""
+    """C2: total も shown も「列」。行数を total にすると shown > total になる。
+
+    M-4: 旧形にあったフィルタ走査 (``0 <= shown_count() <= total_cols``) は削除した
+    — 構成上必ず成り立つ帯で歯が無く、同じフィルタ集合の **実測値** は
+    test_group_total_counts_columns_not_rows と、文言まで含めた
+    test_filter_matches_column_names_and_keeps_parent /
+    test_column_names_for_honors_filter が既に固定している。
+    """
     vm = _vm(tmp_path)
     rows = vm.tree_groups()
     total_cols = sum(r[3] for r in rows)  # r[3] = column_count
     assert total_cols > len(rows)  # fixture が配列を含むことの担保
     assert vm.header_text() == f"{total_cols} ch 中 {total_cols} ch を表示"
-    for q in ("", "mat", "mat[1", "zzz"):
-        vm.set_filter(q)
-        assert 0 <= vm.shown_count() <= total_cols
 
 
 def test_filter_matches_column_names_and_keeps_parent(tmp_path: Path) -> None:
@@ -266,15 +275,60 @@ def test_one_filter_application_scans_columns_once(tmp_path: Path) -> None:
     assert vm.inspect()["filter_scans"] == before + 2
 
 
+def _reachable_strings(obj: object, depth: int = 0) -> list[str]:
+    """*obj* から到達できる str を全部集める (深さ制限つき再帰)。
+
+    メモの「保持は行単位」を **数えて** 確かめるための道具。トップレベルの
+    ``len()`` を見るオラクルは、行タプルの隣に列名リストを 4 番目の要素として
+    足す/行タプルの中へ潜り込ませる、といった現実的な回帰形を素通りする。
+    """
+    if isinstance(obj, str):
+        return [obj]
+    if depth >= 4:
+        return []
+    if isinstance(obj, list | tuple | set | frozenset):
+        return [s for x in obj for s in _reachable_strings(x, depth + 1)]
+    if isinstance(obj, dict):
+        return [
+            s
+            for k, v in obj.items()
+            for s in (
+                *_reachable_strings(k, depth + 1),
+                *_reachable_strings(v, depth + 1),
+            )
+        ]
+    return []
+
+
 def test_filter_memo_does_not_hold_per_column_names(tmp_path: Path) -> None:
-    """メモは行数ぶんしか持たない (名前キャッシュ 33 MB の再導入を構造で禁じる)。"""
-    vm = _vm(tmp_path)
-    vm.set_filter("mat")
+    """メモは行数ぶんしか持たない (名前キャッシュ ≈33 MB の再導入を構造で禁じる)。
+
+    保持量は **メモから到達できる文字列の本数** で測る。旧オラクル
+    (``len(memo[1]) == len(rows)``) は恒真だった: ``tree_groups()`` は
+    ``_ensure_filter_memo()[0]`` = ``memo[1]`` **そのもの** を返すので
+    ``len(x) == len(x)`` を書いていただけで、``_filter_memo`` に
+    ``[c.lower() for r in _prep for c in r[3]]`` を足す変異が丸ごと生き延びた。
+
+    列を多く持つ fixture (64 列 + 1) を使うのは弁別幅のため — 生存行 1 本が
+    正当に持つ文字列は数個で、列ぶんの折り畳みコピーが 1 つでも入れば桁で外れる。
+    sabotage: メモに小文字化した列名リストを持たせると RED。
+    """
+    vm, _app_vm = _vm_for(write_mdf4_wide_2d(tmp_path, cols=64))
+    vm.set_filter("wide")
     rows = vm.tree_groups()
-    assert len(rows) == 1 and rows[0][3] == 3  # 1 行 / 実列数 3
+    assert len(rows) == 1 and rows[0][3] == 64  # 1 行 / 実列数 64
+    total_cols = vm._group_total()
+    assert total_cols == 65  # Wide 64 列 + Clean (反 vacuous: 列 >> 行)
+
     memo = vm._filter_memo
     assert memo is not None
-    assert len(memo[1]) == len(rows)  # 保持は行単位 — 列単位ではない
+    assert memo[1] is rows  # tree_groups() はメモの実体を返す (旧 assert が恒真な所以)
+    held = _reachable_strings(memo)
+    assert len(held) < total_cols, (
+        f"メモが列単位で文字列を抱えている ({len(held)} 本 >= 列数 {total_cols}): {held[:8]}"
+    )
+    # 列名 (大小どちらの綴りでも) はメモに 1 本も居ない
+    assert not [s for s in held if s.lower().startswith("wide[")], held
 
 
 def test_filter_memo_dropped_on_prep_lifecycle(tmp_path: Path) -> None:

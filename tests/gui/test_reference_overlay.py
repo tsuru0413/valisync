@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from tests.mdf4_helpers import write_mdf4, write_mdf4_2d
 from valisync.core.models import Signal, SignalGroup
@@ -484,6 +485,68 @@ def test_overlay_column_key_collision_prefers_real_channel(tmp_path: Path) -> No
     got = session.resolve_signal(added_key)
     assert got is not None
     assert got.sorted_view()[1].tolist() == [7.0, 8.0, 9.0, 10.0]
+
+
+def test_overlay_does_not_touch_the_resolver_for_refusals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M-7: 鋳造せずに決まる却下 (同名なし / 構造不一致 / 済み) は解決器に触らない。
+
+    ``resolve_signal`` は鋳造の入口で、ヒットした列は ``_resolved_by_key`` へ
+    **恒久登録**される (E-3 C-g で LRU なし)。存在判定に使うと「重ねなかった候補」
+    までセッション寿命いっぱい滞留するので、存在は ``has_column`` /
+    ``is_container_channel`` が答え、鋳造は metadata (曖昧フラグ・単位) が本当に
+    必要になるまで遅らせる。
+
+    観測点は ``SignalGroupManager.resolve`` — ``session.resolve_signal`` も
+    ``signal_map()`` のフォールスルーも通る**唯一の鋳造の扉**なので、呼び出し方を
+    別 API へ差し替える「直し方」でも逃げられない。
+    sabotage: 3 つの却下判定を ``resolve_signal`` の後ろへ戻すと呼び出しが 3 件
+    記録されて RED。
+    """
+    ref_path = write_mdf4(
+        tmp_path / "ref.mf4",
+        [
+            {"name": "Solo", "timestamps": [0.0, 0.1], "values": [1.0, 2.0]},
+            {"name": "Mat", "timestamps": [0.0, 0.1], "values": [3.0, 4.0]},
+            {"name": "Clean", "timestamps": [0.0, 0.1], "values": [5.0, 6.0]},
+        ],
+    )
+    session = Session()
+    ref_key = session.load(ref_path).key
+    tgt_key = session.load(_mat2d_in(tmp_path, "tgt")).key  # Mat は 2-D 容器
+
+    panel = GraphPanelVM(session)
+    panel.add_signal_to_axis(f"{ref_key}::Solo", 0)  # tgt に同名なし
+    panel.add_signal_to_axis(f"{ref_key}::Mat", 1)  # tgt の Mat は容器
+    panel.add_signal_to_axis(f"{ref_key}::Clean", 2)
+    panel.add_signal_to_axis(f"{tgt_key}::Clean", 2)  # 既に重ね済み
+
+    calls: list[str] = []
+    original = session._groups.resolve
+
+    def counting(key: str) -> Signal | None:
+        calls.append(key)
+        return original(key)
+
+    monkeypatch.setattr(session._groups, "resolve", counting)
+
+    result = overlay_reference_signals(panel, session, ref_key, tgt_key)
+
+    assert result == OverlayResult(
+        total=3,
+        added=0,
+        no_match=1,
+        unit_mismatch=0,
+        already_present=1,
+        ambiguous=0,
+        container=1,
+    )
+    assert calls == [], f"却下だけの重ねが解決器 (鋳造の扉) を叩いた: {calls}"
+
+    # 反 vacuous: スパイは実際に配線されている (metadata が要る経路では鋳造が起こる)
+    assert session.resolve_signal(f"{tgt_key}::Mat[0]") is not None
+    assert calls == [f"{tgt_key}::Mat[0]"]
 
 
 def test_overlay_skips_container_channel_candidate(tmp_path: Path) -> None:

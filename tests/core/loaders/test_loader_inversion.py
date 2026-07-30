@@ -21,6 +21,7 @@ from tests.mdf4_helpers import (
     write_mdf4_2d,
     write_mdf4_all_channels_bad,
     write_mdf4_all_non_numeric_struct,
+    write_mdf4_display_name_collision,
     write_mdf4_non_monotonic,
     write_mdf4_non_monotonic_2d,
     write_mdf4_single_column_shapes,
@@ -222,6 +223,54 @@ def test_column_records_are_one_to_one_with_emitted_signals(tmp_path: Path) -> N
     bad_key = bad_session.load(write_mdf4_all_channels_bad(tmp_path)).key
     assert bad_session._groups.column_records(bad_key) == {}
     assert bad_session.total_column_count(bad_key) == 0
+
+
+def test_display_name_collision_is_refused_loudly(tmp_path: Path) -> None:
+    """I-1: LD-08 曖昧化が実チャンネル名と衝突したら **error 診断つきでスキップ**。
+
+    表への代入は ``column_records[signal_name] = ...`` (last-wins)、Signal 発行は
+    ``signals.append(...)`` (上書きなし) なので、衝突を黙って通すと 1:1 不変条件が
+    崩れる。崩れた瞬間 ``_mint_column`` は表示名の最長一致で **別チャンネルの列** を
+    鋳造し、値は一方から・timestamps はもう一方から来た誤データを**例外なしで**返す
+    (長さが一致すると ``LazyMdfValues`` の長さ検証も通る)。反転前は各列が自分の
+    ``(gi, ci)`` を持つ独立した Signal だったので、表示が汚いだけでデータは健全だった
+    = **反転が作った新しい壊れ方**。
+
+    sabotage: この loud-fail を外すと
+      (a) ``_orig_names`` が ``["W[0]", "W[0]", "W[1]"]`` になり 1:1 が 3 Signal /
+          2 record へ崩れる
+      (b) ``W[0]`` が 2-D 容器 (後勝ちの namespaced map) を返す
+      (c) ``W[0][1]`` が「値 = ② 配列の列 1 / 時刻 = ① 1-D チャンネルの軸」で解決する
+    のいずれもが同時に RED になる。
+    """
+    session, key, diags = _loaded(write_mdf4_display_name_collision(tmp_path))
+
+    errors = [d for d in diags if d.level == "error"]
+    assert [d.signal_name for d in errors] == ["W[0]"]
+    assert errors[0].message == (
+        "信号 'W[0]': 同名の別チャンネルが既にあるためスキップ（列名が一意になりません）"
+    )
+
+    # 1:1 不変条件: 表と Signal は同数・同じキー集合 (多重集合の強さで)
+    records = session._groups.column_records(key)
+    assert set(records) == {"W[0]", "W[1]"}
+    assert len(session.group_signals(key)) == len(records) == 2
+    assert _orig_names(session, key) == ["W[0]", "W[1]"]
+
+    # 生き残った W[0] は **実 1-D チャンネル** (自分の時刻軸と値を持つ)
+    real = session.resolve_signal(f"{key}::W[0]")
+    assert real is not None
+    np.testing.assert_array_equal(real.values, [5.0, 6.0, 7.0, 8.0])
+    np.testing.assert_array_equal(real.timestamps, [10.0, 11.0, 12.0, 13.0])
+    # 拒否したチャンネルの列は 1 本も鋳造できない (誤データの入口が閉じている)
+    assert session.resolve_signal(f"{key}::W[0][0]") is None
+    assert session.resolve_signal(f"{key}::W[0][1]") is None
+
+    # 過剰拒否ではない: 生き残った 2-D 側 (W[1]) は自分の軸で正しく鋳造できる
+    col = session.resolve_signal(f"{key}::W[1][1]")
+    assert col is not None
+    np.testing.assert_array_equal(col.timestamps, [0.0, 0.1, 0.2, 0.3])
+    np.testing.assert_array_equal(col.values, [101, 103, 105, 107])
 
 
 def test_duplicate_names_stay_two_physical_signals_with_their_own_values(

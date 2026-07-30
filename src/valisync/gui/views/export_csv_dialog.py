@@ -304,7 +304,11 @@ class ExportCsvDialog(QDialog):
         # identity は行ごとに一意とは限らない: 物理チャンネル名が文字どおり
         # "Mono[0]" のファイルと、"Mono" の 1 列展開が同居すると両行が同じ
         # identity になる (T0 が固定している Mat[0] 衝突と同型の配置)。影響は
-        # **表示テキストだけ**で、選択キー (_KEY_ROLE = 実列キー) は常に一意。
+        # **表示テキストだけ**で、選択キー (_KEY_ROLE) はそこから作らない —
+        # ファイルキー + 実列名で組むので表示テキストが衝突しても衝突しない。
+        # (キーの大域的な一意性そのものは本メソッドの保証ではなく、
+        # 「表のキー集合 == 発行された Signal 名」という 1:1 不変条件と、それを
+        # 破る配置をローダーが error 診断で拒否することに依っている。)
         identities: list[str] = []
         tops: list[QTreeWidgetItem] = []
         auto_expand: list[int] = []
@@ -350,6 +354,10 @@ class ExportCsvDialog(QDialog):
                 # 一撃)。QTreeWidgetItem の既定フラグは UserCheckable を **含む**
                 # ため、付けないだけでは足りず明示的に落とす必要がある。
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
+                # 行は enabled のまま (`CheckStateRole` を持つので delegate は
+                # チェック標識を普通の見た目で描く) — 理由を出さないと
+                # 「押しても無反応・何も起きない」の無音拒否になる。
+                item.setToolTip(0, S.EXPORT_CONTAINER_ROW_TOOLTIP)
                 placeholder = QTreeWidgetItem(item, [S.EXPORT_COLUMN_PLACEHOLDER])
                 placeholder.setData(0, _PLACEHOLDER_ROLE, True)
             self._refresh_row_state(item)

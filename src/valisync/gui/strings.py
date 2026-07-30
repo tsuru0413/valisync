@@ -117,6 +117,11 @@ EXPORT_SELECTION_COUNT_TMPL: Final = "{n} 信号を選択中"
 # ユーザーにはほぼ見えないが、これが無いと Qt が展開矢印を描かない
 # (= 列があることに気付けない)。
 EXPORT_COLUMN_PLACEHOLDER: Final = "…"
+# 複数列の物理チャンネル行のチェックボックスは C-a で押しても変わらない (親を
+# チェック = 全列 は prod で 264k 鋳造の一撃)。ただし行は enabled のまま三態を
+# 描くので、理由が無いと「押しても無反応」の無音拒否になる — 増分B が敷いた
+# 「拒否は disabled 表示 + ツールチップ」の規約に合わせて理由を出す。
+EXPORT_CONTAINER_ROW_TOOLTIP: Final = "展開して列を選択してください"
 EXPORT_UNRESOLVED_ERROR_TMPL: Final = "選択した列を読み出せません（{n} 件・例: {name}）"
 
 # ── ダイアログ: 信号プレビュー (signal_preview_window・R-05 em ダッシュ) ─────

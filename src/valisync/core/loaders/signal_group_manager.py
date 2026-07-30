@@ -50,6 +50,11 @@ class SignalGroupManager:
         # 相乗りさせない** — グループの寿命 (add/remove) にだけ従う。相乗りさせると
         # 2 ファイル目のロードで表が消え、鋳造がファイル全体の再走査に落ちる。
         self._column_records: dict[str, dict[str, ColumnRecord]] = {}
+        # {group_key: {physical_channel 表示名: 代表 Signal}} — 鋳造の継承元索引。
+        # _column_records と同じ寿命 (add/remove のみ・_invalidate_namespaced では
+        # 触らない)。索引にするのは、線形走査だと鋳造 1 本あたり O(n_channels)
+        # (prod 4,324) を払うから。
+        self._physical_by_name: dict[str, dict[str, Signal]] = {}
         self.mint_count = 0
 
     def add(
@@ -69,6 +74,7 @@ class SignalGroupManager:
         self._counters[prefix] = self._counters.get(prefix, 0) + 1
         key = f"{prefix}_{self._counters[prefix]}"
         self._groups[key] = group
+        self._physical_by_name[key] = self._index_physical(group)
         if column_records:
             # 呼び出し側の dict と縁を切る (ローダーの一時表が後から変わっても
             # 登録済みグループの列構造は動かない)。物理チャンネル数ぶんなので安い。
@@ -91,6 +97,7 @@ class SignalGroupManager:
             raise KeyError(f"no Signal_Group registered under key: {key!r}") from None
         columns = tuple(self._resolved_by_key.pop(key, {}).values())
         self._column_records.pop(key, None)
+        self._physical_by_name.pop(key, None)
         self._invalidate_namespaced()
         return group, columns
 
@@ -352,7 +359,7 @@ class SignalGroupManager:
             raw_leaf = f"{record.raw_base_name}{rest}"
             if parse_leaf(raw_leaf, {record.raw_base_name: record.spec}) is None:
                 continue  # 消費しきれない / 非数値リーフ = この親では解決不能
-            parent = self._physical_signal(group, display_key[:i])
+            parent = self._physical_signal(group_key, display_key[:i])
             if parent is None:
                 return None
             return Signal(
@@ -381,19 +388,37 @@ class SignalGroupManager:
         return None
 
     @staticmethod
-    def _physical_signal(group: SignalGroup, display_name: str) -> Signal | None:
-        """物理チャンネル ``display_name`` を代表する Signal (継承元)。
+    def _index_physical(group: SignalGroup) -> dict[str, Signal]:
+        """``{metadata['physical_channel']: 代表 Signal}`` を add() で 1 度だけ作る。
 
-        反転後は「物理チャンネル 1 本 = Signal 1 個」なので name 一致でも当たるが、
-        反転前 (ローダーが列を発行している間) はその名前の Signal が存在しない。
-        どちらでも同じ答え (master・file_format・bus_type・source_file・unit 等は
-        チャンネル単位で不変) が要るので ``metadata['physical_channel']`` で引く。
-        走査は列キーごとに 1 回だけ (結果は ``_resolved_by_key`` が保持する)。
+        反転後は「物理チャンネル 1 本 = Signal 1 個」なので、この索引は表示名の
+        全単射そのものになる。``physical_channel`` を持たない Signal (CSV/Derived)
+        は載らない — 旧実装の走査もそれらには一致しなかった (``.get`` が None を
+        返し、display_name は必ず str)。
+
+        **キーの重複はローダー側で構造的に潰れている**: 表示名が別チャンネルと
+        衝突したら ``MdfLoader`` が error 診断つきでそのチャンネルを拒否する
+        (1:1 不変条件の loud-fail)。手組みの SignalGroup (テスト) が重複を作った
+        場合は旧走査と同じ「最初の 1 本」を採る。
         """
+        index: dict[str, Signal] = {}
         for sig in group.signals:
-            if sig.metadata.get("physical_channel") == display_name:
-                return sig
-        return None
+            phys = sig.metadata.get("physical_channel")
+            if isinstance(phys, str) and phys not in index:
+                index[phys] = sig
+        return index
+
+    def _physical_signal(self, group_key: str, display_name: str) -> Signal | None:
+        """物理チャンネル ``display_name`` を代表する Signal (継承元・O(1))。
+
+        鋳造列は master・file_format・bus_type・source_file・unit 等をここから
+        引き継ぐ (いずれもチャンネル単位で不変)。旧実装は ``group.signals`` の
+        線形走査で **最初に一致した** Signal を返していた: 鋳造 1 本あたり
+        O(n_channels) を払い、かつ同じ表示名の Signal が 2 本あると「どちらか」を
+        黙って選ぶ曖昧さがあった。索引化で走査は消え、曖昧さの方はローダーの
+        1:1 loud-fail が入口で断つ。
+        """
+        return self._physical_by_name.get(group_key, {}).get(display_name)
 
 
 class _ResolvingMap(Mapping[str, Signal]):
