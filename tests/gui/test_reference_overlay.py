@@ -417,6 +417,40 @@ def test_overlay_matches_expanded_column_across_files(tmp_path: Path) -> None:
     }
 
 
+def test_overlay_rerun_is_idempotent_for_minted_columns(tmp_path: Path) -> None:
+    """同じ重ねを 2 回走らせても列は増えない (T7 レビュー: 議論のみで未 test-lock)。
+
+    ``already_present`` は plotted entries の **列キー** で作られる (C-c)。1 回目で
+    鋳造された列キーが 2 回目に別表記で戻ってくる、あるいは物理チャンネル単位で
+    突き合わせるようになると、2 回目が ``added=1`` になって同じ列が二重に載る。
+    ここが崩れても 1 回目のテストは全て緑のままなので、**再実行**そのものを固定する。
+    """
+    session = Session()
+    ref_key = session.load(_mat2d_in(tmp_path, "ref")).key
+    tgt_key = session.load(_mat2d_in(tmp_path, "tgt")).key
+    ref_col = f"{ref_key}::Mat[0]"
+
+    panel = GraphPanelVM(session)
+    panel.add_signal_to_axis(ref_col, 0)
+
+    first = overlay_reference_signals(panel, session, ref_key, tgt_key)
+    assert first == OverlayResult(
+        total=1, added=1, no_match=0, unit_mismatch=0, already_present=0, ambiguous=0
+    )
+    after_first = {(sk, ax) for _eid, sk, ax in panel.plotted_entries()}
+
+    second = overlay_reference_signals(panel, session, ref_key, tgt_key)
+    assert second == OverlayResult(
+        total=1, added=0, no_match=0, unit_mismatch=0, already_present=1, ambiguous=0
+    ), f"再実行が冪等でない: {second}"
+    assert {(sk, ax) for _eid, sk, ax in panel.plotted_entries()} == after_first, (
+        "再実行でエントリが増えた (同じ列が二重に載っている)"
+    )
+    # 母数は基準エントリのみ — 1 回目で追加した対象側の列を数え始めると total が
+    # 実行ごとに増える (「重ねるほど仕事が増える」自己増殖)。
+    assert second.total == 1
+
+
 def test_overlay_column_key_collision_prefers_real_channel(tmp_path: Path) -> None:
     """`Mat[0]` 衝突の pin: 参照側の配列列 `Mat[0]` は、対象ファイルに実在する
     1-D チャンネル `Mat[0]` と単位一致で偶然ペアリングされる。どちらが選ばれるかは

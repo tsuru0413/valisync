@@ -16,6 +16,7 @@ import os
 import time
 from pathlib import Path
 
+from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 
@@ -38,7 +39,23 @@ def main() -> None:
     key = app_vm.request_load(PROD)
     # プロットする実在の signal_key を先頭から少数採取(プロット数は真因に無関係 —
     # 遅さは「セッション全走査」に支配され「プロット数」には支配されない)。
-    names = [s.name for s in app_vm.session.signals()][:SIGNALS_PER_PANEL]
+    # 反転後 session.signals() は **物理チャンネル** を返す。2-D 親をそのまま
+    # add_signal すると sorted_view() の astype(float64) が 8 倍膨張した恒久
+    # キャッシュを作る (spec「壊れる消費者」3) ので、必ず列キーを採る。
+    # 列キーは ColumnSpec の名前だけから作る = ここでは 1 本も鋳造しない
+    # (prune の遅さは「セッション全走査」に支配され、プロット数には支配されない)。
+    names: list[str] = []
+    for sig in app_vm.session.signals():
+        display = sig.name.split(KEY_SEPARATOR, 1)[1]
+        for col in app_vm.session.column_names_of(key, display):
+            names.append(f"{key}{KEY_SEPARATOR}{col}")
+        if len(names) >= SIGNALS_PER_PANEL:
+            break
+    names = names[:SIGNALS_PER_PANEL]
+    assert len(names) == SIGNALS_PER_PANEL, (
+        f"プロット対象の列キーが足りない ({len(names)}) — 小データで prune の"
+        "コストを過小評価する"
+    )
 
     vm = GraphAreaVM(app_vm)
     for _ in range(TABS - 1):

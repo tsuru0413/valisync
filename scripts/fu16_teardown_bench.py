@@ -4,13 +4,14 @@
 (1) 同期 close 時間 (2) drain 中 heartbeat 最大 gap を測る。
 内部 API・小データは 6 秒を隠すため厳禁 (len(signals) を検証)。
 
-E-3 T8: 1024 展開ガードと展開確認モーダルは退役した。到達チャンネル数を稼ぐために
+E-3 T8/T9: 1024 展開ガードと展開確認モーダルは退役した。到達チャンネル数を稼ぐために
 展開確認を「全展開」へ差し替えていた行はもう無い (差し替え対象が存在しない)。
-下の数値 (EXPECTED_CHANNELS・honest-RED 期待値) は列展開時代のもので、反転後の
-再実測と再ベースラインは T9 (計測器改修) の担当 — 本タスクでは触っていない。
+反転で session.signals() は **物理チャンネル** のみを返すので、到達検証は
+物理 / 列の 2 軸で行う (物理だけを見ると 61 分の 1 の規模で「到達した」と誤判定し、
+小データ false-green を落とす唯一の防波堤が無力化する)。
 
 honest-RED (現行同期 remove_group・TeardownService 未配線):
-    reached_channels=330004 / sync_close_ms ~ 7000 / drain_* ~ 0
+    reached_columns=330004 / sync_close_ms ~ 7000 / drain_* ~ 0
 after (fix 後):
     sync_close_ms < 200 / drain_max_gap_ms < 150
 
@@ -32,7 +33,12 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 PROD = Path(os.environ.get("VALISYNC_PROD_MF4", "demo_data/prod_demo.mf4"))
-EXPECTED_CHANNELS = 330_004
+# E-3 反転後の到達値 (小データ / 部分ロードでの false-green を落とすための固定値)。
+# session.signals() は **物理チャンネル** のみを返すようになったので、列数は
+# total_column_count() で別途検証する — 物理だけを見ると 61 分の 1 の規模で
+# 「到達した」と誤判定し、6 秒フリーズを隠す元の false-green が戻る。
+EXPECTED_PHYSICAL = 4_324
+EXPECTED_COLUMNS = 330_004
 
 
 def _working_set_mb() -> float:
@@ -111,14 +117,19 @@ def main() -> None:
         app.processEvents()
         time.sleep(0.02)
 
-    reached = len(app_vm.session.signals())
-    if reached != EXPECTED_CHANNELS:
+    key = app_vm.loaded_file_keys[0]
+    reached_physical = len(app_vm.session.signals())
+    reached_columns = app_vm.session.total_column_count(key)
+    if (reached_physical, reached_columns) != (EXPECTED_PHYSICAL, EXPECTED_COLUMNS):
         raise SystemExit(
-            f"reached {reached} ch (expected {EXPECTED_CHANNELS} -- expand-all 未達。"
-            "小データ/未 patch で 6 秒フリーズを隠す false-green のため中止)"
+            f"reached physical={reached_physical} columns={reached_columns} "
+            f"(expected {EXPECTED_PHYSICAL}/{EXPECTED_COLUMNS} -- 小データ/部分ロードで"
+            "フリーズを隠す false-green のため中止)"
         )
     print(
-        f"loaded: reached_channels={reached} ws={_working_set_mb():.0f}MB", flush=True
+        f"loaded: physical={reached_physical} columns={reached_columns} "
+        f"ws={_working_set_mb():.0f}MB",
+        flush=True,
     )
 
     # heartbeat: 20ms ごとに tick 間 gap を記録 (drain 中の UI 応答を実測)。
@@ -137,7 +148,6 @@ def main() -> None:
 
     # 実 close (確認ダイアログはスキップ = 直接 unload_file で close 経路を駆動)。
     ws_before = _working_set_mb()
-    key = app_vm.loaded_file_keys[0]
     gaps.clear()
     last[0] = time.perf_counter()
     t0 = time.perf_counter()
@@ -157,7 +167,8 @@ def main() -> None:
     ws_after = _working_set_mb()
 
     drain_max_gap_ms = max(gaps) if gaps else 0.0
-    print(f"reached_channels={reached}")
+    print(f"reached_physical={reached_physical}")
+    print(f"reached_columns={reached_columns}")
     print(f"sync_close_ms={sync_close_ms:.1f}")
     print(f"drain_max_gap_ms={drain_max_gap_ms:.1f}")
     print(f"drain_total_ms={drain_total_ms:.1f}")

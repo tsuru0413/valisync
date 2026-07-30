@@ -47,7 +47,6 @@ from PySide6.QtWidgets import (
 )
 
 from valisync.core.loaders.csv_format_detector import CsvFormatDetector
-from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
 from valisync.core.models.format_def import FormatDefinition
 from valisync.core.models.load_result import Diagnostic
 from valisync.core.models.sample_source import SampleReadError
@@ -741,14 +740,25 @@ class MainWindow(QMainWindow):
         #
         # E-3: 診断が載せる signal_name は **素の列名** ("Mat[0]")。反転後
         # group_signals は物理チャンネルしか返さないので、名前の線形比較では
-        # 列名の診断が二度と一致しない (ダブルクリックしても無反応)。解決器なら
-        # 列キーを最長一致で引ける。名前空間つきキーがそのまま来た場合は所属
-        # グループへ絞ってから引く (二重接頭辞にしない)。
+        # 列名の診断が二度と一致しない (ダブルクリックしても無反応)。名前空間つき
+        # キーがそのまま来た場合は所属グループへ絞ってから引く (二重接頭辞にしない)。
+        #
+        # T7 レビュー Minor: ここは「その名前がこのファイルに在るか」しか訊いて
+        # いないので **resolve_signal を使ってはならない** — ヒットした列は
+        # `_resolved_by_key` へ *恒久的に* 登録され (LRU は E-3 では入れない = C-g)、
+        # 「どのファイルを active にするか」を決めるためだけに列 Signal がセッション
+        # 寿命いっぱい滞留する。has_column / is_container_channel はどちらも
+        # ColumnRecord の構造だけを見るので鋳造しない。2 つ必要なのは、両者の
+        # 被覆が相補的だから: 列キーとスカラーは has_column が True・配列/構造体の
+        # **親** (E-3 の集約「N 本に展開」info が載せる名前そのもの) は
+        # has_column が False で is_container_channel が True。片方だけにすると
+        # どちらかの診断のジャンプが無音で死ぬ。
+        session = self.app_vm.session
         group_key, bare = split_key(target)
         for key in self.app_vm.loaded_file_keys:
             if group_key and group_key != key:
                 continue
-            if self.app_vm.session.resolve_signal(f"{key}{KEY_SEPARATOR}{bare}"):
+            if session.has_column(key, bare) or session.is_container_channel(key, bare):
                 self.app_vm.set_active_file(key)
                 return
 

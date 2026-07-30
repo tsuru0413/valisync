@@ -555,6 +555,46 @@ class TestDiagnosticActivatedJump:
 
         assert window.app_vm.active_file_key == key_mf4
 
+    def test_jumps_by_container_channel_name_without_minting(self, qtbot, tmp_path):
+        """E-3 の集約 info 診断が載せるのは **親** の名前 ("Mat") — 列ではない。
+
+        T7 レビュー Minor の修正 (resolve_signal -> has_column/is_container_channel)
+        で親の腕が落ちると、列展開 info のダブルクリックだけが無音で死ぬ
+        (has_column は容器を False にする)。そして存在判定のために鋳造しては
+        ならない: ヒットした列は _resolved_by_key へ恒久登録され (C-g: LRU なし)、
+        表示のためだけに列 Signal がセッション寿命いっぱい滞留する。
+        """
+        window = _make_window(qtbot)
+        key_csv = window.app_vm.request_load(_write_csv(tmp_path), _csv_format())
+        key_mf4 = window.app_vm.request_load(write_mdf4_2d(tmp_path))
+        window.app_vm.set_active_file(key_csv)
+        mgr = window.app_vm.session._groups
+        assert mgr.mint_count == 0
+
+        window._on_diagnostic_activated("Mat")  # 容器 (親) の名前
+
+        assert window.app_vm.active_file_key == key_mf4, (
+            "容器チャンネル名の診断からジャンプできない (親の腕が落ちている)"
+        )
+        assert mgr.mint_count == 0, (
+            f"存在判定で列を鋳造した (恒久滞留・C-g): {mgr.mint_count}"
+        )
+
+    def test_column_name_jump_does_not_mint(self, qtbot, tmp_path):
+        """列名の腕も鋳造しない (resolve_signal 経路への回帰ガード)。"""
+        window = _make_window(qtbot)
+        key_csv = window.app_vm.request_load(_write_csv(tmp_path), _csv_format())
+        window.app_vm.request_load(write_mdf4_2d(tmp_path))
+        window.app_vm.set_active_file(key_csv)
+        mgr = window.app_vm.session._groups
+
+        window._on_diagnostic_activated("Mat[0]")
+
+        assert mgr.mint_count == 0, (
+            f"列名の存在判定で鋳造した (has_column でなく resolve_signal を"
+            f"使っている疑い): {mgr.mint_count}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Real dblclick on the Diagnostics dock's table jumps the active file
