@@ -302,12 +302,16 @@ def write_mdf4_shared_group_wide(tmp_path: Path) -> Path:
     チャンネルをキャッシュ対象から除外する (レビュー I4) ため、スカラーの A/B
     では ci を落とす変異 (S4) がそもそも ``ChannelSampleCache.put`` へ到達せず、
     キー計算の破壊が実害 (別チャンネルの値が返る) を生まない = テストが変異に
-    盲目になる。**2-D 配列 2 本を同一 append 呼び出しに混ぜる案は不採用**:
-    asammdf の書き込みが record-size を取り違え、読み戻すと A の先頭 5 行だけが
-    1-D として返る実装依存の壊れ方を実測した (2-D 単独 1 本の group は問題なし —
-    ``write_mdf4_2d`` 参照)。単一フィールド構造化 1-D
-    (``samples.dtype.names`` が truthy = I4 のもう一方のキャッシュ対象条件) は
-    同一 append に複数混ぜても正しく書き戻せることを実測済みなのでこちらを使う。
+    盲目になる。
+
+    **2-D を使うなら uint8 でなければ往復しない** (本ファイル冒頭の 3-D の注記と
+    ``test_column_roundtrip.py`` の同旨の注記と同じ制約)。float64 の 2-D は
+    **同一 append に 1 本だけでも** ``(N, w) -> (N,)`` へ潰れ、先頭 N 要素
+    (= 先頭 N/w 行) だけが返る。逆に uint8 の 2-D なら**幅が違っても同一 append に
+    複数混ぜて問題ない** — いずれも実測。ここで 2-D でなく単一フィールド構造化
+    1-D を採るのは、``write_mdf4_shared_group`` の float64 な A/B と値の型を揃えた
+    まま ``samples.dtype.names`` を truthy (= I4 のもう一方のキャッシュ対象条件)
+    にできるためで、書き込みの制約が理由ではない。
     """
     ts = np.arange(0.0, 1.0, 0.1)
     a = np.array([(v,) for v in np.arange(10.0)], dtype=[("x", "<f8")])
