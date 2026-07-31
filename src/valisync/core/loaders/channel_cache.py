@@ -148,6 +148,9 @@ class ChannelSampleCache:
             if old is not None:
                 # 同一キーの入れ替え。差分加算でなく「引いてから足す」— サイズの違う
                 # 配列で上書きされたときに会計が実体から乖離しないため。
+                # ``old`` は関数スコープなので最後の参照は return 時 = lock の**外**で
+                # 死ぬ。ここに ``del old`` を足すと evicted と同じ理由で lock 下 dealloc
+                # に戻る (_evict_oldest の docstring)。
                 self._bytes_held -= int(old.nbytes)
             capacity = self._capacity_for(size)
             while self._entries and self._bytes_held + size > capacity:
