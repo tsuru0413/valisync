@@ -3,12 +3,11 @@ from __future__ import annotations
 import datetime
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 from asammdf import MDF
 
-from valisync.core.loaders.channel_cache import ChannelSampleCache
 from valisync.core.loaders.column_names import (
     ColumnRecord,
     ColumnSpec,
@@ -19,6 +18,12 @@ from valisync.core.loaders.mdf_handle import MdfHandle
 from valisync.core.models import Diagnostic, LoadResult, Signal, SignalGroup
 from valisync.core.models.load_result import LoadCancelled
 from valisync.core.models.sample_source import LazyMdfValues
+
+if TYPE_CHECKING:
+    # 実行時 import は不要 (注釈は from __future__ で文字列化済み・mdf_handle.py と
+    # 同じ扱いに揃える — M8: annotation-only の runtime import は ruff の TC ルール
+    # 非有効下では検出されないドリフトになる)。
+    from valisync.core.loaders.channel_cache import ChannelSampleCache
 
 # Maps asammdf BusType int values to Signal.bus_type strings.
 # asammdf v4_constants.BusType: CAN=2, ETHERNET=7.

@@ -230,11 +230,24 @@ class LazyMdfValues:
             # 2 本抱える = 予算 2 倍。詳細と会計上の帰結は _column_of の docstring。
             samples.flags.writeable = False
             col = self._column_of(samples)  # 長さ不変条件もこの中で執行する
-            if channel_cache is not None:
+            if channel_cache is not None and (samples.ndim > 1 or samples.dtype.names):
                 # put は **長さ検証を通った後**。壊れた読みを共有キャッシュへ
                 # 焼き付けると、同じチャンネルの全列が以後その配列を見る。
                 # 予算超のエントリは載らない (put が False・spec D7) が、
                 # 呼び出し側から見た値の意味は変わらない。
+                #
+                # **スカラー (1-D かつ非構造化) チャンネルは意図的にキャッシュしない**
+                # (レビュー I4): そのチャンネルの容器 Signal と「列」は同一の
+                # LazyMdfValues インスタンスを指す — ``_mint_column`` は
+                # ``rest == ""`` で None を返すので第 2 の読み手が存在しない。
+                # つまりこのエントリは construction 上二度と ``get()`` で引かれず、
+                # 載せても LRU が evict しても実 RSS は 1 バイトも動かない
+                # 「実効ゼロの死蔵エントリ」になるだけ。prod (4,324 物理チャンネル)
+                # の大半はスカラーなので、これを載せ続けると 256 MB 予算がその死蔵
+                # エントリで埋まり、実際に兄弟列を持つ広幅 2-D エントリを押し出す
+                # うえ ``bytes_held`` が「evict すれば解放できるバイト数」を過大に
+                # 報告する。``Mono`` (2-D・幅 1) は引き続き載る — 兄弟列
+                # (``Mono[0]``) が実在し、命中パステストの前提はここに依存する。
                 channel_cache.put(key, samples)
             return col
 

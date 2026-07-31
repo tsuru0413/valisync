@@ -454,15 +454,30 @@ def _leaf_path(record: ColumnRecord, suffix: str) -> ColumnPath | None:
     ならない。索引を持つのは実際に列を鋳造したチャンネルだけで、閲覧しかしない
     チャンネルには 1 バイトも作らない。
 
-    書き込みは dict への代入 1 発 (GIL 下で atomic) で、二重に走っても同じ内容を
-    作り直すだけ。T3 以降は ``resolve`` が ``_resolved_lock`` 下で ``_mint_column``
-    を呼ぶので、そもそも重ならない。
+    **書き込みは dict 同士の merge (GIL 下で 1 ステップ)** — ``leaf_paths`` は
+    **ジェネレータ**なので、``index.update(leaf_paths(record.spec))`` のように
+    直接渡すと ``update`` はジェネレータを 1 件ずつ消費しながら ``index`` へ
+    書き込む。この「1 発の代入」ではなく「複数回の代入」である間、他スレッドは
+    ``record.path_index`` 越しに**部分的にしか埋まっていない索引**を観測できる
+    (レビュー実測: 2000 件中 6 件だけ入った状態が見えた)。結果は「間違った値」
+    ではなく「まだ入っていないキーが ``None`` を返す」(= このチャンネルは
+    解決不能扱いになる) なので実害はサイレント破損ではないが、走査の途中経過を
+    見せてよい理由にはならない。**``dict(leaf_paths(record.spec))`` で先に
+    ジェネレータを完全に消費してから** ``index.update(その dict)`` する —
+    dict 同士の merge は C 実装のみで進み Python コールバックへ戻らないため、
+    途中経過を他スレッドへ見せない。二重に走っても同じ内容を作り直すだけなので
+    競合そのものは無害だが、この関数を呼ぶのに専用 lock は要らない、という
+    今日の安全性は「呼び出し元 (``resolve``) が ``_resolved_lock`` 下でしか
+    ``_mint_column`` を呼ばない」という**呼び出し側の事実**に依っているだけで、
+    この関数自身がアトミックだからではない — 将来ここが lock なしの経路
+    (T3 以降の並行読み等) から呼ばれても崩れないよう、書き込みそのものを
+    1 ステップにしておく。
     """
     index = record.path_index
     if not index:
         # 0 リーフのチャンネル (幅 0 軸) は毎回空走査になるが、その走査自体が
         # O(1) (leaf_paths が 1 件も yield しない) なので償却の意味がない。
-        index.update(leaf_paths(record.spec))
+        index.update(dict(leaf_paths(record.spec)))
     return index.get(suffix)
 
 

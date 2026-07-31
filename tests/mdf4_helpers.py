@@ -294,6 +294,64 @@ def write_mdf4_shared_group(tmp_path: Path) -> Path:
     return path
 
 
+def write_mdf4_shared_group_wide(tmp_path: Path) -> Path:
+    """同一チャンネルグループに単一フィールド構造化チャンネル 2ch (A/B) — ci 軸の
+    キャッシュ検証用.
+
+    ``write_mdf4_shared_group`` の非スカラー版。E-4a はスカラー (1-D 非構造化)
+    チャンネルをキャッシュ対象から除外する (レビュー I4) ため、スカラーの A/B
+    では ci を落とす変異 (S4) がそもそも ``ChannelSampleCache.put`` へ到達せず、
+    キー計算の破壊が実害 (別チャンネルの値が返る) を生まない = テストが変異に
+    盲目になる。**2-D 配列 2 本を同一 append 呼び出しに混ぜる案は不採用**:
+    asammdf の書き込みが record-size を取り違え、読み戻すと A の先頭 5 行だけが
+    1-D として返る実装依存の壊れ方を実測した (2-D 単独 1 本の group は問題なし —
+    ``write_mdf4_2d`` 参照)。単一フィールド構造化 1-D
+    (``samples.dtype.names`` が truthy = I4 のもう一方のキャッシュ対象条件) は
+    同一 append に複数混ぜても正しく書き戻せることを実測済みなのでこちらを使う。
+    """
+    ts = np.arange(0.0, 1.0, 0.1)
+    a = np.array([(v,) for v in np.arange(10.0)], dtype=[("x", "<f8")])
+    b = np.array([(v,) for v in np.arange(10.0) * 2.0], dtype=[("x", "<f8")])
+    mdf = MDF()
+    try:
+        mdf.append(
+            [
+                ASignal(samples=a, timestamps=ts, name="A"),
+                ASignal(samples=b, timestamps=ts, name="B"),
+            ]
+        )  # 1回の append = 1グループ
+        path = tmp_path / "shared_struct.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
+def write_mdf4_2d_solo(path: Path, offset: int) -> Path:
+    """単一の 2D チャンネル ("Mat") だけを持つ MDF4 — handle 軸のキャッシュ検証用.
+
+    ``test_cache_key_separates_two_files_with_identical_positions`` は元々
+    1-D スカラー ("Spd") の 2 ファイルだったが、E-4a がスカラーチャンネルを
+    キャッシュ対象から除外する (レビュー I4) ため、handle 軸を落とす変異 (S3) が
+    ``put``/``get`` を経由せずテストが盲目になる (``write_mdf4_shared_group_wide``
+    と同じ理由)。1 チャンネル構成にするのは、(gi, ci) が「master 直後の唯一の
+    チャンネル」として 2 ファイルで確実に一致するようにするため。``offset`` で
+    2 ファイルの値を分ける (uint8 なので 0/100 程度に収める — 255 を超えない)。
+    """
+    ts = np.array([0.0, 0.1, 0.2, 0.3])
+    mat = (
+        np.array([[0, 1, 2], [10, 11, 12], [20, 21, 22], [30, 31, 32]], dtype=np.uint8)
+        + offset
+    )
+    mdf = MDF()
+    try:
+        mdf.append([ASignal(samples=mat, timestamps=ts, name="Mat")])
+        mdf.save(Path(path), overwrite=True)
+    finally:
+        mdf.close()
+    return Path(path)
+
+
 def write_mdf4_2d(tmp_path: Path) -> Path:
     """2D (Nx3) uint8 配列チャンネル + 通常チャンネル — LD-12 展開検証用.
 

@@ -21,13 +21,14 @@ import numpy as np
 import pytest
 
 from tests.mdf4_helpers import (
-    write_mdf4,
     write_mdf4_2d,
+    write_mdf4_2d_solo,
     write_mdf4_dup_2d,
-    write_mdf4_shared_group,
+    write_mdf4_shared_group_wide,
     write_mdf4_single_column_shapes,
 )
 from valisync.core.loaders.channel_cache import ChannelSampleCache
+from valisync.core.loaders.column_names import ColumnPath
 from valisync.core.loaders.mdf_handle import MdfHandle
 from valisync.core.models.sample_source import LazyMdfValues, SampleReadError
 from valisync.core.session import Session
@@ -93,10 +94,23 @@ def _buffer_owner(arr: np.ndarray) -> np.ndarray:
     エントリだけは死ぬ = **RSS が 1 バイトも下がっていないのにテストが緑になる**
     (S1 で実測: entry alive=False / owner alive=True)。所有者を見れば、列が
     ビューを焼き付けている限り生き続けるので変異が届く。
+
+    **終端が ndarray であることを明示的に確認する** (M2): ``owner.base`` が
+    ``bytes``/``memoryview``/``mmap`` のような非 ndarray になりうる chain では、
+    素の ``while owner.base is not None:`` は次周回の ``.base`` アクセスで
+    ``AttributeError`` (該当なし) になったり、そこで止まっても呼び出し側の
+    ``weakref.ref(owner)`` が ``bytes`` は weak-referenceable でないため
+    ``TypeError`` になったりする — 今日 chain が ndarray で終端するのは asammdf の
+    実装詳細であって契約ではないので、``isinstance`` ガード付きループ + 終端の
+    形の assert にして、asammdf 側が変わったときに原因の分かる失敗にする。
     """
     owner = arr
-    while owner.base is not None:
+    while isinstance(owner.base, np.ndarray):
         owner = owner.base
+    assert owner.base is None, (
+        f"base 連鎖の終端が ndarray でない ({type(owner.base)!r}) — "
+        "asammdf の内部表現が変わり _buffer_owner の前提が崩れている可能性"
+    )
     return owner
 
 
@@ -208,9 +222,17 @@ def test_cache_key_separates_two_channels_in_one_group(tmp_path: Path) -> None:
     ``write_mdf4_dup_2d`` は gi が違うので ci を落とす変異に盲目である
     (fixture の実測を下の assert で固定する)。同一グループ 2ch の fixture が
     ci 軸の唯一の観測点。
+
+    **fixture は単一フィールド構造化** (``write_mdf4_shared_group_wide``・レビュー
+    I4 の repoint): 元は 1-D スカラー (``write_mdf4_shared_group`` の A/B)
+    だったが、E-4a はスカラーチャンネルをキャッシュ対象から除外する (I4) ため、
+    A/B のどちらも ``ChannelSampleCache.put`` へ到達せず、ci 軸を殺す変異 (S4) が
+    get() の衝突という実害を起こせなくなる (= テストが変異に盲目になる)。
+    ``dtype.names`` が truthy な構造化チャンネルは I4 のもう一方のキャッシュ
+    対象条件を満たす。
     """
     session = Session()
-    key = session.load(write_mdf4_shared_group(tmp_path)).key
+    key = session.load(write_mdf4_shared_group_wide(tmp_path)).key
     try:
         records = _records(session, key)
         assert records["A"].group_index == records["B"].group_index
@@ -219,8 +241,12 @@ def test_cache_key_separates_two_channels_in_one_group(tmp_path: Path) -> None:
         a = session.resolve_signal(f"{key}::A")
         b = session.resolve_signal(f"{key}::B")
         assert a is not None and b is not None
-        np.testing.assert_array_equal(a.values, np.arange(10.0))
-        np.testing.assert_array_equal(b.values, np.arange(10.0) * 2.0)
+        expected_a = np.array([(v,) for v in np.arange(10.0)], dtype=[("x", "<f8")])
+        expected_b = np.array(
+            [(v,) for v in np.arange(10.0) * 2.0], dtype=[("x", "<f8")]
+        )
+        np.testing.assert_array_equal(a.values, expected_a)
+        np.testing.assert_array_equal(b.values, expected_b)
     finally:
         session.remove_group(key)
 
@@ -233,20 +259,20 @@ def test_cache_key_separates_two_files_with_identical_positions(
     Session は 1 個のキャッシュを全ファイルで共有する。handle をキーに含めないと
     2 ファイル比較で同じ曲線が 2 本描かれる (長さが同じなので長さ検証も通り、
     例外は出ない — spec §5.3)。
+
+    **fixture は 2-D 単一チャンネル** (``write_mdf4_2d_solo``・レビュー I4 の
+    repoint): 元は 1-D スカラー ("Spd") の 2 ファイルだったが、ci 軸のテストと
+    同じ理由でスカラーは put へ到達せず、handle 軸を殺す変異 (S3) がテストを
+    通り抜けてしまう。1 チャンネル構成にするのは、2 ファイルの (gi, ci) が
+    「master 直後の唯一のチャンネル」として確実に一致するようにするため。
     """
-    first_path = write_mdf4(
-        tmp_path / "a.mf4",
-        [{"name": "Spd", "timestamps": [0.0, 1.0], "values": [1.0, 2.0]}],
-    )
-    second_path = write_mdf4(
-        tmp_path / "b.mf4",
-        [{"name": "Spd", "timestamps": [0.0, 1.0], "values": [11.0, 12.0]}],
-    )
+    first_path = write_mdf4_2d_solo(tmp_path / "a.mf4", offset=0)
+    second_path = write_mdf4_2d_solo(tmp_path / "b.mf4", offset=100)
     session = Session()
     key_a = session.load(first_path).key
     key_b = session.load(second_path).key
     try:
-        rec_a, rec_b = _records(session, key_a)["Spd"], _records(session, key_b)["Spd"]
+        rec_a, rec_b = _records(session, key_a)["Mat"], _records(session, key_b)["Mat"]
         # 到達範囲の実測: 2 ファイルは (gi, ci) が完全に一致する = handle だけが
         # 両者を分けている。ここが違うと本テストは handle 軸に盲目になる。
         assert (rec_a.group_index, rec_a.channel_index) == (
@@ -254,14 +280,55 @@ def test_cache_key_separates_two_files_with_identical_positions(
             rec_b.channel_index,
         )
 
-        a = session.resolve_signal(f"{key_a}::Spd")
-        b = session.resolve_signal(f"{key_b}::Spd")
+        a = session.resolve_signal(f"{key_a}::Mat")
+        b = session.resolve_signal(f"{key_b}::Mat")
         assert a is not None and b is not None
-        np.testing.assert_array_equal(a.values, [1.0, 2.0])
-        np.testing.assert_array_equal(b.values, [11.0, 12.0])
+        np.testing.assert_array_equal(
+            a.values, [[0, 1, 2], [10, 11, 12], [20, 21, 22], [30, 31, 32]]
+        )
+        np.testing.assert_array_equal(
+            b.values,
+            [[100, 101, 102], [110, 111, 112], [120, 121, 122], [130, 131, 132]],
+        )
     finally:
         session.remove_group(key_a)
         session.remove_group(key_b)
+
+
+# ─── 何がキャッシュされるか (レビュー I4): スカラーは死蔵エントリになるので除外 ──
+
+
+def test_scalar_channel_read_leaves_no_evictable_cache_entry(tmp_path: Path) -> None:
+    """1-D スカラーチャンネルはキャッシュへ載らない。2-D チャンネルは引き続き載る
+    (I4)。
+
+    スカラーチャンネルの容器 Signal と「列」は同一の ``LazyMdfValues`` を指す
+    (``_mint_column`` は ``rest == ""`` で None を返すので第 2 の読み手が存在しない)。
+    そのエントリを LRU に載せても evict しても実 RSS は 1 バイトも動かない —
+    prod では 4,324 物理チャンネルの大半がスカラーなので、載せ続けると 256 MB
+    予算がこの種の死蔵エントリで埋まり、実際に兄弟列を持つ広幅 2-D エントリを
+    押し出す。
+    """
+    session = Session()
+    key = session.load(write_mdf4_2d(tmp_path)).key
+    try:
+        cache = session.channel_cache
+        clean = session.resolve_signal(f"{key}::Clean")  # 1-D スカラー
+        assert clean is not None
+        np.testing.assert_array_equal(clean.values, [1.0, 2.0, 3.0, 4.0])
+        assert cache.bytes_held == 0, "スカラーチャンネルがキャッシュへ載っている"
+        assert cache.misses == 1, (
+            "スカラーの読みが cache.get 経由の miss を計上していない"
+        )
+
+        mat = session.resolve_signal(f"{key}::Mat")  # 2-D 容器 (対照)
+        assert mat is not None
+        np.testing.assert_array_equal(
+            mat.values, [[0, 1, 2], [10, 11, 12], [20, 21, 22], [30, 31, 32]]
+        )
+        assert cache.bytes_held > 0, "2-D チャンネルがキャッシュへ載っていない"
+    finally:
+        session.remove_group(key)
 
 
 # ─── 所有権の不変条件 (spec §5.4 = レビュー Critical 1) ───────────────────────
@@ -335,6 +402,36 @@ def test_minted_column_owns_its_values_on_the_cache_hit_path(tmp_path: Path) -> 
         session.remove_group(key)
 
 
+def test_container_channel_shares_its_buffer_with_the_cache_entry(
+    tmp_path: Path,
+) -> None:
+    """容器読み (``self._path is None``) の Signal 値はキャッシュ実体と同一オブジェクト
+    (レビュー I1)。
+
+    ``array()`` は ``samples.flags.writeable = False`` を **``_column_of`` / ``put``
+    より前**に置いている。順序が正しい今日は、容器パスの ``_freeze`` は read-only
+    入力を素通しするので Signal の値とキャッシュのエントリが 1 本のバッファを
+    共有する (コピー 0)。凍結を ``put`` の**後ろ**へ動かす変異 (S11) は、値・
+    ``base``・所有権のどの既存 assert にも現れない (``_freeze`` が代わりにコピー
+    するので、コピーであっても列は独立配列のまま — task-2-report §7 Concerns 1
+    に記録済みの盲点)。この identity だけがその変異を検出できる。
+    """
+    session = Session()
+    key = session.load(write_mdf4_2d(tmp_path)).key
+    try:
+        handle = _handle_of(session, key)
+        container = session.resolve_signal(f"{key}::Mat")
+        assert container is not None
+        values = container.values  # 容器読み (selector なし) を発火させる
+        (entry,) = session.channel_cache.drop_handle(id(handle))
+        assert values is entry, (
+            "容器の値がキャッシュ実体と同一バッファでない "
+            "(凍結が put より後ろへ回っている・S11)"
+        )
+    finally:
+        session.remove_group(key)
+
+
 def test_dropping_the_channel_frees_the_2d_because_the_column_is_independent(
     tmp_path: Path,
 ) -> None:
@@ -388,9 +485,10 @@ def test_a_length_mismatch_is_not_burned_into_the_shared_cache() -> None:
     見る ``match=`` では捕まらないので、値そのものを assert する。
     """
     cache = ChannelSampleCache()
+    stub = _StubMdf(3)  # select は 3 サンプル
     # source_path を渡すのが要点: 既定の "" だと source_file の assert が
     # 「空文字と空文字の比較」= 恒真になり、宛先を落とす変異に盲目になる。
-    handle = MdfHandle(_StubMdf(3), "C:/x.mf4", cache=cache)  # select は 3 サンプル
+    handle = MdfHandle(stub, "C:/x.mf4", cache=cache)
     src = LazyMdfValues(handle, "ch", 0, 1, length=4)  # 宣言は 4
 
     with pytest.raises(SampleReadError, match="サンプル数") as exc:
@@ -400,24 +498,64 @@ def test_a_length_mismatch_is_not_burned_into_the_shared_cache() -> None:
     assert exc.value.source_file == "C:/x.mf4", "診断の宛先 (ファイル) が失われている"
     assert cache.bytes_held == 0, "長さ検証を通らない読みが共有キャッシュに載った"
     assert src.array_if_materialized() is None
+    # M6: select_calls が生きているのに誰も見ていなかった死蔵状態 assert。副次的に
+    # 「失敗した読みが再試行されていない」ことも同時に固定する (再試行があれば
+    # ここは 2 以上になる)。
+    assert stub.select_calls == 1, "失敗した読みが再試行されている"
 
 
-def test_unload_drops_the_channel_entries_before_close(tmp_path: Path) -> None:
-    """アンロードでキャッシュのエントリが残らない。
+def test_unload_drops_the_channel_entries_before_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """アンロードでキャッシュのエントリが残らない、かつ **close の前**に残る (I2)。
 
     キーは ``id(handle)`` を含むだけでハンドルを**所有しない**ので、残したまま
     ハンドルが死ぬと、新しいファイルのハンドルが同じアドレスを再利用したときに
     古いファイルの 2-D を引き当てる (値が黙って入れ替わる)。
+
+    ``bytes_held > 0`` → ``bytes_held == 0`` だけでは**順序**を見ていない — この
+    テスト名が主張する「close の前」を drop_handle を close の**後**へ動かす変異でも
+    両方とも green のまま通ってしまう (レビュー指摘 I2)。``ChannelSampleCache.drop_handle``
+    をクラスごとスパイして、呼ばれた瞬間の ``handle.is_closed`` を記録することで
+    順序そのものを assert する (``__slots__`` によりインスタンス属性の差し替えは
+    できないためクラスパッチ)。
     """
     session = Session()
     key = session.load(write_mdf4_2d(tmp_path)).key
-    col = session.resolve_signal(f"{key}::Mat[1]")
-    assert col is not None
-    np.testing.assert_array_equal(col.values, [1, 11, 21, 31])
-    assert session.channel_cache.bytes_held > 0, "読んだのに載っていない (setup 失敗)"
+    try:
+        col = session.resolve_signal(f"{key}::Mat[1]")
+        assert col is not None
+        np.testing.assert_array_equal(col.values, [1, 11, 21, 31])
+        assert session.channel_cache.bytes_held > 0, (
+            "読んだのに載っていない (setup 失敗)"
+        )
 
-    session.remove_group(key)
-    assert session.channel_cache.bytes_held == 0
+        handle = _handle_of(session, key)
+        real_drop_handle = ChannelSampleCache.drop_handle
+        observed_is_closed: list[bool] = []
+
+        def _spy_drop_handle(
+            cache_self: ChannelSampleCache, handle_id: int
+        ) -> tuple[np.ndarray, ...]:
+            observed_is_closed.append(handle.is_closed)
+            return real_drop_handle(cache_self, handle_id)
+
+        monkeypatch.setattr(ChannelSampleCache, "drop_handle", _spy_drop_handle)
+
+        session.remove_group(key)
+
+        assert observed_is_closed == [False], (
+            "drop_handle が close 後に呼ばれている (spec §5.7 の順序が崩れている): "
+            f"{observed_is_closed}"
+        )
+        assert session.channel_cache.bytes_held == 0
+    finally:
+        if key in session.group_keys():
+            # setup/順序 assert のどれかで落ちても、実 mf4 が開いたまま残ると
+            # tmp_path の後片付けが Windows のファイルロックで失敗し、正直な
+            # assert 失敗が別のエラーに埋もれる (M5)。remove_group 自体が
+            # テスト対象操作でもあるので、正常系ではここは no-op になる。
+            session.remove_group(key)
 
 
 def test_selector_and_path_must_be_given_as_a_pair() -> None:
@@ -430,3 +568,49 @@ def test_selector_and_path_must_be_given_as_a_pair() -> None:
     handle = MdfHandle(_StubMdf(4))
     with pytest.raises(ValueError, match="selector"):
         LazyMdfValues(handle, "ch", 0, 1, length=4, selector=("ch[0]",))
+
+
+def test_path_without_selector_must_also_be_given_as_a_pair() -> None:
+    """片方だけの構築は逆方向 (``path`` のみ) も loud-fail させる (M7)。
+
+    ``selector`` だけの片側は落ちても列が容器分岐へフォールバックするだけで
+    値としては安全に見えるが、**逆方向 (``path`` だけ) はそれ自身がサイレント
+    誤データの方向そのもの** — 列読みが容器分岐 (2-D 丸ごと) へ落ちる。上の
+    テストは片方向 (S10 の変異方向) しか塞がないので、ガードが両方向を
+    等しく塞ぐことをここで対にして固定する。
+    """
+    handle = MdfHandle(_StubMdf(4))
+    with pytest.raises(ValueError, match="selector"):
+        LazyMdfValues(handle, "ch", 0, 1, length=4, path=ColumnPath(()))
+
+
+# ─── 予算注入口 (M3): Session が MdfLoader へ渡した「その」インスタンスであること ──
+
+
+def test_cache_budget_bytes_is_the_instance_the_read_path_actually_uses(
+    tmp_path: Path,
+) -> None:
+    """``Session(cache_budget_bytes=...)`` に呼び出し元が無いままだと、コンストラクタ
+    引数と setter のどちらでも「注入したインスタンス」を捕捉できてしまい、
+    ``MdfLoader`` が実際に使っているのが**どちらか**を区別する検出器が無かった
+    (M3・Tasks 5/6 が依存する契約)。
+
+    予算を極小 (1 byte) にすると、実読みで得た配列は必ず budget を超えるので
+    ``put`` が oversize skip になる。この副作用が「Session.__init__ が
+    MdfLoader(cache=self._channel_cache) へ渡したのと同じオブジェクトを
+    LazyMdfValues.array() が見ている」ことの直接証拠になる — 誤って別インスタンス
+    (import 時に握った空のデフォルト予算キャッシュ等) を見ていれば、極小予算は
+    一切効かず ``skipped_oversize`` は 0 のままになる。
+    """
+    session = Session(cache_budget_bytes=1)
+    key = session.load(write_mdf4_2d(tmp_path)).key
+    try:
+        col = session.resolve_signal(f"{key}::Mat[1]")
+        assert col is not None
+        np.testing.assert_array_equal(col.values, [1, 11, 21, 31])
+        assert session.channel_cache.skipped_oversize == 1, (
+            "極小予算が効いていない (別インスタンスを見ている疑い)"
+        )
+        assert session.channel_cache.bytes_held == 0
+    finally:
+        session.remove_group(key)
