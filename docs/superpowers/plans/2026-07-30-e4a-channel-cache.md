@@ -1858,7 +1858,9 @@ def test_selector_and_path_must_be_given_as_a_pair() -> None:
 
 Run: `uv run pytest tests/core/loaders/test_channel_cache_read_path.py -q`
 
-Expected: **10 failed / 1 passed**（合計 11 件。`-rf` の集計とこの内訳を突き合わせること）。
+Expected: **7 failed / 4 passed**（合計 11 件。`-rf` の集計とこの内訳を突き合わせること）。
+
+> **実測による訂正（T2 実装時）**: 当初この行は「10 failed / 1 passed」と書いていたが、実測は 7/4 だった。差の 3 本は**実装前から通る**（`test_leaf_view_of_these_shapes_is_already_contiguous` と同類で、キャッシュ以前に成立する numpy / 既存 API の性質を pin しているもの）。RED 期待値を実際の被覆より多く見積もるのは、このプロジェクトが繰り返し捕まえている「テストが自分の実装の破壊を検出できない」失敗クラスと同根なので、内訳が合わないまま進めないこと。
 - `ModuleNotFoundError: No module named 'valisync.core.loaders.channel_cache'`（T0 が未マージなら先に T0 を入れる。この場合は収集エラーになり内訳が出ないので、先に T0 を入れる）
 - `AttributeError: 'Session' object has no attribute 'channel_cache'`（キャッシュ系 8 本）
 - `TypeError: MdfHandle.__init__() got an unexpected keyword argument 'cache'`（`test_a_length_mismatch_is_not_burned_into_the_shared_cache` / `test_selector_and_path_must_be_given_as_a_pair`）
