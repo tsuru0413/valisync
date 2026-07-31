@@ -451,12 +451,22 @@ class Session:
             # 三軸ペーシングを迂回して GUI スレッドで解放される (会計上は「配列は
             # 1 本も無かった」ように見えるので、症状はフリーズだけで数字に出ない)。
             #
-            # 引くのは handle.cache ではなく **self._channel_cache**: Session が
-            # 作ったハンドルなら同一オブジェクトだが、handle.cache は型として
-            # None を取りうる (MdfLoader を引数なしで使う経路)。ここで Session 側を
-            # 使えば None 分岐が構造的に要らず、かつ「予算の裁定者は Session が
-            # 持つ 1 個」(spec §5.2) がコード上でも読める。
-            cached = self._channel_cache.drop_handle(id(group.handle))
+            # 引く先は**ハンドル自身が提げているキャッシュ**を第一とし、None の
+            # ときだけ Session の 1 個へ落とす。Session 経由のロードでは同一
+            # オブジェクトなので production の挙動は 1 ビットも変わらないが、
+            # self._channel_cache 固定にすると「別キャッシュを提げたハンドル」で
+            # drop が空振りし、cached_arrays が空 → close() が実エントリを GUI
+            # スレッドで同期解放する = **本タスクが防いだ退行そのもの**へ、
+            # どの数字にも症状を出さずに degrade する (M5)。
+            #
+            # ``or`` ではなく ``is not None`` で分岐するのは、キャッシュが将来
+            # ``__len__`` を持つと「空なら falsy」で無言に別帳簿へ逃げるため。
+            cache = (
+                group.handle.cache
+                if group.handle.cache is not None
+                else self._channel_cache
+            )
+            cached = cache.drop_handle(id(group.handle))
             group.handle.close()
         return RemovalResult(
             removed=True,

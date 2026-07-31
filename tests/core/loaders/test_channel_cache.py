@@ -370,3 +370,45 @@ def test_byte_accounting_survives_concurrent_puts() -> None:
         "引き渡しがハングした — 有界待ちが効いていない"
     )
     assert cache.bytes_held == 350, "lost update (A か B の加算が消えた)"
+
+
+class _LockProbeArray(np.ndarray):
+    """解放される瞬間に「キャッシュの lock が握られていたか」を記録する ndarray。
+
+    ``threading.Lock`` は非再帰なので、保持中のスレッドが ``acquire(blocking=False)``
+    しても False が返る — これが「今 lock 下か」の直接観測になる。参照はロック
+    オブジェクトと記録用リストだけに留める (キャッシュを参照すると循環になり、
+    解放が refcount でなく gc 任せ = 非決定になる)。
+    """
+
+    def __del__(self) -> None:
+        lock = getattr(self, "probe_lock", None)
+        if lock is None:  # numpy が作る view には属性が伝播しない
+            return
+        acquired = lock.acquire(blocking=False)
+        self.probe_observed.append(not acquired)
+        if acquired:
+            lock.release()
+
+
+def test_release_handle_frees_outside_the_lock() -> None:
+    """同期解放は ``_lock`` の**外**で走る (spec §5.8: ヒットは誰も待たない)。
+
+    ``with self._lock:`` の中で戻り値の最後の参照が死ぬ形だと、13.2 MB/本 の
+    dealloc がキャッシュ lock 保持下で走り、その間 GUI スレッドのキャッシュ
+    ヒットが ``get`` の入口でブロックする。ロック順 (``handle.lock -> _lock``) は
+    保たれたままなのでデッドロックにはならず、**症状は待ち時間だけ**で数字にも
+    出ない — だから会計でなく解放の瞬間そのものを観測する。
+    """
+    cache = ChannelSampleCache(budget_bytes=4096)
+    observed: list[bool] = []
+    arr = _arr(64).view(_LockProbeArray)
+    arr.probe_lock = cache._lock
+    arr.probe_observed = observed
+    cache.put((7, 0, 0), arr)
+    del arr  # キャッシュだけが持つ状態にする
+
+    cache.release_handle(7)
+
+    assert observed == [False], f"配列の解放が _lock 保持下で走った: {observed}"
+    assert cache.bytes_held == 0  # 会計そのものは従来どおり

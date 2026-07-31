@@ -261,6 +261,12 @@ def _retained_bytes(obj: _Freeable, seen: set[int]) -> int:
     RangeStatIndex を計上しないことは時間問題の解決ではない — 実測で RSI を持たせても
     バイト計上は変わらないままティックが 24→36ms に増える (だから第 3 軸の
     デッドラインが要る)。
+
+    **既知の過小計上 (M8・cross-task)**: ``isinstance(obj, np.ndarray)`` は
+    ``np.ma.MaskedArray`` にも一致し、その ``nbytes`` はマスク配列を含まないので
+    実体より小さく出る。向きは「ティックが長引く側」= 安全でない側だが、同じ性質は
+    Signal の値配列についても ``models.retained_bytes`` に既に存在する既存事象で、
+    E-4a の production 経路 (asammdf の select 結果) にマスク配列は現れない。
     """
     if isinstance(obj, np.ndarray):
         if id(obj) in seen:

@@ -53,8 +53,11 @@ class ChannelSampleCache:
     (このクラスは ndarray しか触らないので I/O を lock 下で呼ぶ経路が無い)。
 
     evict した配列は**その場で同期解放する** (unload の ``drop_handle`` と違い teardown へ
-    渡さない): 1 エントリ 13.2 MB で 1 ms 未満と見込まれる (spec §5.7 — **実測は T4
-    Step 5**。T5 の飽和計測はそこで確定した値を実 GUI 経路でも刷る)。
+    渡さない): 1 エントリ 13.2 MB の実測は**最大 1.28 ms / 中央値 0.65-0.79 ms**
+    (20 回 x 3 run・spec §5.7 / §9)。E-3 T9 が実測した「最大単発解放 5.8 ms」より
+    小さいので、ペーシングの構造的な床 (デッドライン + 最大単発解放) を押し上げない。
+    **計測はページを dirty 化して行う**こと — ``np.zeros`` の未タッチページは
+    lazily-zeroed で free が実体を伴わず、~17-25 倍の過小評価になる。
     """
 
     __slots__ = (
@@ -165,7 +168,11 @@ class ChannelSampleCache:
                 self._evict_oldest()
 
     def drop_handle(self, handle_id: int) -> tuple[np.ndarray, ...]:
-        """*handle_id* のファイルのエントリを外して**返す** (捨てない・spec §5.7)。
+        """**ペーシングあり** — *handle_id* のエントリを外して**返す** (spec §5.7)。
+
+        呼び出し側が正しく選ぶべき性質は「回収か解放か」ではなく**ペーシングを
+        通るかどうか**である (:meth:`release_handle` は同期解放)。名前だけでは
+        近義語に見えるので、この 1 行を契約の見出しとして置く。
 
         返すのは teardown へ渡すため: 2-D 配列は 1 本 13.2 MB あり、ここで参照を
         落とすと unload の同期解放へ戻る (FU-16 のフリーズ)。呼び出し側が
@@ -182,7 +189,11 @@ class ChannelSampleCache:
             return self._pop_handle_entries(handle_id)
 
     def release_handle(self, handle_id: int) -> None:
-        """*handle_id* のエントリを外して**その場で解放する** (回収しない)。
+        """**同期解放** — *handle_id* のエントリを外してその場で捨てる (回収しない)。
+
+        呼び出し側が正しく選ぶべき性質は**ペーシングを通るかどうか**である
+        (:meth:`drop_handle` はペーシングあり)。名前だけでは近義語に見えるので、
+        この 1 行を契約の見出しとして置く。
 
         :meth:`drop_handle` との違いは**所有権の行き先だけ**である。あちらは
         teardown へ渡すために配列を返すが、こちらは渡す相手が居ない
@@ -195,7 +206,12 @@ class ChannelSampleCache:
         なので空振りする。
         """
         with self._lock:
-            self._pop_handle_entries(handle_id)
+            dropped = self._pop_handle_entries(handle_id)
+        # 解放 (最後の参照が死ぬ瞬間) を lock の**外**へ出す。``with`` の中で
+        # ``dropped`` を捨てると 13.2 MB/本 の dealloc が ``_lock`` 保持下で走り、
+        # 「キャッシュヒットは誰も待たない」(spec §5.8) が GUI スレッド側から
+        # 破れる — ロック順 ``handle.lock -> _lock`` は保たれるので気付きにくい。
+        del dropped
 
     # ─── introspection (非侵襲・spec §8) ──────────────────────────────────────
     # LRU 順序を動かさず lock も取らない: int の読みは GIL 下で atomic であり、

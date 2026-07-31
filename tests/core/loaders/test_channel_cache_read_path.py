@@ -544,6 +544,12 @@ def test_unload_drops_the_channel_entries_before_close(
 
         session.remove_group(key)
 
+        # NOTE: ``== [False]`` は順序だけでなく**呼び出し回数**も pin している。
+        # これは付随的な性質であって契約ではない — 今そうなっているのは close() が
+        # ``release_handle`` 側で解放しており、このスパイに見えないからにすぎない。
+        # 将来 close() が drop_handle を呼ぶ形になれば ``[False, True]`` が**正しい**
+        # (backstop が効いている姿) ので、そのときの正しい修正は revert ではなく
+        # ``assert observed_is_closed[0] is False`` である。
         assert observed_is_closed == [False], (
             "drop_handle が close 後に呼ばれている (spec §5.7 の順序が崩れている): "
             f"{observed_is_closed}"

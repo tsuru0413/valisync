@@ -12,6 +12,7 @@ import pytest
 
 from tests.mdf4_helpers import write_mdf4_2d
 from valisync.core.interpolation import InterpolationMethod
+from valisync.core.loaders.channel_cache import ChannelSampleCache
 from valisync.core.loaders.mdf_handle import MdfHandle
 from valisync.core.loaders.mdf_loader import MdfLoader
 from valisync.core.models import Delimiter, FormatDefinition, Signal, SignalGroup
@@ -276,6 +277,19 @@ def _loaded_2d_with_a_cached_channel(tmp_path: Path) -> tuple[Session, str, MdfH
     return session, key, handle
 
 
+def _close_if_open(session: Session, key: str) -> None:
+    """テスト後始末: グループが残っていれば閉じる (実 mf4 のハンドルを手放す)。
+
+    前提 assert や順序 assert が close の**前**で落ちると、実 mf4 が開いたまま
+    残って ``tmp_path`` の後片付けが Windows のファイルロックで失敗し、正直な
+    assert 失敗が別のエラー (PermissionError) に埋もれる。remove_group 自体が
+    テスト対象操作でもあるので、正常系ではここは no-op になる
+    (``test_channel_cache_read_path.py`` が先に採った形と同型)。
+    """
+    if key in session.group_keys():
+        session.remove_group(key)
+
+
 def test_remove_group_recovers_the_cached_channel_arrays(tmp_path: Path) -> None:
     """デコード済みチャンネル配列は RemovalResult 経由で呼び出し側へ渡る (spec §5.7)。
 
@@ -284,15 +298,43 @@ def test_remove_group_recovers_the_cached_channel_arrays(tmp_path: Path) -> None
     相乗りできないのは型が違うから (Signal ではなく生 ndarray)。
     """
     session, key, handle = _loaded_2d_with_a_cached_channel(tmp_path)
+    try:
+        result = session.remove_group(key)
 
-    result = session.remove_group(key)
+        assert result.removed is True
+        assert len(result.cached_arrays) == 1
+        # 列 1 本 (長さ 4) ではなくチャンネル全体 (4 行 x 3 列) が渡る = キャッシュの実体。
+        assert result.cached_arrays[0].shape == (4, 3)
+        assert handle.cache is not None
+        assert handle.cache.bytes_held == 0  # 予算からは外れている (回収 = 移譲)
+    finally:
+        _close_if_open(session, key)
 
-    assert result.removed is True
-    assert len(result.cached_arrays) == 1
-    # 列 1 本 (長さ 4) ではなくチャンネル全体 (4 行 x 3 列) が渡る = キャッシュの実体。
-    assert result.cached_arrays[0].shape == (4, 3)
-    assert handle.cache is not None
-    assert handle.cache.bytes_held == 0  # 予算からは外れている (回収 = 所有権の移譲)
+
+def test_recovery_reads_the_cache_the_handle_actually_carries(tmp_path: Path) -> None:
+    """回収先は**ハンドルが提げているキャッシュ**。Session 側で固定しない (M5)。
+
+    Session 経由のロードでは両者は同一オブジェクトなので production の値は 1 ビットも
+    変わらない。それでも固定してはならないのは、ずれた瞬間の degrade が**無症状**
+    だから: drop が空振り → ``cached_arrays`` が空 → 実エントリは ``close()`` の中で
+    GUI スレッドが同期解放する = 本タスクが防いだ退行そのものが、どの数字にも
+    出ないまま戻る。
+    """
+    session, key, handle = _loaded_2d_with_a_cached_channel(tmp_path)
+    try:
+        other = ChannelSampleCache()
+        arr = np.zeros((4, 3), dtype=np.uint8)
+        assert other.put((id(handle), 999, 0), arr) is True
+        handle.cache = other  # ハンドルだけが別帳簿を提げた状態
+
+        result = session.remove_group(key)
+
+        assert any(a is arr for a in result.cached_arrays), (
+            "ハンドルが提げているキャッシュから回収していない (空振りしている)"
+        )
+        assert other.bytes_held == 0
+    finally:
+        _close_if_open(session, key)
 
 
 def test_cached_arrays_are_recovered_before_the_handle_is_closed(
@@ -306,21 +348,26 @@ def test_cached_arrays_are_recovered_before_the_handle_is_closed(
     テストへ劣化する。
     """
     session, key, _handle = _loaded_2d_with_a_cached_channel(tmp_path)
-    held_at_close: list[int] = []
-    real_close = MdfHandle.close
+    try:
+        held_at_close: list[int] = []
+        real_close = MdfHandle.close
 
-    def _spy(self: MdfHandle) -> None:
-        assert self.cache is not None  # Session 経由のハンドルなので必ず配線済み
-        held_at_close.append(self.cache.bytes_held)
-        real_close(self)
+        def _spy(self: MdfHandle) -> None:
+            assert self.cache is not None  # Session 経由のハンドルなので必ず配線済み
+            held_at_close.append(self.cache.bytes_held)
+            real_close(self)
 
-    # MdfHandle は __slots__ なのでインスタンス属性の差し替えはできない (クラス側で patch)。
-    monkeypatch.setattr(MdfHandle, "close", _spy)
+        # MdfHandle は __slots__ なのでインスタンス属性を差し替えられない (クラス patch)。
+        monkeypatch.setattr(MdfHandle, "close", _spy)
 
-    result = session.remove_group(key)
+        result = session.remove_group(key)
 
-    assert held_at_close == [0], "close 時点でまだ予算に載っている = 回収が close の後"
-    assert len(result.cached_arrays) == 1  # 消えたのではなく移譲された
+        assert held_at_close == [0], (
+            "close 時点でまだ予算に載っている = 回収が close の後"
+        )
+        assert len(result.cached_arrays) == 1  # 消えたのではなく移譲された
+    finally:
+        _close_if_open(session, key)
 
 
 def test_close_releases_the_handles_cached_arrays_from_the_budget(
@@ -332,13 +379,16 @@ def test_close_releases_the_handles_cached_arrays_from_the_budget(
     予算が恒久的に目減りし、かつ id が再利用されたとき新しいハンドルが別ファイルの
     配列を引く (memory gui_id_reuse_flake_object_recreation の形)。
     """
-    session, _key, handle = _loaded_2d_with_a_cached_channel(tmp_path)
-    assert handle.cache is not None and handle.cache.bytes_held > 0
+    session, key, handle = _loaded_2d_with_a_cached_channel(tmp_path)
+    try:
+        assert handle.cache is not None and handle.cache.bytes_held > 0
 
-    handle.close()
+        handle.close()
 
-    assert handle.cache.bytes_held == 0
-    assert session.signals()  # グループは残ったまま = close 単独の効果を見ている
+        assert handle.cache.bytes_held == 0
+        assert session.signals()  # グループは残ったまま = close 単独の効果を見ている
+    finally:
+        _close_if_open(session, key)
 
 
 def test_close_without_a_cache_is_still_a_plain_close(tmp_path: Path) -> None:
@@ -351,11 +401,18 @@ def test_close_without_a_cache_is_still_a_plain_close(tmp_path: Path) -> None:
     区別できなくなるので、ここで正面から固定する。
     """
     handle = MdfLoader().load(write_mdf4_2d(tmp_path)).signal_group.handle
-    assert handle is not None and handle.cache is None
+    try:
+        assert handle is not None and handle.cache is None
 
-    handle.close()  # 例外を出さないこと自体が assert
+        handle.close()  # 例外を出さないこと自体が assert
 
-    assert handle.is_closed is True
+        assert handle.is_closed is True
+    finally:
+        # 前提 assert で落ちたときに実 mf4 が開いたまま残ると、tmp_path の後片付けが
+        # Windows のファイルロックで失敗し正直な assert 失敗が埋もれる (M4)。
+        # close は冪等なので正常系ではここは no-op。
+        if handle is not None:
+            handle.close()
 
 
 # ─── Pure-computation pass-throughs ───────────────────────────────────────────

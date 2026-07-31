@@ -322,22 +322,57 @@ def test_a_cached_array_shared_with_a_signal_is_counted_once(qtbot) -> None:  # 
 
     svc.enqueue("k", _group_of((sig,)), cached_arrays=(arr,))
 
+    # キャッシュ配列が本当にキューへ届いたことの前提固定。これが無いと、配列が
+    # 1 本も載らない変異 (S4) でも期待値が偶然一致して緑のまま通る — この fixture は
+    # arr が信号の値配列そのものなので、dedup が効いた状態と「配列が最初から
+    # キューに無い」状態が**同じバイト数**になる (構造的に別の 2 状態が同じオラクルを
+    # 満たす)。
+    assert svc.pending_signals() == 2, "キャッシュ配列がキューに載っていない"
     assert svc.pending_bytes() == ts.nbytes + arr.nbytes  # 2*arr.nbytes は不合格
 
 
-def test_derived_view_arrays_are_counted_by_the_byte_axis(qtbot) -> None:  # type: ignore[no-untyped-def]
-    """sorted_view/finite_view が抱える**別の**配列も会計に載る。
+def test_cached_array_bytes_bound_the_tick(qtbot) -> None:  # type: ignore[no-untyped-def]
+    """ndarray のバイトが**ペーシングの判断点**でも数えられる (b1 では届かない)。
 
-    値 dtype を uint8 にするのが要点。float64 値 + 単調 master という既存 fixture
-    (`_eager_group`) の形では ``sorted_view()`` が ``astype(copy=False)`` で
-    **同一オブジェクト**を返し ``finite_view()`` も zero-copy なので、派生ビューの
-    寄与が構造的に 0 バイトになる — その形で書いた assert は「派生ビューを 1 本も
-    数えない実装」でも緑のまま通る (実測: 共有ヘルパから派生ビュー計上を削っても
-    test_teardown_pacing.py は 11/11 緑・全スイートも緑だった)。
-    非 float64 のチャンネル値は prod の広幅 uint8 そのもので、そこでは派生ビューが
-    値配列の 8 倍を追加で抱える = 会計が落とすと最も痛い regime である。
+    ``pending_bytes()`` はアクセサであって、1 ティックを止めるのは ``_drain`` の
+    ローカル ``freed_bytes`` である。会計を共有ヘルパへ委譲していても、
+    **呼び出しサイトだけ**を潰す変異 —
+    ``freed_bytes += 0 if isinstance(item, np.ndarray) else _retained_bytes(...)``
+    — は共有関数に一度も到達しないので b1 (pending_bytes 観測) は緑のまま通る。
+    実測でもフルスイート 2083 passed / 0 failed だった。ここはティックの実効
+    (last_tick_bytes と「1 ティックで流し切らない」こと) を直接見る。
     """
-    vs = np.zeros(4096, dtype=np.uint8)
+    svc = TeardownService(
+        byte_budget=4 * 1024 * 1024, signal_budget=10_000, now=lambda: 0.0
+    )
+    arrs = tuple(np.zeros(1024 * 1024, dtype=np.uint8) for _ in range(10))
+
+    svc.enqueue("k", _group_of(()), cached_arrays=arrs)
+    svc._drain()
+
+    assert svc.last_tick_bytes >= 4 * 1024 * 1024, svc.last_tick_bytes
+    assert svc.pending_signals() > 0, "1 ティックで 10 MB 全部を流した"
+
+
+def test_derived_view_arrays_are_counted_by_the_byte_axis(qtbot) -> None:  # type: ignore[no-untyped-def]
+    """sorted_view **と** finite_view が抱える別配列が、それぞれ会計に載る。
+
+    fixture の条件は 2 つあり、どちらも「片方の計上を削る変異」を落とすために要る:
+
+    1. **値 dtype が非 float64** — float64 値 + 単調 master という既存 fixture
+       (`_eager_group`) の形では ``sorted_view()`` が ``astype(copy=False)`` で
+       **同一オブジェクト**を返すので、sorted 側の寄与が構造的に 0 バイトになる。
+       prod の広幅チャンネルはまさに非 float64 (uint8) で、そこでは派生ビューが
+       値配列の数倍を追加で抱える = 会計が落とすと最も痛い regime。
+    2. **値に非有限が 1 つある** — 全有限だと ``finite_view()`` は zero-copy で
+       sorted と**同じ 2 本**を返し、id dedup により finite 側の計上が観測不能に
+       なる。実測: uint8 全有限の初版では、共有ヘルパから ``_finite_view_cache``
+       だけを削っても 240 passed / 0 failed で緑のまま通った。
+       (uint8 は非有限を表現できないので dtype は float32 — 非 float64 の条件 1 は
+       保ったまま NaN を置ける最小の型。)
+    """
+    vs = np.zeros(4096, dtype=np.float32)
+    vs[7] = np.nan
     vs.flags.writeable = False
     ts = np.arange(4096, dtype=np.float64)
     ts.flags.writeable = False
@@ -349,11 +384,20 @@ def test_derived_view_arrays_are_counted_by_the_byte_axis(qtbot) -> None:  # typ
         bus_type="",
         source_file="/x.mf4",
     )
-    view_ts, view_vs = sig.finite_view()  # sorted_view 経由で float64 の別配列が生える
-    assert view_ts is ts and view_vs is not vs, "fixture 前提: 派生ビューが別配列でない"
+    sorted_ts, sorted_vs = sig.sorted_view()  # float64 へ upcast した別配列
+    finite_ts, finite_vs = sig.finite_view()  # NaN を落とすので更に別配列
+    assert sorted_ts is ts and sorted_vs is not vs, (
+        "fixture 前提: sorted_view が値と同一配列 (条件 1 が崩れている)"
+    )
+    assert finite_ts is not sorted_ts and finite_vs is not sorted_vs, (
+        "fixture 前提: finite_view が zero-copy (条件 2 が崩れている)"
+    )
     svc = TeardownService()
 
     svc.enqueue("k", _group_of((sig,)))
 
-    # ts (32 KB) + 値 uint8 (4 KB) + float64 へ upcast した派生ビュー (32 KB)。
-    assert svc.pending_bytes() == ts.nbytes + vs.nbytes + view_vs.nbytes
+    # ts (32 KB) + 値 float32 (16 KB) + sorted の float64 値 (32 KB)
+    # + finite の ts/値 (各 4095 サンプルの float64)。
+    assert svc.pending_bytes() == (
+        ts.nbytes + vs.nbytes + sorted_vs.nbytes + finite_ts.nbytes + finite_vs.nbytes
+    )
