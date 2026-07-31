@@ -766,6 +766,38 @@ def write_mdf4_structured(tmp_path: Path) -> Path:
     return path
 
 
+def write_mdf4_two_wide_channels(
+    tmp_path: Path, rows: int = 1000, cols: int = 64
+) -> Path:
+    """幅 cols の 2D uint8 チャンネル 2 本 (WideA / WideB) — E-4a ①ゲート用.
+
+    デコード済み 2-D 配列 1 本 = ``rows * cols`` バイト (uint8) と **実体サイズが既知**
+    になるのが要点。E-4a の ①ゲートは LRU 予算を注入して evict を起こす (実データでは
+    256 MB に広幅が ~19 本入り発火しない・spec D6) ので、予算を「1 本は載り 2 本は
+    載らない」値に決めるにはエントリの実体サイズが要る。2 本あるのは「別チャンネルを
+    読むと古い方が落ちる」を観測するため。
+
+    値は ``WideA[j][r] = (r + 7j) % 251`` / ``WideB[j][r] = (r + 7j + 128) % 251``。
+    どの **チャンネルのどの列** を読んだかが値だけで判別でき、位置パスが隣の列や別
+    チャンネルを返す誤りを値で捕まえられる (長さも dtype も一致するので、LazyMdfValues
+    の長さ検証は素通りする = 値でしか捕まらない)。251 は素数で 7 とも rows/cols とも
+    互いに素なので、列間・チャンネル間の値列が偶然一致しない。
+    """
+    ts = np.arange(rows, dtype=np.float64) * 0.01
+    r = np.arange(rows, dtype=np.int64)[:, None]
+    j = np.arange(cols, dtype=np.int64)[None, :]
+    mdf = MDF()
+    try:
+        for name, base in (("WideA", 0), ("WideB", 128)):
+            samples = ((r + 7 * j + base) % 251).astype(np.uint8)
+            mdf.append([ASignal(samples=samples, timestamps=ts, name=name, unit="m")])
+        path = tmp_path / "twowide.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return Path(path)
+
+
 def write_mdf3(tmp_path: Path, version: str = "3.30") -> Path:
     """asammdf で MDF 3.x 実ファイルを書き出す (LD-02 の版横断読み取り検証用)."""
     t = np.arange(0.0, 5.0, 0.1, dtype=np.float64)
