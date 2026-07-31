@@ -34,6 +34,7 @@ from tests.mdf4_helpers import (
     write_mdf4_structured,
 )
 from valisync.core.loaders.column_names import (
+    ColumnPath,
     apply_path,
     leaf_names,
     leaf_paths,
@@ -235,3 +236,22 @@ def test_nested_array_paths_are_field_names_and_indices(tmp_path: Path) -> None:
         apply_path(samples, by_suffix[f".{_ARRAY_CHANNEL}.dx[2]"]),
         [300.0, 301.0, 302.0, 303.0],
     )
+
+
+def test_apply_path_does_not_freeze_an_array_the_caller_owns() -> None:
+    """空経路の分岐で呼び出し側の配列の可変性を横から奪わない (T1 レビュー I1).
+
+    ``apply_path`` は自分が作った配列だけを凍結する。この ``out is not samples``
+    ガードは T1 の sabotage 一式が 1 つも突いておらず、削除しても全スイートが緑
+    だった — 契約の中で唯一検出器を持たない場所だったのでここで塞ぐ。
+
+    今日の production では E-4a T2 が ``cache.put`` の前に凍結するので、この分岐に
+    来る配列は既に read-only であり、ガードを消しても実害は出ない。**それがまさに
+    このテストが要る理由**で、キャッシュ側が凍結をやめた瞬間 (S11 の方向) にガードは
+    再び唯一の防波堤に戻る。その時に初めて壊れていたと気付くのでは遅い。
+    """
+    arr = np.zeros(3, dtype=np.float64)  # スカラーチャンネル = 空経路
+    out = apply_path(arr, ColumnPath(()))
+
+    assert out is arr  # 余計なコピーもしない
+    assert arr.flags.writeable
