@@ -43,6 +43,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import psutil
 
@@ -356,6 +357,9 @@ class DrainResult:
     total_drain_s: float
     # (index, ms, signals, bytes, gc passes)
     top_ticks: tuple[tuple[int, float, int, int, int], ...]
+    # T4: remove_group が close の前にキャッシュを回収して teardown へ渡す (spec §5.7)。
+    cache_mb_before: float = 0.0
+    cache_mb_after: float = 0.0
 
 
 def instrument_teardown_ticks() -> list[tuple[float, int, int, int]]:
@@ -502,11 +506,30 @@ def materialize_leaves(win: object, key: str, target: int) -> int:
         # 測定の意味を決めるのはここ: dtype/shape/内容が一致していても、bulk 側の
         # リーフが 1 つの base 配列をエイリアスしていたら「解放」が桁違いに安くなり、
         # ティック時間を無言で低く見せる (上の 4 つはその失敗モードに盲目)。
-        # production は _flatten の ascontiguousarray + _freeze でリーフごとに
-        # 独立バッファを持つので、bulk 側にも同じ所有権を要求する。
-        assert prod_arr.flags.owndata and bulk_arr.flags.owndata, (
-            "リーフが base をエイリアスしている — 解放コストが production と違う"
-        )
+        if src._selector is not None:
+            # 列 (LD-14 リーフ): production は apply_path が独立配列を返す契約
+            # (spec §5.4) なので、bulk 側にも同じ所有権を要求する。1 本の 2-D を
+            # 1,000 リーフで共有されるとティック時間が桁違いに安く出る分岐。
+            assert prod_arr.flags.owndata and bulk_arr.flags.owndata, (
+                "リーフが base をエイリアスしている — 解放コストが production と違う"
+            )
+        else:
+            # 容器 (スカラーチャンネル) に owndata を要求してはならない — E-4a T2 が
+            # ``_freeze`` を ``put`` の前へ出した結果、production は read-only 化した
+            # asammdf の samples を**そのまま**値にする (sample_source._column_of の
+            # docstring)。実測 (prod_demo VehSpd): prod は owndata=False /
+            # base=同サイズ (96,000 B) の ndarray でチェーンは 2 段、bulk は
+            # ``_freeze`` が書き込み可能な入力をコピーするので owndata=True。
+            # 解放コストで意味を持つのは所有権でなく**解放される実体の大きさ**なので、
+            # 「自分より大きい base を生かし続けない」だけを両者に要求する
+            # (裸の owndata assert は「production と違う物を保持しろ」になる)。
+            for tag, arr in (("prod", prod_arr), ("bulk", bulk_arr)):
+                base = arr.base
+                assert base is None or base.nbytes == arr.nbytes, (
+                    f"{tag} 側が自分より大きい base を抱えている — 解放コストが違う",
+                    arr.nbytes,
+                    None if base is None else base.nbytes,
+                )
         print(
             f"  EQUIVALENCE ok [{branch}]: bulk route reproduces the lazy array "
             f"({prod_arr.dtype}, {prod_arr.shape}, {prod_arr.nbytes / 1024:,.0f} KiB)"
@@ -514,12 +537,23 @@ def materialize_leaves(win: object, key: str, target: int) -> int:
         del table, bulk_arr, prod_arr
 
     done = 0
+    # E-4a: T3 の鋳造列 LRU (既定容量 512 列) は非 pin の列を古い順に落とす。
+    # ここは 8,000 本を鋳造するが 1 本もプロットしないので、pin を張らないと
+    # _resolved_by_key に残るのは ~512 本だけになり、(b) のドレインが測る対象が
+    # 消える (下の母数 assert が必ず失敗する) だけでなく、RemovalResult.removed_columns
+    # が 8,000 -> ~512 になって E-3 が測った「展開済み regime」そのものを踏まなくなる。
+    # pin は拒否されない (spec §5.5) ので、**鋳造の前**に張れば容量超でも全列が残る。
+    # GUI がプロット中の列を push するのと同じ API を、測定側が「今から触る列」へ
+    # 使うだけ (集合は置き換えなので、チャンネルごとに累積して押し直す)。
+    pins: set[str] = set()
     t0 = time.perf_counter()
     for sig in physical:
         if done >= target:
             break
         psrc = sig._values_source
         col_keys = _column_keys_of(session, key, _orig(sig.name))
+        pins.update(col_keys)
+        session.set_pinned_columns(pins)
         table = _bulk_columns(
             psrc._name, _select_samples(handle, psrc._name, psrc._gi, psrc._ci)
         )
@@ -540,6 +574,14 @@ def materialize_leaves(win: object, key: str, target: int) -> int:
         f"  materialized {materialized:,} / {session.total_column_count(key):,} columns "
         f"(minted {len(session._groups.resolved_keys(key)):,}) "
         f"(+range_stat_index) in {wall:,.1f}s"
+    )
+    # (b) のドレインは「展開済み信号が実在すること」を前提にした計測なので、母数が
+    # 目標に届かなかった実行を「MAX tick OK」と読ませない。E-4a では _resolved_by_key の
+    # evict (D4) で鋳造列が測定中に消えうるため、この 1 本が唯一の観測点になる
+    # (3-3a の pin が効いていないと、ここが最初に鳴る)。
+    assert materialized >= target, (
+        f"展開済み列が {materialized:,} 本しかない (目標 {target:,}) — "
+        "(b) のドレインが測る対象が存在しない (鋳造列が evict された可能性)"
     )
     # 参照は関数の return で全て落ちるが、下の集計と gc を正しい状態で行うため
     # 明示的に落とす (ドレインは唯一の参照者でなければならない)。
@@ -562,6 +604,8 @@ def drain_after_unload(app: object, win: object, key: str, label: str) -> DrainR
     n_physical = len(session.group_signals(key))
     n_minted = len(mgr.resolved_keys(key))
     materialized = len(_materialized_names(session, key))
+    cache = _channel_cache(session)
+    cache_before = cache.bytes_held
     gc.collect()
 
     ticks: list[tuple[float, int, int, int]] = win._tick_log  # type: ignore[attr-defined]
@@ -577,6 +621,7 @@ def drain_after_unload(app: object, win: object, key: str, label: str) -> DrainR
     ):
         app.processEvents()  # type: ignore[attr-defined]
     total = time.perf_counter() - t0
+    cache_after = cache.bytes_held
     app.processEvents()  # type: ignore[attr-defined]
 
     durations = [t[0] for t in ticks]
@@ -592,6 +637,8 @@ def drain_after_unload(app: object, win: object, key: str, label: str) -> DrainR
         mean_tick_ms=(sum(durations) / len(durations)) * 1000.0 if durations else 0.0,
         total_drain_s=total,
         top_ticks=tuple((i, s * 1000.0, n, b, g) for i, (s, n, b, g) in top),
+        cache_mb_before=cache_before / MB,
+        cache_mb_after=cache_after / MB,
     )
 
 
@@ -620,6 +667,10 @@ def report_drain(results: list[DrainResult]) -> None:
             f"materialized at unload={r.materialized:,}"
         )
         print(f"  sync close (UI thread)  = {r.sync_close_ms:,.1f} ms")
+        print(
+            f"  cache bytes at unload   = {r.cache_mb_before:,.1f} -> "
+            f"{r.cache_mb_after:,.1f} MB  (T4: close の前に回収して teardown へ渡す)"
+        )
         print(f"  ticks                   = {r.ticks:,}")
         print(f"  MAX tick                = {r.max_tick_ms:,.1f} ms   [{verdict}]")
         print(f"  mean tick               = {r.mean_tick_ms:,.2f} ms")
@@ -665,70 +716,401 @@ def report_drain(results: list[DrainResult]) -> None:
     )
 
 
+# ─── E-4a: チャンネル単位キャッシュの観測 ─────────────────────────────────────
 LATENCY_COLUMNS = 5
+LATENCY_TARGET_MS = 380.0  # spec §9 (5 列合計)
+# U3: キャッシュ合計の追加メモリ予算 (spec §5.1)。飽和後の USS 天井の判定に使う。
+CACHE_BUDGET_MB = 256
+# evict の同期解放時間を測るための合成エントリの handle id。実オブジェクトの id() は
+# 0 にならないので、実ファイルのエントリと絶対に衝突しない。
+_SYNTH_HANDLE_ID = 0
+# M5: E-3 の獲得 (core 297 MB / USS +15 MB / load 1.43 s) の非回帰帯。
+CORE_RESIDENT_LIMIT_MB = 310.0
+CORE_USS_DELTA_LIMIT_MB = 20.0
+CORE_LOAD_LIMIT_S = 1.6
 
 
-def column_read_latency(win: object, key: str) -> None:
-    """同一チャンネルの 5 列を production 経路で読み、対話コストを実測する。
+class _ReadCounters:
+    """1 回の測定窓で production が何回 select / ``_flatten`` したかを**直接**数える。
 
-    E-4 (チャンネル単位デコード済みキャッシュ + 位置ベース selector) の要否を
-    判断するための数値。E-3 は「オブジェクト数」を削るが **読み方は変えない**:
-    ``LazyMdfValues.array()`` は列ごとに全チャンネル select + 全リーフ flatten を
-    やり直す (sample_source.py)。したがって想定は「メモリは勝ち・対話レイテンシは
-    据え置き (鋳造ぶん微増)」であり、その据え置きの実測値そのものを残す。
+    ``cache.misses`` は「キャッシュが数えた miss」であって「select を呼んだ回数」では
+    ない — 先に select してから cache を見る実装でも miss は 1 になりうるので、観測点
+    1 本では中途半端実装 (M4) を区別できない。``_flatten`` を module 属性の差し替えで
+    捕まえられるのは、呼び出し元が**呼び出しのたびに module から取り直す**形
+    (関数内 ``from ... import _flatten``) しか無いため。**E-4a の読み経路は位置パス
+    (``apply_path``) へ置き換わっており、期待値は 0** — 0 であること自体が「列 1 本の
+    ために全リーフを flatten する」のをやめた観測点になる。
+    """
 
-    未鋳造の列だけを測る — 既に触れた列はキャッシュヒットで 0 ms になり測定が
-    無意味になる。
+    def __init__(self, handle: Any) -> None:
+        self._mdf = handle.mdf
+        self._real_select: Any = None
+        self._real_flatten: Any = None
+        self._had_own_select = False
+        self.select_calls = 0
+        self.flatten_calls = 0
+
+    def __enter__(self) -> _ReadCounters:
+        from valisync.core.loaders import mdf_loader
+
+        self._real_select = self._mdf.select
+        self._had_own_select = "select" in vars(self._mdf)
+        self._real_flatten = mdf_loader._flatten
+
+        def counting_select(*args: Any, **kwargs: Any) -> Any:
+            self.select_calls += 1
+            return self._real_select(*args, **kwargs)
+
+        def counting_flatten(*args: Any, **kwargs: Any) -> Any:
+            self.flatten_calls += 1
+            return self._real_flatten(*args, **kwargs)
+
+        self._mdf.select = counting_select
+        mdf_loader._flatten = counting_flatten
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        from valisync.core.loaders import mdf_loader
+
+        mdf_loader._flatten = self._real_flatten
+        if self._had_own_select:
+            self._mdf.select = self._real_select
+        else:
+            del self._mdf.select  # クラス側の実装へ戻す
+
+
+def _channel_cache(session: Any) -> Any:
+    """Session が全ファイルで共有する 1 個の ChannelSampleCache (spec §5.3)。"""
+    from valisync.core.loaders.channel_cache import ChannelSampleCache
+
+    cache = session.channel_cache
+    assert isinstance(cache, ChannelSampleCache), type(cache)
+    return cache
+
+
+def _handle_of(session: Any, key: str) -> Any:
+    """グループの MdfHandle (キャッシュキー ``(id(handle), gi, ci)`` の第 1 成分)。"""
+    return session.group_signals(key)[0]._values_source._handle
+
+
+def _widest_channel(session: Any, key: str) -> tuple[str, int]:
+    """列数が最大の物理チャンネルとその列数 (**名前を 1 本も生成しない**)。
+
+    探索は ColumnRecord の spec を数えるだけ (leaf_count は名前を 1 本も生成しない)。
+    ここで column_names_of を全チャンネルに回すと prod では 330k 本の文字列を作って
+    捨てることになり、計測器自身が測ろうとしているコストを踏む。
     """
     from valisync.core.loaders.column_names import leaf_count
 
-    session = win.app_vm.session  # type: ignore[attr-defined]
-    mgr = session._groups
-    # 最も列数の多い物理チャンネル (1024 ガード退役で初めて開ける広幅チャンネル)。
-    # 探索は ColumnRecord の spec を **数えるだけ** (leaf_count は名前を 1 本も
-    # 生成しない)。ここで column_names_of を全チャンネルに回すと prod では 330k 本の
-    # 文字列を作って捨てることになり、計測器自身が測ろうとしているコストを踏む。
-    # 鋳造は 1 本もしない。
-    records = mgr.column_records(key)
+    records = session._groups.column_records(key)
     widest_n, widest_display = 0, ""
     for display, record in records.items():
         n = leaf_count(record.spec)
         if n > widest_n:
             widest_n, widest_display = n, display
     assert widest_display, "ロード済みグループに列レコードが無い"
-    widest_keys = _column_keys_of(session, key, widest_display)
+    return widest_display, widest_n
+
+
+@dataclass
+class LatencyResult:
+    label: str
+    channel: str
+    columns_in_channel: int
+    per_column_ms: tuple[float, ...]
+    hits: int
+    misses: int
+    select_calls: int
+    flatten_calls: int
+    minted: int
+    entries_left: int
+    base_is_none: bool
+
+
+def column_read_latency(
+    session: Any, key: str, *, cold_every_column: bool
+) -> LatencyResult:
+    """同一広幅チャンネルの隣接 5 列を production 経路で読み、対話コストを実測する。
+
+    **キャッシュの冷熱を測定側で決める** (レビュー M5): E-4a 以降「未鋳造」は
+    「キャッシュが冷たい」を意味しない — 未鋳造の列でも同じ物理チャンネルが
+    ``ChannelSampleCache`` に載っていれば読みはスライスだけで終わる。冷熱を制御
+    しないと 1,584 ms → 380 ms がキャッシュの効果なのか呼び出し順序の偶然なのかを
+    区別できない (先行する段が同じチャンネルを温めていれば 0 ms すら出せる)。
+
+    ``cold_every_column=False``: 測定開始時だけ冷たい = ユーザーが広幅チャンネルの
+    隣接 5 列をまとめて載せる journey。期待は select 1 回 / hit 4。
+    ``cold_every_column=True``: 列ごとに冷たい = E-4a **以前**が構造的に踏んでいた
+    経路。同一実行内の対照であり、これが無いと 380 ms に比較対象が無い (別マシンで
+    測った 1,584 ms との A/B は環境差を吸えない)。
+    """
+    mgr = session._groups
+    cache = _channel_cache(session)
+    handle = _handle_of(session, key)
+    hid = id(handle)
+
+    display, width = _widest_channel(session, key)
+    col_keys = _column_keys_of(session, key, display)
     # 安い数え方 (leaf_count) と、列キーを実際に作る唯一の真実 (column_names_of →
-    # leaf_names) が食い違ったら「勝者チャンネル」の主張が黙って嘘になる。勝者 1 本
-    # だけは突き合わせる (名前生成はここでしか起きない)。
-    assert len(widest_keys) == widest_n, (len(widest_keys), widest_n, widest_display)
+    # leaf_names) が食い違ったら「勝者チャンネル」の主張が黙って嘘になる。
+    assert len(col_keys) == width, (len(col_keys), width, display)
     already = mgr.resolved_keys(key)
-    fresh = [k for k in widest_keys if k not in already][:LATENCY_COLUMNS]
-    # E-4 の要否はこの数値 1 本で決まる。呼び出し位置が動いて先頭列が既に鋳造済みに
-    # なるとループが 0 回になり「TOTAL 0 columns = 0 ms」を刷って**黙って合格**する。
-    # 上の 2 つの前提 assert と同じ基準で loud-fail させる。
-    assert len(fresh) == LATENCY_COLUMNS, (len(fresh), widest_display, len(already))
+    fresh = [k for k in col_keys if k not in already][:LATENCY_COLUMNS]
+    # 呼び出し位置が動いて先頭列が既に鋳造済みになるとループが 0 回になり
+    # 「TOTAL 0 columns = 0 ms」を刷って**黙って合格**する (E-3 T9 の指摘)。
+    assert len(fresh) == LATENCY_COLUMNS, (
+        f"未鋳造かつ隣接の列が {len(fresh)} 本しかない (channel={display} / "
+        f"鋳造済み {len(already)}) — 測定対象ゼロ件での黙った合格を防ぐ前提"
+    )
 
+    # 冷たい状態を作る唯一の行。drop_handle は落としたエントリを **返す** ので、
+    # 戻り値を捨てた時点でキャッシュ側の参照は消える。
+    cache.drop_handle(hid)
+    # カウンタは drop の**後**に読む: 冷熱の確認に cache.get を使うと hits/misses が
+    # 動いて測定対象そのものを汚すので、観測点は drop_handle の戻り本数側に置く。
+    hits_before, misses_before = cache.hits, cache.misses
     mint_before = mgr.mint_count
-    per_column: list[float] = []
-    for col_key in fresh:
-        t0 = time.perf_counter()
-        col = session.resolve_signal(col_key)  # 鋳造 (production 経路)
-        assert col is not None, f"列キーが解決できない: {col_key}"
-        arr = col.values  # 実読み: select -> _flatten -> _freeze
-        per_column.append((time.perf_counter() - t0) * 1000.0)
-        assert len(arr) > 0
 
-    print("\n=== COLUMN READ latency (E-4 の要否判断のための実測) ===")
-    print(f"  channel={widest_display}  columns in channel={widest_n:,}")
-    print(f"  minted here = {mgr.mint_count - mint_before} columns")
-    for i, ms in enumerate(per_column):
-        print(f"    column #{i}  {ms:,.0f} ms")
-    print(f"  TOTAL {len(per_column)} columns = {sum(per_column):,.0f} ms")
+    per_column: list[float] = []
+    base_is_none = True
+    with _ReadCounters(handle) as counters:
+        for col_key in fresh:
+            if cold_every_column:
+                cache.drop_handle(hid)  # 解放は計測窓の外 (測るのは読みのコスト)
+            t0 = time.perf_counter()
+            col = session.resolve_signal(col_key)  # 鋳造 (production 経路)
+            assert col is not None, f"列キーが解決できない: {col_key}"
+            arr = col.values  # 実読み: miss なら select・hit ならスライス + コピー
+            per_column.append((time.perf_counter() - t0) * 1000.0)
+            assert len(arr) > 0
+            # C1 所有権不変条件 (spec §5.4): 命中パスが view を焼き付けると evict しても
+            # RSS が下がらず _retained_bytes も実体の 1/1000 になる。値一致は view でも
+            # 通るので、ここが計測器側の唯一の観測点になる。
+            base_is_none = base_is_none and arr.base is None
+
+    dropped = cache.drop_handle(hid)
+    label = "列ごとに冷 (E-4a 以前の経路・対照)"
+    if not cold_every_column:
+        label = "測定開始時のみ冷 (E-4a の journey)"
+    return LatencyResult(
+        label=label,
+        channel=display,
+        columns_in_channel=width,
+        per_column_ms=tuple(per_column),
+        hits=cache.hits - hits_before,
+        misses=cache.misses - misses_before,
+        select_calls=counters.select_calls,
+        flatten_calls=counters.flatten_calls,
+        minted=mgr.mint_count - mint_before,
+        entries_left=len(dropped),
+        base_is_none=base_is_none,
+    )
+
+
+def report_latency(results: list[LatencyResult]) -> None:
     print(
-        "  reference (spec 列読みコスト): 333-386 ms/col, 5 cols 2,105 ms.\n"
-        "  E-4 (per-channel decoded cache + positional selector) targets 448 ms\n"
-        "  for 5 columns. E-3 does not change HOW values are read, so the\n"
-        "  expectation is: unchanged (plus the minting overhead) => E-4 still needed.",
+        "\n=== COLUMN READ latency (同一広幅チャンネルの隣接 5 列・E-4a 受け入れ) ==="
+    )
+    for r in results:
+        total = sum(r.per_column_ms)
+        print(f"  --- {r.label} ---")
+        print(f"  channel={r.channel}  columns in channel={r.columns_in_channel:,}")
+        for i, ms in enumerate(r.per_column_ms):
+            print(f"    column #{i}  {ms:,.0f} ms")
+        verdict = "OK" if total <= LATENCY_TARGET_MS else "OVER"
+        print(
+            f"  TOTAL {len(r.per_column_ms)} columns = {total:,.0f} ms   [{verdict}]"
+            f"   (目標 <= {LATENCY_TARGET_MS:,.0f} ms)"
+        )
+        print(
+            f"  select calls = {r.select_calls}   _flatten calls = {r.flatten_calls}"
+            "   (目標 select 1 / _flatten <= 1 — 位置パス経路なら 0)"
+        )
+        print(
+            f"  cache hits/misses = {r.hits}/{r.misses}   "
+            f"entries left for this file = {r.entries_left}   minted = {r.minted}"
+        )
+        own = "OK" if r.base_is_none else "VIEW LEAK"
+        print(f"  minted values.base is None = {r.base_is_none}   [{own}]")
+    print(
+        "  reference (E-3 実測・キャッシュ無し): 309-327 ms/列・5 列 1,584 ms。\n"
+        "  対照 (列ごとに冷) が cached 側と同程度なら、キャッシュが効いていないか\n"
+        "  冷やす側が壊れている — どちらでも受け入れは成立しない。",
+        flush=True,
+    )
+
+
+@dataclass
+class SaturationResult:
+    channels_read: int
+    wall_s: float
+    bytes_held_mb: float
+    hits: int
+    misses: int
+    evictions: int
+    skipped_oversize: int
+    base_rss_mb: float
+    base_uss_mb: float
+    rss_mb: float
+    uss_mb: float
+    evict_ms: tuple[float, ...]
+    evict_entry_mb: float
+
+
+def evict_release_ms(
+    cache: Any, entry_bytes: int, samples: int = 5
+) -> tuple[float, ...]:
+    """予算超の put が 1 エントリを追い出すときの**同期**解放時間 (ms)。
+
+    LRU の evict は unload と違い TeardownService のペーシングを通らない (spec §5.7)
+    ので、1 回の解放が呼び出しスレッドを止める時間そのものが受け入れ対象になる。
+    合成配列で追加するのは、実チャンネルを読むと select のデコード時間が同じ窓に
+    入って解放だけを取り出せないから。測っているのは **追い出される側** の解放で、
+    ``np.ones`` で埋めるのは ``np.zeros``/``np.empty`` が OS の遅延マップで触られて
+    いないページを返し、解放が実測より安く出るため。
+    """
+    import numpy as np
+
+    out: list[float] = []
+    for i in range(samples * 8):
+        if len(out) >= samples:
+            break
+        arr = np.ones(max(1, entry_bytes), dtype=np.uint8)
+        before = cache.evictions
+        t0 = time.perf_counter()
+        accepted = cache.put((_SYNTH_HANDLE_ID, 0, i), arr)
+        elapsed = (time.perf_counter() - t0) * 1000.0
+        del arr  # キャッシュを唯一の参照者にする (次の evict が実解放になる)
+        if not accepted:
+            break  # oversize: この予算では evict を起こせない
+        if cache.evictions - before == 1:
+            out.append(elapsed)
+    cache.drop_handle(_SYNTH_HANDLE_ID)
+    # 測定対象がゼロ件でも「解放は速い」と読めてしまう経路を塞ぐ。
+    assert out, (
+        "evict を 1 度も起こせなかった — 解放時間の測定対象がゼロ件 "
+        f"(bytes_held={cache.bytes_held / MB:,.0f} MB / "
+        f"entry={entry_bytes / MB:,.2f} MB)"
+    )
+    return tuple(out)
+
+
+def cache_saturation(
+    session: Any, key: str, max_channels: int = 64
+) -> SaturationResult:
+    """広い順にチャンネルを読んで予算を飽和させ、飽和後の USS と evict を実測する。
+
+    広い順に読むのは D6 の裏返し: prod の広幅は 13.2 MB/本なので 256 MB を埋めるには
+    ~19 本要る一方、スカラー (1.9 KB) から読むと 13 万本読んでも飽和しない。
+    """
+    from valisync.core.loaders.column_names import leaf_count, leaf_names
+    from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
+
+    cache = _channel_cache(session)
+    hid = id(_handle_of(session, key))
+    records = session._groups.column_records(key)
+    widest = sorted(
+        ((leaf_count(rec.spec), display) for display, rec in records.items()),
+        reverse=True,
+    )[:max_channels]
+    assert widest, "ロード済みグループに列レコードが無い"
+
+    cache.drop_handle(hid)
+    gc.collect()
+    base_rss, base_uss = rss_mb(), uss_mb()
+    hits0, misses0 = cache.hits, cache.misses
+    ev0, over0 = cache.evictions, cache.skipped_oversize
+
+    channels = 0
+    t0 = time.perf_counter()
+    for _n, display in widest:
+        # 列名は 1 本だけ生成する: _column_keys_of は広幅 1 本で 1,100 本の f-string を
+        # 作るので、64 チャンネルぶん回すと計測器自身が測ろうとしているコストを踏む。
+        first = next(leaf_names(display, records[display].spec), None)
+        if first is None:
+            continue
+        col = session.resolve_signal(f"{key}{KEY_SEPARATOR}{first}")
+        if col is None:
+            continue
+        arr = col.values  # 1 列読む = そのチャンネル全体が 1 エントリとして載る
+        if first != display:
+            # C1 (spec §5.4): **列を読んだときだけ** 所有権を要求する。
+            # first == display は「リーフが 1 本しかない物理チャンネル」(スカラーや
+            # 単一フィールド) で、返るのは列ではなく**容器 Signal そのもの**。
+            # 容器分岐は np.ascontiguousarray(samples) を返し、連続な samples では
+            # 同一オブジェクトが返って _freeze も (read-only 済みなので) コピー
+            # しない — したがって **values.base は非 None になりうる** (実測:
+            # Clean (3,) float64 base=ndarray)。ここを裸で assert すると、広い順
+            # 64 本の走査が最初のスカラーチャンネルに到達した瞬間に落ち、しかも
+            # メッセージが無いので test_cache_saturation_refuses_when_the_budget_
+            # is_never_reached の match= が「別の理由で」満たされなくなる。
+            assert arr.base is None, first
+        channels += 1
+        if cache.evictions > ev0:
+            break  # 予算超過 = 飽和した
+    wall = time.perf_counter() - t0
+    gc.collect()
+    rss, uss = rss_mb(), uss_mb()
+    held = cache.bytes_held
+
+    # 測定対象がゼロ件でも「USS は予算内」に見える経路を塞ぐ (この 2 本が無いと
+    # 1 本も載らなかった実行が満点で通る)。
+    assert channels > 0, "1 チャンネルも読めていない (飽和計測が空)"
+    assert cache.evictions > ev0, (
+        "予算に到達しなかった — この入力では飽和後の天井を検証できない "
+        f"(bytes_held={held / MB:,.0f} MB / 読んだチャンネル {channels})"
+    )
+    return SaturationResult(
+        channels_read=channels,
+        wall_s=wall,
+        bytes_held_mb=held / MB,
+        hits=cache.hits - hits0,
+        misses=cache.misses - misses0,
+        evictions=cache.evictions - ev0,
+        skipped_oversize=cache.skipped_oversize - over0,
+        base_rss_mb=base_rss,
+        base_uss_mb=base_uss,
+        rss_mb=rss,
+        uss_mb=uss,
+        # 追加サイズは実エントリと同程度にする: 小さすぎると 1 回の evict のあと
+        # 何度 put しても予算に触れず、標本が集まらない。
+        evict_ms=evict_release_ms(cache, int(held / channels)),
+        evict_entry_mb=held / channels / MB,
+    )
+
+
+def report_cache(sat: SaturationResult) -> None:
+    delta_uss = sat.uss_mb - sat.base_uss_mb
+    verdict = "OK" if delta_uss <= CACHE_BUDGET_MB else "OVER"
+    held_verdict = "OK" if sat.bytes_held_mb <= CACHE_BUDGET_MB else "OVER"
+    print("\n=== CHANNEL CACHE saturation (U3 予算 256 MB・spec §9 の USS 天井) ===")
+    print(
+        f"  channels read (widest first) = {sat.channels_read}  in {sat.wall_s:,.1f}s"
+        f"   hits/misses = {sat.hits}/{sat.misses}"
+    )
+    print(
+        f"  cache bytes_held = {sat.bytes_held_mb:,.1f} MB   [{held_verdict}]   "
+        f"evictions = {sat.evictions}   skipped_oversize = {sat.skipped_oversize}"
+    )
+    print(
+        f"  baseline (cache empty) = {sat.base_rss_mb:,.0f} MB RSS / "
+        f"{sat.base_uss_mb:,.0f} MB USS"
+    )
+    print(
+        f"  saturated              = {sat.rss_mb:,.0f} MB RSS / {sat.uss_mb:,.0f} MB USS"
+    )
+    print(
+        f"  USS delta [PRIMARY]    = +{delta_uss:,.0f} MB   [{verdict}]   "
+        f"(目標 <= {CACHE_BUDGET_MB} MB)"
+    )
+    print(
+        f"  LRU evict 同期解放 ({sat.evict_entry_mb:,.1f} MB/エントリ): "
+        f"max {max(sat.evict_ms):,.2f} ms / "
+        f"mean {sum(sat.evict_ms) / len(sat.evict_ms):,.2f} ms  (n={len(sat.evict_ms)})"
+    )
+    print(
+        "    (unload と違い evict はペーシングを通らない = この値がそのまま\n"
+        "     呼び出しスレッドの停止時間。1 frame @60fps = 16.7 ms)",
         flush=True,
     )
 
@@ -797,19 +1179,53 @@ def core_footprint() -> None:
         f"  + group_signals()      = {s3_rss:,.0f} MB RSS / {s3_uss:,.0f} MB USS "
         f"(+{s3_rss - s2_rss:,.0f} / +{s3_uss - s2_uss:,.0f})"
     )
+    # M5: E-4a が E-3 の獲得を削っていないことを同じ実行で読めるようにする。
+    res_verdict = "OK" if s3_rss <= CORE_RESIDENT_LIMIT_MB else "OVER"
+    uss_verdict = "OK" if s3_uss - base_uss <= CORE_USS_DELTA_LIMIT_MB else "OVER"
+    load_verdict = "OK" if load_wall <= CORE_LOAD_LIMIT_S else "OVER"
     print(
-        f"  CORE RESIDENT (final)  = {s3_rss:,.0f} MB RSS  "
-        f"[eager 590 MB -> target ~310 MB]"
+        f"  CORE RESIDENT (final)  = {s3_rss:,.0f} MB RSS  [{res_verdict}]  "
+        f"[eager 590 -> E-3 297 -> limit {CORE_RESIDENT_LIMIT_MB:,.0f} MB]"
     )
     print(
-        f"  CORE USS delta         = +{s3_uss - base_uss:,.0f} MB  "
-        f"[eager +281 MiB -> target +15 MiB]  **primary metric**",
+        f"  CORE USS delta         = +{s3_uss - base_uss:,.0f} MB  [{uss_verdict}]  "
+        f"[eager +281 MiB -> E-3 +15 -> limit +{CORE_USS_DELTA_LIMIT_MB:,.0f} MB]"
+        "  **primary metric**"
+    )
+    print(
+        f"  CORE load wall         = {load_wall:.2f} s  [{load_verdict}]   "
+        f"(E-3 1.43 s -> limit {CORE_LOAD_LIMIT_S:.1f} s)",
         flush=True,
     )
+    # 列挙の戻り値を先に落とす: 抱えたままだと以下の USS がキャッシュ以外の分だけ
+    # 底上げされ、飽和天井の判定が甘くなる。
     del sigs, smap
+    gc.collect()
+
+    # ── E-4a: 列読みの対話コストとキャッシュ会計 (Qt を構築しない同じ土俵) ──
+    report_latency(
+        [
+            column_read_latency(session, key, cold_every_column=False),
+            column_read_latency(session, key, cold_every_column=True),
+        ]
+    )
+    report_cache(cache_saturation(session, key))
+
+    cache = _channel_cache(session)
+    held_before = cache.bytes_held
     session.remove_group(
         key
     )  # ハンドルを閉じる (計測プロセスがファイルを掴んだまま終わらない)
+    leak = "OK" if cache.bytes_held == 0 else "LEAK"
+    print(
+        f"\n  cache bytes at remove_group = {held_before / MB:,.1f} -> "
+        f"{cache.bytes_held / MB:,.1f} MB   [{leak}]"
+    )
+    print(
+        "    (T4: remove_group は close の**前**に回収して teardown へ渡す。残ると\n"
+        "     閉じたハンドルのデコード済み配列がプロセス寿命まで居座る)",
+        flush=True,
+    )
 
 
 def main() -> None:
@@ -915,9 +1331,16 @@ def main() -> None:
 
     keys = list(win.app_vm.loaded_file_keys)
 
-    # E-4 判断材料: 広幅チャンネルの 5 列を production 経路で読む実時間。
-    # ドレイン計測より前に置く (ドレインはグループを消すため)。
-    column_read_latency(win, keys[0])
+    # E-4a 受け入れ: 広幅チャンネルの隣接 5 列の実時間 (温 / 列ごと冷の対照つき) と
+    # キャッシュ飽和後の USS。ドレイン計測より前に置く (ドレインはグループを消すため)。
+    session = win.app_vm.session
+    report_latency(
+        [
+            column_read_latency(session, keys[0], cold_every_column=False),
+            column_read_latency(session, keys[0], cold_every_column=True),
+        ]
+    )
+    report_cache(cache_saturation(session, keys[0]))
 
     # ── 増分B: unload -> teardown ドレインの最大ティック時間 (2 入力必須) ──
     #
