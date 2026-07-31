@@ -53,7 +53,10 @@ class ChannelSampleCache:
     (このクラスは ndarray しか触らないので I/O を lock 下で呼ぶ経路が無い)。
 
     evict した配列は**その場で同期解放する** (unload の ``drop_handle`` と違い teardown へ
-    渡さない)。実測 (spec §5.7 / §9) は **追い出される配列の出自ごとに分けて**記録する:
+    渡さない)。ただし解放そのものは ``_lock`` を出てから起こす (``_evict_oldest`` が
+    返し、``put`` / ``set_reserved`` が ``with`` の外で手放す) — 下の単価が示すとおり
+    1 本の dealloc はミリ秒級で、lock 下で走らせるとヒットが待たされる。
+    実測 (spec §5.7 / §9) は **追い出される配列の出自ごとに分けて**記録する:
 
     - **実 asammdf デコード配列** (prod_demo の広幅チャンネル 12.6 MiB/本・キャッシュが
       唯一の所有者): 中央値 **1.2-1.7 ms** / 最大 1.5-4.2 ms (n=20 x 10 run)
@@ -136,6 +139,7 @@ class ChannelSampleCache:
         ``skipped_oversize`` で観測可能にする。
         """
         size = int(samples.nbytes)  # 会計は nbytes のみ (lock の外で済ませる)
+        evicted: list[np.ndarray] = []
         with self._lock:
             if size > self._budget:
                 self._skipped_oversize += 1
@@ -147,10 +151,14 @@ class ChannelSampleCache:
                 self._bytes_held -= int(old.nbytes)
             capacity = self._capacity_for(size)
             while self._entries and self._bytes_held + size > capacity:
-                self._evict_oldest()
+                evicted.append(self._evict_oldest())
             self._entries[key] = samples
             self._bytes_held += size
-            return True
+        # 最後の参照は lock の**外**で死ぬ (理由は _evict_oldest の docstring)。
+        # ここは未キャッシュのチャンネルを読むたびに通る**ホットパス**で、
+        # エクスポートワーカー (QRunnable) が最も踏む経路でもある。
+        del evicted
+        return True
 
     def set_reserved(self, reserved_bytes: int) -> None:
         """pin 済み (``_resolved_by_key`` が保持中) のバイト数を登録する。
@@ -171,6 +179,7 @@ class ChannelSampleCache:
         登録と同時に縮めるのは、次の ``put`` まで待つと「プロットしたまま放置」で
         超過が残り続け、飽和後 USS +256 MB 以内 (spec §9) が破れるから。
         """
+        evicted: list[np.ndarray] = []
         with self._lock:
             self._reserved = max(0, reserved_bytes)
             if not self._entries:
@@ -178,7 +187,9 @@ class ChannelSampleCache:
             newest = int(next(reversed(self._entries.values())).nbytes)
             capacity = self._capacity_for(newest)
             while self._entries and self._bytes_held > capacity:
-                self._evict_oldest()
+                evicted.append(self._evict_oldest())
+        # put と同じ理由で lock の外まで参照を持ち越す (_evict_oldest の docstring)。
+        del evicted
 
     def drop_handle(self, handle_id: int) -> tuple[np.ndarray, ...]:
         """**ペーシングあり** — *handle_id* のエントリを外して**返す** (spec §5.7)。
@@ -295,8 +306,21 @@ class ChannelSampleCache:
         """LRU が使ってよいバイト数。``floor_bytes`` は無条件に確保する最低容量。"""
         return max(self._budget - self._reserved, floor_bytes)
 
-    def _evict_oldest(self) -> None:
-        """LRU の先頭 (最も長く使われていない 1 本) を落とす。"""
+    def _evict_oldest(self) -> np.ndarray:
+        """LRU の先頭 (最も長く使われていない 1 本) を落として**返す**。
+
+        **返り値を捨ててはならない** — 呼び出し側は lock の外まで参照を持ち越し、
+        そこで初めて手放すこと (``put`` / ``set_reserved`` の ``del evicted``)。
+        ここで参照を落とすと 13.2 MB/本 の dealloc が ``_lock`` 保持下で走り
+        (実 asammdf デコード配列で中央値 1.2-1.7 ms・最大 4.2 ms)、その間
+        **キャッシュヒットが誰も待たない** (spec §5.8) が GUI スレッド側から破れる。
+        ロック順 ``handle.lock -> _lock`` は保たれるのでデッドロックにならず、
+        症状は待ち時間だけで数字にも出ない — :meth:`release_handle` が同じ理由で
+        同じ形をしている。test-lock は
+        ``test_channel_cache.py::test_dropped_arrays_are_freed_outside_the_lock``
+        (3 経路すべてを回す)。
+        """
         _key, arr = self._entries.popitem(last=False)
         self._bytes_held -= int(arr.nbytes)
         self._evictions += 1
+        return arr

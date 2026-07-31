@@ -231,9 +231,12 @@ class LazyMdfValues:
             samples.flags.writeable = False
             col = self._column_of(samples)  # 長さ不変条件もこの中で執行する
             if channel_cache is not None and (samples.ndim > 1 or samples.dtype.names):
-                # put は **長さ検証を通った後**。壊れた読みを共有キャッシュへ
-                # 焼き付けると、同じチャンネルの全列が以後その配列を見る。
-                # 予算超のエントリは載らない (put が False・spec D7) が、
+                # put は **長さ検証を通った後**。ただし**これは値の防波堤ではない**
+                # (レビュー I2 の正直な重大度): 順序を逆にしても誤った波形は出ない —
+                # どの読み手も _column_of で同じ長さ検証を通るので、壊れたチャンネルは
+                # 何度読んでも SampleReadError になる。害は「二度と使えないエントリが
+                # 予算を占め続け、以後 miss しないので再読みの余地も消える」ことで、
+                # 予算超のエントリが載らない (put が False・spec D7) のと同様、
                 # 呼び出し側から見た値の意味は変わらない。
                 #
                 # **スカラー (1-D かつ非構造化) チャンネルは意図的にキャッシュしない**

@@ -56,11 +56,19 @@ class _CountingLock:
 
 
 class _StubMdf:
-    """select が n サンプルの 1-D を返す最小 MDF スタブ.
+    """select が n レコード x 2 列の 2-D を返す最小 MDF スタブ.
 
     宣言 length と実読み列の不一致は実 mf4 では作れない (v4.20+ の
     remote-master/column-storage が要る) ので、``test_mdf_handle_concurrency.py`` と
     同じくスタブで作る。
+
+    **2-D であることが要件** (レビュー I2): T2 のスカラー除外
+    (``sample_source`` の ``samples.ndim > 1 or samples.dtype.names``) により、
+    1-D 非構造化配列は**そもそも ``put`` に到達しない**。1-D を返すスタブだと
+    「長さ検証を通る前に ``put`` してしまう」変異を入れても ``bytes_held == 0`` が
+    construction 上そのまま成立し、下の長さ検証テストが**自分の守るべき実装が
+    壊れても緑のまま**になる (実測: 変異を入れて tests/core + session +
+    teardown_pacing + column_pin_push が 264 passed / 0 failed)。
     """
 
     def __init__(self, n: int) -> None:
@@ -69,7 +77,8 @@ class _StubMdf:
 
     def select(self, entries: Any, **kwargs: Any) -> list[Any]:
         self.select_calls += 1
-        return [SimpleNamespace(samples=np.arange(self.n, dtype=np.float64))]
+        samples = np.arange(self.n * 2, dtype=np.float64).reshape(self.n, 2)
+        return [SimpleNamespace(samples=samples)]
 
 
 def _handle_of(session: Session, key: str) -> MdfHandle:
@@ -475,8 +484,13 @@ def test_dropping_the_channel_frees_the_2d_because_the_column_is_independent(
 def test_a_length_mismatch_is_not_burned_into_the_shared_cache() -> None:
     """長さ不変条件は共有キャッシュへ載せる **前** に執行する。
 
-    後ろに置くと、壊れた読みが 1 度でも起きたチャンネルの全列が以後その配列を
-    見る (miss しないので再読みの余地も無い)。
+    **値が壊れるわけではない** (レビュー I2 の正直な重大度): 順序を逆にしても、
+    どの読み手も ``_column_of`` で同じ長さ検証を通るので誤った波形は出ない —
+    出るのは同じ ``SampleReadError`` である。害は「二度と使えないエントリが予算を
+    占め続け、以後 miss しないので再読みの余地も消える」ことで、サイレント誤データ
+    ではない。**それでもこのテストが要るのは、この不変条件が
+    「``put`` の前後どちらでもよい」に見えてしまうから**である
+    (``_StubMdf`` の docstring — 1-D スタブでは変異が構造的に届かなかった)。
 
     **診断の宛先も同時に固定する** (spec §5.6): 位置パス化で読みは名前を使わなく
     なったので、``SampleReadError`` に載る ``signal_key`` / ``source_file`` だけが

@@ -81,6 +81,10 @@ pytestmark = pytest.mark.realgui
 
 _LOAD_TIMEOUT_MS = 30_000
 _PLOT_TIMEOUT_MS = 10_000
+# 実右クリック後にコンテキストメニューが出るまでの締切 (固定待ちでなくポーリング)。
+_POPUP_TIMEOUT_S = 3.0
+# ウィンドウがフォアグラウンドを取るまでの締切 (実 OS 入力の前提条件)。
+_ACTIVATE_TIMEOUT_MS = 3_000
 _ROWS = 1000
 _COLS = 64
 # uint8 (ROWS, COLS) = デコード済み 2-D チャンネル 1 本の実体サイズ。
@@ -163,6 +167,14 @@ def _build_window(qtbot: QtBot, session: Session | None = None) -> Any:
     window.raise_()
     window.activateWindow()
     qtbot.waitExposed(window)
+    # ``activateWindow()`` は fire-and-forget — 前面化が完了する**前**に返る。
+    # 実 OS 入力はフォアグラウンドウィンドウにしか届かないので、待たずに撃つと
+    # 最初のクリック (展開矢印) が別プロセスへ飛ぶ (T6 が実測した初回限定 transient・
+    # 3 テストとも同じ 1 クリックで失敗し、以後 26 回再現しなかった)。
+    # **前提条件を待つのはリトライではない** — 入力は 1 度しか撃たないので、
+    # 展開が本当に壊れていれば honest-RED はそのまま出る。
+    # 既存の確立パターン: test_global_cursor.py の waitUntil(isActiveWindow)。
+    qtbot.waitUntil(window.isActiveWindow, timeout=_ACTIVATE_TIMEOUT_MS)
     _pump_n(3)
     return window
 
@@ -218,12 +230,16 @@ def _click_index(tree: Any, index: QModelIndex) -> None:
     _real_click(*_row_point(tree, index))
 
 
-def _click_expand_arrow(tree: Any, index: QModelIndex) -> None:
-    """展開アフォーダンス (ブランチインジケータ) を実クリックする。
+def _click_expand_arrow(tree: Any, index: QModelIndex) -> dict[str, Any]:
+    """展開アフォーダンス (ブランチインジケータ) を実クリックし、叩いた座標を返す。
 
     QTreeView は rootIsDecorated の矢印を item 矩形の **左** の ``indentation()``
     幅の帯に描く。``visualRect`` はテキスト側の矩形なので、その左端から半インデント
     戻った点がユーザーが実際に叩く三角形の中心。
+
+    **返り値は呼び出し側の失敗メッセージ用** (レビュー T6-M4): 「展開されない」は
+    このファイルで実際に起きた唯一の transient なので、そのときに何処を叩いたのかが
+    後から読めないと原因を帰属できない。
     """
     tree.scrollTo(index)
     _pump_n(3)
@@ -238,7 +254,14 @@ def _click_expand_arrow(tree: Any, index: QModelIndex) -> None:
         f"展開矢印の想定 x が負 (rect.left()={rect.left()}, indent={indent}, "
         f"x={arrow_x}) — インデント計算が壊れている"
     )
-    _real_click(*_phys(tree.viewport(), QPoint(arrow_x, rect.center().y())))
+    phys = _phys(tree.viewport(), QPoint(arrow_x, rect.center().y()))
+    _real_click(*phys)
+    return {
+        "rect": (rect.left(), rect.top(), rect.width(), rect.height()),
+        "indent": indent,
+        "arrow_x": arrow_x,
+        "phys": phys,
+    }
 
 
 def _real_right_click_add(view: Any, px: int, py: int) -> dict[str, Any]:
@@ -253,19 +276,34 @@ def _real_right_click_add(view: Any, px: int, py: int) -> dict[str, Any]:
     ESC の watchdog を挟み、クリックを外した場合でも popup を閉じてから assert で
     落ちるようにする (共有マシンを開いたメニューで塞がない)。タイマは exec() 復帰後に
     明示 stop する — 生き残ると後続の waitUntil 中に本物の ESC を送りかねない。
+
+    **popup の出現は固定待ちでなくポーリングで待つ** (レビュー T6-M2): 単発の
+    1000 ms プローブだと、遅いマシンではメニューがまだ出ていない瞬間に 1 度見て
+    ``loop.quit()`` してしまい、実装は正しいのに RED になる (競合)。締切つきの
+    ポーリングなら「メニューが最後まで出なかった」ときだけ RED になる = honest-RED は
+    鈍らない。**前提条件を待つのはリトライではない** — 入力を撃ち直しはしない。
     """
     from PySide6.QtCore import QEventLoop, QTimer
     from PySide6.QtWidgets import QApplication, QMenu
 
     loop = QEventLoop()
     seen: dict[str, Any] = {}
+    deadline = 0.0
+    poll = QTimer()
+    poll.setInterval(50)
 
     def right_click() -> None:
+        nonlocal deadline
         at(px, py, RDOWN)
         at(px, py, RUP)
+        deadline = time.monotonic() + _POPUP_TIMEOUT_S
+        poll.start()
 
     def click_item() -> None:
         menu = QApplication.activePopupWidget()
+        if not isinstance(menu, QMenu) and time.monotonic() < deadline:
+            return  # まだ出ていない — 次の tick で見直す (締切までは失敗にしない)
+        poll.stop()
         seen["popup"] = type(menu).__name__ if menu is not None else None
         if isinstance(menu, QMenu):
             seen["selection"] = view.selected_signal_keys()
@@ -289,12 +327,13 @@ def _real_right_click_add(view: Any, px: int, py: int) -> dict[str, Any]:
             key_input(VK_ESCAPE)
         loop.quit()
 
-    timers = []
+    poll.timeout.connect(click_item)
+    timers = [poll]
+    # watchdog / 最終 quit は right_click(300ms) + ポーリング締切より後ろに置く。
     for delay, slot in (
         (300, right_click),
-        (1000, click_item),
-        (1600, watchdog),
-        (5000, loop.quit),
+        (int(300 + _POPUP_TIMEOUT_S * 1000) + 900, watchdog),
+        (int(300 + _POPUP_TIMEOUT_S * 1000) + 2700, loop.quit),
     ):
         timer = QTimer()
         timer.setSingleShot(True)
@@ -404,7 +443,9 @@ def _expected_column(channel: str, j: int) -> np.ndarray:
     return ((np.arange(_ROWS, dtype=np.int64) + 7 * j + base) % 251).astype(np.uint8)
 
 
-def _expand_channel(qtbot: QtBot, window: Any, name: str) -> QModelIndex:
+def _expand_channel(
+    qtbot: QtBot, window: Any, name: str, tmp_path: Path
+) -> QModelIndex:
     """物理チャンネル *name* の行を実クリックで展開し、その親 index を返す。"""
     view = window.channel_browser_view
     tree, model = view.tree, view.model
@@ -414,8 +455,13 @@ def _expand_channel(qtbot: QtBot, window: Any, name: str) -> QModelIndex:
     assert not model.has_materialized_children(parent), (
         f"{name} の子が展開前に合成されている (葉の事前保持へ回帰)"
     )
-    _click_expand_arrow(tree, parent)
-    assert tree.isExpanded(parent), f"{name} が実クリックで展開されない"
+    where = _click_expand_arrow(tree, parent)
+    # 座標とスクショを必ず載せる (T6-M4): このファイルで実際に落ちた唯一の assert
+    # であり、ここだけが「何処を叩いたのか」を残さない失敗メッセージだった。
+    assert tree.isExpanded(parent), (
+        f"{name} が実クリックで展開されない: {where} "
+        f"active={window.isActiveWindow()}。{_shot(tmp_path, f'ERR_expand_{name}')}"
+    )
     return parent
 
 
@@ -445,7 +491,7 @@ def test_bulk_add_of_five_columns_decodes_the_channel_once(
     flattens = _count_flatten(monkeypatch)
     hits_before, misses_before = cache.hits, cache.misses
 
-    parent = _expand_channel(qtbot, window, "WideA")
+    parent = _expand_channel(qtbot, window, "WideA", tmp_path)
     children = _child_names(model, parent)
     assert children[:5] == [f"WideA[{j}]" for j in range(5)], (
         f"子行が列になっていない: {children[:8]}"
@@ -507,10 +553,13 @@ def test_bulk_add_of_five_columns_decodes_the_channel_once(
     )
     # **この 1 行は上の misses の言い換えではない** (sabotage 実測): ``get`` の先頭で
     # ``return None`` する形に壊すと ``_misses += 1`` に到達しないので上の
-    # ``misses <= 1`` は 0 で**通り**、実際に 5 回デコードしていることを捕まえるのは
-    # この select オラクルだけになる (実測 selects=5・全て [('WideA', 0, 1)])。
-    # counters は実装自身が書く数値なので、counters だけを見る ①gate は
-    # 「counters を書かない壊れ方」に構造的に盲目である。
+    # ``misses <= 1`` は 0 で**通り**、この select オラクルが RED になる
+    # (実測 selects=5・全て [('WideA', 0, 1)])。counters は実装自身が書く数値なので、
+    # counters だけを見る ①gate は「counters を書かない壊れ方」に構造的に盲目である。
+    # **正確には「唯一のオラクル」ではなく「唯一の *独立* オラクル」** (レビュー
+    # T6-M1): 同じ変異では下の ``hits >= 4`` も RED になりうる (ヒットが 0 になる) —
+    # ただし select が先に落ちるので実測では走らなかっただけである。``hits`` を
+    # 「冗長だから」と削らないこと。
     assert len(selects) <= 1, (
         f"asammdf select の実呼び出しが {len(selects)} 回 (上界 1) — "
         f"counters と実デコード回数が乖離している: {selects}。{shot}"
@@ -575,7 +624,7 @@ def test_exploring_columns_one_by_one_hits_the_channel_cache(
     flattens = _count_flatten(monkeypatch)
     hits_before, misses_before = cache.hits, cache.misses
 
-    parent = _expand_channel(qtbot, window, "WideB")
+    parent = _expand_channel(qtbot, window, "WideB", tmp_path)
     panel_vm = window.graph_area_vm.panels(0)[0]
     panel = _panel_widget(window, 0, 0)
 
@@ -683,7 +732,7 @@ def test_injected_small_budget_evicts_the_older_channel(
     panel = _panel_widget(window, 0, 0)
 
     # ── (a) WideA[0] を実追加 -> A の 2-D 配列が載る ─────────────────────────
-    parent_a = _expand_channel(qtbot, window, "WideA")
+    parent_a = _expand_channel(qtbot, window, "WideA", tmp_path)
     _add_single_row(view, model.index(0, 0, parent_a))
     key_a0 = f"{loaded_key}::WideA[0]"
     qtbot.waitUntil(
@@ -709,13 +758,19 @@ def test_injected_small_budget_evicts_the_older_channel(
         f" (put は size > budget だけで決める) ので、ここは pin の影響を受けない。"
         f"{shot_a}"
     )
-    # pin (T3 の set_reserved) が LRU の最低容量 (1 物理チャンネル分・spec §5.5) を
-    # 割り込んでいないことの観測点は **bytes_held**: 割り込んでいれば 1 本目が
-    # 載った直後に自分自身を落として 0 になる。上の bytes_held == _ENTRY_BYTES が
-    # その assert であり、skipped_oversize ではこの機構を殺せない。
+    # **上の bytes_held 等式を「spec §5.5 の床の検出器」と読まないこと** (レビュー
+    # T6-I1・上の 546 行と同じ形の正直な但し書き): この fixture の規模では
+    # ``reserved`` (9,000-27,000 B) が ``budget - entry`` (32,000 B) に決して
+    # 近づかないので、``_capacity_for`` の床分岐は一度も選ばれない — 実測で
+    # ``max(..., floor_bytes)`` を外して ``return self._budget - self._reserved`` に
+    # しても 3 本とも緑のままである。§5.5 の牙は Layer A の
+    # ``test_channel_cache.py::test_reserved_never_starves_the_lru_below_one_channel``
+    # と ``::test_set_reserved_keeps_the_newest_entry_even_when_pins_eat_the_budget``
+    # にあり、被覆は失われていない。ここの ``bytes_held`` 等式は「何かが実際に
+    # 常駐している」ことの**反 vacuous アンカー**であって床の検出器ではない。
 
     # ── (b) WideB[0] を実追加 -> 予算超で A が落ちる ─────────────────────────
-    parent_b = _expand_channel(qtbot, window, "WideB")
+    parent_b = _expand_channel(qtbot, window, "WideB", tmp_path)
     _add_single_row(view, model.index(0, 0, parent_b))
     key_b0 = f"{loaded_key}::WideB[0]"
     qtbot.waitUntil(
@@ -780,6 +835,7 @@ def test_injected_small_budget_evicts_the_older_channel(
     )
 
     # evict を挟んでも値は正しい (キャッシュの再構築が別の列にならない)。
+    misses_at_check = cache.misses
     for key, channel, j in (
         (key_a0, "WideA", 0),
         (key_b0, "WideB", 0),
@@ -792,3 +848,10 @@ def test_injected_small_budget_evicts_the_older_channel(
             f"{key} の値が違う (evict 後の再デコードが別の列/別チャンネル): "
             f"先頭 {got[:4]}。{shot_c}"
         )
+    # T6-M6: 上の 2 本と対称の「観測が対象を変えていない」ガード。ここは予算を
+    # 絞った脚なので特に意味がある — 照合そのものが再デコードを誘発していると、
+    # 直前の evict 会計 (bytes_held / evictions) が照合後の状態と食い違う。
+    assert cache.misses <= misses_at_check, (
+        f"値の照合が新しいデコードを誘発した (観測が対象を変えている): "
+        f"misses {misses_at_check} -> {cache.misses}。{shot_c}"
+    )

@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 
 import numpy as np
+import pytest
 
 from valisync.core.loaders.channel_cache import CacheKey, ChannelSampleCache
 
@@ -391,24 +393,71 @@ class _LockProbeArray(np.ndarray):
             lock.release()
 
 
-def test_release_handle_frees_outside_the_lock() -> None:
-    """同期解放は ``_lock`` の**外**で走る (spec §5.8: ヒットは誰も待たない)。
-
-    ``with self._lock:`` の中で戻り値の最後の参照が死ぬ形だと、13.2 MB/本 の
-    dealloc がキャッシュ lock 保持下で走り、その間 GUI スレッドのキャッシュ
-    ヒットが ``get`` の入口でブロックする。ロック順 (``handle.lock -> _lock``) は
-    保たれたままなのでデッドロックにはならず、**症状は待ち時間だけ**で数字にも
-    出ない — だから会計でなく解放の瞬間そのものを観測する。
-    """
-    cache = ChannelSampleCache(budget_bytes=4096)
+def _probe_entry(cache: ChannelSampleCache, key: CacheKey, nbytes: int) -> list[bool]:
+    """*key* へ「解放される瞬間の lock 状態」を記録する配列を載せ、記録先を返す。"""
     observed: list[bool] = []
-    arr = _arr(64).view(_LockProbeArray)
+    arr = _arr(nbytes).view(_LockProbeArray)
     arr.probe_lock = cache._lock
     arr.probe_observed = observed
-    cache.put((7, 0, 0), arr)
-    del arr  # キャッシュだけが持つ状態にする
+    assert cache.put(key, arr) is True
+    del arr  # キャッシュだけが持つ状態にする (以後の解放は必ずキャッシュ由来)
+    return observed
 
+
+def _drop_via_release_handle() -> list[bool]:
+    """``MdfHandle.close()`` の backstop 経路 (同期解放)."""
+    cache = ChannelSampleCache(budget_bytes=4096)
+    observed = _probe_entry(cache, (7, 0, 0), 64)
     cache.release_handle(7)
+    assert cache.bytes_held == 0  # 会計そのものは従来どおり
+    return observed
+
+
+def _drop_via_put_eviction() -> list[bool]:
+    """**ホットパス**: 予算超の ``put`` が古いエントリを追い出す経路。
+
+    production でこの形になるのは「未キャッシュのチャンネルを読んだ」瞬間であり、
+    エクスポートワーカー (``QRunnable``) が最も踏む経路でもある。
+    """
+    cache = ChannelSampleCache(budget_bytes=128)
+    observed = _probe_entry(cache, (7, 0, 0), 64)
+    cache.put((7, 0, 1), _arr(96))  # 64 + 96 > 128 -> probe が落ちる
+    assert (cache.evictions, cache.bytes_held) == (1, 96)
+    return observed
+
+
+def _drop_via_set_reserved_eviction() -> list[bool]:
+    """pin 登録 (``Session.set_pinned_columns``) が容量を縮めて追い出す経路。"""
+    cache = ChannelSampleCache(budget_bytes=4096)
+    observed = _probe_entry(cache, (7, 0, 0), 64)
+    cache.put((7, 0, 1), _arr(64))  # これが「最新 1 エントリ」= 最低容量になる
+    cache.set_reserved(4096)  # 容量 = max(4096 - 4096, 64) -> 古い probe が落ちる
+    assert (cache.evictions, cache.bytes_held) == (1, 64)
+    return observed
+
+
+@pytest.mark.parametrize(
+    "drop",
+    [_drop_via_release_handle, _drop_via_put_eviction, _drop_via_set_reserved_eviction],
+    ids=["release_handle", "put_eviction", "set_reserved_eviction"],
+)
+def test_dropped_arrays_are_freed_outside_the_lock(
+    drop: Callable[[], list[bool]],
+) -> None:
+    """参照を落とす**全ての**経路で、解放は ``_lock`` の外で走る (spec §5.8)。
+
+    ``with self._lock:`` の中で最後の参照が死ぬ形だと、13.2 MB/本 の dealloc が
+    キャッシュ lock 保持下で走り (実 asammdf 配列で中央値 1.2-1.7 ms・最大 4.2 ms)、
+    その間 GUI スレッドのキャッシュヒットが ``get`` の入口でブロックする。ロック順
+    (``handle.lock -> _lock``) は保たれたままなのでデッドロックにはならず、**症状は
+    待ち時間だけ**で数字にも出ない — だから会計でなく解放の瞬間そのものを観測する。
+
+    **3 経路すべてを回す** (レビュー I1): 最初にこの穴を塞いだのは ``release_handle``
+    だけで、同じ probe を残り 2 経路へ向けたら両方 ``[True]`` だった (実測)。
+    ``release_handle`` は close の backstop = 最も踏まれない経路で、**予算超の
+    ``put`` こそがホットパス**である。1 経路だけを test-lock すると「直した経路だけが
+    守られている」ことに気付けない。
+    """
+    observed = drop()
 
     assert observed == [False], f"配列の解放が _lock 保持下で走った: {observed}"
-    assert cache.bytes_held == 0  # 会計そのものは従来どおり

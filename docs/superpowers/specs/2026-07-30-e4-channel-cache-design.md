@@ -345,7 +345,43 @@ USS は参考である（上表 I4）。
 - **`_resolved_by_key` の「同一キー → 同一オブジェクト」は D4 で「pin 中のみ」へ supersede**
   （意図的・test-lock 更新を伴う）
 
-## 12. REFUTED になった指摘（記録・同じ議論を繰り返さないため）
+## 12. E-4a で直さないと決めたもの（最終レビュー Minor・記録）
+
+whole-branch 最終レビュー（Ready to merge）の Minor。**どれも本増分が導入・拡大したもの
+ではなく**、直すには別の設計判断が要るので記録に留める。
+
+1. **§5.2 の「予算の裁定者は 1 人」は言い過ぎである** — 鋳造列 LRU
+   （`SignalGroupManager._resolved_order`）が縛るのは **本数（512）だけでバイトではない**
+   （`_DEFAULT_RESOLVED_CAPACITY` のコメントが既に明記）。かつ
+   `ChannelSampleCache.set_reserved()` へ届くのは **pin 済みの列だけ**である。
+   したがって「**非 pin の実体化済み鋳造列が最大 512 本**（prod 規模で 1 本あたり
+   native ~12 KB ＋ `sorted_view()` の float64 ~96 KB ≒ **合計 55 MB**）」は
+   **誰の予算にも乗らない**。裁定者が単一なのは「デコード済み 2-D ＋ pin 済み列」の
+   合計についてであって、プロセス全体ではない。E-4b で `_selected` を扱うときに
+   同じ言い回しを再利用しないこと
+2. **`SignalGroupManager._evict_resolved` は `_resolved_lock` 保持下で鋳造列 Signal を
+   手放す** — §5.8 で `ChannelSampleCache` に禁じたのと同じクラスの問題。規模が桁違いに
+   小さく（高々 ~64 列 × ~108 KB）、`_resolved_lock` に今日は競合する取り手が居ないため
+   実害は測れない。`ChannelSampleCache._evict_oldest` と同じ「返して lock の外で捨てる」
+   形にするのは機械的だが、テストの歯（probe 配列）を Signal 側に作る必要がある
+3. **`_column_of` の容器パス docstring が「素通し」を無条件に主張している**
+   （`sample_source.py`）— 実際には `np.ascontiguousarray` は**非連続な** `samples` を
+   コピーするので、その場合キャッシュと Signal の両方が実体を持つ。今日 asammdf が
+   返す `samples` は C 連続なので **挙動でなく記述の問題**。契約として非連続入力を
+   許すなら、会計（`bytes_held` ＋ `nbytes_if_materialized`）の二重計上の扱いを
+   §5.4 に書き足す必要がある
+4. **`TeardownService._retained_bytes` はビューの `nbytes` を計上する** — asammdf が
+   将来「大きなレコードブロックのスライス」を返すようになると、バイト軸が実体を
+   過小に数える（解放されないバイトを解放したと見なす）。既に記録済みの
+   `np.ma.MaskedArray` の注記と同じ形の前提依存
+5. **`SignalGroupManager._ensure_namespaced` の無ロック走査は「今日は到達不能」ではなく
+   「E-4a 以前から存在し、E-4a が変えていない」** — 繰越理由の訂正。`add()` は
+   `LoadWorker.run` → `session.load` → `add` で **`QThreadPool` スレッド**から走る一方、
+   `_ensure_namespaced()` は GUI スレッドで無ロックに走査するので、**2 ファイルを同時に
+   落とせば実際に窓が開く**。本増分は導入も拡大もしていないが、「到達不能」と書いて
+   閉じてはならない
+
+## 13. REFUTED になった指摘（記録・同じ議論を繰り返さないため）
 
 敵対的レビューの検証段で落ちた主要なもの:
 
