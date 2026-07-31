@@ -84,11 +84,16 @@ class ChannelSampleCache:
     def get(self, key: CacheKey) -> np.ndarray | None:
         """命中なら配列 (最近使用へ更新)、不在なら None。
 
-        不在は ``misses`` を 1 増やす。**miss 数と select 呼び出し回数は 1:1** —
-        production が select を呼ぶ唯一の理由がここの None であり、miss の後は必ず
-        1 回だけデコードするため (oversize で ``put`` が False を返しても、その
-        チャンネルは次回また miss + select になるので 1:1 は保たれる)。
-        T6 の ①gate はこの数を観測点にする (spec §8)。
+        不在は ``misses`` を 1 増やす。**正しい関係は等式でなく ``misses >= select``**。
+        production が select を呼ぶ唯一の理由がここの None なので下限は必ず立つが、
+        **等号は「同一キーへの miss が直列化されているとき」に限る**: 兄弟列は別々の
+        ``LazyMdfValues`` インスタンスなので per-instance の fast path では畳まれず、
+        2 スレッドが同じ物理チャンネルの別列を読むと **miss は 2・select は 1**
+        (``handle.lock`` 下の同一キー再チェックが 1 回に畳む) になる。これは E-4a が
+        最適化しようとしているワークロードそのものなので、等式を仮定してはならない。
+
+        **T6 の ①gate は上界 (``misses <= N``) で書くこと** — 直列でも並行でも健全な
+        のは上界だけである (spec §8)。
 
         **等式が成り立つのはキャッシュが配線された経路 (``Session`` 経由) に限る**:
         ``MdfLoader()`` を引数なしで使う構成では ``MdfHandle.cache`` が None になり、
@@ -192,10 +197,12 @@ class ChannelSampleCache:
 
     @property
     def misses(self) -> int:
-        """キャッシュミス回数 = **select 呼び出し回数** (``get`` の docstring 参照)。
+        """キャッシュミス回数。**``misses >= select 呼び出し回数``** (等式ではない)。
 
-        1:1 が成り立つのは cache が配線された経路のみ (``cache is None`` の構成では
-        ``get`` を通らないので 0 のまま select だけが走る)。
+        等号は同一キーへの miss が直列化されているときだけ成り立つ — 詳細と
+        「①gate は上界で書く」理由は ``get`` の docstring を参照。
+        なお下限そのものが立つのは cache が配線された経路のみ (``cache is None`` の
+        構成では ``get`` を通らないので 0 のまま select だけが走る)。
         """
         return self._misses
 
