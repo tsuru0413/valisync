@@ -29,9 +29,16 @@ import time
 from collections import deque
 from collections.abc import Callable
 
+import numpy as np
 from PySide6.QtCore import QObject, QTimer
 
 from valisync.core.models import Signal, SignalGroup, retained_bytes
+
+# teardown が解放する対象。E-4a で ChannelSampleCache から回収した**生 ndarray**
+# (RemovalResult.cached_arrays) が加わった — Signal の皮を持たないので、会計は
+# 型で分岐する (_retained_bytes)。同じキューへ載せるのは、ペーシングの三軸
+# (バイト / 信号数 / 経過時間) を配列にもそのまま適用したいから。
+_Freeable = Signal | np.ndarray
 
 _BYTE_BUDGET = 64 * 1024 * 1024  # 64 MiB per tick
 # 未展開の遅延シェルはバイト会計上ほぼ 0 なので、バイト予算だけでは 330k シェルが
@@ -95,7 +102,7 @@ class TeardownService(QObject):
         # the oldest closed file releases first. Order WITHIN a group is
         # irrelevant (all its signals free before on_finished fires), so _drain
         # pops from each list's end (O(1), no shifting).
-        self._groups: deque[tuple[str, list[Signal]]] = deque()
+        self._groups: deque[tuple[str, list[_Freeable]]] = deque()
         self._pending_signals = 0
         self._last_tick_bytes = 0
         self._timer = QTimer(self)
@@ -116,43 +123,58 @@ class TeardownService(QObject):
         # small groups in tests; the prod drain-wait polls pending_signals().
         seen: set[int] = set()  # 呼び出しごとに新規 (寿命規約は _drain と同じ)
         return sum(
-            _retained_bytes(s, seen) for _key, sigs in self._groups for s in sigs
+            _retained_bytes(item, seen)
+            for _key, items in self._groups
+            for item in items
         )
 
     def enqueue(
-        self, key: str, group: SignalGroup, columns: tuple[Signal, ...] = ()
+        self,
+        key: str,
+        group: SignalGroup,
+        columns: tuple[Signal, ...] = (),
+        cached_arrays: tuple[np.ndarray, ...] = (),
     ) -> None:
-        """*key* のグループ信号 + 鋳造列 (E-3) を 1 エントリとして積む。
+        """*key* のグループ信号 + 鋳造列 (E-3) + キャッシュ配列 (E-4a) を 1 エントリで積む。
 
         ``columns`` は ``SignalGroup.signals`` の外に居る鋳造列
-        (``RemovalResult.removed_columns``)。**同一エントリへ連結する**のが要点:
-        ``on_finished`` はエントリごとに発火し、その宛先の ``AppViewModel.mark_released``
-        は初回 pop で確定するため、同じ key を 2 エントリに分けると 1 本目の完了で
-        releasing 行が消え、列がまだ残っているのに「解放完了」に見える。
+        (``RemovalResult.removed_columns``)。``cached_arrays`` は
+        ``ChannelSampleCache`` から回収したデコード済みチャンネル配列
+        (``RemovalResult.cached_arrays``) で、``columns`` に相乗りできない —
+        こちらは Signal の皮を持たない**生 ndarray** だから (spec §5.7)。
 
-        O(1) 契約は維持する: ``list(group.signals)`` も ``extend(columns)`` も C レベルの
-        ポインタコピーだけで、信号の配列には一切触れない (nbytes 走査と解放は _drain の
-        担当のまま)。``columns`` は解決済み列 = プロット/読み値/エクスポートで触れた列だけで、
-        全論理列ではない。**ただし「常に少ない」と読まないこと** — 反転後は
-        ``group.signals`` が物理チャンネル数 (prod 4,324) まで縮む一方、``_resolved_by_key``
-        は全列を選ぶワークフロー (全選択エクスポート等) で論理列数 (prod 264k) へ向かって
-        伸びうるので、``columns`` が支配項になりうる。O(1) 契約自体はポインタコピーのみ
-        なので成立し続ける。
+        **同一エントリへ連結する**のが要点: ``on_finished`` はエントリごとに発火し、
+        その宛先の ``AppViewModel.mark_released`` は初回 pop で確定するため、同じ key を
+        2 エントリに分けると 1 本目の完了で releasing 行が消え、まだ残っているのに
+        「解放完了」に見える。
+
+        O(1) 契約は維持する: ``list(group.signals)`` も ``extend`` も C レベルの
+        ポインタコピーだけで、信号の配列にも ndarray の ``nbytes`` にも一切触らない
+        (会計と解放は _drain の担当のまま)。``columns`` は解決済み列 = プロット/読み値/
+        エクスポートで触れた列だけで、全論理列ではない。**ただし「常に少ない」と
+        読まないこと** — 反転後は ``group.signals`` が物理チャンネル数 (prod 4,324) まで
+        縮む一方、``_resolved_by_key`` は全列を選ぶワークフロー (全選択エクスポート等) で
+        論理列数 (prod 264k) へ向かって伸びうるので、``columns`` が支配項になりうる。
+        ``cached_arrays`` の本数は予算で上界がつく (256 MB / 13.2 MB ≈ 19 本) ので、
+        そもそも支配項にならない。
         """
-        sigs = list(group.signals)  # single C-level copy -- no per-signal loop
-        # extend は**空判定より前**に置く。後ろだと「signals が空で列だけ残る」グループが
-        # 下の即時 finish 分岐に落ち、列がペーシングを迂回して同期解放される (実体化済みの
-        # 列はバイトが重い)。エントリ内の順序は無関係 — _drain は末尾から pop する。
-        sigs.extend(columns)
-        if not sigs:
+        items: list[_Freeable] = list(group.signals)  # single C-level copy
+        # extend は**空判定より前**に置く。後ろだと「signals が空で列/配列だけ残る」
+        # グループが下の即時 finish 分岐に落ち、ペーシングを迂回して同期解放される
+        # (実体化済みの列も 13.2 MB のチャンネル配列もバイトが重い)。
+        # エントリ内の順序は無関係 — _drain は末尾から pop する。
+        items.extend(columns)
+        items.extend(cached_arrays)
+        if not items:
             if self._on_finished is not None:
                 self._on_finished(key)
             return
-        self._pending_signals += len(sigs)
-        self._groups.append((key, sigs))
-        # NOTE: caller must not keep a ref to `group` / `columns` after this (it does
-        # not -- both hang off the RemovalResult local that falls out of scope);
-        # `sigs` becomes the sole owner, so popping from it frees the arrays.
+        self._pending_signals += len(items)
+        self._groups.append((key, items))
+        # NOTE: caller must not keep a ref to `group` / `columns` / `cached_arrays`
+        # after this (it does not -- all three hang off the RemovalResult local that
+        # falls out of scope); `items` becomes the sole owner, so popping from it
+        # frees the arrays.
         if not self._timer.isActive():
             self._timer.start()
 
@@ -182,19 +204,19 @@ class TeardownService(QObject):
             and freed_signals < self._signal_budget
             and not deadline_hit
         ):
-            key, sigs = self._groups[0]
+            key, items = self._groups[0]
             while (
-                sigs
+                items
                 and freed_bytes < self._budget
                 and freed_signals < self._signal_budget
             ):
-                sig = sigs.pop()
+                item = items.pop()
                 # カウンタを pop の直後に更新するのは、会計が raise してもキューと
                 # pending_signals() が乖離しないための安価な保険。
                 self._pending_signals -= 1
                 freed_signals += 1
-                freed_bytes += _retained_bytes(sig, seen)
-                del sig  # drop the last strong ref -> the arrays free here
+                freed_bytes += _retained_bytes(item, seen)
+                del item  # drop the last strong ref -> the arrays free here
                 # 読まない区間 (1 ティックが _CLOCK_CHECK_EVERY 信号未満) が
                 # 安全なのは、バイト軸が毎イテレーション評価されるから: その
                 # regime に入るのは 1 信号あたりが大きいときで、そのとき 64MiB
@@ -205,7 +227,7 @@ class TeardownService(QObject):
                 ):
                     deadline_hit = True
                     break
-            if not sigs:
+            if not items:
                 self._groups.popleft()
                 if self._on_finished is not None:
                     self._on_finished(key)
@@ -216,8 +238,14 @@ class TeardownService(QObject):
             self._timer.stop()
 
 
-def _retained_bytes(sig: Signal, seen: set[int]) -> int:
-    """この Signal が解放で返すバイト数 (既に数えた配列は id で除外).
+def _retained_bytes(obj: _Freeable, seen: set[int]) -> int:
+    """この対象が解放で返すバイト数 (既に数えた配列は id で除外).
+
+    *obj* が生 ndarray のときは ``ChannelSampleCache`` から回収したデコード済み
+    チャンネル配列 (E-4a)。Signal の皮を持たないので直接数える。**id dedup は
+    Signal 側と同じ ``seen`` を共有する** — 分岐ごとに別集合を持つと、共有された
+    配列が二重計上されてティックが予算へ早く到達し、ペーシングの実効粒度が
+    黙って粗くなる。
 
     会計そのものは ``valisync.core.models.retained_bytes`` に 1 本だけ置く — pin の
     予約会計 (``SignalGroupManager.pinned_column_bytes``) と同じ問いに答えるので、
@@ -234,4 +262,9 @@ def _retained_bytes(sig: Signal, seen: set[int]) -> int:
     バイト計上は変わらないままティックが 24→36ms に増える (だから第 3 軸の
     デッドラインが要る)。
     """
-    return retained_bytes(sig, seen)
+    if isinstance(obj, np.ndarray):
+        if id(obj) in seen:
+            return 0
+        seen.add(id(obj))
+        return int(obj.nbytes)
+    return retained_bytes(obj, seen)

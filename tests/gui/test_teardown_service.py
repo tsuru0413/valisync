@@ -160,6 +160,71 @@ def test_columns_alone_do_not_take_the_empty_group_shortcut(qtbot) -> None:
     assert done == ["g"]
 
 
+def test_cached_channel_arrays_drain_in_the_same_entry_and_finish_once(qtbot) -> None:
+    """E-4a: ChannelSampleCache から回収した生 ndarray も同じペーシングで解放され、
+    on_finished は 1 回だけ発火する。
+
+    ``columns`` (鋳造 Signal) に相乗りさせられないのは型が違うから: キャッシュが
+    持つのは Signal の皮を持たない 2-D チャンネル配列そのもの。だが**エントリは
+    同じ**でなければならない — 同一 key を 2 エントリに割ると 1 本目の完了で
+    on_finished が撃たれ、AppViewModel.mark_released が初回 pop で確定するので、
+    配列がまだ残っているのに「解放完了」に見える (列と同じ罠)。
+    """
+    done: list[str] = []
+    svc = TeardownService(on_finished=done.append, byte_budget=1 * 1024 * 1024)
+    arr = np.zeros((4096, 64), dtype=np.uint8)  # 2-D チャンネル配列相当 (256 KB)
+    ref = weakref.ref(arr)
+    grp = _group((_sig("s", 500_000),))
+
+    svc.enqueue("g", grp, cached_arrays=(arr,))
+
+    assert svc.pending_signals() == 2  # グループ 1 本 + キャッシュ配列 1 本
+    assert done == []  # まだ 1 本も解放していない
+    del grp, arr
+    _drain_all(svc, qtbot)
+    gc.collect()
+    assert done == ["g"]  # エントリが 1 つ = 発火も 1 回
+    assert ref() is None  # 会計だけでなく実際の解放も通っている
+
+
+def test_cached_arrays_alone_do_not_take_the_empty_group_shortcut(qtbot) -> None:
+    """signals も columns も空でキャッシュ配列だけ残るグループを即時 finish にしない。
+
+    pin しているのは実データの形ではなく **extend が空判定より前にあること**そのもの:
+    順序が逆だと 13.2 MB/本 の配列がペーシングを迂回して同期解放される。
+    エクスポートだけが触ったファイル (列を 1 本も鋳造しない) がまさにこの形。
+    """
+    done: list[str] = []
+    svc = TeardownService(on_finished=done.append)
+    arr = np.zeros((256, 8), dtype=np.uint8)
+
+    svc.enqueue("g", _group(()), cached_arrays=(arr,))
+
+    assert done == []
+    assert svc.pending_signals() == 1
+    del arr
+    qtbot.waitUntil(lambda: svc.pending_signals() == 0, timeout=5000)
+    assert done == ["g"]
+
+
+def test_zero_cached_arrays_leave_the_existing_pacing_untouched(qtbot) -> None:
+    """キャッシュ配列ゼロ = 反転前と挙動が 1 ビットも変わらない。
+
+    空タプルでも幽霊エントリを積まない (pending_signals が増えない) ことと、
+    ドレイン前に「解放完了」を宣言しないことを対で見る。列ゼロが production の
+    既定経路であるのと同じく、**キャッシュ配列ゼロは CSV/Derived の既定経路**。
+    """
+    done: list[str] = []
+    svc = TeardownService(on_finished=done.append, byte_budget=1 * 1024 * 1024)
+
+    svc.enqueue("g", _group((_sig("a", 500_000),)), columns=(), cached_arrays=())
+
+    assert done == []
+    assert svc.pending_signals() == 1  # グループ信号 1 本ちょうど
+    _drain_all(svc, qtbot)
+    assert done == ["g"]
+
+
 class _CountingArr:
     """ndarray-like whose .nbytes read is counted (proves WHO touches bytes)."""
 

@@ -12,6 +12,8 @@ import pytest
 
 from tests.mdf4_helpers import write_mdf4_2d
 from valisync.core.interpolation import InterpolationMethod
+from valisync.core.loaders.mdf_handle import MdfHandle
+from valisync.core.loaders.mdf_loader import MdfLoader
 from valisync.core.models import Delimiter, FormatDefinition, Signal, SignalGroup
 from valisync.core.session import (
     LoadCancelled,
@@ -250,6 +252,110 @@ def test_remove_group_reports_minted_columns(tmp_path: Path) -> None:
 
     assert result.removed is True
     assert result.removed_columns == (column,)
+
+
+def _loaded_2d_with_a_cached_channel(tmp_path: Path) -> tuple[Session, str, MdfHandle]:
+    """2-D チャンネルの列を 1 本読んで ChannelSampleCache を温めた Session を返す。
+
+    列読みは物理チャンネルの 2-D 配列をデコードしてキャッシュへ載せる (E-4a)。
+    温まっていない状態で会計を検証すると全 assert が「空タプル同士の比較」に化けて
+    恒真になるので、前提そのものを assert しておく。
+    """
+    session = Session()
+    key = session.load(write_mdf4_2d(tmp_path)).key
+    col = session.resolve_signal(f"{key}::Mat[0]")
+    assert col is not None
+    np.testing.assert_array_equal(col.values, [0, 10, 20, 30])
+    handle = session._groups.group(key).handle
+    assert handle is not None
+    # 「ハンドルが提げているキャッシュ」と「Session が裁定しているキャッシュ」が
+    # **同一オブジェクト**であること。別物なら以下の会計は 2 つの帳簿を跨いで
+    # 比較することになり、順序テストが偶然通る/偶然落ちるどちらにもなりうる。
+    assert handle.cache is session.channel_cache, "ローダーへの注入が効いていない"
+    assert handle.cache.bytes_held > 0, "前提が壊れている: 列読みがキャッシュを温めない"
+    return session, key, handle
+
+
+def test_remove_group_recovers_the_cached_channel_arrays(tmp_path: Path) -> None:
+    """デコード済みチャンネル配列は RemovalResult 経由で呼び出し側へ渡る (spec §5.7)。
+
+    渡さないと 13.2 MB/本 (prod の広幅チャンネル) が teardown の三軸ペーシングを
+    通らず、close() の中で GUI スレッドが同期解放する。``removed_columns`` に
+    相乗りできないのは型が違うから (Signal ではなく生 ndarray)。
+    """
+    session, key, handle = _loaded_2d_with_a_cached_channel(tmp_path)
+
+    result = session.remove_group(key)
+
+    assert result.removed is True
+    assert len(result.cached_arrays) == 1
+    # 列 1 本 (長さ 4) ではなくチャンネル全体 (4 行 x 3 列) が渡る = キャッシュの実体。
+    assert result.cached_arrays[0].shape == (4, 3)
+    assert handle.cache is not None
+    assert handle.cache.bytes_held == 0  # 予算からは外れている (回収 = 所有権の移譲)
+
+
+def test_cached_arrays_are_recovered_before_the_handle_is_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """回収は close() より**前**。順序が逆だと会計から丸ごと消える (spec §5.7)。
+
+    close() は自ハンドルのエントリをキャッシュから落とす (= その場で解放する) ので、
+    「close 時点で予算に残っていない」が順序の直接の観測点になる。cached_arrays の
+    非空だけを見る形は、close 側の解放を将来やめたときに「順序は逆のまま偶然通る」
+    テストへ劣化する。
+    """
+    session, key, _handle = _loaded_2d_with_a_cached_channel(tmp_path)
+    held_at_close: list[int] = []
+    real_close = MdfHandle.close
+
+    def _spy(self: MdfHandle) -> None:
+        assert self.cache is not None  # Session 経由のハンドルなので必ず配線済み
+        held_at_close.append(self.cache.bytes_held)
+        real_close(self)
+
+    # MdfHandle は __slots__ なのでインスタンス属性の差し替えはできない (クラス側で patch)。
+    monkeypatch.setattr(MdfHandle, "close", _spy)
+
+    result = session.remove_group(key)
+
+    assert held_at_close == [0], "close 時点でまだ予算に載っている = 回収が close の後"
+    assert len(result.cached_arrays) == 1  # 消えたのではなく移譲された
+
+
+def test_close_releases_the_handles_cached_arrays_from_the_budget(
+    tmp_path: Path,
+) -> None:
+    """回収されない close 経路 (ローダーのエラー/キャンセル) でも予算が返る。
+
+    キーは id(handle) なので、閉じたハンドルのエントリを残すと害が 2 つある:
+    予算が恒久的に目減りし、かつ id が再利用されたとき新しいハンドルが別ファイルの
+    配列を引く (memory gui_id_reuse_flake_object_recreation の形)。
+    """
+    session, _key, handle = _loaded_2d_with_a_cached_channel(tmp_path)
+    assert handle.cache is not None and handle.cache.bytes_held > 0
+
+    handle.close()
+
+    assert handle.cache.bytes_held == 0
+    assert session.signals()  # グループは残ったまま = close 単独の効果を見ている
+
+
+def test_close_without_a_cache_is_still_a_plain_close(tmp_path: Path) -> None:
+    """``cache is None`` のハンドルを閉じても落ちない (T2 が cache を任意にした帰結)。
+
+    ``MdfLoader()`` を引数なしで使う経路 (ローダー単体テスト・エラー/キャンセル経路の
+    finally・T3 の fixture) は ``cache=None`` のハンドルを作り、その全てが
+    ``close()`` を呼ぶ。None ガードが無いと ``AttributeError: 'NoneType' object has
+    no attribute 'release_handle'`` が**既存テストの広範囲**で出る — 本タスクの RED と
+    区別できなくなるので、ここで正面から固定する。
+    """
+    handle = MdfLoader().load(write_mdf4_2d(tmp_path)).signal_group.handle
+    assert handle is not None and handle.cache is None
+
+    handle.close()  # 例外を出さないこと自体が assert
+
+    assert handle.is_closed is True
 
 
 # ─── Pure-computation pass-throughs ───────────────────────────────────────────

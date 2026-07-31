@@ -274,3 +274,86 @@ def test_one_tick_stops_over_materialized_signals_too(qtbot) -> None:  # type: i
     before = svc.pending_signals()
     svc._drain()
     assert before - svc.pending_signals() == 100
+
+
+def test_cached_channel_array_bytes_are_counted_by_the_byte_axis(qtbot) -> None:  # type: ignore[no-untyped-def]
+    """生 ndarray (Signal の皮を持たない) が会計のバイト軸に載る。
+
+    載らないと 13.2 MB のチャンネル配列が 0 バイト扱いになり、1 ティックに何本でも
+    詰め込まれて 64 MiB 予算が黙って効かなくなる — 未展開シェルで一度踏んだ
+    「バイト会計が正直でないと予算が死ぬ」regime そのもの (FU-16)。
+    """
+    svc = TeardownService()
+    group = _lazy_group(1)
+    m = group.signals[0].timestamps.nbytes
+    arr = np.zeros((1024, 16), dtype=np.uint8)
+
+    svc.enqueue("k", group, cached_arrays=(arr,))
+
+    assert svc.pending_bytes() == m + arr.nbytes  # m のみ (= 0 バイト扱い) は不合格
+
+
+def test_a_cached_array_shared_with_a_signal_is_counted_once(qtbot) -> None:  # type: ignore[no-untyped-def]
+    """identity dedup は新しい ndarray 分岐にも効く (会計の保存すべき契約)。
+
+    今日の production は C1 の所有権不変条件により列の値配列とキャッシュ配列が
+    別オブジェクトなので、これは再現ではなく**契約ガード**である: 分岐が共通の
+    ``seen`` を使わなくなる変異 (C1 の copy を外す / 非セレクタ経路をキャッシュ
+    配列の素通しにする) を入れた瞬間に二重計上が始まり、ティックが予算へ早く
+    到達してペーシングの実効粒度が黙って粗くなる。
+    """
+    arr = np.zeros(4096, dtype=np.uint8)
+    # _freeze は read-only 入力を素通しする (sample_source.py) ので、凍結してから
+    # 渡さないと EagerValues がコピーを持ち、同一オブジェクトの共有を作れない。
+    arr.flags.writeable = False
+    src = EagerValues(arr)
+    assert src.array_if_materialized() is arr, "fixture 前提: 値配列が共有されていない"
+    ts = np.arange(4096, dtype=np.float64)
+    ts.flags.writeable = False
+    sig = Signal(
+        name="s",
+        timestamps=ts,
+        values_source=src,
+        file_format="MDF4",
+        bus_type="",
+        source_file="/x.mf4",
+    )
+    svc = TeardownService()
+
+    svc.enqueue("k", _group_of((sig,)), cached_arrays=(arr,))
+
+    assert svc.pending_bytes() == ts.nbytes + arr.nbytes  # 2*arr.nbytes は不合格
+
+
+def test_derived_view_arrays_are_counted_by_the_byte_axis(qtbot) -> None:  # type: ignore[no-untyped-def]
+    """sorted_view/finite_view が抱える**別の**配列も会計に載る。
+
+    値 dtype を uint8 にするのが要点。float64 値 + 単調 master という既存 fixture
+    (`_eager_group`) の形では ``sorted_view()`` が ``astype(copy=False)`` で
+    **同一オブジェクト**を返し ``finite_view()`` も zero-copy なので、派生ビューの
+    寄与が構造的に 0 バイトになる — その形で書いた assert は「派生ビューを 1 本も
+    数えない実装」でも緑のまま通る (実測: 共有ヘルパから派生ビュー計上を削っても
+    test_teardown_pacing.py は 11/11 緑・全スイートも緑だった)。
+    非 float64 のチャンネル値は prod の広幅 uint8 そのもので、そこでは派生ビューが
+    値配列の 8 倍を追加で抱える = 会計が落とすと最も痛い regime である。
+    """
+    vs = np.zeros(4096, dtype=np.uint8)
+    vs.flags.writeable = False
+    ts = np.arange(4096, dtype=np.float64)
+    ts.flags.writeable = False
+    sig = Signal(
+        name="s",
+        timestamps=ts,
+        values_source=EagerValues(vs),
+        file_format="MDF4",
+        bus_type="",
+        source_file="/x.mf4",
+    )
+    view_ts, view_vs = sig.finite_view()  # sorted_view 経由で float64 の別配列が生える
+    assert view_ts is ts and view_vs is not vs, "fixture 前提: 派生ビューが別配列でない"
+    svc = TeardownService()
+
+    svc.enqueue("k", _group_of((sig,)))
+
+    # ts (32 KB) + 値 uint8 (4 KB) + float64 へ upcast した派生ビュー (32 KB)。
+    assert svc.pending_bytes() == ts.nbytes + vs.nbytes + view_vs.nbytes

@@ -179,13 +179,23 @@ class ChannelSampleCache:
         予算の効きが読めなくなる。
         """
         with self._lock:
-            hit = [key for key in self._entries if key[0] == handle_id]
-            dropped = []
-            for key in hit:
-                arr = self._entries.pop(key)
-                self._bytes_held -= int(arr.nbytes)
-                dropped.append(arr)
-            return tuple(dropped)
+            return self._pop_handle_entries(handle_id)
+
+    def release_handle(self, handle_id: int) -> None:
+        """*handle_id* のエントリを外して**その場で解放する** (回収しない)。
+
+        :meth:`drop_handle` との違いは**所有権の行き先だけ**である。あちらは
+        teardown へ渡すために配列を返すが、こちらは渡す相手が居ない
+        (``MdfHandle.close()`` の backstop — 回収されない close 経路) ので参照を
+        ここで落とす。``drop_handle`` を呼んで返り値を捨てる形にしないのは、
+        「この経路は同期解放している」という事実がコード上から消えるため。
+        エントリを外す会計そのものは :meth:`_pop_handle_entries` の 1 本だけ。
+
+        通常の unload では ``Session.remove_group`` が先に ``drop_handle`` で回収済み
+        なので空振りする。
+        """
+        with self._lock:
+            self._pop_handle_entries(handle_id)
 
     # ─── introspection (非侵襲・spec §8) ──────────────────────────────────────
     # LRU 順序を動かさず lock も取らない: int の読みは GIL 下で atomic であり、
@@ -241,6 +251,16 @@ class ChannelSampleCache:
         return self._bytes_held
 
     # ─── 内部 (すべて _lock 保持前提) ────────────────────────────────────────
+
+    def _pop_handle_entries(self, handle_id: int) -> tuple[np.ndarray, ...]:
+        """*handle_id* の全エントリを外して返す (回収と解放が共有する唯一の会計)。"""
+        hit = [key for key in self._entries if key[0] == handle_id]
+        dropped = []
+        for key in hit:
+            arr = self._entries.pop(key)
+            self._bytes_held -= int(arr.nbytes)
+            dropped.append(arr)
+        return tuple(dropped)
 
     def _capacity_for(self, floor_bytes: int) -> int:
         """LRU が使ってよいバイト数。``floor_bytes`` は無条件に確保する最低容量。"""

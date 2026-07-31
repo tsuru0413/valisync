@@ -80,12 +80,17 @@ class RemovalResult:
     ``removed_columns`` carries the group's minted column Signals (E-1), which
     live outside ``SignalGroup.signals`` and would otherwise escape the teardown
     accounting.
+    ``cached_arrays`` carries the decoded channel arrays recovered from the
+    ``ChannelSampleCache`` (E-4a). ``removed_columns`` cannot carry them: those
+    are raw ndarrays, not Signals. 1 本 13.2 MB (prod の広幅チャンネル) なので、
+    ここで渡さないと teardown の三軸ペーシングを丸ごと迂回する。
     """
 
     removed: bool
     dependent_signals: tuple[str, ...] = ()
     removed_group: SignalGroup | None = None
     removed_columns: tuple[Signal, ...] = ()
+    cached_arrays: tuple[np.ndarray, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -433,18 +438,32 @@ class Session:
         # 競合 (native アクセス違反) を防いでおり外せない。だから「エクスポート中の
         # unload」は close をやめるのではなく **UI 側で拒否**する
         # (AppViewModel.unload_file の述語ガード)。
+        cached: tuple[np.ndarray, ...] = ()
         if group.handle is not None:
             # **close の前**に落とす (spec §5.7)。キーは id(handle) を含むだけで
             # ハンドルを所有しないので、エントリを残したままハンドルが死ぬと、
             # 次のロードが同じアドレスを再利用したときに古いファイルの 2-D を
             # 引き当てる (長さが合えば例外も出ない = 値の無言すり替え)。
-            self._channel_cache.drop_handle(id(group.handle))
+            #
+            # E-4a: 回収した配列は捨てずに呼び出し側へ渡す。close() は自ハンドルの
+            # エントリを ChannelSampleCache から落として**その場で同期解放**するので、
+            # 順序を逆にすると teardown へ渡す実体が消え、13.2 MB/本 のチャンネル配列が
+            # 三軸ペーシングを迂回して GUI スレッドで解放される (会計上は「配列は
+            # 1 本も無かった」ように見えるので、症状はフリーズだけで数字に出ない)。
+            #
+            # 引くのは handle.cache ではなく **self._channel_cache**: Session が
+            # 作ったハンドルなら同一オブジェクトだが、handle.cache は型として
+            # None を取りうる (MdfLoader を引数なしで使う経路)。ここで Session 側を
+            # 使えば None 分岐が構造的に要らず、かつ「予算の裁定者は Session が
+            # 持つ 1 個」(spec §5.2) がコード上でも読める。
+            cached = self._channel_cache.drop_handle(id(group.handle))
             group.handle.close()
         return RemovalResult(
             removed=True,
             dependent_signals=dependents,
             removed_group=group,
             removed_columns=columns,
+            cached_arrays=cached,
         )
 
     # ─── Pure-computation pass-throughs (Session is the only gateway) ──────────

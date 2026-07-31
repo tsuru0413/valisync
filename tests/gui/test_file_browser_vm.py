@@ -143,7 +143,13 @@ def test_releasing_file_stays_after_loaded_rows_until_released(tmp_path: Path) -
     app_vm = AppViewModel()
 
     class _Fake:
-        def enqueue(self, key: str, group: object, columns: object = ()) -> None:
+        def enqueue(
+            self,
+            key: str,
+            group: object,
+            columns: object = (),
+            cached_arrays: object = (),
+        ) -> None:
             pass
 
     app_vm.set_teardown(_Fake())
@@ -224,7 +230,13 @@ def test_key_at_none_for_releasing_row(tmp_path: Path) -> None:
     app_vm = AppViewModel()
 
     class _Fake:
-        def enqueue(self, key: str, group: object, columns: object = ()) -> None:
+        def enqueue(
+            self,
+            key: str,
+            group: object,
+            columns: object = (),
+            cached_arrays: object = (),
+        ) -> None:
             pass
 
     app_vm.set_teardown(_Fake())

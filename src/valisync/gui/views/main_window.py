@@ -644,10 +644,15 @@ class MainWindow(QMainWindow):
             # export_csv_dialog.py:114) に載らないためエクスポート中になり得ない。
             # 鋳造列も渡す (E-3 の 2 サイト目): session.load はグループ登録の**後**に
             # キャンセルが確定するので、その窓で resolve された列は実在しうる。
+            # キャッシュ配列 (E-4a) も同様 — 完走したロードの窓で読まれた列があれば
+            # デコード済みチャンネル 2-D が載っている。
             result = session.remove_group(outcome.key, force=True)
             if result.removed_group is not None:
                 self.teardown_service.enqueue(
-                    outcome.key, result.removed_group, columns=result.removed_columns
+                    outcome.key,
+                    result.removed_group,
+                    columns=result.removed_columns,
+                    cached_arrays=result.cached_arrays,
                 )
 
         self._load_controller.submit(

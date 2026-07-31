@@ -56,6 +56,22 @@ class MdfHandle:
             if self._closed:
                 return
             self._closed = True
+        # 予算の返却は読み直列化 lock の**外**で行う: キャッシュは自前の lock で
+        # 守られているので、in-flight な select の完了を待つ理由が無い。
+        # 通常の unload はここへ来る前に remove_group が drop_handle() で回収済み
+        # なので空振りする — 回収されない close (ローダーのエラー/キャンセル経路)
+        # でエントリが恒久滞留するのを防ぐのがここの役目。キーは id(self) なので、
+        # 残すと予算が目減りするだけでなく id 再利用時に別ファイルの配列を引く。
+        #
+        # 呼ぶのは drop_handle ではなく release_handle: close には回収した配列を
+        # 手渡す相手が居ないので、ここは**同期解放**である。返り値を捨てる形にすると
+        # その事実がコードから読めなくなる (回収 = teardown 行きは remove_group の側)。
+        #
+        # **None ガードは必須** (省略不可): cache は任意で、MdfLoader を引数なしで
+        # 使う経路 — ローダー単体テスト・load() のエラー/キャンセル経路の finally・
+        # MdfHandle(_FakeMdf()) — が全て cache=None のまま close() を呼ぶ。
+        if self.cache is not None:
+            self.cache.release_handle(id(self))
         # mdf.close() 自体は読み直列化 lock 下で行う: in-flight な select を
         # 中断せず完走させ、mmap の native アクセス違反を防ぐ。
         with self.lock:
