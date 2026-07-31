@@ -493,8 +493,9 @@ def test_overlay_does_not_touch_the_resolver_for_refusals(
     """M-7: 鋳造せずに決まる却下 (同名なし / 構造不一致 / 済み) は解決器に触らない。
 
     ``resolve_signal`` は鋳造の入口で、ヒットした列は ``_resolved_by_key`` へ
-    **恒久登録**される (E-3 C-g で LRU なし)。存在判定に使うと「重ねなかった候補」
-    までセッション寿命いっぱい滞留するので、存在は ``has_column`` /
+    登録される。E-4a の LRU で恒久滞留はしなくなったが、存在判定に使うと
+    「重ねなかった候補」が非 pin の枠を食ってプロット中でない列を押し出す
+    (spec §5.5)。したがって存在は ``has_column`` /
     ``is_container_channel`` が答え、鋳造は metadata (曖昧フラグ・単位) が本当に
     必要になるまで遅らせる。
 

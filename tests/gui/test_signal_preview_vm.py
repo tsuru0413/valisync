@@ -231,8 +231,9 @@ def test_display_name_does_not_mint_any_column(qtbot: QtBot, tmp_path: Path) -> 
     """表示名の衝突判定は **1 本も鋳造しない** (列構造だけで決まる)。
 
     「全ファイルの全列を舐めない」だけでは足りない: 鋳造した列は _resolved_by_key へ
-    恒久的に入る (C-g で LRU なし) ので、他ファイル 1 本ずつでも「プレビューを開いた
-    ぶんだけ列 Signal が滞留する」経路が残る。上限 (<= 1) ではなく **0** を要求する。
+    入り、E-4a の LRU では非 pin の枠を食ってプロット中でない列を押し出す
+    (spec §5.5) ので、他ファイル 1 本ずつでも「プレビューを開くたびに枠が削られる」
+    経路が残る。上限 (<= 1) ではなく **0** を要求する。
     """
     app_vm = AppViewModel()
     d1, d2 = tmp_path / "a", tmp_path / "b"

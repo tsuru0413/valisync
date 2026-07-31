@@ -292,7 +292,9 @@ class ExportCsvDialog(QDialog):
         ここで走る column_names_of は「列数」と「初期選択の所在」を確定する
         ための **一過性** の生成で、名前は 1 つも保持しない (行あたり int 1 個)。
         物理チャンネルごとの列数を返す API があれば消せる一過性コストだが、
-        C-g と同じ理由で E-3 では増やさない。
+        生成物は行あたり int 1 個で保持もしないため、API 面を増やす価値が無いと
+        判断している (根拠だった「E-3 は C-g で LRU を入れない」は E-4a で失効した
+        が、判断そのものは E-4a でも据え置き)。
         """
         session = self._app_vm.session
         items: list[QTreeWidgetItem] = []  # _rows と同じ添字

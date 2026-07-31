@@ -173,6 +173,16 @@ class AppViewModel(Observable):
         """
         self._teardown = service
 
+    def set_pinned_columns(self, keys: frozenset[str]) -> None:
+        """GraphAreaVM が集めた「今 pin すべき列キー」を Session へ push する。
+
+        E-4a spec §5.5: VM は ``signal_key: str`` しか持たないので weakref では
+        何も pin されない。したがって GUI から明示的に押し込む。ここに素通しの
+        1 段を置くのは、GraphAreaVM が Session を直接触らない (AppViewModel が
+        唯一のアプリ状態の口である) という既存の依存の向きを崩さないため。
+        """
+        self._session.set_pinned_columns(keys)
+
     def set_busy_predicate(self, predicate: Callable[[], bool] | None) -> None:
         """Inject a duck-typed "a blocking job is running" predicate (増分B).
 

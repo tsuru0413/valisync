@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -119,8 +119,18 @@ class Session:
     downsampler and export, and manages loaded Signal_Groups by key.
     """
 
-    def __init__(self, cache_budget_bytes: int | None = None) -> None:
-        self._groups = SignalGroupManager()
+    def __init__(
+        self,
+        cache_budget_bytes: int | None = None,
+        column_capacity: int | None = None,
+    ) -> None:
+        # column_capacity は鋳造列 LRU の容量注入 (テスト/①gate 用・T2 の
+        # cache_budget_bytes と同型で、D6 の「予算を注入して小さくする」)。
+        # None は production 既定。
+        if column_capacity is None:
+            self._groups = SignalGroupManager()
+        else:
+            self._groups = SignalGroupManager(resolved_capacity=column_capacity)
         self._csv_loader = CsvLoader()
         # E-4a: デコード済みチャンネル 2-D の LRU。**Session が 1 個だけ持つ** —
         # 予算 (U3: 256 MB) の裁定者を 1 人にするため (spec §5.2)。ローダーは
@@ -299,9 +309,36 @@ class Session:
         """*display_name* の列がこのグループに実在するか (鋳造しない存在判定)。
 
         ``resolve_signal`` と違い副テーブルへ何も残さない — 「表示のためだけに列を
-        恒久登録する」経路を作らないための口 (E-3 C-g)。
+        登録する」経路を作らないための口。E-4a で LRU が入ったので鋳造列の恒久滞留は
+        なくなったが、非 pin の枠を食ってプロット中でない列を押し出す (spec §5.5)。
         """
         return self._groups.has_column(key, display_name)
+
+    def set_pinned_columns(self, keys: Iterable[str]) -> None:
+        """今 pin すべき列キー集合を差し替える (GUI が push する・E-4a spec §5.5)。
+
+        pin 済みの鋳造列は LRU の evict 対象外になる。予算を超えても**拒否しない**
+        (拒否するとプロット中の列が落ちて再描画ごとに 316 ms 停止が復活する) —
+        超過は :meth:`pinned_column_overflow` で観測する。
+        """
+        self._groups.set_pinned_columns(keys)
+        # spec §5.2「予算の裁定者は 1 人」の実配線。pin した列は所有権不変条件
+        # (spec §5.4) により**自前の独立配列**を抱えるので、チャンネル 2-D と同じ
+        # U3 256 MB を食う。ここを繋がないと ChannelSampleCache.set_reserved は
+        # 誰も呼ばない dead API になり、「プロット中の列 + キャッシュ」の合計が
+        # 静かに上限を超える — どちらの帳簿でも自分だけは予算内に見えるので、
+        # 症状はメモリ以外のどの数字にも出ない。
+        # **順序が重要**: 先に set_pinned_columns で pin 集合を確定させてから
+        # 数える (逆だと古い pin 集合のバイト数を渡す)。
+        self._channel_cache.set_reserved(self._groups.pinned_column_bytes())
+
+    def pinned_columns(self) -> frozenset[str]:
+        """現在 pin されている列キー集合 (introspection・鋳造しない)."""
+        return self._groups.pinned_columns()
+
+    def pinned_column_overflow(self) -> int:
+        """予算を超えて pin されている鋳造列の数 (0 なら予算内)."""
+        return self._groups.pinned_overflow
 
     def is_container_channel(self, key: str, display_name: str) -> bool:
         """*display_name* が複数列 (または改名列) へ展開される「親」チャンネルか。

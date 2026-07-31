@@ -745,9 +745,10 @@ class MainWindow(QMainWindow):
         #
         # T7 レビュー Minor: ここは「その名前がこのファイルに在るか」しか訊いて
         # いないので **resolve_signal を使ってはならない** — ヒットした列は
-        # `_resolved_by_key` へ *恒久的に* 登録され (LRU は E-3 では入れない = C-g)、
-        # 「どのファイルを active にするか」を決めるためだけに列 Signal がセッション
-        # 寿命いっぱい滞留する。has_column / is_container_channel はどちらも
+        # `_resolved_by_key` へ登録される。E-4a で LRU が入ったので恒久滞留は
+        # しなくなったが、**非 pin の枠を食ってプロット中でない列を押し出す**
+        # (spec §5.5) ため、「どのファイルを active にするか」を決めるためだけに
+        # 列 Signal を鋳造してはならない。has_column / is_container_channel はどちらも
         # ColumnRecord の構造だけを見るので鋳造しない。2 つ必要なのは、両者の
         # 被覆が相補的だから: 列キーとスカラーは has_column が True・配列/構造体の
         # **親** (E-3 の集約「N 本に展開」info が載せる名前そのもの) は

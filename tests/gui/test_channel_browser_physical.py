@@ -410,9 +410,12 @@ def _assert_production_is_inverted(app_vm: AppViewModel, key: str) -> None:
 def _mint_count(app_vm: AppViewModel) -> int:
     """鋳造カウンタのスナップショット (読み取り経路の前後で差分を測る)。
 
-    E-3 C-g で鋳造列は **恒久保持** (LRU なし)。ブラウザの読み取り経路
+    鋳造列は E-4a の LRU に載るので恒久滞留はしなくなったが、**非 pin の枠を
+    食ってプロット中でない列を押し出す** (spec §5.5)。ブラウザの読み取り経路
     (prep 構築 / 行 / 列名 / 件数 / フィルタ) が 1 本でも resolve_signal を呼ぶと、
-    prod では 264,004 本の列 Signal が「木を描いただけ」で常駐する。T4 の擬似反転
+    prod では「木を描いただけ」で 264,004 回の鋳造が走り、LRU 枠が丸ごと
+    使い捨ての列で埋まる (プロット中の列は pin で守られるが、それ以外は全滅)。
+    T4 の擬似反転
     fixture は signal_map/resolve を実ローダーのまま残していたため、合成した列キーが
     _namespaced_map に当たり **鋳造がそもそも起きなかった** (実測 delta 0) —
     つまり構造的にこの回帰へ盲目だった。反転で鋳造が本物になった今こそ測る。
@@ -532,13 +535,14 @@ def test_group_total_agrees_with_session_total_column_count(tmp_path: Path) -> N
 
 
 def test_browser_read_paths_never_mint_a_column(tmp_path: Path) -> None:
-    """C-g: ブラウザの読み取り経路は列 Signal を **1 本も鋳造しない**。
+    """ブラウザの読み取り経路は列 Signal を **1 本も鋳造しない**。
 
-    鋳造列は ``_resolved_by_key`` へ恒久登録される (E-3 決定 C-g で LRU なし)。
+    鋳造列は ``_resolved_by_key`` へ登録される。E-4a で LRU が入ったので恒久滞留は
+    しなくなったが、**非 pin の枠を食ってプロット中でない列を押し出す** (spec §5.5)。
     ``_ensure_prep`` / ``column_names_for`` のどこか 1 箇所が
     ``session.resolve_signal`` を呼ぶと、prod では「木を開いた・フィルタを打った」
-    だけで 264,004 本の列 Signal が寿命いっぱい常駐する — 本増分が取り除いた
-    コストそのものが裏口から戻る。
+    だけで 264,004 回の鋳造が走り、LRU 枠が使い捨ての列で埋まる — 本増分が
+    取り除いたコストそのものが裏口から戻る。
 
     T4 時点ではこの回帰を測れなかった: 擬似反転 fixture が signal_map/resolve を
     実ローダーのまま残していたため、合成した列キーは ``_namespaced_map`` に当たり
@@ -566,7 +570,9 @@ def test_browser_read_paths_never_mint_a_column(tmp_path: Path) -> None:
     vm.refresh()
     vm.tree_groups()  # 再構築も鋳造しない
 
-    assert _mint_count(app_vm) == before, "ブラウザの読み取りが列を鋳造した (C-g 違反)"
+    assert _mint_count(app_vm) == before, (
+        "ブラウザの読み取りが列を鋳造した (非 pin 枠を食う・spec §5.5)"
+    )
     # 反 vacuous 前置: このセッションで鋳造は**実際に起こりうる** (guard が「鋳造
     # 経路が死んでいるから 0」で通っていない)。
     assert app_vm.session.resolve_signal(f"{key}{KEY_SEPARATOR}Mat[1]") is not None
@@ -615,8 +621,9 @@ def test_tooltip_resolves_a_column_key_after_inversion(tmp_path: Path) -> None:
     sabotage: _signal_by_key の resolve フォールバックを外すと空文字で RED。
 
     **このテストは resolve 経由を「推奨形」として祝福していない** — resolve は
-    鋳造列を _resolved_by_key へ恒久登録する (C-g で LRU なし) ので、ホバーごとに
-    列 Signal が滞留する。許容できるのは production 消費者がゼロだからで、
+    鋳造列を _resolved_by_key へ登録する。E-4a の LRU で恒久滞留はしなくなったが、
+    ホバーごとに非 pin の枠を食ってプロット中でない列を押し出す (spec §5.5)。
+    許容できるのは production 消費者がゼロだからで、
     PC-19 を復活させるときは鋳造しないメタデータ取得口が要る
     (_signal_by_key の docstring 参照)。
     """
