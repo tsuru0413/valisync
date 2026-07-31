@@ -31,7 +31,7 @@ from collections.abc import Callable
 
 from PySide6.QtCore import QObject, QTimer
 
-from valisync.core.models import Signal, SignalGroup
+from valisync.core.models import Signal, SignalGroup, retained_bytes
 
 _BYTE_BUDGET = 64 * 1024 * 1024  # 64 MiB per tick
 # 未展開の遅延シェルはバイト会計上ほぼ 0 なので、バイト予算だけでは 330k シェルが
@@ -217,38 +217,21 @@ class TeardownService(QObject):
 
 
 def _retained_bytes(sig: Signal, seen: set[int]) -> int:
-    """この Signal が保持しているバイト数 (既に数えた配列は id で除外).
+    """この Signal が解放で返すバイト数 (既に数えた配列は id で除外).
 
-    master はグループ内で identity 共有されるので、信号ごとに数えると prod_demo で
-    実体 0.2 MiB に対し 10,316 MiB (約 5 万倍) を計上してしまう。
-    未展開信号の sig.values は絶対に読まない (読むと遅延ロードを再誘発する) —
-    値は array_if_materialized() で「展開済みのときだけ」取る。
+    会計そのものは ``valisync.core.models.retained_bytes`` に 1 本だけ置く — pin の
+    予約会計 (``SignalGroupManager.pinned_column_bytes``) と同じ問いに答えるので、
+    別々に書くと必ずずれる (E-4a レビューで実際にずれていた: 予約側が float64 の
+    ``sorted_view`` を取りこぼし、非 float64 チャンネルで最大 8 倍の**過小**申告)。
 
-    `_range_stat_index_cache` (RangeStatIndex のブロック配列 5 本) は計上しない:
-    ブロック配列は √n スケールで小さく、元の ts/vs は finite_view と共有されるため
-    二重計上になる。ただしこれは時間問題の解決ではない — 実測で RSI を持たせても
+    ここに残るのはこのラッパー 1 つ = **master を数える**という teardown 固有の判断。
+    teardown は master ごと解放するので ``seen`` を種まきせずに渡す (予約側は master を
+    グループ側の帳簿に残すため ``id(timestamps)`` を先に入れる — 両者の唯一の差)。
+    master はグループ内で identity 共有されるので、``seen`` を通さずに信号ごとに
+    数えると prod_demo で実体 0.2 MiB に対し 10,316 MiB (約 5 万倍) を計上してしまう。
+
+    RangeStatIndex を計上しないことは時間問題の解決ではない — 実測で RSI を持たせても
     バイト計上は変わらないままティックが 24→36ms に増える (だから第 3 軸の
     デッドラインが要る)。
     """
-    total = 0
-    ts = sig.timestamps
-    if id(ts) not in seen:
-        seen.add(id(ts))
-        total += int(ts.nbytes)
-    # getattr フォールバックは使わない — 名前がドリフトしたら実ソースで dedup が
-    # 無言で消えるので、AttributeError で loud-fail させる。
-    val = sig._values_source.array_if_materialized()
-    if val is not None and id(val) not in seen:
-        seen.add(id(val))
-        total += int(val.nbytes)
-    for pair in (
-        getattr(sig, "_sorted_view_cache", None),
-        getattr(sig, "_finite_view_cache", None),
-    ):
-        if pair is None:
-            continue
-        for arr in pair:  # (timestamps, values) タプル
-            if id(arr) not in seen:
-                seen.add(id(arr))
-                total += int(arr.nbytes)
-    return total
+    return retained_bytes(sig, seen)

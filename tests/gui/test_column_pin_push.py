@@ -139,10 +139,17 @@ def test_pins_reserve_their_bytes_in_the_channel_cache(tmp_path: Path) -> None:
 
     **実体化は pin push の「前」に起きる** (実測・E-4a T3 で確認): ``add_signal`` は
     ``_notify("signals")`` を出す前に ``_auto_fit_ranges`` -> ``_visible_union_range``
-    で ``sig.values`` を読むので、push の時点で列は既に実体を持っている。したがって
-    申告値は「1 回分 stale」にはならない — 「鋳造しただけで未展開の列は 0」という
-    もう一方の契約は manager 側の
+    で ``sig.values`` と ``sig.sorted_view()`` を読むので、push の時点で列は既に
+    実体を持っている。したがって申告値は「1 回分 stale」にはならない —
+    「鋳造しただけで未展開の列は 0」というもう一方の契約は manager 側の
     ``test_pinned_column_bytes_counts_only_what_is_materialized`` が固定する。
+
+    **申告は値配列 + float64 ビューの合計** (E-4a T3 レビュー I1): プロットされた列は
+    native dtype の値配列 (uint8 x 3 = 3 B) と ``sorted_view()`` が upcast した
+    float64 の別実体 (24 B) の**両方**を抱える。値配列だけを数えると非 float64
+    チャンネルで最大 8 倍の過小申告になり、LRU が「まだ空きがある」と信じて
+    pin + キャッシュの合計が予算を超える。master (24 B) は親物理チャンネルと共有で
+    グループ側の帳簿に属するので載らない。
     """
     session, key = _session_with_wide(tmp_path)
     plotted = f"{key}::Wide[0]"
@@ -152,10 +159,19 @@ def test_pins_reserve_their_bytes_in_the_channel_cache(tmp_path: Path) -> None:
     area.active_panel().add_signal(plotted)
     sig = session.resolve_signal(plotted)
     assert sig is not None
-    one = np.asarray(sig.values).nbytes
-    assert one == 3, one  # 反 vacuous: 0 と機械的に区別できる値 (3 サンプル x uint8)
+    # 内訳を先に固定する (合計だけ見ると「たまたま一致」と区別できない)。読む前に
+    # 実体があることを確かめる — テスト側で sorted_view() を呼んで作ってしまうと、
+    # production が作っていなくても緑になる。
+    assert getattr(sig, "_sorted_view_cache", None) is not None, (
+        "描画経路が sorted_view を作っていない (前提が崩れている = 以降が偽緑)"
+    )
+    native = np.asarray(sig.values).nbytes
+    vs64 = sig.sorted_view()[1].nbytes
+    assert (native, vs64) == (3, 24), (native, vs64)
+    one = native + vs64
+    assert one == 27, one  # 反 vacuous: 0 とも「値配列だけ」の 3 とも区別できる
     assert session.channel_cache.reserved == one, (
-        "pin の実体バイトが予算の裁定者へ渡っていない (set_reserved が未配線)"
+        "pin の実体バイトが予算の裁定者へ渡っていない (set_reserved が未配線 / 過小申告)"
     )
 
     # 覗くだけの列 (非 pin) を実体化しても申告は増えない。定数を刷っているだけの
@@ -163,8 +179,40 @@ def test_pins_reserve_their_bytes_in_the_channel_cache(tmp_path: Path) -> None:
     browsed = session.resolve_signal(f"{key}::Wide[2]")
     assert browsed is not None
     _ = browsed.values
+    browsed.sorted_view()
     area.active_panel().add_signal(f"{key}::Wide[1]")  # 次の pin push を起こす
 
     assert session.channel_cache.reserved == one * 2, (
         "pin 集合の実体バイト合計になっていない (非 pin を数えた / 増えていない)"
     )
+
+
+def test_session_pin_push_reserves_and_releases_bytes(tmp_path: Path) -> None:
+    """pin を外したら予約は **返る** — 予約は一方向のラチェットではない。
+
+    既存のテストは ``reserved`` が 0 -> 27 -> 54 と**増える**方向しか観測していない
+    ので、``set_reserved(max(reserved, pinned_column_bytes()))`` のようなラチェット
+    実装が全数緑のまま出荷できてしまう (レビューの sabotage で実測: 1754 本すべて
+    pass)。そのとき起きるのは「プロットを外しても予約が高いまま」→
+    ``_capacity_for`` がチャンネルキャッシュを最低容量まで痩せさせる →
+    列ごとのフルチャンネル再読み (316 ms/列) の復活で、まさにこの配線が防ぐはずの
+    症状そのもの。
+
+    GUI の push 連鎖を通さず ``Session`` を直接叩くのは、解放の契約が core 側の
+    ものだから (GraphAreaVM 経由だと「pin が減る操作」を作る手数の方が主題に
+    なってしまう)。
+    """
+    session, key = _session_with_wide(tmp_path)
+    col = f"{key}::Wide[0]"
+    sig = session.resolve_signal(col)
+    assert sig is not None
+    native = np.asarray(sig.values).nbytes
+    vs64 = sig.sorted_view()[1].nbytes  # render 相当 (float64 の別実体を抱える)
+    held = native + vs64
+    assert held == 27, held  # 反 vacuous: 0 とも「値配列だけ」の 3 とも区別できる
+
+    session.set_pinned_columns({col})
+    assert session.channel_cache.reserved == held
+
+    session.set_pinned_columns(())  # プロットから外した相当
+    assert session.channel_cache.reserved == 0, "pin を外しても予約が返らない"

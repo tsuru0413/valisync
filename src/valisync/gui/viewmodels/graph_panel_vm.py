@@ -474,6 +474,12 @@ class GraphPanelVM(Observable):
         self._axes[axis_index] = placeholder
         self._compact_axes()  # prune the now-signal-less placeholder, remap survivors
         self._invalidate_cache()
+        # 通知は "axes" であって "signals" ではない (E-4a): 抽出はクロスパネル移動の
+        # 前半で、entries はまだどのパネルにも載っていない。ここで "signals" を出すと
+        # GraphAreaVM が pin 集合を数え直し、移動中のエントリが一瞬 unpin される —
+        # 容量が逼迫していればその隙に evict され、着地後の初回描画がフルチャンネル
+        # 再読み (実測 316 ms/列) になる。この対の pin push は後半の insert_axis
+        # (末尾で "signals" を出す) が持つ。
         self._notify("axes")
         return axis, entries
 

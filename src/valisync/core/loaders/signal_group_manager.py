@@ -12,7 +12,7 @@ from valisync.core.loaders.column_names import (
     leaf_paths,
     parse_leaf,
 )
-from valisync.core.models import Signal, SignalGroup
+from valisync.core.models import Signal, SignalGroup, retained_bytes
 from valisync.core.models.sample_source import LazyMdfValues
 
 _FORMAT_KEY_PREFIX: dict[str, str] = {"MDF4": "mf4", "CSV": "csv"}
@@ -27,9 +27,14 @@ _NO_COLUMN_RECORDS: Mapping[str, ColumnRecord] = MappingProxyType({})
 # 止めている (mdf_loader._load_group) ので、鋳造側をそれに一致させる。
 _UNINHERITED_METADATA = frozenset({"conversion_info", "value_labels"})
 
-# 鋳造列 LRU の既定容量 (**列数**)。1 列 ~96 KB (float64 実体化後) なので ~48 MB 相当。
-# バイトでなく本数で持つのは、鋳造直後の列がまだ未展開 (nbytes 0) で、バイト予算だと
+# 鋳造列 LRU の既定容量。単位は **列数だけ** で、この LRU はバイトを一切強制しない。
+# バイトでなく本数で持つのは、鋳造直後の列がまだ未展開 (0 バイト) で、バイト予算だと
 # 「まだ読んでいない列は無料」に見えて上限が一切効かないため。
+# 512 という数は「prod の広幅 1 列 ~96 KB (float64 実体化後) x 512 = ~48 MB」という
+# **最悪ケースの見積り**から採ったが、それは目安であって上限ではない: 512 本すべてが
+# もっと長いチャンネルなら実体はいくらでも大きくなりうるし、逆に未展開なら 0 に
+# なりうる。実体バイトを見て動くのは pin 側 (pinned_column_bytes ->
+# ChannelSampleCache.set_reserved) だけで、ここを「48 MB の予算」と読んではならない。
 _DEFAULT_RESOLVED_CAPACITY = 512
 
 # pin が容量を食い尽くしても非 pin 用に必ず残す枠 (spec §5.5 の「LRU の最低容量を
@@ -122,11 +127,17 @@ class SignalGroupManager:
         Dependency checking against Derived_Signals (Req 4.5) is the Session's
         responsibility; this method removes unconditionally.
         """
-        try:
-            group = self._groups.pop(key)
-        except KeyError:
-            raise KeyError(f"no Signal_Group registered under key: {key!r}") from None
         with self._resolved_lock:
+            # 在籍表からの pop も **lock の中** (resolve 側の在籍判定と対で意味を持つ)。
+            # 外に出すと、resolve が lock 下で「在籍あり」を確認して鋳造している最中に
+            # ここが _groups を抜き、_mint_column の self._groups[group_key] が
+            # KeyError になる — resolve() の契約 (アンロード済みは None) が破れる。
+            try:
+                group = self._groups.pop(key)
+            except KeyError:
+                raise KeyError(
+                    f"no Signal_Group registered under key: {key!r}"
+                ) from None
             table = self._resolved_by_key.pop(key, {})
             # recency 表からも外す。残すとアンロード済みキーが LRU の枠を食い続け、
             # 生きている列が理由なく落ちる (帳簿の静かなリーク)。
@@ -266,9 +277,17 @@ class SignalGroupManager:
         if hit is not None:
             return hit
         group_key = key.split(KEY_SEPARATOR, 1)[0]
-        if group_key not in self._groups:
-            return None
         with self._resolved_lock:
+            # グループ在籍の判定は **lock の中** で行う (E-4a T3 レビュー M3)。外で
+            # 判定すると、判定を通ったスレッドが lock 待ちで止まっている間に別の
+            # スレッドの remove() が完走し、_mint_column の self._groups[group_key] が
+            # KeyError を上げて resolve() の外へ漏れる — 呼び出し側は「アンロード
+            # 済み = None」しか想定していない。setdefault が remove() の掃除済み
+            # エントリを蘇らせるのも同じバグの後半 (帳簿に幽霊グループが残る)。
+            # 今日ここへ並行して入る呼び出し元は無いが、E-4b はエクスポート
+            # ワーカーをこの経路へ載せる。
+            if group_key not in self._groups:
+                return None
             table = self._resolved_by_key.setdefault(group_key, {})
             cached = table.get(key)
             if cached is not None:
@@ -314,7 +333,7 @@ class SignalGroupManager:
         return self._pinned
 
     def pinned_column_bytes(self) -> int:
-        """pin 済みの鋳造列が **今** 保持している値バイトの合計 (spec §5.5)。
+        """pin 済みの鋳造列が **今** 保持している配列バイトの合計 (spec §5.5)。
 
         ``Session.set_pinned_columns`` がこれを ``ChannelSampleCache.set_reserved``
         へ渡す (spec §5.2「予算の裁定者は 1 人」)。pin した列は所有権不変条件
@@ -322,10 +341,22 @@ class SignalGroupManager:
         U3 256 MB を食う — 渡さないと 2 つの帳簿が互いの解放を当てにして両方が
         上限を超える。
 
+        **数え方は teardown と共有する** (``models.retained_bytes``)。値配列だけを
+        数えてはならない: プロット中の列は ``sorted_view()`` が ``astype(float64)``
+        で作った**別の実体**も抱えており、非 float64 チャンネルではそちらの方が
+        大きい (幅広 uint8 で 8 倍)。過小申告は LRU に「まだ空きがある」と信じさせ、
+        pin + キャッシュの合計が予算を超える — ``set_reserved`` が防ぐはずの失敗を
+        会計そのものが招く形になる。
+
+        **master は数えない**: 鋳造列は親物理チャンネルの master を**同一
+        オブジェクトのまま**共有する (``_mint_column``) ので、ここへ載せると
+        グループ側の帳簿と二重計上になる。``seen`` を pin 列すべてで共有するのは、
+        同一チャンネルの兄弟列が master を共有する分も 1 回に畳むため。
+
         **未展開の列は 0**: 鋳造しただけの列は 1 バイトも保持していない
-        (``nbytes_if_materialized`` は展開を誘発しない)。「鋳造したから食っている」
-        と数えると、ブラウザで覗いただけの列がチャンネルキャッシュの容量を削り、
-        最低容量まで痩せて再描画ごとのフルチャンネル再読みが復活する。
+        (``retained_bytes`` は展開を誘発しない)。「鋳造したから食っている」と数えると、
+        ブラウザで覗いただけの列がチャンネルキャッシュの容量を削り、最低容量まで
+        痩せて再描画ごとのフルチャンネル再読みが復活する。
 
         pin 集合には物理チャンネルのキーも混ざる (プロットしたのがスカラー信号なら
         鋳造列ではない) が、ここには載らない — 走査するのは ``_resolved_by_key``
@@ -337,16 +368,20 @@ class SignalGroupManager:
         (``bytes_held`` は常に真の値)。
 
         lock 下で数え切るのは、表のコピーを外へ持ち出すと反復中に別スレッドの
-        鋳造で ``dict changed size`` になるから。``nbytes_if_materialized`` は int の
-        読みだけで I/O も ``handle.lock`` も触らないので、ロック順の危険は無い。
+        鋳造で ``dict changed size`` になるから。``retained_bytes`` は展開済み配列の
+        nbytes を読むだけで I/O も ``handle.lock`` も触らないので、ロック順の危険は
+        無い。
         """
         with self._resolved_lock:
-            return sum(
-                int(signal._values_source.nbytes_if_materialized)
-                for table in self._resolved_by_key.values()
-                for column_key, signal in table.items()
-                if column_key in self._pinned
-            )
+            seen: set[int] = set()
+            total = 0
+            for table in self._resolved_by_key.values():
+                for column_key, signal in table.items():
+                    if column_key not in self._pinned:
+                        continue
+                    seen.add(id(signal.timestamps))  # master はグループ側の帳簿
+                    total += retained_bytes(signal, seen)
+            return total
 
     @property
     def resolved_capacity(self) -> int:

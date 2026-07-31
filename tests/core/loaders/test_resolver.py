@@ -164,28 +164,44 @@ def test_pinned_column_survives_unrelated_add_and_remove(tmp_path: Path) -> None
     なのは容量に余裕があるという偶然であって、契約の証明にならない。
     失われた保証は test_unpinned_column_identity_is_not_guaranteed_after_eviction
     が明示的に固定する。
+
+    **pin を実際に効かせる構成にする** (E-4a T3 レビュー M1): 既定容量 512 で列を
+    1 本しか鋳造しないと ``_evict_resolved`` が「予算内」の早期 return に入り、
+    ``set_pinned_columns`` は 1 行も仕事をしない = pin ガードを壊しても緑のままに
+    なる (sabotage で実測)。容量 1 + 非 pin の列 1 本で圧力を作れば、pin ガードが
+    有れば pin 列が残り、無ければ **pin 列こそが最古として落ちる**。
     """
-    mgr = SignalGroupManager()
+    mgr = SignalGroupManager(resolved_capacity=1)
     k1 = _add_real(mgr, tmp_path)
-    col_key = f"{k1}::Mat[2]"  # 既存 map に無い列キー -> 鋳造経路
-    first = mgr.resolve(col_key)
-    assert first is not None
-    assert mgr.mint_count == 1
-    mgr.set_pinned_columns({col_key})  # GUI がプロット中として push した状態
-    _ = first.values  # 実際に読ませる (再鋳造されると読み直しになる)
-    assert first._values_source.is_materialized is True
+    try:
+        col_key = f"{k1}::Mat[2]"  # 既存 map に無い列キー -> 鋳造経路
+        first = mgr.resolve(col_key)
+        assert first is not None
+        assert mgr.mint_count == 1
+        mgr.set_pinned_columns({col_key})  # GUI がプロット中として push した状態
+        _ = first.values  # 実際に読ませる (再鋳造されると読み直しになる)
+        assert first._values_source.is_materialized is True
 
-    k2 = mgr.add(_group("Other"))  # 2 ファイル目ロード相当
-    again = mgr.resolve(col_key)
-    assert again is first  # pin 中は同一オブジェクト
-    assert again._values_source.is_materialized is True  # 読み直していない
-    assert mgr.mint_count == 1  # 再鋳造していない
+        k2 = mgr.add(_group("Other"))  # 2 ファイル目ロード相当
+        # 非 pin の列を 1 本鋳造して容量を超えさせる。pin 列より **後** に鋳造する
+        # のが要点 — pin 列を最古のまま残すことで、ガードが無い実装では pin 列が
+        # evict 対象の先頭になる。
+        assert mgr.resolve(f"{k1}::Mat[1]") is not None
+        assert mgr.mint_count == 2
 
-    mgr.remove(k2)  # 2 ファイル目 unload 相当
-    assert mgr.resolve(col_key) is first
-    assert mgr.mint_count == 1
+        again = mgr.resolve(col_key)
+        assert again is first  # pin 中は同一オブジェクト
+        assert again._values_source.is_materialized is True  # 読み直していない
+        assert mgr.mint_count == 2  # 再鋳造していない
 
-    _close(mgr, k1)
+        mgr.remove(k2)  # 2 ファイル目 unload 相当
+        assert mgr.resolve(col_key) is first
+        assert mgr.mint_count == 2
+    finally:
+        # finally で閉じる: 途中の assert が落ちるとハンドルが開いたまま残り、
+        # Windows では tmp_path の後始末が mmap ロックで失敗して、1 件の明快な
+        # 失敗が無関係な場所のカスケードに化ける。
+        _close(mgr, k1)
 
 
 def test_unpinned_column_identity_is_not_guaranteed_after_eviction(
@@ -200,18 +216,21 @@ def test_unpinned_column_identity_is_not_guaranteed_after_eviction(
     """
     mgr = SignalGroupManager(resolved_capacity=1)
     k1 = _add_real(mgr, tmp_path)
-    first = mgr.resolve(f"{k1}::Mat[1]")
-    assert first is not None
-    assert mgr.resolve(f"{k1}::Mat[2]") is not None  # 予算超 -> 最古を落とす
+    try:
+        first = mgr.resolve(f"{k1}::Mat[1]")
+        assert first is not None
+        assert mgr.resolve(f"{k1}::Mat[2]") is not None  # 予算超 -> 最古を落とす
 
-    again = mgr.resolve(f"{k1}::Mat[1]")
-    assert again is not None
-    assert again is not first  # ← 旧契約ではここが `is` だった (意図的 supersede)
-    assert again.name == first.name
-    assert np.array_equal(np.asarray(again.values), np.asarray(first.values))
-    assert mgr.resolved_evictions >= 1
-
-    _close(mgr, k1)
+        again = mgr.resolve(f"{k1}::Mat[1]")
+        assert again is not None
+        assert again is not first  # ← 旧契約ではここが `is` だった (意図的 supersede)
+        assert again.name == first.name
+        assert np.array_equal(np.asarray(again.values), np.asarray(first.values))
+        assert mgr.resolved_evictions >= 1
+    finally:
+        # finally で閉じる理由は上のテストと同じ (開いたままだと tmp_path の後始末が
+        # Windows の mmap ロックで失敗し、失敗の原因が別テストへ飛び火する)。
+        _close(mgr, k1)
 
 
 def test_removing_own_group_drops_its_resolved_table(tmp_path: Path) -> None:

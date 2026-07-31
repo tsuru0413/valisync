@@ -116,6 +116,35 @@ def test_pins_are_never_refused_and_overflow_is_observable(wide: LoadResult) -> 
     assert probe in mgr.resolved_keys(key), "非 pin 用の最低容量が確保されていない"
 
 
+def test_a_probe_column_is_not_evicted_by_its_own_minting(wide: LoadResult) -> None:
+    """最低容量 (``_MIN_EVICTABLE_COLUMNS``) の **2 つ目の検出器**。
+
+    上の ``test_pins_are_never_refused_and_overflow_is_observable`` は
+    ``resolved_keys`` の**メンバシップ**だけを見ており、機構の防波堤がその 1 行しか
+    無かった (T3 の sabotage S5 で実測: 31 本中 1 本しか赤くならない)。ここでは
+    別の観測点 — **オブジェクト同一性と鋳造カウンタ** — で同じ機構を押さえる。
+    どちらか一方の観測点だけを壊す回帰でも必ず捕まえるため。
+
+    症状の形: 最低容量が 0 だと、pin が予算を食い尽くしている状態で鋳造した列が
+    evict 走査の中で**自分自身**を落とす。resolve は返り値としては Signal を返す
+    ので値は正しく、壊れているのは「2 度目も同じものが返る」だけ — つまりブラウザで
+    列を覗くたびに毎回フルチャンネル再読み (316 ms/列) が走る形で、
+    ``resolved_keys`` を見ないテストからは完全に不可視になる。
+    """
+    mgr = SignalGroupManager(resolved_capacity=2)
+    key = _register(mgr, wide)
+    mgr.set_pinned_columns({f"{key}::Wide[{i}]" for i in range(5)})
+    for i in range(5):
+        assert mgr.resolve(f"{key}::Wide[{i}]") is not None
+
+    probe = f"{key}::Wide[7]"
+    first = mgr.resolve(probe)
+    assert first is not None
+    before = mgr.mint_count
+    assert mgr.resolve(probe) is first, "鋳造した列が自分自身を落とした"
+    assert mgr.mint_count == before, "2 度目の解決が再鋳造になっている"
+
+
 def test_pinned_column_bytes_counts_only_what_is_materialized(wide: LoadResult) -> None:
     """pin が抱える **実体** バイトだけを数える (Session が予算の裁定者へ渡す値)。
 
@@ -124,6 +153,12 @@ def test_pinned_column_bytes_counts_only_what_is_materialized(wide: LoadResult) 
     まで痩せて再描画ごとのフルチャンネル再読み (316 ms/列) が復活する。
     introspection が**展開を誘発しない**ことも同時に固定する — 誘発すると、
     pin を push するたびに全 pin 列のフル読みが走る。
+
+    **値配列だけを数えてはならない** (E-4a T3 レビュー I1): プロットされた列は
+    ``sorted_view()`` が ``astype(float64)`` で作った**別の実体**も抱えており、
+    非 float64 チャンネルではそちらの方が大きい (この fixture の uint8 で 8 倍・
+    prod の幅広チャンネルでは 12 KB に対し 96 KB)。取りこぼすと予約が過小になり、
+    LRU は「まだ空きがある」と信じて pin + キャッシュの合計が予算を超える。
     """
     mgr = SignalGroupManager(resolved_capacity=8)
     key = _register(mgr, wide)
@@ -136,13 +171,51 @@ def test_pinned_column_bytes_counts_only_what_is_materialized(wide: LoadResult) 
     assert first._values_source.is_materialized is False, (
         "introspection が展開を誘発した"
     )
+    assert getattr(first, "_sorted_view_cache", None) is None, (
+        "introspection が sorted_view を誘発した"
+    )
 
-    values = np.asarray(first.values)  # ここで初めて実体を持つ (render 相当)
+    values = np.asarray(first.values)  # ここで初めて実体を持つ
     assert values.nbytes == 3, values.nbytes  # 3 サンプル x uint8 (fixture の規則)
-    assert mgr.pinned_column_bytes() == values.nbytes
+    assert mgr.pinned_column_bytes() == 3
+
+    # render 相当。単調な信号なので sorted_view の時刻軸は master と同一オブジェクト
+    # (= master 非計上の種まきで畳まれる) だが、値は float64 の別配列になる。
+    _ts, vs64 = first.sorted_view()
+    assert vs64.nbytes == 24, vs64.nbytes  # 3 サンプル x float64
+    assert _ts is first.timestamps, "master が別配列になった (前提が崩れている)"
+    assert mgr.pinned_column_bytes() == 27, "float64 ビューの実体を取りこぼしている"
 
     _ = second.values  # 非 pin を展開しても reserved は動かない
-    assert mgr.pinned_column_bytes() == values.nbytes, "非 pin の実体を数えている"
+    second.sorted_view()
+    assert mgr.pinned_column_bytes() == 27, "非 pin の実体を数えている"
+
+
+def test_pinned_column_bytes_excludes_the_shared_master(wide: LoadResult) -> None:
+    """master は pin の予約に **載せない** (グループ側の帳簿に属する)。
+
+    鋳造列は親物理チャンネルの master を同一オブジェクトのまま共有する
+    (``_mint_column``)。ここで数えると (a) 同じ配列を pin 列の本数だけ二重計上し
+    (prod は 1 チャンネル 1,100 列)、(b) 「未展開の pin は 0」という契約も破れる
+    (未展開でも master のバイトが立つ)。teardown 側は逆に master ごと解放するので
+    数える — その 1 点だけが 2 つの呼び出し側の差で、共有ヘルパの ``seen`` 種まきで
+    表現している。
+    """
+    mgr = SignalGroupManager(resolved_capacity=8)
+    key = _register(mgr, wide)
+    a, b = f"{key}::Wide[0]", f"{key}::Wide[1]"
+    sig_a, sig_b = mgr.resolve(a), mgr.resolve(b)
+    assert sig_a is not None and sig_b is not None
+    assert sig_a.timestamps is sig_b.timestamps, "兄弟列は master を共有する (前提)"
+    assert sig_a.timestamps.nbytes == 24, sig_a.timestamps.nbytes
+
+    mgr.set_pinned_columns({a, b})
+    assert mgr.pinned_column_bytes() == 0, "未展開なのに master を数えている"
+
+    _ = sig_a.values
+    _ = sig_b.values
+    # master を数えていれば 3+3+24 = 30 になる (兄弟で共有なので 1 回だけ数えても)。
+    assert mgr.pinned_column_bytes() == 6, "master を予約に載せている"
 
 
 def test_lru_order_is_recency_not_insertion(wide: LoadResult) -> None:
