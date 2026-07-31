@@ -8,6 +8,7 @@ from typing import Any, ClassVar
 import numpy as np
 from asammdf import MDF
 
+from valisync.core.loaders.channel_cache import ChannelSampleCache
 from valisync.core.loaders.column_names import (
     ColumnRecord,
     ColumnSpec,
@@ -182,6 +183,11 @@ def _extract_metadata(asammdf_sig: Any, raw_conversion: Any = None) -> dict[str,
 class MdfLoader:
     """MDF (3.x / 4.x) file loader using asammdf. Reads all channel groups in one pass."""
 
+    def __init__(self, cache: ChannelSampleCache | None = None) -> None:
+        # 生成する MdfHandle へ渡すだけ (所有は Session — 予算の裁定者は 1 人・
+        # spec §5.2)。None はキャッシュ無し = E-3 と同一挙動。
+        self._cache = cache
+
     _READ_OPTIONS: ClassVar[dict[str, Any]] = {
         "time_from_zero": False,
     }
@@ -267,7 +273,7 @@ class MdfLoader:
         resolved_path = file_path.resolve()
         # source_path は Signal.source_file と同一の文字列にする — 遅延読みが失敗
         # したとき、診断ラベルが render 境界 (Signal 経由) と食い違わないため。
-        handle = MdfHandle(mdf, str(resolved_path))
+        handle = MdfHandle(mdf, str(resolved_path), cache=self._cache)
         signals: list[Signal] = []
         diagnostics: list[Diagnostic] = []
         # 物理チャンネル 1 本につき 1 レコード (列数ではない) — prod 4,324 件。

@@ -4,9 +4,11 @@ from collections.abc import Callable, Iterator, Mapping
 from types import MappingProxyType
 
 from valisync.core.loaders.column_names import (
+    ColumnPath,
     ColumnRecord,
     leaf_count,
     leaf_names,
+    leaf_paths,
     parse_leaf,
 )
 from valisync.core.models import Signal, SignalGroup
@@ -359,6 +361,9 @@ class SignalGroupManager:
             raw_leaf = f"{record.raw_base_name}{rest}"
             if parse_leaf(raw_leaf, {record.raw_base_name: record.spec}) is None:
                 continue  # 消費しきれない / 非数値リーフ = この親では解決不能
+            path = _leaf_path(record, rest)
+            if path is None:
+                continue  # 名前は通ったが位置が引けない = この親では解決不能
             parent = self._physical_signal(group_key, display_key[:i])
             if parent is None:
                 return None
@@ -374,7 +379,9 @@ class SignalGroupManager:
                     record.group_index,
                     record.channel_index,
                     length=len(parent.timestamps),
+                    # 名前は永続キー・位置は読み経路。両方渡すのが列の契約。
                     selector=(raw_leaf,),
+                    path=path,
                 ),
                 file_format=parent.file_format,
                 bus_type=parent.bus_type,
@@ -419,6 +426,44 @@ class SignalGroupManager:
         1:1 loud-fail が入口で断つ。
         """
         return self._physical_by_name.get(group_key, {}).get(display_name)
+
+
+def _leaf_path(record: ColumnRecord, suffix: str) -> ColumnPath | None:
+    """リーフ名サフィックスから **位置** を引く (E-4a・解決不能なら None)。
+
+    サフィックス (``[2]`` / ``.xa``) は 2 つのキー空間 (LD-08 dedup 済み表示名 /
+    生チャンネル名) が共有する唯一の部分なので、位置は dedup のずれを受けない —
+    生名側でしか引けない ``parse_leaf`` (docstring の precondition) と対照的に、
+    ここは表示名側の残余をそのまま使える。``leaf_paths`` は ``_flatten`` と同順で
+    **全**リーフを返す (非数値も含む) ので、数値ゲートは呼び出し側の
+    ``parse_leaf`` に残す — ここで数値判定を兼ねると混在構造 ``Q`` の
+    ``Q.tag`` が裏口から列になる。
+
+    **索引は ``leaf_paths`` が返すサフィックスで引く** (T1 レビューの前方ハザード)。
+    ``zip(leaf_names(...), leaf_paths(...))`` で位置合わせしてはならない: 2 つは
+    **別の列挙空間**で (``leaf_names`` は数値リーフのみ・``leaf_paths`` は全リーフ)、
+    混在構造では長さが違う。フィールド順が ``(tag: S2, x: f8)`` の構造体では zip が
+    キー ``R.x`` に ``.tag`` の経路を**例外なしで**結びつける = 本増分が潰そうと
+    している「別の列を黙って返す」そのもの (S3-S5 の失敗モードが 1 層上がった形)。
+
+    **索引は ``record`` 側に 1 度だけ作る** (I-2): 引くたびに ``leaf_paths`` を頭から
+    回すと 1 鋳造が O(全リーフ) になり、幅 1,100 のチャンネルを全列鋳造すると
+    1.2M ステップ = **O(n^2)** になる。E-4b の「すべて選択 -> エクスポート」は
+    E-4a 完了に依存する (spec §4) ので、そこで律速するのはここ。初回の 1 回だけ
+    全リーフを歩く (= 従来の**最悪 1 回分**と同じコスト) ので、単発の鋳造は遅く
+    ならない。索引を持つのは実際に列を鋳造したチャンネルだけで、閲覧しかしない
+    チャンネルには 1 バイトも作らない。
+
+    書き込みは dict への代入 1 発 (GIL 下で atomic) で、二重に走っても同じ内容を
+    作り直すだけ。T3 以降は ``resolve`` が ``_resolved_lock`` 下で ``_mint_column``
+    を呼ぶので、そもそも重ならない。
+    """
+    index = record.path_index
+    if not index:
+        # 0 リーフのチャンネル (幅 0 軸) は毎回空走査になるが、その走査自体が
+        # O(1) (leaf_paths が 1 件も yield しない) なので償却の意味がない。
+        index.update(leaf_paths(record.spec))
+    return index.get(suffix)
 
 
 class _ResolvingMap(Mapping[str, Signal]):

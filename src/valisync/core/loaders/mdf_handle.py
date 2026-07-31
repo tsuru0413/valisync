@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import threading
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    # 実行時 import は不要 (注釈は from __future__ で文字列化済み)。
+    from valisync.core.loaders.channel_cache import ChannelSampleCache
 
 
 class MdfHandle:
@@ -11,9 +15,14 @@ class MdfHandle:
     非安全。グループ内の全 LazyMdfValues はこの lock で読みを直列化する。ハンドルは
     SignalGroup が 1 個所有し、unload/エラー経路で close() する (増分B/M3)。"""
 
-    __slots__ = ("_close_lock", "_closed", "lock", "mdf", "source_path")
+    __slots__ = ("_close_lock", "_closed", "cache", "lock", "mdf", "source_path")
 
-    def __init__(self, mdf: Any, source_path: str = "") -> None:
+    def __init__(
+        self,
+        mdf: Any,
+        source_path: str = "",
+        cache: ChannelSampleCache | None = None,
+    ) -> None:
         self.mdf = mdf
         self.lock = threading.Lock()
         # close の check-and-set 専用の小さい lock。読み直列化用の self.lock とは
@@ -25,6 +34,11 @@ class MdfHandle:
         # ハンドルは 1 ファイル 1 個なので、26 万個の LazyMdfValues 各々に
         # 持たせるより安い (信号側は既に Signal.source_file を持つ)。
         self.source_path = source_path
+        # E-4a: デコード済みチャンネル 2-D のプロセス単位 LRU (所有は Session)。
+        # ハンドルに提げるのは、LazyMdfValues が既に handle しか持たないから —
+        # 信号 26 万個に別の参照を配らずに全列へ届く唯一の場所である。
+        # None ならキャッシュ無し = E-3 と同一挙動 (MdfLoader を直接使う経路)。
+        self.cache = cache
 
     @property
     def is_closed(self) -> bool:

@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -46,6 +46,22 @@ class ColumnRecord:
     group_index: int
     channel_index: int
     spec: ColumnSpec
+    # E-4a: {リーフ名サフィックス: ColumnPath} の **遅延構築** 索引 (I-2)。
+    # 引くたびに leaf_paths を頭から回すと 1 鋳造が O(全リーフ) になり、幅 1,100 の
+    # チャンネルの全列鋳造で 1.2M ステップ = **O(n^2)**。E-4b の「すべて選択 ->
+    # エクスポート」は E-4a 完了に依存する (spec §4) ので、そこで律速になる。
+    # **レコードに持たせる**のが要点: 寿命が _column_records と完全に一致するので、
+    # remove(key) でレコードごと落ちて別の掃除経路を要らない。
+    # frozen なのは属性の再束縛を禁じるためで、dict の in-place 更新は許される。
+    # compare=False: 索引は導出値であって同一性の一部ではない (== と hash を
+    # 現状のまま保つ — ロードごとに索引の有無が違うだけで別レコード扱いになると、
+    # 表の突き合わせテストが理由なく落ちる)。
+    # **eager に埋めない**: ブラウザの閲覧だけで 264k 本の ColumnPath を作ると
+    # E-3 が潰したオブジェクト数の回帰になる。埋めるのは実際に列を鋳造した
+    # チャンネルだけ (_leaf_path が初回に 1 度)。
+    path_index: dict[str, ColumnPath] = field(
+        default_factory=dict, compare=False, repr=False
+    )
 
 
 def spec_from_probe(arr: np.ndarray) -> ColumnSpec:

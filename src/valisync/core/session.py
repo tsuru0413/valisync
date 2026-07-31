@@ -14,6 +14,7 @@ from valisync.core.export.csv_exporter import (
 )
 from valisync.core.formula.engine import FormulaEngine
 from valisync.core.interpolation.interpolator import InterpolationMethod, Interpolator
+from valisync.core.loaders.channel_cache import ChannelSampleCache
 from valisync.core.loaders.csv_loader import CsvLoader
 from valisync.core.loaders.mdf_loader import MdfLoader
 from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR, SignalGroupManager
@@ -118,10 +119,27 @@ class Session:
     downsampler and export, and manages loaded Signal_Groups by key.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, cache_budget_bytes: int | None = None) -> None:
         self._groups = SignalGroupManager()
         self._csv_loader = CsvLoader()
-        self._mdf_loader = MdfLoader()
+        # E-4a: デコード済みチャンネル 2-D の LRU。**Session が 1 個だけ持つ** —
+        # 予算 (U3: 256 MB) の裁定者を 1 人にするため (spec §5.2)。ローダーは
+        # これを MdfHandle へ提げるだけで所有しない。
+        #
+        # cache_budget_bytes は予算の注入口 (テスト / realgui ①gate 用・D6
+        # 「予算を注入して小さくする」)。**setter ではなくコンストラクタ引数**に
+        # するのが要点: この __init__ が MdfLoader へ渡した時点で MdfLoader._cache が
+        # このオブジェクトを捕捉し、MdfHandle はロード時にそれを提げる。
+        # LazyMdfValues.array() が見るのは self._handle.cache なので、後から
+        # session.channel_cache へ別インスタンスを差し込んでも **誰もそれを書かない**
+        # (misses も bytes_held も 0 のまま = 予算注入が構造的に成立しない)。
+        # 同じ理由で channel_cache に setter は置かない。
+        self._channel_cache = (
+            ChannelSampleCache()
+            if cache_budget_bytes is None
+            else ChannelSampleCache(budget_bytes=cache_budget_bytes)
+        )
+        self._mdf_loader = MdfLoader(cache=self._channel_cache)
         self._formula = FormulaEngine()
         self._synchronizer = TimeSynchronizer()
         self._interpolator = Interpolator()
@@ -129,6 +147,20 @@ class Session:
         self._downsampler = Downsampler()
         self._exporter = CsvExporter()
         self._derived: list[_DerivedRecord] = []
+
+    @property
+    def channel_cache(self) -> ChannelSampleCache:
+        """チャンネル 2-D の共有 LRU (鋳造も読みも誘発しない introspection)。
+
+        hits/misses/evictions/skipped_oversize/bytes_held は計測器 (E-4a の
+        出口表) と realgui ①gate の観測点。「select 回数」を数える口は他に無い。
+
+        **setter は無い** (``__init__`` の WHY 参照): 差し替えても既にロード済み /
+        これからロードする ``MdfHandle`` は ``MdfLoader`` が捕捉した旧インスタンスを
+        提げるので、注入した新キャッシュには 1 バイトも載らない。予算を変えたい
+        呼び出し側は ``Session(cache_budget_bytes=...)`` を使う。
+        """
+        return self._channel_cache
 
     def load(
         self,
@@ -365,6 +397,11 @@ class Session:
         # unload」は close をやめるのではなく **UI 側で拒否**する
         # (AppViewModel.unload_file の述語ガード)。
         if group.handle is not None:
+            # **close の前**に落とす (spec §5.7)。キーは id(handle) を含むだけで
+            # ハンドルを所有しないので、エントリを残したままハンドルが死ぬと、
+            # 次のロードが同じアドレスを再利用したときに古いファイルの 2-D を
+            # 引き当てる (長さが合えば例外も出ない = 値の無言すり替え)。
+            self._channel_cache.drop_handle(id(group.handle))
             group.handle.close()
         return RemovalResult(
             removed=True,
