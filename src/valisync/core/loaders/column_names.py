@@ -6,13 +6,15 @@
 誤った列を返す。本モジュールを唯一の実装とし、順序は _flatten と一致させる。
 
 生成 (``spec_from_probe`` / ``leaf_names`` / ``leaf_count``) と逆変換
-(``parse_leaf``) を対で持つ。
+(``parse_leaf``) を対で持つ。E-4a からは **位置** (``ColumnPath`` /
+``leaf_paths`` / ``apply_path``) も同じ順序規則の上に載る — 名前で引く経路と
+位置で引く経路が別々の順序を持つと、同じ列キーが読みごとに別の列を返す。
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -44,6 +46,22 @@ class ColumnRecord:
     group_index: int
     channel_index: int
     spec: ColumnSpec
+    # E-4a: {リーフ名サフィックス: ColumnPath} の **遅延構築** 索引 (I-2)。
+    # 引くたびに leaf_paths を頭から回すと 1 鋳造が O(全リーフ) になり、幅 1,100 の
+    # チャンネルの全列鋳造で 1.2M ステップ = **O(n^2)**。E-4b の「すべて選択 ->
+    # エクスポート」は E-4a 完了に依存する (spec §4) ので、そこで律速になる。
+    # **レコードに持たせる**のが要点: 寿命が _column_records と完全に一致するので、
+    # remove(key) でレコードごと落ちて別の掃除経路を要らない。
+    # frozen なのは属性の再束縛を禁じるためで、dict の in-place 更新は許される。
+    # compare=False: 索引は導出値であって同一性の一部ではない (== と hash を
+    # 現状のまま保つ — ロードごとに索引の有無が違うだけで別レコード扱いになると、
+    # 表の突き合わせテストが理由なく落ちる)。
+    # **eager に埋めない**: ブラウザの閲覧だけで 264k 本の ColumnPath を作ると
+    # E-3 が潰したオブジェクト数の回帰になる。埋めるのは実際に列を鋳造した
+    # チャンネルだけ (_leaf_path が初回に 1 度)。
+    path_index: dict[str, ColumnPath] = field(
+        default_factory=dict, compare=False, repr=False
+    )
 
 
 def spec_from_probe(arr: np.ndarray) -> ColumnSpec:
@@ -93,6 +111,98 @@ def leaf_count(spec: ColumnSpec) -> int:
         assert spec.child is not None
         return spec.axis_len * leaf_count(spec.child)
     return 1 if spec.dtype_kind in _NUMERIC_KINDS else 0
+
+
+@dataclass(frozen=True, slots=True)
+class ColumnPath:
+    """全リーフ空間における 1 リーフへの経路 (フィールド名と添字の列)。
+
+    **整数序数では表現できない** — 構造化 × 配列の入れ子 (``Name.field[i]`` /
+    ``Name[i][j]``) があるため「n 番目のリーフ」という 1 個の数では位置が定まらない。
+    ``str`` = 構造化フィールド名 / ``int`` = 配列の添字 (剥がすのは常に軸 1。
+    軸 0 はサンプル軸である)。
+
+    名前 (列キー) は永続キーのまま (LD-14)。位置は**ロードごとに導出する派生値**で
+    あり保存しない — チャンネル構造が変わればロード時に作り直される。
+    """  # noqa: RUF002 — 乗算記号は設計 spec §5.6 と同じ字面を保つため意図的
+
+    steps: tuple[str | int, ...]
+
+
+def leaf_paths(spec: ColumnSpec) -> Iterator[tuple[str, ColumnPath]]:
+    """(リーフ名サフィックス, 経路) を _flatten と同じ順序で生成する (ジェネレータ)。
+
+    **列挙空間は _flatten と同じ「全リーフ」** — ``leaf_names`` が返すのは数値リーフ
+    だけで、混在構造 (``Q``: x=f8 + tag=S2) では両者がずれる。位置は「デコード済み
+    配列のどこを引くか」なので dtype で間引いてはならない (間引くと後続のリーフが
+    1 つずつ手前へずれ、**別の列を黙って返す**)。数値判定は経路ではなく引いた配列の
+    dtype で行う。
+
+    **base を取らない**のは、サフィックスが base 非依存だからである。列キーは LD-08
+    dedup 済み表示名から作り (``leaf_names(display, spec)``)、読みは生名を使う
+    (``_flatten(raw, samples)``) — 2 つのキー空間で base は違うが、サフィックスと
+    位置は共通なので、ここで dedup 規則を写す必要が無い。
+
+    ジェネレータなのは ``leaf_names`` と同じ理由 — 広幅チャンネル (prod は 1,100 列)
+    で全サフィックスを常に実体化しないため。
+    """
+    yield from _leaf_paths("", (), spec)
+
+
+def _leaf_paths(
+    suffix: str, steps: tuple[str | int, ...], spec: ColumnSpec
+) -> Iterator[tuple[str, ColumnPath]]:
+    """leaf_paths の再帰本体。名前と経路を**同時に**伸ばして順序の一致を構造的に保つ。"""
+    if spec.kind == "struct":
+        for name, sub in spec.fields:
+            yield from _leaf_paths(f"{suffix}.{name}", (*steps, name), sub)
+    elif spec.kind == "array":
+        assert spec.child is not None
+        for i in range(spec.axis_len):
+            yield from _leaf_paths(f"{suffix}[{i}]", (*steps, i), spec.child)
+    else:
+        yield (suffix, ColumnPath(steps))
+
+
+def apply_path(samples: np.ndarray, path: ColumnPath) -> np.ndarray:
+    """samples (axis 0 = サンプル) から経路のリーフ列を **独立配列**で取り出す。
+
+    **必ず base を持たない配列を返す (E-4 spec §5.4 の所有権の不変条件)**: 共有
+    キャッシュの 2-D 配列を view のまま返すと、``_freeze`` が read-only 入力を素通し
+    する性質と相まって view が ``LazyMdfValues._cache`` へ焼き付く。すると (1) LRU が
+    evict しても列 Signal が base 経由で 2-D 全体を保持し RSS が 1 バイトも下がらず
+    (2) ``nbytes_if_materialized`` が view の nbytes を返して teardown のバイト軸が
+    黙って死ぬ。**値一致の検証は view でも全部通る**ので、ここを緩めても値のテストは
+    緑のままである。
+
+    連続スライス (幅 1 の 2-D・単一フィールド構造化) では ``ascontiguousarray`` が
+    コピーを作らないため、明示的な copy が要る。経路が空 (スカラーチャンネル) かつ
+    入力が既に独立配列なら入力そのものを返す — 列 = チャンネル全体で余分に生かす親が
+    無く、不変条件 (base is None) は満たされる。
+
+    **自分が作った配列は read-only にして返す**: 呼び出し側 (``LazyMdfValues.
+    _column_of``) が通す ``sample_source._freeze`` は ``writeable`` を見て
+    ``array.copy()`` するので、writeable のまま返すと**同じ列を 2 回コピーする**
+    (実測: 非連続スライスへの ``ascontiguousarray`` は writeable=True のコピーを
+    返し、``_freeze`` がもう 1 回コピーする)。E-4a が縮めようとしている列読みの
+    ホットパスで毎列 2x のアロケーション + memcpy になるため、**ここで凍結して
+    ``_freeze`` を素通しにするのが正**。この 2 行を「凍結は ``_freeze`` の仕事」と
+    考えて消さないこと — 消すと二重コピーが黙って戻る。
+    """
+    out = samples
+    for step in path.steps:
+        # int は軸 1 を剥がす (_flatten の arr[:, i] と同一) — 軸 0 はサンプル軸
+        out = out[step] if isinstance(step, str) else out[:, step]
+    out = np.ascontiguousarray(out)
+    if out.base is not None:
+        out = out.copy()
+    if out is not samples:
+        # 凍結するのは **この関数が作った配列だけ**。経路が空で入力そのものを返す
+        # 場合まで凍結すると、呼び出し側が渡した配列の可変性を横から奪う
+        # (production ではその配列は共有前に read-only 化済みなので、この分岐でも
+        # _freeze は素通しし、やはりコピーは 0 回である)。
+        out.flags.writeable = False
+    return out
 
 
 def parse_leaf(

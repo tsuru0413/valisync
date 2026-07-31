@@ -3,9 +3,12 @@ from __future__ import annotations
 import numpy as np
 
 from valisync.core.loaders.column_names import (
+    ColumnPath,
     ColumnSpec,
+    apply_path,
     leaf_count,
     leaf_names,
+    leaf_paths,
     parse_leaf,
     spec_from_probe,
 )
@@ -162,3 +165,81 @@ def test_all_leaf_count_counts_all_leaves_including_non_numeric() -> None:
     arr = np.zeros(1, dtype=[("ok", "<f8"), ("txt", "S4")])
     assert _all_leaf_count(spec_from_probe(arr)) == 2
     assert leaf_count(spec_from_probe(arr)) == 1
+
+
+def test_leaf_paths_walk_all_leaves_in_flatten_order() -> None:
+    """``leaf_paths`` は ``_flatten`` と同じ**全リーフ**空間・同じ順序 (数値だけではない)。
+
+    ``test_leaf_names_order_matches_flatten`` と同じ case リストを使うのが要点 —
+    非数値を含むケースで両者は**意図的にずれる** (spec §5.6)。パスから数値列を
+    得るときは経路ではなく**引いた配列の dtype** で判定する。
+
+    ``base is None`` を全ケースで見るのは、1 サンプルの合成配列ではどの
+    リーフスライスも自明に連続 = view になり (実測)、copy を外すと全ケースが
+    赤くなるため — 実 mf4 側 (4 サンプル) では view になるリーフが 2 本しか
+    無いので、合成側は独立した第 2 の検出器になる。
+    """
+    cases = [
+        np.zeros(1, dtype=np.float64),
+        np.zeros((1, 3), dtype=np.uint8),
+        np.zeros((1, 2, 2), dtype=np.int16),
+        np.zeros(1, dtype=[("x", "<f8"), ("y", "<f8")]),
+        np.zeros(1, dtype=[("v", "<f8", (2,))]),
+        np.zeros(1, dtype=[("ok", "<f8"), ("txt", "S4")]),
+        np.zeros(1, dtype=[("Radar.ObjList", "<u1"), ("Radar.ObjList.dx", "<f8")]),
+        np.zeros((1, 0), dtype=np.float64),
+    ]
+    for arr in cases:
+        spec = spec_from_probe(arr)
+        walked = list(leaf_paths(spec))
+        assert ["B" + suffix for suffix, _p in walked] == [
+            name for name, _c in _flatten("B", arr)
+        ], arr.dtype
+        for suffix, path in walked:
+            got = apply_path(arr, path)
+            np.testing.assert_array_equal(got, dict(_flatten("B", arr))["B" + suffix])
+            assert got.base is None, (arr.dtype, suffix)
+        numeric = [
+            "B" + suffix
+            for suffix, path in walked
+            if apply_path(arr, path).dtype.kind in "iufb"
+        ]
+        assert numeric == list(leaf_names("B", spec)), arr.dtype
+
+    # 反 vacuous: 非数値を含むケースで 2 つの空間が実際にずれている
+    mixed = spec_from_probe(np.zeros(1, dtype=[("ok", "<f8"), ("txt", "S4")]))
+    assert len(list(leaf_paths(mixed))) == 2
+    assert len(list(leaf_names("B", mixed))) == 1
+
+
+def test_apply_path_peels_the_non_sample_axis() -> None:
+    """整数 step は**軸 1** (非サンプル軸) を剥がす — 軸 0 はサンプル軸である。
+
+    ``samples[i]`` へ取り違えると「1 サンプル分の横断面」が返る。長さが変わるので
+    ``LazyMdfValues`` の長さ検証が拾える形もあるが、行数と列数がたまたま等しい
+    チャンネルでは黙って別データになる (例外の出ない誤波形)。
+    """
+    arr = np.array(
+        [[0, 1, 2], [10, 11, 12], [20, 21, 22], [30, 31, 32]], dtype=np.uint8
+    )
+    out = apply_path(arr, ColumnPath((1,)))
+    np.testing.assert_array_equal(out, [1, 11, 21, 31])
+    assert len(out) == len(arr)  # サンプル数 4 (列数 3 ではない)
+
+
+def test_nested_array_path_steps_are_indices_in_peel_order() -> None:
+    """``Name[i][j]`` は asammdf の public write API で往復できない (既存の記録と同根)。
+
+    多段配列の経路だけは合成 ndarray で固定する — 実データで裏取りできていない
+    事実として明示する (``test_column_roundtrip`` の
+    ``test_nested_index_arm_is_synthetic_because_asammdf_flattens_subarrays`` と同じ扱い)。
+    """
+    arr = np.zeros((4, 2, 3), dtype=np.uint8)
+    for k in range(4):
+        arr[k] = np.arange(6, dtype=np.uint8).reshape(2, 3) + 10 * k
+    walked = list(leaf_paths(spec_from_probe(arr)))
+    assert [(suffix, path.steps) for suffix, path in walked] == [
+        (f"[{i}][{j}]", (i, j)) for i in range(2) for j in range(3)
+    ]
+    # 値も剥がし順どおり (arr[:, 1][:, 2] = 5 + 10k) — サンプル軸の取り違えも落ちる
+    np.testing.assert_array_equal(apply_path(arr, ColumnPath((1, 2))), [5, 15, 25, 35])

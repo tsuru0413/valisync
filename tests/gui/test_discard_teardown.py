@@ -106,15 +106,21 @@ def _minted_column(name: str) -> Signal:
 
 
 class _DummyTeardown:
-    """duck-typed teardown — enqueue(key, group, columns=...) の実引数をそのまま記録する。"""
+    """duck-typed teardown — enqueue の実引数 (columns / cached_arrays) をそのまま記録する。"""
 
     def __init__(self) -> None:
-        self.calls: list[tuple[str, SignalGroup, tuple[Signal, ...]]] = []
+        self.calls: list[
+            tuple[str, SignalGroup, tuple[Signal, ...], tuple[np.ndarray, ...]]
+        ] = []
 
     def enqueue(
-        self, key: str, group: SignalGroup, columns: tuple[Signal, ...] = ()
+        self,
+        key: str,
+        group: SignalGroup,
+        columns: tuple[Signal, ...] = (),
+        cached_arrays: tuple[np.ndarray, ...] = (),
     ) -> None:
-        self.calls.append((key, group, columns))
+        self.calls.append((key, group, columns, cached_arrays))
 
 
 def test_discard_hands_the_group_to_the_teardown_service(qtbot, tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -173,7 +179,7 @@ def test_minted_columns_are_handed_to_the_teardown_service(tmp_path) -> None:  #
     app_vm.unload_file(key)
 
     assert len(dummy.calls) == 1  # 同一 key を 2 エントリに割らない
-    got_key, got_group, got_columns = dummy.calls[0]
+    got_key, got_group, got_columns, _got_cached = dummy.calls[0]
     assert got_key == key
     assert got_group is not None  # グループ本体は従来どおり渡る
     assert got_columns == (column,)  # 鋳造列が同じ呼び出しに乗る
@@ -202,3 +208,49 @@ def test_discard_also_hands_the_minted_columns(qtbot, tmp_path) -> None:  # type
     entries = win.teardown_service._groups
     assert len(entries) == 1, f"1 キー = 1 エントリのはず ({len(entries)} エントリ)"
     assert column in entries[-1][1]
+
+
+def test_cached_channel_arrays_are_handed_to_the_teardown_service(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """E-4a: ChannelSampleCache から回収した配列も同じ enqueue で渡る。
+
+    渡さないと RemovalResult のスコープアウトで GUI スレッドの同期解放になる
+    (1 本 13.2 MB = ペーシングを迂回した瞬間に FU-16 のフリーズ regime へ戻る)。
+    """
+    app_vm, key, handle = _loaded(tmp_path)
+    dummy = _DummyTeardown()
+    app_vm.set_teardown(dummy)
+    arr = np.zeros((256, 8), dtype=np.uint8)
+    # 実在しない group_index を使う (実読みが載せたエントリを踏まない)。
+    assert handle.cache is not None
+    assert handle.cache.put((id(handle), 999, 0), arr) is True
+
+    app_vm.unload_file(key)
+
+    assert len(dummy.calls) == 1  # 同一 key を 2 エントリに割らない
+    _key, got_group, _columns, got_cached = dummy.calls[0]
+    assert got_group is not None  # グループ本体は従来どおり渡る
+    assert len(got_cached) == 1 and got_cached[0] is arr
+
+
+def test_discard_also_hands_the_cached_arrays(qtbot, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """2 サイト目 (_discard) もキャッシュ配列を渡す。
+
+    _discard は AppViewModel を経由しないので、unload_file 側の配線では 1 バイトも
+    カバーされない (鋳造列と同じ二重配線の事情)。
+    """
+    win, outcome, n_signals, discard = _loaded_but_discarded_setup(qtbot, tmp_path)
+    # 注意: enqueue はタイマーを再始動する。決定的なのは stop() ではなく
+    # 「assert までイベントループを回さない」ことによる。
+    win.teardown_service._timer.stop()
+    handle = win.app_vm.session._groups.group(outcome.key).handle
+    assert handle is not None and handle.cache is not None
+    arr = np.zeros((256, 8), dtype=np.uint8)
+    assert handle.cache.put((id(handle), 999, 0), arr) is True
+
+    discard(outcome)
+
+    assert win.teardown_service.pending_signals() == n_signals + 1
+    entries = win.teardown_service._groups
+    assert len(entries) == 1, f"1 キー = 1 エントリのはず ({len(entries)} エントリ)"
+    # ndarray に `in` を使うと要素ごとの == で真理値が曖昧になる — identity で探す。
+    assert any(item is arr for item in entries[-1][1])

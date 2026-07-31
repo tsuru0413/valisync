@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -14,6 +14,7 @@ from valisync.core.export.csv_exporter import (
 )
 from valisync.core.formula.engine import FormulaEngine
 from valisync.core.interpolation.interpolator import InterpolationMethod, Interpolator
+from valisync.core.loaders.channel_cache import ChannelSampleCache
 from valisync.core.loaders.csv_loader import CsvLoader
 from valisync.core.loaders.mdf_loader import MdfLoader
 from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR, SignalGroupManager
@@ -79,12 +80,17 @@ class RemovalResult:
     ``removed_columns`` carries the group's minted column Signals (E-1), which
     live outside ``SignalGroup.signals`` and would otherwise escape the teardown
     accounting.
+    ``cached_arrays`` carries the decoded channel arrays recovered from the
+    ``ChannelSampleCache`` (E-4a). ``removed_columns`` cannot carry them: those
+    are raw ndarrays, not Signals. 1 本 13.2 MB (prod の広幅チャンネル) なので、
+    ここで渡さないと teardown の三軸ペーシングを丸ごと迂回する。
     """
 
     removed: bool
     dependent_signals: tuple[str, ...] = ()
     removed_group: SignalGroup | None = None
     removed_columns: tuple[Signal, ...] = ()
+    cached_arrays: tuple[np.ndarray, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -118,10 +124,37 @@ class Session:
     downsampler and export, and manages loaded Signal_Groups by key.
     """
 
-    def __init__(self) -> None:
-        self._groups = SignalGroupManager()
+    def __init__(
+        self,
+        cache_budget_bytes: int | None = None,
+        column_capacity: int | None = None,
+    ) -> None:
+        # column_capacity は鋳造列 LRU の容量注入 (テスト/①gate 用・T2 の
+        # cache_budget_bytes と同型で、D6 の「予算を注入して小さくする」)。
+        # None は production 既定。
+        if column_capacity is None:
+            self._groups = SignalGroupManager()
+        else:
+            self._groups = SignalGroupManager(resolved_capacity=column_capacity)
         self._csv_loader = CsvLoader()
-        self._mdf_loader = MdfLoader()
+        # E-4a: デコード済みチャンネル 2-D の LRU。**Session が 1 個だけ持つ** —
+        # 予算 (U3: 256 MB) の裁定者を 1 人にするため (spec §5.2)。ローダーは
+        # これを MdfHandle へ提げるだけで所有しない。
+        #
+        # cache_budget_bytes は予算の注入口 (テスト / realgui ①gate 用・D6
+        # 「予算を注入して小さくする」)。**setter ではなくコンストラクタ引数**に
+        # するのが要点: この __init__ が MdfLoader へ渡した時点で MdfLoader._cache が
+        # このオブジェクトを捕捉し、MdfHandle はロード時にそれを提げる。
+        # LazyMdfValues.array() が見るのは self._handle.cache なので、後から
+        # session.channel_cache へ別インスタンスを差し込んでも **誰もそれを書かない**
+        # (misses も bytes_held も 0 のまま = 予算注入が構造的に成立しない)。
+        # 同じ理由で channel_cache に setter は置かない。
+        self._channel_cache = (
+            ChannelSampleCache()
+            if cache_budget_bytes is None
+            else ChannelSampleCache(budget_bytes=cache_budget_bytes)
+        )
+        self._mdf_loader = MdfLoader(cache=self._channel_cache)
         self._formula = FormulaEngine()
         self._synchronizer = TimeSynchronizer()
         self._interpolator = Interpolator()
@@ -129,6 +162,20 @@ class Session:
         self._downsampler = Downsampler()
         self._exporter = CsvExporter()
         self._derived: list[_DerivedRecord] = []
+
+    @property
+    def channel_cache(self) -> ChannelSampleCache:
+        """チャンネル 2-D の共有 LRU (鋳造も読みも誘発しない introspection)。
+
+        hits/misses/evictions/skipped_oversize/bytes_held は計測器 (E-4a の
+        出口表) と realgui ①gate の観測点。「select 回数」を数える口は他に無い。
+
+        **setter は無い** (``__init__`` の WHY 参照): 差し替えても既にロード済み /
+        これからロードする ``MdfHandle`` は ``MdfLoader`` が捕捉した旧インスタンスを
+        提げるので、注入した新キャッシュには 1 バイトも載らない。予算を変えたい
+        呼び出し側は ``Session(cache_budget_bytes=...)`` を使う。
+        """
+        return self._channel_cache
 
     def load(
         self,
@@ -267,9 +314,36 @@ class Session:
         """*display_name* の列がこのグループに実在するか (鋳造しない存在判定)。
 
         ``resolve_signal`` と違い副テーブルへ何も残さない — 「表示のためだけに列を
-        恒久登録する」経路を作らないための口 (E-3 C-g)。
+        登録する」経路を作らないための口。E-4a で LRU が入ったので鋳造列の恒久滞留は
+        なくなったが、非 pin の枠を食ってプロット中でない列を押し出す (spec §5.5)。
         """
         return self._groups.has_column(key, display_name)
+
+    def set_pinned_columns(self, keys: Iterable[str]) -> None:
+        """今 pin すべき列キー集合を差し替える (GUI が push する・E-4a spec §5.5)。
+
+        pin 済みの鋳造列は LRU の evict 対象外になる。予算を超えても**拒否しない**
+        (拒否するとプロット中の列が落ちて再描画ごとに 316 ms 停止が復活する) —
+        超過は :meth:`pinned_column_overflow` で観測する。
+        """
+        self._groups.set_pinned_columns(keys)
+        # spec §5.2「予算の裁定者は 1 人」の実配線。pin した列は所有権不変条件
+        # (spec §5.4) により**自前の独立配列**を抱えるので、チャンネル 2-D と同じ
+        # U3 256 MB を食う。ここを繋がないと ChannelSampleCache.set_reserved は
+        # 誰も呼ばない dead API になり、「プロット中の列 + キャッシュ」の合計が
+        # 静かに上限を超える — どちらの帳簿でも自分だけは予算内に見えるので、
+        # 症状はメモリ以外のどの数字にも出ない。
+        # **順序が重要**: 先に set_pinned_columns で pin 集合を確定させてから
+        # 数える (逆だと古い pin 集合のバイト数を渡す)。
+        self._channel_cache.set_reserved(self._groups.pinned_column_bytes())
+
+    def pinned_columns(self) -> frozenset[str]:
+        """現在 pin されている列キー集合 (introspection・鋳造しない)."""
+        return self._groups.pinned_columns()
+
+    def pinned_column_overflow(self) -> int:
+        """予算を超えて pin されている鋳造列の数 (0 なら予算内)."""
+        return self._groups.pinned_overflow
 
     def is_container_channel(self, key: str, display_name: str) -> bool:
         """*display_name* が複数列 (または改名列) へ展開される「親」チャンネルか。
@@ -364,13 +438,42 @@ class Session:
         # 競合 (native アクセス違反) を防いでおり外せない。だから「エクスポート中の
         # unload」は close をやめるのではなく **UI 側で拒否**する
         # (AppViewModel.unload_file の述語ガード)。
+        cached: tuple[np.ndarray, ...] = ()
         if group.handle is not None:
+            # **close の前**に落とす (spec §5.7)。キーは id(handle) を含むだけで
+            # ハンドルを所有しないので、エントリを残したままハンドルが死ぬと、
+            # 次のロードが同じアドレスを再利用したときに古いファイルの 2-D を
+            # 引き当てる (長さが合えば例外も出ない = 値の無言すり替え)。
+            #
+            # E-4a: 回収した配列は捨てずに呼び出し側へ渡す。close() は自ハンドルの
+            # エントリを ChannelSampleCache から落として**その場で同期解放**するので、
+            # 順序を逆にすると teardown へ渡す実体が消え、13.2 MB/本 のチャンネル配列が
+            # 三軸ペーシングを迂回して GUI スレッドで解放される (会計上は「配列は
+            # 1 本も無かった」ように見えるので、症状はフリーズだけで数字に出ない)。
+            #
+            # 引く先は**ハンドル自身が提げているキャッシュ**を第一とし、None の
+            # ときだけ Session の 1 個へ落とす。Session 経由のロードでは同一
+            # オブジェクトなので production の挙動は 1 ビットも変わらないが、
+            # self._channel_cache 固定にすると「別キャッシュを提げたハンドル」で
+            # drop が空振りし、cached_arrays が空 → close() が実エントリを GUI
+            # スレッドで同期解放する = **本タスクが防いだ退行そのもの**へ、
+            # どの数字にも症状を出さずに degrade する (M5)。
+            #
+            # ``or`` ではなく ``is not None`` で分岐するのは、キャッシュが将来
+            # ``__len__`` を持つと「空なら falsy」で無言に別帳簿へ逃げるため。
+            cache = (
+                group.handle.cache
+                if group.handle.cache is not None
+                else self._channel_cache
+            )
+            cached = cache.drop_handle(id(group.handle))
             group.handle.close()
         return RemovalResult(
             removed=True,
             dependent_signals=dependents,
             removed_group=group,
             removed_columns=columns,
+            cached_arrays=cached,
         )
 
     # ─── Pure-computation pass-throughs (Session is the only gateway) ──────────

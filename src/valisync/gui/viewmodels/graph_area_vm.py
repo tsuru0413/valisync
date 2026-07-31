@@ -143,6 +143,31 @@ class GraphAreaVM(Observable):
             for panel in tab.panels:
                 fn(panel)
 
+    # ─── Column pins (E-4a spec §5.5) ─────────────────────────────────────────
+
+    def pinned_signal_keys(self) -> frozenset[str]:
+        """全タブ・全パネルの plotted entries の signal_key 集合。
+
+        **アクティブパネル/アクティブタブに絞ってはならない** — 2 タブ目の列が
+        evict されると、タブを戻した最初の再描画がフルチャンネル再読み
+        (実測 316 ms/列) になる (spec §5.5)。
+        """
+        keys: set[str] = set()
+        for tab in self._tabs:
+            for panel in tab.panels:
+                keys.update(panel.plotted_signal_keys())
+        return frozenset(keys)
+
+    def _push_pins(self) -> None:
+        """今 pin すべき列キー集合を core へ押し込む (GUI -> core の一方向)。
+
+        core が VM を覗きに行くのではなく GUI が push するのは依存の向きを保つため
+        (spec §5.5)。毎回全タブぶん数え直すのは、パネル/タブ削除やクロスパネル軸移動
+        のように「どの panel から通知が来るか」が経路ごとに違う変化でも 1 つの計算で
+        正しい全体像になるから (差分更新だと経路ごとに漏れる)。
+        """
+        self._app_vm.set_pinned_columns(self.pinned_signal_keys())
+
     # ─── X-sync wiring ────────────────────────────────────────────────────────
 
     def _subscribe_panel(self, panel: GraphPanelVM) -> None:
@@ -162,6 +187,11 @@ class GraphAreaVM(Observable):
         """Propagate a panel's X-range (when synced) or cursor/delta (always) to siblings."""
         if self._propagating:
             return
+        if change == "signals":
+            # プロット集合が動いた = pin 集合が動いた (E-4a spec §5.5)。"range" や
+            # "cursor" に相乗りさせない — ズーム/パンのたびに全タブを数え直すことに
+            # なり、pin が変わらない経路でホットパスを踏む。
+            self._push_pins()
         for tab_index, tab in enumerate(self._tabs):
             if panel not in tab.panels:
                 continue
@@ -235,6 +265,9 @@ class GraphAreaVM(Observable):
             self.active_tab_index = len(self._tabs) - 1
         elif index < self.active_tab_index:
             self.active_tab_index -= 1
+        # タブ削除はどのパネルからも "signals" が飛ばない (パネルごと消えるだけ)
+        # ので、ここで明示的に押し直す。
+        self._push_pins()
         self._notify("tabs")
 
     def rename_tab(self, index: int, name: str) -> None:
@@ -293,6 +326,7 @@ class GraphAreaVM(Observable):
             tab.active_panel_index = len(tab.panels) - 1
         elif panel_index < tab.active_panel_index:
             tab.active_panel_index -= 1
+        self._push_pins()  # remove_tab と同じ理由 (パネルの通知は飛ばない)
         self._notify("panels")
 
     def set_active_panel(self, tab_index: int, panel_index: int) -> None:

@@ -54,7 +54,13 @@ def _two_file_app_vm_with_fake_teardown(
     """
 
     class _Fake:
-        def enqueue(self, key: str, group: object, columns: object = ()) -> None:
+        def enqueue(
+            self,
+            key: str,
+            group: object,
+            columns: object = (),
+            cached_arrays: object = (),
+        ) -> None:
             pass
 
     app_vm = AppViewModel()

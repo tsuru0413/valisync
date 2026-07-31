@@ -61,6 +61,23 @@ def _add_real(mgr: SignalGroupManager, tmp_path: Path) -> str:
     return mgr.add(sg, column_records=result.column_records)
 
 
+def _close(mgr: SignalGroupManager, key: str) -> None:
+    """*key* を外してハンドルを閉じる (実 mf4 を開いたまま終わらない)。
+
+    ``_add_real`` は実ファイルを開く。Windows は開いたままだと ``tmp_path`` の
+    後始末が mmap ロックで失敗しうる (``test_mdf_handle_concurrency.py`` の
+    ``_cleanup`` が同じ罠を記録している)。列の値を**読む**テスト
+    (D4 supersede の 2 本) は読み終わるまでハンドルが要るので、fixture の
+    finalizer ではなくテスト末尾で明示的に閉じる。
+
+    NOTE: 本モジュールの**既存**テストは開いたまま終わる (先例)。それらは値を
+    読まないので今回の変更対象に含めない — 一斉に直すのは別スコープ。
+    """
+    group, _columns = mgr.remove(key)
+    if group.handle is not None:
+        group.handle.close()
+
+
 def test_resolve_returns_existing_signal_without_minting() -> None:
     mgr = SignalGroupManager()
     key = mgr.add(_group("Mat[0]"))
@@ -137,26 +154,83 @@ def test_namespaced_wrapper_is_rebuilt_by_unrelated_add() -> None:
     assert mgr.resolve(f"{k1}::Mat[0]") is not first  # ラッパーは作り直される
 
 
-def test_resolved_table_survives_unrelated_add_and_remove(tmp_path: Path) -> None:
-    # Critical 1: 無関係なファイルの load/remove で副テーブルを捨ててはならない
-    mgr = SignalGroupManager()
+def test_pinned_column_survives_unrelated_add_and_remove(tmp_path: Path) -> None:
+    """(D4 supersede) 「同一キー → 同一オブジェクト」は **pin 中のみ** 保証する。
+
+    Critical 1 (無関係なファイルの load/remove で副テーブルを捨てない) は不変。
+    変わったのは保証の**範囲**で、E-4a が `_resolved_by_key` に LRU を入れた以上
+    「無条件に同一オブジェクト」は成立しえない (evict を入れる以上ほかに無い)。
+    したがってこのテストは **pin を張ってから** 同一性を主張する —— 張らずに緑
+    なのは容量に余裕があるという偶然であって、契約の証明にならない。
+    失われた保証は test_unpinned_column_identity_is_not_guaranteed_after_eviction
+    が明示的に固定する。
+
+    **pin を実際に効かせる構成にする** (E-4a T3 レビュー M1): 既定容量 512 で列を
+    1 本しか鋳造しないと ``_evict_resolved`` が「予算内」の早期 return に入り、
+    ``set_pinned_columns`` は 1 行も仕事をしない = pin ガードを壊しても緑のままに
+    なる (sabotage で実測)。容量 1 + 非 pin の列 1 本で圧力を作れば、pin ガードが
+    有れば pin 列が残り、無ければ **pin 列こそが最古として落ちる**。
+    """
+    mgr = SignalGroupManager(resolved_capacity=1)
     k1 = _add_real(mgr, tmp_path)
-    col_key = f"{k1}::Mat[2]"  # 既存 map に無い列キー -> 鋳造経路
-    first = mgr.resolve(col_key)
-    assert first is not None
-    assert mgr.mint_count == 1
-    _ = first.values  # 実際に読ませる (再鋳造されると読み直しになる)
-    assert first._values_source.is_materialized is True
+    try:
+        col_key = f"{k1}::Mat[2]"  # 既存 map に無い列キー -> 鋳造経路
+        first = mgr.resolve(col_key)
+        assert first is not None
+        assert mgr.mint_count == 1
+        mgr.set_pinned_columns({col_key})  # GUI がプロット中として push した状態
+        _ = first.values  # 実際に読ませる (再鋳造されると読み直しになる)
+        assert first._values_source.is_materialized is True
 
-    k2 = mgr.add(_group("Other"))  # 2 ファイル目ロード相当
-    again = mgr.resolve(col_key)
-    assert again is first  # 同一オブジェクト
-    assert again._values_source.is_materialized is True  # 読み直していない
-    assert mgr.mint_count == 1  # 再鋳造していない
+        k2 = mgr.add(_group("Other"))  # 2 ファイル目ロード相当
+        # 非 pin の列を 1 本鋳造して容量を超えさせる。pin 列より **後** に鋳造する
+        # のが要点 — pin 列を最古のまま残すことで、ガードが無い実装では pin 列が
+        # evict 対象の先頭になる。
+        assert mgr.resolve(f"{k1}::Mat[1]") is not None
+        assert mgr.mint_count == 2
 
-    mgr.remove(k2)  # 2 ファイル目 unload 相当
-    assert mgr.resolve(col_key) is first
-    assert mgr.mint_count == 1
+        again = mgr.resolve(col_key)
+        assert again is first  # pin 中は同一オブジェクト
+        assert again._values_source.is_materialized is True  # 読み直していない
+        assert mgr.mint_count == 2  # 再鋳造していない
+
+        mgr.remove(k2)  # 2 ファイル目 unload 相当
+        assert mgr.resolve(col_key) is first
+        assert mgr.mint_count == 2
+    finally:
+        # finally で閉じる: 途中の assert が落ちるとハンドルが開いたまま残り、
+        # Windows では tmp_path の後始末が mmap ロックで失敗して、1 件の明快な
+        # 失敗が無関係な場所のカスケードに化ける。
+        _close(mgr, k1)
+
+
+def test_unpinned_column_identity_is_not_guaranteed_after_eviction(
+    tmp_path: Path,
+) -> None:
+    """(D4 supersede・失われた保証の明示) pin されていない列は evict されうる。
+
+    **保証されるもの**: 値・名前・時刻軸は同じ (再鋳造は同じ ColumnRecord から
+    同じ Signal を作り直す)。読みも T2 のチャンネルキャッシュに当たるので安い。
+    **保証されなくなったもの**: オブジェクト同一性と `LazyMdfValues._cache` の
+    引き継ぎ。よって `is` 比較で列 Signal を追跡するコードを書いてはならない。
+    """
+    mgr = SignalGroupManager(resolved_capacity=1)
+    k1 = _add_real(mgr, tmp_path)
+    try:
+        first = mgr.resolve(f"{k1}::Mat[1]")
+        assert first is not None
+        assert mgr.resolve(f"{k1}::Mat[2]") is not None  # 予算超 -> 最古を落とす
+
+        again = mgr.resolve(f"{k1}::Mat[1]")
+        assert again is not None
+        assert again is not first  # ← 旧契約ではここが `is` だった (意図的 supersede)
+        assert again.name == first.name
+        assert np.array_equal(np.asarray(again.values), np.asarray(first.values))
+        assert mgr.resolved_evictions >= 1
+    finally:
+        # finally で閉じる理由は上のテストと同じ (開いたままだと tmp_path の後始末が
+        # Windows の mmap ロックで失敗し、失敗の原因が別テストへ飛び火する)。
+        _close(mgr, k1)
 
 
 def test_removing_own_group_drops_its_resolved_table(tmp_path: Path) -> None:

@@ -234,3 +234,56 @@ class Signal:
         result = len(ts) < 2 or bool(np.all(np.diff(ts) > 0))
         object.__setattr__(self, "_monotonic", result)
         return result
+
+
+def retained_bytes(sig: Signal, seen: set[int]) -> int:
+    """*sig* が **今** 抱えている配列バイト数 (``seen`` に id がある配列は数えない)。
+
+    **この会計は 1 本しか置かない**。teardown の解放会計 (``TeardownService``) と
+    pin の予約会計 (``SignalGroupManager.pinned_column_bytes``) は「この Signal は
+    何バイト抱えているか」という**同一の問い**に答えるので、2 か所に書くと必ずずれる。
+    実際 E-4a のレビューで pin 側だけが ``nbytes_if_materialized`` (= native dtype の
+    値配列) しか見ておらず、``sorted_view()`` が ``astype(np.float64)`` で作る**別の
+    配列** — 非 float64 チャンネルでは実体がもう 1 本増える — を丸ごと取りこぼして
+    いた (widthed uint8 で 8 倍)。予約の**過小**申告は ``ChannelSampleCache`` に
+    「まだ空きがある」と信じさせるので、pin とキャッシュの合計が予算を超える =
+    ``set_reserved`` が存在する理由そのものの失敗モード。
+
+    **展開は絶対に誘発しない**: 値は ``array_if_materialized()`` で「既に展開済みの
+    ときだけ」取る (``sig.values`` を読むと遅延ロードが走り、pin を push するたびに
+    全 pin 列のフル読みになる)。派生ビューも ``getattr`` で覗くだけで作らない。
+    getattr のフォールバックに ``None`` を使うのは ``__slots__`` の未代入属性が
+    AttributeError になるからで、**値の取得**には getattr を使わない — 名前が
+    ドリフトしたら実ソース側は AttributeError で loud-fail させたいため。
+
+    **``seen`` の種まきは呼び出し側の責務**: master (timestamps) の持ち主が用途で
+    違う。teardown は master ごと解放するので数える。pin の予約は「列が抱える分」の
+    会計であって、master は親物理チャンネル = グループ側の帳簿に属する
+    (``_mint_column`` は親の master を**同一オブジェクトのまま**渡す) ので、
+    呼び出し側が ``id(sig.timestamps)`` を先に ``seen`` へ入れて除外する。単調な信号
+    では ``sorted_view()[0] is sig.timestamps`` なので、その 1 件が両方を覆う。
+
+    ``_range_stat_index_cache`` (RangeStatIndex のブロック配列) は計上しない:
+    ブロック配列は √n スケールで小さく、元の ts/vs は finite_view と共有されるため
+    二重計上になる。
+    """
+    total = 0
+    ts = sig.timestamps
+    if id(ts) not in seen:
+        seen.add(id(ts))
+        total += int(ts.nbytes)
+    val = sig._values_source.array_if_materialized()
+    if val is not None and id(val) not in seen:
+        seen.add(id(val))
+        total += int(val.nbytes)
+    for pair in (
+        getattr(sig, "_sorted_view_cache", None),
+        getattr(sig, "_finite_view_cache", None),
+    ):
+        if pair is None:
+            continue
+        for arr in pair:  # (timestamps, values) タプル
+            if id(arr) not in seen:
+                seen.add(id(arr))
+                total += int(arr.nbytes)
+    return total

@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
+import threading
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from types import MappingProxyType
 
 from valisync.core.loaders.column_names import (
+    ColumnPath,
     ColumnRecord,
     leaf_count,
     leaf_names,
+    leaf_paths,
     parse_leaf,
 )
-from valisync.core.models import Signal, SignalGroup
+from valisync.core.models import Signal, SignalGroup, retained_bytes
 from valisync.core.models.sample_source import LazyMdfValues
 
 _FORMAT_KEY_PREFIX: dict[str, str] = {"MDF4": "mf4", "CSV": "csv"}
@@ -24,6 +27,26 @@ _NO_COLUMN_RECORDS: Mapping[str, ColumnRecord] = MappingProxyType({})
 # 止めている (mdf_loader._load_group) ので、鋳造側をそれに一致させる。
 _UNINHERITED_METADATA = frozenset({"conversion_info", "value_labels"})
 
+# 鋳造列 LRU の既定容量。単位は **列数だけ** で、この LRU はバイトを一切強制しない。
+# バイトでなく本数で持つのは、鋳造直後の列がまだ未展開 (0 バイト) で、バイト予算だと
+# 「まだ読んでいない列は無料」に見えて上限が一切効かないため。
+# 512 という数は「prod の広幅 1 列 ~96 KB (float64 実体化後) x 512 = ~48 MB」という
+# **最悪ケースの見積り**から採ったが、それは目安であって上限ではない: 512 本すべてが
+# もっと長いチャンネルなら実体はいくらでも大きくなりうるし、逆に未展開なら 0 に
+# なりうる。実体バイトを見て動くのは pin 側 (pinned_column_bytes ->
+# ChannelSampleCache.set_reserved) だけで、ここを「48 MB の予算」と読んではならない。
+_DEFAULT_RESOLVED_CAPACITY = 512
+
+# pin が容量を食い尽くしても非 pin 用に必ず残す枠 (spec §5.5 の「LRU の最低容量を
+# 無条件確保」)。0 にすると pin 過多のとき、鋳造した列が evict 走査の中で **自分自身を**
+# 落としてしまい、ブラウザのプレビュー 1 本ごとにフルチャンネル再読みが復活する。
+_MIN_EVICTABLE_COLUMNS = 1
+
+# 高水位 (容量) を超えたら低水位まで一気に空けるヒステリシスの分母。予算ちょうどへ
+# 削ると鋳造 1 本ごとに O(現存列) の走査が要り、E-4b の全列エクスポート (264k 鋳造)
+# がそこで律速する。1/8 ずつ空ければ走査は鋳造 8 本に 1 度で済む。
+_RESOLVED_EVICT_DIVISOR = 8
+
 
 class SignalGroupManager:
     """Manages loaded Signal_Groups under unique per-load keys.
@@ -36,7 +59,7 @@ class SignalGroupManager:
     name and source file) is left to the GUI layer.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, resolved_capacity: int = _DEFAULT_RESOLVED_CAPACITY) -> None:
         self._groups: dict[str, SignalGroup] = {}
         self._counters: dict[str, int] = {}
         self._namespaced_list: list[Signal] | None = None
@@ -44,7 +67,8 @@ class SignalGroupManager:
         self._namespaced_by_key: dict[str, list[Signal]] = {}
         # 鋳造した列 Signal (E-1)。**_invalidate_namespaced() に相乗りさせない** —
         # 相乗りすると 2 ファイル目のロードごとに全プロット列がフルチャンネル再読み
-        # (実測 0.73-1.18 s/列) になる純粋な回帰。remove(key) でだけ切り離す。
+        # (実測 0.73-1.18 s/列) になる純粋な回帰。切り離しは remove(key) と
+        # E-4a の LRU evict のみ (どちらもグループ寿命/予算という明示の理由を持つ)。
         self._resolved_by_key: dict[str, dict[str, Signal]] = {}
         # 列鋳造の材料 (E-3)。_resolved_by_key と同じく **_invalidate_namespaced() に
         # 相乗りさせない** — グループの寿命 (add/remove) にだけ従う。相乗りさせると
@@ -56,6 +80,18 @@ class SignalGroupManager:
         # (prod 4,324) を払うから。
         self._physical_by_name: dict[str, dict[str, Signal]] = {}
         self.mint_count = 0
+        # ─── 鋳造列 LRU (E-4a・D4) ────────────────────────────────────────────
+        self._resolved_capacity = max(1, resolved_capacity)
+        # 名前空間つき列キーの recency 順 (dict の挿入順 = 古い順)。値は使わない。
+        self._resolved_order: dict[str, None] = {}
+        # GUI が push した「今プロットされている列」(spec §5.5)。evict 対象外。
+        self._pinned: frozenset[str] = frozenset()
+        self.resolved_evictions = 0
+        # LRU の帳簿 (順序表・pin 集合) は GUI スレッドと E-4b のエクスポートワーカー
+        # が同時に触りうる。MdfHandle._close_lock と同型の**小さい専用 lock** で守る —
+        # 読み直列化用の handle.lock とは別物で、この下では I/O を一切しないので
+        # 入れ子にならない (spec §5.8)。
+        self._resolved_lock = threading.Lock()
 
     def add(
         self,
@@ -91,11 +127,23 @@ class SignalGroupManager:
         Dependency checking against Derived_Signals (Req 4.5) is the Session's
         responsibility; this method removes unconditionally.
         """
-        try:
-            group = self._groups.pop(key)
-        except KeyError:
-            raise KeyError(f"no Signal_Group registered under key: {key!r}") from None
-        columns = tuple(self._resolved_by_key.pop(key, {}).values())
+        with self._resolved_lock:
+            # 在籍表からの pop も **lock の中** (resolve 側の在籍判定と対で意味を持つ)。
+            # 外に出すと、resolve が lock 下で「在籍あり」を確認して鋳造している最中に
+            # ここが _groups を抜き、_mint_column の self._groups[group_key] が
+            # KeyError になる — resolve() の契約 (アンロード済みは None) が破れる。
+            try:
+                group = self._groups.pop(key)
+            except KeyError:
+                raise KeyError(
+                    f"no Signal_Group registered under key: {key!r}"
+                ) from None
+            table = self._resolved_by_key.pop(key, {})
+            # recency 表からも外す。残すとアンロード済みキーが LRU の枠を食い続け、
+            # 生きている列が理由なく落ちる (帳簿の静かなリーク)。
+            for column_key in table:
+                self._resolved_order.pop(column_key, None)
+            columns = tuple(table.values())
         self._column_records.pop(key, None)
         self._physical_by_name.pop(key, None)
         self._invalidate_namespaced()
@@ -154,7 +202,8 @@ class SignalGroupManager:
         self._namespaced_by_key = {}
         # NOTE: _resolved_by_key はここで**捨てない** (Critical 1)。捨てると 2 ファイル目の
         # ロードごとに全プロット列が新オブジェクト (空キャッシュ) となり、次の render で
-        # フルチャンネル再読み (実測 0.73-1.18 s/列) が走る。切り離しは remove(key) のみ。
+        # フルチャンネル再読み (実測 0.73-1.18 s/列) が走る。切り離しは remove(key) と
+        # E-4a の LRU evict のみ。
 
     def _ensure_namespaced(self) -> None:
         """Build and cache the namespaced signal list/map once (idempotent).
@@ -215,6 +264,12 @@ class SignalGroupManager:
 
         グループ未ロードなら None (正当な不在)。ローダーが列を展開している間は
         全キーが既存 map で解決でき、鋳造経路はテストからのみ exercise される。
+
+        **同一キー → 同一オブジェクトは pin 中のみ保証** (E-4a D4 の意図的
+        supersede)。pin されていない列は :meth:`set_pinned_columns` が設定する
+        予算に応じて古い順に落ちるので、再解決で**別オブジェクト**が返りうる。
+        値・名前・時刻軸は同じで、読みも T2 のチャンネルキャッシュに当たるため
+        安い。列 Signal を ``is`` で追跡するコードを書いてはならない。
         """
         self._ensure_namespaced()
         assert self._namespaced_map is not None
@@ -222,22 +277,168 @@ class SignalGroupManager:
         if hit is not None:
             return hit
         group_key = key.split(KEY_SEPARATOR, 1)[0]
-        if group_key not in self._groups:
-            return None
-        table = self._resolved_by_key.setdefault(group_key, {})
-        cached = table.get(key)
-        if cached is not None:
-            return cached
-        minted = self._mint_column(group_key, key)
-        if minted is None:
-            return None
-        table[key] = minted
-        self.mint_count += 1
-        return minted
+        with self._resolved_lock:
+            # グループ在籍の判定は **lock の中** で行う (E-4a T3 レビュー M3)。外で
+            # 判定すると、判定を通ったスレッドが lock 待ちで止まっている間に別の
+            # スレッドの remove() が完走し、_mint_column の self._groups[group_key] が
+            # KeyError を上げて resolve() の外へ漏れる — 呼び出し側は「アンロード
+            # 済み = None」しか想定していない。setdefault が remove() の掃除済み
+            # エントリを蘇らせるのも同じバグの後半 (帳簿に幽霊グループが残る)。
+            # 今日ここへ並行して入る呼び出し元は無いが、E-4b はエクスポート
+            # ワーカーをこの経路へ載せる。
+            if group_key not in self._groups:
+                return None
+            table = self._resolved_by_key.setdefault(group_key, {})
+            cached = table.get(key)
+            if cached is not None:
+                # ヒットは recency を更新する。プロット中の列は render のたびに
+                # ここを通る (GraphPanelVM が sig_map.get を引き直す) ので、
+                # pin 済みの列は放っておいても MRU 側へ寄る。
+                self._touch(key)
+                return cached
+            minted = self._mint_column(group_key, key)
+            if minted is None:
+                return None
+            table[key] = minted
+            self._resolved_order[key] = None
+            self.mint_count += 1
+            self._evict_resolved()
+            return minted
 
     def resolved_keys(self, group_key: str) -> frozenset[str]:
         """鋳造済み列キーの集合 (鋳造を誘発しない introspection)."""
-        return frozenset(self._resolved_by_key.get(group_key, {}))
+        with self._resolved_lock:
+            return frozenset(self._resolved_by_key.get(group_key, {}))
+
+    # ─── 鋳造列 LRU と pin (E-4a spec §5.5 / D4) ──────────────────────────────
+
+    def set_pinned_columns(self, keys: Iterable[str]) -> None:
+        """今 pin すべき列キー集合を差し替える (GUI が push する)。
+
+        weakref では何も pin されない (VM は ``signal_key: str`` しか持たない)
+        ため、GUI 側が明示的に押し込む。集合は**置き換え**であって追加ではない —
+        差分更新にすると、パネル削除やクロスパネル軸移動のように「どの経路から
+        通知が来るか」が変わる操作で漏れが出る。
+
+        アンロード済みグループのキーが残っていても無害 (グループ key の連番は
+        減らないので、外れたキーが後から別の列に当たることはない)。
+        """
+        pinned = frozenset(keys)
+        with self._resolved_lock:
+            self._pinned = pinned
+            self._evict_resolved()
+
+    def pinned_columns(self) -> frozenset[str]:
+        """現在 pin されている列キー集合 (introspection・鋳造しない)."""
+        return self._pinned
+
+    def pinned_column_bytes(self) -> int:
+        """pin 済みの鋳造列が **今** 保持している配列バイトの合計 (spec §5.5)。
+
+        ``Session.set_pinned_columns`` がこれを ``ChannelSampleCache.set_reserved``
+        へ渡す (spec §5.2「予算の裁定者は 1 人」)。pin した列は所有権不変条件
+        (spec §5.4) により自前の独立配列を抱えるので、チャンネル 2-D と**同じ**
+        U3 256 MB を食う — 渡さないと 2 つの帳簿が互いの解放を当てにして両方が
+        上限を超える。
+
+        **数え方は teardown と共有する** (``models.retained_bytes``)。値配列だけを
+        数えてはならない: プロット中の列は ``sorted_view()`` が ``astype(float64)``
+        で作った**別の実体**も抱えており、非 float64 チャンネルではそちらの方が
+        大きい (幅広 uint8 で 8 倍)。過小申告は LRU に「まだ空きがある」と信じさせ、
+        pin + キャッシュの合計が予算を超える — ``set_reserved`` が防ぐはずの失敗を
+        会計そのものが招く形になる。
+
+        **master は数えない**: 鋳造列は親物理チャンネルの master を**同一
+        オブジェクトのまま**共有する (``_mint_column``) ので、ここへ載せると
+        グループ側の帳簿と二重計上になる。``seen`` を pin 列すべてで共有するのは、
+        同一チャンネルの兄弟列が master を共有する分も 1 回に畳むため。
+
+        **未展開の列は 0**: 鋳造しただけの列は 1 バイトも保持していない
+        (``retained_bytes`` は展開を誘発しない)。「鋳造したから食っている」と数えると、
+        ブラウザで覗いただけの列がチャンネルキャッシュの容量を削り、最低容量まで
+        痩せて再描画ごとのフルチャンネル再読みが復活する。
+
+        pin 集合には物理チャンネルのキーも混ざる (プロットしたのがスカラー信号なら
+        鋳造列ではない) が、ここには載らない — 走査するのは ``_resolved_by_key``
+        (鋳造列の表) だけで、物理チャンネルの実体はグループ側の会計に属するから。
+
+        **タイミング (仕様として受け入れる)**: この値は次の pin 変化まで更新され
+        ないので、pin の後に実体化した列は次の push まで申告に現れない。過小申告は
+        LRU の容量を広めに見せるだけで、実際の超過は ``put`` 側の evict が吸収する
+        (``bytes_held`` は常に真の値)。
+
+        lock 下で数え切るのは、表のコピーを外へ持ち出すと反復中に別スレッドの
+        鋳造で ``dict changed size`` になるから。``retained_bytes`` は展開済み配列の
+        nbytes を読むだけで I/O も ``handle.lock`` も触らないので、ロック順の危険は
+        無い。
+        """
+        with self._resolved_lock:
+            seen: set[int] = set()
+            total = 0
+            for table in self._resolved_by_key.values():
+                for column_key, signal in table.items():
+                    if column_key not in self._pinned:
+                        continue
+                    seen.add(id(signal.timestamps))  # master はグループ側の帳簿
+                    total += retained_bytes(signal, seen)
+            return total
+
+    @property
+    def resolved_capacity(self) -> int:
+        """鋳造列 LRU の容量 (列数)."""
+        return self._resolved_capacity
+
+    @property
+    def pinned_overflow(self) -> int:
+        """予算を超えて pin されている鋳造列の数 (0 なら予算内)。
+
+        pin は**拒否しない** (拒否するとプロット中の列が落ち、再描画ごとに
+        316 ms 停止が復活する) ので、超過は落とすのではなくここで観測する。
+        """
+        with self._resolved_lock:
+            pinned_live = sum(1 for k in self._resolved_order if k in self._pinned)
+        return max(0, pinned_live - self._resolved_capacity)
+
+    def resolved_lru_keys(self) -> tuple[str, ...]:
+        """鋳造列の recency 順 (**古い順**) — 鋳造を誘発しない introspection."""
+        with self._resolved_lock:
+            return tuple(self._resolved_order)
+
+    def _touch(self, key: str) -> None:
+        """*key* を MRU 側へ移す (呼び出し側が ``_resolved_lock`` を保持していること)."""
+        self._resolved_order.pop(key, None)
+        self._resolved_order[key] = None
+
+    def _evict_resolved(self) -> None:
+        """非 pin の鋳造列を古い順に落として容量へ収める (D4)。
+
+        **pin は決して落とさない**。pin が予算を超えても拒否せず、超過は
+        :attr:`pinned_overflow` で観測する (spec §5.5)。pin だけで予算が埋まった
+        場合でも非 pin 用に ``_MIN_EVICTABLE_COLUMNS`` 本は確保するので、鋳造した
+        列がその場で自分を落とす形にはならない。
+
+        高水位/低水位のヒステリシスは走査回数の償却のため (定数のコメント参照)。
+        pin が予算を超えている極端な状態では毎回 O(pin 数) の走査になるが、
+        これは「プロット中の列を落とさない」ことの代価として受け入れる。
+
+        呼び出し側が ``_resolved_lock`` を保持していること。
+        """
+        if len(self._resolved_order) <= self._resolved_capacity:
+            return  # 予算内 — pin の数え直しすらしない (鋳造ホットパスの O(n) 回避)
+        pinned_live = sum(1 for k in self._resolved_order if k in self._pinned)
+        room = max(self._resolved_capacity - pinned_live, _MIN_EVICTABLE_COLUMNS)
+        slack = max(1, room // _RESOLVED_EVICT_DIVISOR)
+        keep = max(room - slack, _MIN_EVICTABLE_COLUMNS)
+        unpinned = [k for k in self._resolved_order if k not in self._pinned]
+        excess = len(unpinned) - keep
+        if excess <= 0:
+            return
+        for column_key in unpinned[:excess]:  # dict は挿入順 = 古い順
+            del self._resolved_order[column_key]
+            table = self._resolved_by_key.get(column_key.split(KEY_SEPARATOR, 1)[0])
+            if table is not None:
+                table.pop(column_key, None)
+            self.resolved_evictions += 1
 
     def column_records(self, group_key: str) -> Mapping[str, ColumnRecord]:
         """{LD-08 dedup 済み表示名: ColumnRecord} の読み取り専用ビュー (E-3)。
@@ -283,8 +484,9 @@ class SignalGroupManager:
 
         「あるか」しか要らない呼び出し側 (T5 の行フィルタ・T7 の表示名衝突判定) の
         ための存在判定。``resolve_signal`` で代用すると、ヒットした列が
-        ``_resolved_by_key`` へ**恒久的に**登録される (LRU は E-3 では入れない = C-g)
-        ため、表示のためだけに列 Signal が寿命いっぱい滞留する。
+        ``_resolved_by_key`` へ登録される。E-4a で LRU が入ったので恒久滞留はしなく
+        なったが、**非 pin の枠を食ってプロット中でない列を押し出す** (spec §5.5)
+        ため、表示や存在判定のためだけに列 Signal を鋳造してはならない。
 
         物理チャンネル名そのものが渡された場合は ``spec`` の形だけで決まる
         (列名を 1 本も生成しない — 広幅チャンネルで 1,000 本の f-string を作らない)。
@@ -320,9 +522,10 @@ class SignalGroupManager:
     def _mint_column(self, group_key: str, key: str) -> Signal | None:
         """列キーから Signal を鋳造する (解決できなければ None)。
 
-        鋳造した Signal は列キーの**正典**であり (resolve は同じキーに同じオブジェクトを
-        返す)、namespaced ラッパーと違って別の元 Signal を持たない --
-        ``_sorted_view_delegate`` は付けない。
+        鋳造した Signal は **pin 中に限り**その列キーの正典 (resolve が同じ
+        オブジェクトを返す) であり、namespaced ラッパーと違って別の元 Signal を
+        持たない -- ``_sorted_view_delegate`` は付けない。pin されていない列は
+        E-4a の LRU で落ちうるので、再解決で別オブジェクトが返る (D4 supersede)。
         """
         _prefix, sep, display_key = key.partition(KEY_SEPARATOR)
         if not sep:
@@ -359,6 +562,9 @@ class SignalGroupManager:
             raw_leaf = f"{record.raw_base_name}{rest}"
             if parse_leaf(raw_leaf, {record.raw_base_name: record.spec}) is None:
                 continue  # 消費しきれない / 非数値リーフ = この親では解決不能
+            path = _leaf_path(record, rest)
+            if path is None:
+                continue  # 名前は通ったが位置が引けない = この親では解決不能
             parent = self._physical_signal(group_key, display_key[:i])
             if parent is None:
                 return None
@@ -374,7 +580,9 @@ class SignalGroupManager:
                     record.group_index,
                     record.channel_index,
                     length=len(parent.timestamps),
+                    # 名前は永続キー・位置は読み経路。両方渡すのが列の契約。
                     selector=(raw_leaf,),
+                    path=path,
                 ),
                 file_format=parent.file_format,
                 bus_type=parent.bus_type,
@@ -419,6 +627,59 @@ class SignalGroupManager:
         1:1 loud-fail が入口で断つ。
         """
         return self._physical_by_name.get(group_key, {}).get(display_name)
+
+
+def _leaf_path(record: ColumnRecord, suffix: str) -> ColumnPath | None:
+    """リーフ名サフィックスから **位置** を引く (E-4a・解決不能なら None)。
+
+    サフィックス (``[2]`` / ``.xa``) は 2 つのキー空間 (LD-08 dedup 済み表示名 /
+    生チャンネル名) が共有する唯一の部分なので、位置は dedup のずれを受けない —
+    生名側でしか引けない ``parse_leaf`` (docstring の precondition) と対照的に、
+    ここは表示名側の残余をそのまま使える。``leaf_paths`` は ``_flatten`` と同順で
+    **全**リーフを返す (非数値も含む) ので、数値ゲートは呼び出し側の
+    ``parse_leaf`` に残す — ここで数値判定を兼ねると混在構造 ``Q`` の
+    ``Q.tag`` が裏口から列になる。
+
+    **索引は ``leaf_paths`` が返すサフィックスで引く** (T1 レビューの前方ハザード)。
+    ``zip(leaf_names(...), leaf_paths(...))`` で位置合わせしてはならない: 2 つは
+    **別の列挙空間**で (``leaf_names`` は数値リーフのみ・``leaf_paths`` は全リーフ)、
+    混在構造では長さが違う。フィールド順が ``(tag: S2, x: f8)`` の構造体では zip が
+    キー ``R.x`` に ``.tag`` の経路を**例外なしで**結びつける = 本増分が潰そうと
+    している「別の列を黙って返す」そのもの (S3-S5 の失敗モードが 1 層上がった形)。
+
+    **索引は ``record`` 側に 1 度だけ作る** (I-2): 引くたびに ``leaf_paths`` を頭から
+    回すと 1 鋳造が O(全リーフ) になり、幅 1,100 のチャンネルを全列鋳造すると
+    1.2M ステップ = **O(n^2)** になる。E-4b の「すべて選択 -> エクスポート」は
+    E-4a 完了に依存する (spec §4) ので、そこで律速するのはここ。初回の 1 回だけ
+    全リーフを歩く (= 従来の**最悪 1 回分**と同じコスト) ので、単発の鋳造は遅く
+    ならない。索引を持つのは実際に列を鋳造したチャンネルだけで、閲覧しかしない
+    チャンネルには 1 バイトも作らない。
+
+    **書き込みは dict 同士の merge (GIL 下で 1 ステップ)** — ``leaf_paths`` は
+    **ジェネレータ**なので、``index.update(leaf_paths(record.spec))`` のように
+    直接渡すと ``update`` はジェネレータを 1 件ずつ消費しながら ``index`` へ
+    書き込む。この「1 発の代入」ではなく「複数回の代入」である間、他スレッドは
+    ``record.path_index`` 越しに**部分的にしか埋まっていない索引**を観測できる
+    (レビュー実測: 2000 件中 6 件だけ入った状態が見えた)。結果は「間違った値」
+    ではなく「まだ入っていないキーが ``None`` を返す」(= このチャンネルは
+    解決不能扱いになる) なので実害はサイレント破損ではないが、走査の途中経過を
+    見せてよい理由にはならない。**``dict(leaf_paths(record.spec))`` で先に
+    ジェネレータを完全に消費してから** ``index.update(その dict)`` する —
+    dict 同士の merge は C 実装のみで進み Python コールバックへ戻らないため、
+    途中経過を他スレッドへ見せない。二重に走っても同じ内容を作り直すだけなので
+    競合そのものは無害だが、この関数を呼ぶのに専用 lock は要らない、という
+    今日の安全性は「呼び出し元 (``resolve``) が ``_resolved_lock`` 下でしか
+    ``_mint_column`` を呼ばない」という**呼び出し側の事実**に依っているだけで、
+    この関数自身がアトミックだからではない — 将来ここが lock なしの経路
+    (T3 以降の並行読み等) から呼ばれても崩れないよう、書き込みそのものを
+    1 ステップにしておく。
+    """
+    index = record.path_index
+    if not index:
+        # 0 リーフのチャンネル (幅 0 軸) は毎回空走査になるが、その走査自体が
+        # O(1) (leaf_paths が 1 件も yield しない) なので償却の意味がない。
+        index.update(dict(leaf_paths(record.spec)))
+    return index.get(suffix)
 
 
 class _ResolvingMap(Mapping[str, Signal]):

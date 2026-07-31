@@ -60,9 +60,10 @@ class SignalPreviewVM:
         数だけが結果を決めるので、``display_names`` の規則そのものは変わらない。
 
         判定に ``resolve_signal`` を使わないのが要点: 鋳造した列は
-        ``_resolved_by_key`` へ **恒久的に** 入る (LRU は E-3 では入れない = C-g) ため、
-        プレビュー窓のタイトルやプロパティの「名前」を出すだけで、他ファイルぶんの
-        列 Signal が寿命いっぱい滞留する。``has_column`` (列の存在) と
+        ``_resolved_by_key`` へ入る。E-4a で LRU が入ったので恒久滞留はしなく
+        なったが、**非 pin の枠を食ってプロット中でない列を押し出す** (spec §5.5)
+        ため、プレビュー窓のタイトルやプロパティの「名前」を出すだけで他ファイル
+        ぶんの列を鋳造してはならない。``has_column`` (列の存在) と
         ``is_container_channel`` (親チャンネルの存在) はどちらも ColumnRecord の
         列構造だけを見るので、1 本も鋳造しない。2 つを OR するのは旧実装
         (``resolve_signal is not None``) の母数を厳密に保つため — 解決できるキーは

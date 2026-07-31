@@ -58,7 +58,8 @@ class AppViewModel(Observable):
         # deltas applied to the ORIGINAL session signal at render time.
         self._signal_offsets: dict[str, float] = {}
         self._file_offsets: dict[str, float] = {}
-        self._teardown: object | None = None  # duck-typed: enqueue(key, group, columns)
+        # duck-typed: enqueue(key, group, columns, cached_arrays)
+        self._teardown: object | None = None
         self._releasing: dict[str, str] = {}  # key -> display name (capture at unload)
         # 増分B: 「重い処理が実行中か」の duck-typed 述語 (GUI が ExportController を
         # 注入する)。VM は Qt も ExportController も知らないままガードできる。
@@ -168,10 +169,22 @@ class AppViewModel(Observable):
     def set_teardown(self, service: object) -> None:
         """Inject the GUI-thread teardown service.
 
-        duck-typed ``enqueue(key, group, columns=())`` — ``columns`` は鋳造列
-        (``RemovalResult.removed_columns``) で、グループ信号と同じペーシングに乗せる。
+        duck-typed ``enqueue(key, group, columns=(), cached_arrays=())`` —
+        ``columns`` は鋳造列 (``RemovalResult.removed_columns``)、``cached_arrays``
+        は ChannelSampleCache から回収したチャンネル配列
+        (``RemovalResult.cached_arrays``)。どちらもグループ信号と同じペーシングに乗せる。
         """
         self._teardown = service
+
+    def set_pinned_columns(self, keys: frozenset[str]) -> None:
+        """GraphAreaVM が集めた「今 pin すべき列キー」を Session へ push する。
+
+        E-4a spec §5.5: VM は ``signal_key: str`` しか持たないので weakref では
+        何も pin されない。したがって GUI から明示的に押し込む。ここに素通しの
+        1 段を置くのは、GraphAreaVM が Session を直接触らない (AppViewModel が
+        唯一のアプリ状態の口である) という既存の依存の向きを崩さないため。
+        """
+        self._session.set_pinned_columns(keys)
 
     def set_busy_predicate(self, predicate: Callable[[], bool] | None) -> None:
         """Inject a duck-typed "a blocking job is running" predicate (増分B).
@@ -269,13 +282,17 @@ class AppViewModel(Observable):
             self._releasing[key] = name
             # 鋳造列 (E-1) は SignalGroup.signals の外に居るので、渡さないと result の
             # スコープアウトで GUI スレッドの同期解放になる (プロット済み列は実体化済み
-            # = バイトが重い → FU-16 のフリーズが戻る)。columns は**常に**渡す: 空の
-            # ときだけ省く形にすると、鋳造が生きるまでこの実引数が一度も評価されず、
+            # = バイトが重い → FU-16 のフリーズが戻る)。キャッシュ配列 (E-4a) も同じ
+            # 理由で渡す (1 本 13.2 MB)。columns / cached_arrays は**常に**渡す: 空の
+            # ときだけ省く形にすると、実データが載るまでこの実引数が一度も評価されず、
             # テストダブルの署名ドリフトが無音で残る。MainWindow._discard の
             # remove_group(force=True) も同じ配線を持つ (AppViewModel を経由しない
             # 2 サイト目)。
             self._teardown.enqueue(  # type: ignore[attr-defined]
-                key, result.removed_group, columns=result.removed_columns
+                key,
+                result.removed_group,
+                columns=result.removed_columns,
+                cached_arrays=result.cached_arrays,
             )
             self._notify("releasing")
         # else: removed_group falls out of scope here -> immediate sync free.

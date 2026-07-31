@@ -294,6 +294,68 @@ def write_mdf4_shared_group(tmp_path: Path) -> Path:
     return path
 
 
+def write_mdf4_shared_group_wide(tmp_path: Path) -> Path:
+    """同一チャンネルグループに単一フィールド構造化チャンネル 2ch (A/B) — ci 軸の
+    キャッシュ検証用.
+
+    ``write_mdf4_shared_group`` の非スカラー版。E-4a はスカラー (1-D 非構造化)
+    チャンネルをキャッシュ対象から除外する (レビュー I4) ため、スカラーの A/B
+    では ci を落とす変異 (S4) がそもそも ``ChannelSampleCache.put`` へ到達せず、
+    キー計算の破壊が実害 (別チャンネルの値が返る) を生まない = テストが変異に
+    盲目になる。
+
+    **2-D を使うなら uint8 でなければ往復しない** (本ファイル冒頭の 3-D の注記と
+    ``test_column_roundtrip.py`` の同旨の注記と同じ制約)。float64 の 2-D は
+    **同一 append に 1 本だけでも** ``(N, w) -> (N,)`` へ潰れ、先頭 N 要素
+    (= 先頭 N/w 行) だけが返る。逆に uint8 の 2-D なら**幅が違っても同一 append に
+    複数混ぜて問題ない** — いずれも実測。ここで 2-D でなく単一フィールド構造化
+    1-D を採るのは、``write_mdf4_shared_group`` の float64 な A/B と値の型を揃えた
+    まま ``samples.dtype.names`` を truthy (= I4 のもう一方のキャッシュ対象条件)
+    にできるためで、書き込みの制約が理由ではない。
+    """
+    ts = np.arange(0.0, 1.0, 0.1)
+    a = np.array([(v,) for v in np.arange(10.0)], dtype=[("x", "<f8")])
+    b = np.array([(v,) for v in np.arange(10.0) * 2.0], dtype=[("x", "<f8")])
+    mdf = MDF()
+    try:
+        mdf.append(
+            [
+                ASignal(samples=a, timestamps=ts, name="A"),
+                ASignal(samples=b, timestamps=ts, name="B"),
+            ]
+        )  # 1回の append = 1グループ
+        path = tmp_path / "shared_struct.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
+def write_mdf4_2d_solo(path: Path, offset: int) -> Path:
+    """単一の 2D チャンネル ("Mat") だけを持つ MDF4 — handle 軸のキャッシュ検証用.
+
+    ``test_cache_key_separates_two_files_with_identical_positions`` は元々
+    1-D スカラー ("Spd") の 2 ファイルだったが、E-4a がスカラーチャンネルを
+    キャッシュ対象から除外する (レビュー I4) ため、handle 軸を落とす変異 (S3) が
+    ``put``/``get`` を経由せずテストが盲目になる (``write_mdf4_shared_group_wide``
+    と同じ理由)。1 チャンネル構成にするのは、(gi, ci) が「master 直後の唯一の
+    チャンネル」として 2 ファイルで確実に一致するようにするため。``offset`` で
+    2 ファイルの値を分ける (uint8 なので 0/100 程度に収める — 255 を超えない)。
+    """
+    ts = np.array([0.0, 0.1, 0.2, 0.3])
+    mat = (
+        np.array([[0, 1, 2], [10, 11, 12], [20, 21, 22], [30, 31, 32]], dtype=np.uint8)
+        + offset
+    )
+    mdf = MDF()
+    try:
+        mdf.append([ASignal(samples=mat, timestamps=ts, name="Mat")])
+        mdf.save(Path(path), overwrite=True)
+    finally:
+        mdf.close()
+    return Path(path)
+
+
 def write_mdf4_2d(tmp_path: Path) -> Path:
     """2D (Nx3) uint8 配列チャンネル + 通常チャンネル — LD-12 展開検証用.
 
@@ -702,6 +764,38 @@ def write_mdf4_structured(tmp_path: Path) -> Path:
     finally:
         mdf.close()
     return path
+
+
+def write_mdf4_two_wide_channels(
+    tmp_path: Path, rows: int = 1000, cols: int = 64
+) -> Path:
+    """幅 cols の 2D uint8 チャンネル 2 本 (WideA / WideB) — E-4a ①ゲート用.
+
+    デコード済み 2-D 配列 1 本 = ``rows * cols`` バイト (uint8) と **実体サイズが既知**
+    になるのが要点。E-4a の ①ゲートは LRU 予算を注入して evict を起こす (実データでは
+    256 MB に広幅が ~19 本入り発火しない・spec D6) ので、予算を「1 本は載り 2 本は
+    載らない」値に決めるにはエントリの実体サイズが要る。2 本あるのは「別チャンネルを
+    読むと古い方が落ちる」を観測するため。
+
+    値は ``WideA[j][r] = (r + 7j) % 251`` / ``WideB[j][r] = (r + 7j + 128) % 251``。
+    どの **チャンネルのどの列** を読んだかが値だけで判別でき、位置パスが隣の列や別
+    チャンネルを返す誤りを値で捕まえられる (長さも dtype も一致するので、LazyMdfValues
+    の長さ検証は素通りする = 値でしか捕まらない)。251 は素数で 7 とも rows/cols とも
+    互いに素なので、列間・チャンネル間の値列が偶然一致しない。
+    """
+    ts = np.arange(rows, dtype=np.float64) * 0.01
+    r = np.arange(rows, dtype=np.int64)[:, None]
+    j = np.arange(cols, dtype=np.int64)[None, :]
+    mdf = MDF()
+    try:
+        for name, base in (("WideA", 0), ("WideB", 128)):
+            samples = ((r + 7 * j + base) % 251).astype(np.uint8)
+            mdf.append([ASignal(samples=samples, timestamps=ts, name=name, unit="m")])
+        path = tmp_path / "twowide.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return Path(path)
 
 
 def write_mdf3(tmp_path: Path, version: str = "3.30") -> Path:

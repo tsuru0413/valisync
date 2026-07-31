@@ -61,9 +61,10 @@ def overlay_reference_signals(
        (E-3 C-c — マッチ粒度は列レベル)。存在判定は ``session.has_column`` /
        ``session.is_container_channel`` で行い、**鋳造 (``resolve_signal``) は
        metadata が実際に必要になるまで遅らせる** (M-7): 鋳造列は
-       ``_resolved_by_key`` へ恒久登録される (E-3 C-g で LRU なし) ので、
-       存在確認のためだけに鋳造すると「重ねなかった候補」がセッション寿命いっぱい
-       滞留する。物理チャンネル単位で突き合わせてはならない: ``already_present``
+       ``_resolved_by_key`` へ登録される。E-4a で LRU が入ったので恒久滞留は
+       しなくなったが、**非 pin の枠を食ってプロット中でない列を押し出す**
+       (spec §5.5) ので、存在確認のためだけに「重ねなかった候補」を鋳造しては
+       ならない。物理チャンネル単位で突き合わせてはならない: ``already_present``
        判定は plotted entries の **列キー**で作られているため、再実行で重複追加になる。
     3. A match is added to the SAME axis via ``panel.add_signal_to_axis``.
     4. Skips (all counted, nothing raises) — 判定順は **鋳造の要否** で並べる
@@ -127,9 +128,10 @@ def overlay_reference_signals(
             continue
         if not session.has_column(target_key, bare):
             # M-7: 存在判定に resolve_signal を使わない。ヒットした列は
-            # _resolved_by_key へ恒久登録される (C-g で LRU なし) ため、却下する
-            # 候補まで鋳造するとセッション寿命いっぱい滞留する。has_column は
-            # 記録の形だけで答え、副テーブルに何も残さない。
+            # _resolved_by_key へ登録され、E-4a の LRU では非 pin の枠を食って
+            # プロット中でない列を押し出す (spec §5.5) ため、却下する候補まで
+            # 鋳造してはならない。has_column は記録の形だけで答え、副テーブルに
+            # 何も残さない。
             no_match += 1
             continue
 

@@ -288,7 +288,7 @@ class _FakeTeardown:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
 
-    def enqueue(self, key, group, columns=()) -> None:
+    def enqueue(self, key, group, columns=(), cached_arrays=()) -> None:
         self.calls.append((key, group))
 
 
