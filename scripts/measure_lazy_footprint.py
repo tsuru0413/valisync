@@ -358,8 +358,16 @@ class DrainResult:
     # (index, ms, signals, bytes, gc passes)
     top_ticks: tuple[tuple[int, float, int, int, int], ...]
     # T4: remove_group が close の前にキャッシュを回収して teardown へ渡す (spec §5.7)。
-    cache_mb_before: float = 0.0
-    cache_mb_after: float = 0.0
+    # **既定値を置かない**: 0.0 の既定は「配線し忘れた実行」を "0.0 -> 0.0" として
+    # 刷り、回収を検証できていない実行が検証済みに見える (T5 レビュー Minor)。
+    # 必須フィールドなら配線漏れは TypeError で止まる。
+    cache_mb_before: float
+    cache_mb_after: float
+    # プロセス全体ではなく **この unload 対象ファイル** のぶん。(a) は 1 バイトも
+    # キャッシュしていないファイルを unload するので、プロセス全体の行だけでは
+    # 「回収できていない」と誤読される (実測 188.8 -> 188.8 は別ファイルのぶん)。
+    handle_cache_mb_before: float
+    handle_cache_mb_after: float
 
 
 def instrument_teardown_ticks() -> list[tuple[float, int, int, int]]:
@@ -523,13 +531,27 @@ def materialize_leaves(win: object, key: str, target: int) -> int:
             # 解放コストで意味を持つのは所有権でなく**解放される実体の大きさ**なので、
             # 「自分より大きい base を生かし続けない」だけを両者に要求する
             # (裸の owndata assert は「production と違う物を保持しろ」になる)。
+            # チェーンは**最後まで**歩く: 実測の 2 段は同サイズだが、深さ 1 だけ見る
+            # 実装は「同サイズの view の先に巨大な実体がぶら下がる」形に盲目になる。
             for tag, arr in (("prod", prod_arr), ("bulk", bulk_arr)):
-                base = arr.base
-                assert base is None or base.nbytes == arr.nbytes, (
-                    f"{tag} 側が自分より大きい base を抱えている — 解放コストが違う",
-                    arr.nbytes,
-                    None if base is None else base.nbytes,
-                )
+                base, hops = arr.base, 0
+                while base is not None:
+                    hops += 1
+                    size = getattr(base, "nbytes", None)
+                    # ndarray 以外 (bytes 等) が base に来た実績は無い。来たなら
+                    # 大きさが読めない = 検証できていないので黙って通さない。
+                    assert size is not None, (
+                        f"{tag} の base チェーンに大きさの読めない要素",
+                        hops,
+                        type(base),
+                    )
+                    assert size == arr.nbytes, (
+                        f"{tag} 側が自分より大きい base を抱えている — 解放コストが違う",
+                        hops,
+                        arr.nbytes,
+                        size,
+                    )
+                    base = getattr(base, "base", None)
         print(
             f"  EQUIVALENCE ok [{branch}]: bulk route reproduces the lazy array "
             f"({prod_arr.dtype}, {prod_arr.shape}, {prod_arr.nbytes / 1024:,.0f} KiB)"
@@ -606,6 +628,9 @@ def drain_after_unload(app: object, win: object, key: str, label: str) -> DrainR
     materialized = len(_materialized_names(session, key))
     cache = _channel_cache(session)
     cache_before = cache.bytes_held
+    # ハンドル id は unload の**前**に控える (unload 後は group_signals が引けない)。
+    hid = id(_handle_of(session, key))
+    handle_before = _handle_cache_bytes(cache, hid)
     gc.collect()
 
     ticks: list[tuple[float, int, int, int]] = win._tick_log  # type: ignore[attr-defined]
@@ -622,6 +647,7 @@ def drain_after_unload(app: object, win: object, key: str, label: str) -> DrainR
         app.processEvents()  # type: ignore[attr-defined]
     total = time.perf_counter() - t0
     cache_after = cache.bytes_held
+    handle_after = _handle_cache_bytes(cache, hid)
     app.processEvents()  # type: ignore[attr-defined]
 
     durations = [t[0] for t in ticks]
@@ -639,6 +665,8 @@ def drain_after_unload(app: object, win: object, key: str, label: str) -> DrainR
         top_ticks=tuple((i, s * 1000.0, n, b, g) for i, (s, n, b, g) in top),
         cache_mb_before=cache_before / MB,
         cache_mb_after=cache_after / MB,
+        handle_cache_mb_before=handle_before / MB,
+        handle_cache_mb_after=handle_after / MB,
     )
 
 
@@ -667,9 +695,25 @@ def report_drain(results: list[DrainResult]) -> None:
             f"materialized at unload={r.materialized:,}"
         )
         print(f"  sync close (UI thread)  = {r.sync_close_ms:,.1f} ms")
+        # 回収 (T4) の主語は **この unload 対象ファイル** である。プロセス全体の
+        # bytes_held は別ファイルのぶんを含むので、それだけでは回収を証明も反証も
+        # できない (T5 レビュー Minor)。
+        if r.handle_cache_mb_before > 0.0:
+            recovered = "OK" if r.handle_cache_mb_after == 0.0 else "LEAK"
+            claim = (
+                f"このファイル {r.handle_cache_mb_before:,.1f} -> "
+                f"{r.handle_cache_mb_after:,.1f} MB  [{recovered}]"
+                "  (T4: close の前に回収して teardown へ渡す)"
+            )
+        else:
+            claim = (
+                "このファイルはキャッシュ 0 本 = **回収の観測対象なし** "
+                "(T4 の証拠にはならない)"
+            )
+        print(f"  cache bytes at unload   = {claim}")
         print(
-            f"  cache bytes at unload   = {r.cache_mb_before:,.1f} -> "
-            f"{r.cache_mb_after:,.1f} MB  (T4: close の前に回収して teardown へ渡す)"
+            f"    プロセス全体の bytes_held = {r.cache_mb_before:,.1f} -> "
+            f"{r.cache_mb_after:,.1f} MB  (他ファイルのぶんを含む)"
         )
         print(f"  ticks                   = {r.ticks:,}")
         print(f"  MAX tick                = {r.max_tick_ms:,.1f} ms   [{verdict}]")
@@ -719,15 +763,32 @@ def report_drain(results: list[DrainResult]) -> None:
 # ─── E-4a: チャンネル単位キャッシュの観測 ─────────────────────────────────────
 LATENCY_COLUMNS = 5
 LATENCY_TARGET_MS = 380.0  # spec §9 (5 列合計)
-# U3: キャッシュ合計の追加メモリ予算 (spec §5.1)。飽和後の USS 天井の判定に使う。
+# U3: キャッシュ合計の追加メモリ予算 (spec §5.1)。
+#
+# **一次判定はキャッシュ自身の会計 (bytes_held <= 予算)** であってプロセス USS では
+# ない。LRU は「次の 1 本を載せると予算を超える」ところまで正当に保持する (実測
+# 251.8 MB) ので、USS 側に残るヘッドルームは構造的に ~4 MB しかなく、アロケータと
+# 一時分がそれを食う — 「プロセス USS delta <= 予算」は達成不能に近い帯の定義だった
+# (T5 レビュー I4)。USS は「予算 + 実測オーバーヘッド」に対する**参考**として刷る。
 CACHE_BUDGET_MB = 256
+# 参考帯に足す実測オーバーヘッド (USS delta - bytes_held)。実測: headless --core
+# n=4 で 2.5-3.5 MB / 実 GUI n=1 で 3.1 MB (いずれも gc.collect 後)。断片化の
+# 揺れを吸える程度に丸めて 8 MB とする — ここを実測ぎりぎりにすると I4 と同じ
+# 「構造的に達成不能な帯」を USS 側へ作り直すことになる。
+CACHE_USS_OVERHEAD_MB = 8.0
 # evict の同期解放時間を測るための合成エントリの handle id。実オブジェクトの id() は
 # 0 にならないので、実ファイルのエントリと絶対に衝突しない。
 _SYNTH_HANDLE_ID = 0
 # M5: E-3 の獲得 (core 297 MB / USS +15 MB / load 1.43 s) の非回帰帯。
 CORE_RESIDENT_LIMIT_MB = 310.0
 CORE_USS_DELTA_LIMIT_MB = 20.0
-CORE_LOAD_LIMIT_S = 1.6
+# load wall の帯は**中央値の ~1.4 倍**に置く (T5 レビュー I3)。実測 (HEAD・warm・
+# fresh process n=33): 中央値 1.42 s / 最小 1.33 / 最大 1.65 s。旧帯 1.6 s は
+# 中央値の 1.13 倍しかなく、ページキャッシュが完全に温まった状態でも 1/33 が超えた
+# (E-3 記録 1.43 s との差は測定ノイズであって回帰ではない)。加えてセッション初回の
+# 冷たいページキャッシュでは 3.38 s を実測しており、1 実行の verdict は本質的に
+# advisory である。2.0 s なら「E-3 比で実質倍」= 本物の回帰だけが鳴る。
+CORE_LOAD_LIMIT_S = 2.0
 
 
 class _ReadCounters:
@@ -793,6 +854,21 @@ def _handle_of(session: Any, key: str) -> Any:
     return session.group_signals(key)[0]._values_source._handle
 
 
+def _handle_cache_bytes(cache: Any, handle_id: int) -> int:
+    """*handle_id* **1 ファイルぶん**のキャッシュバイト数。
+
+    キャッシュはファイル別の会計を公開していない (公開するのは予算の裁定に必要な
+    プロセス全体の ``bytes_held`` だけ)。しかし「このファイルの回収が起きたか」は
+    全体の合計では読めない — 他ファイルのぶんが残っていれば回収済みでも減らないし、
+    1 バイトも載っていないファイルなら「変わらない」ことが回収の証拠にならない
+    (T5 レビュー Minor)。観測点は内部辞書のキー第 1 成分しかないので、ここだけ
+    private を読む。
+    """
+    return sum(
+        int(arr.nbytes) for k, arr in cache._entries.items() if k[0] == handle_id
+    )
+
+
 def _widest_channel(session: Any, key: str) -> tuple[str, int]:
     """列数が最大の物理チャンネルとその列数 (**名前を 1 本も生成しない**)。
 
@@ -840,9 +916,17 @@ def column_read_latency(
 
     ``cold_every_column=False``: 測定開始時だけ冷たい = ユーザーが広幅チャンネルの
     隣接 5 列をまとめて載せる journey。期待は select 1 回 / hit 4。
-    ``cold_every_column=True``: 列ごとに冷たい = E-4a **以前**が構造的に踏んでいた
-    経路。同一実行内の対照であり、これが無いと 380 ms に比較対象が無い (別マシンで
-    測った 1,584 ms との A/B は環境差を吸えない)。
+    ``cold_every_column=True``: 列ごとに 1 decode。同一実行内の対照であり、これが
+    無いと 380 ms に比較対象が無い (別マシンで測った値との A/B は環境差を吸えない)。
+
+    **対照は「E-4a 以前」ではなく その下限である** (T5 レビュー I5): merge-base
+    (84a5a69) の読み経路は列ごとに select **に加えて** 全リーフの
+    ``dict(_flatten(...))`` をやり直していたが、この対照は select だけを払う。
+    同一マシン・同一ファイル・同一チャンネル (Prod10Wide_0000) ・同一位置
+    (load 直後) で実測すると、対照 1,675 / 1,723 / 1,809 ms に対し merge-base を
+    実際にチェックアウトして測った真の before は 2,033 / 2,102 / 2,177 ms
+    (n=3 ずつ) で、**対照の方が中央値で ~380 ms 楽観的**である。したがってこの行は
+    「以前はこうだった」ではなく「キャッシュ無しでも最低これだけ掛かる」を意味する。
     """
     mgr = session._groups
     cache = _channel_cache(session)
@@ -889,7 +973,7 @@ def column_read_latency(
             base_is_none = base_is_none and arr.base is None
 
     dropped = cache.drop_handle(hid)
-    label = "列ごとに冷 (E-4a 以前の経路・対照)"
+    label = "列ごとに 1 decode (E-4a 以前の**下限** — 列ごとの _flatten を含まない)"
     if not cold_every_column:
         label = "測定開始時のみ冷 (E-4a の journey)"
     return LatencyResult(
@@ -916,7 +1000,10 @@ def report_latency(results: list[LatencyResult]) -> None:
         print(f"  --- {r.label} ---")
         print(f"  channel={r.channel}  columns in channel={r.columns_in_channel:,}")
         for i, ms in enumerate(r.per_column_ms):
-            print(f"    column #{i}  {ms:,.0f} ms")
+            # 小数 2 桁は飾りではない: この増分のヘッドライン (兄弟列 0.07-0.31 ms)
+            # は :,.0f では全部 "0 ms" になり、自分の成果を別プローブで測り直す
+            # 羽目になる (T5 レビュー Minor)。
+            print(f"    column #{i}  {ms:,.2f} ms")
         verdict = "OK" if total <= LATENCY_TARGET_MS else "OVER"
         print(
             f"  TOTAL {len(r.per_column_ms)} columns = {total:,.0f} ms   [{verdict}]"
@@ -933,10 +1020,69 @@ def report_latency(results: list[LatencyResult]) -> None:
         own = "OK" if r.base_is_none else "VIEW LEAK"
         print(f"  minted values.base is None = {r.base_is_none}   [{own}]")
     print(
-        "  reference (E-3 実測・キャッシュ無し): 309-327 ms/列・5 列 1,584 ms。\n"
-        "  対照 (列ごとに冷) が cached 側と同程度なら、キャッシュが効いていないか\n"
-        "  冷やす側が壊れている — どちらでも受け入れは成立しない。",
+        "  reference (真の before = merge-base 84a5a69 を実際にチェックアウトして\n"
+        "  実測・同一チャンネル Prod10Wide_0000 / n=3): 5 列 2,033 / 2,102 / 2,177 ms\n"
+        "  (346-496 ms/列)。同一位置で測った上の対照 (列ごとに 1 decode) は\n"
+        "  1,675-1,809 ms で、中央値 ~380 ms 楽観的な**下限**である\n"
+        "  (merge-base は列ごとに全リーフ _flatten もやり直していた)。\n"
+        "  対照が cached 側と同程度なら、キャッシュが効いていないか冷やす側が\n"
+        "  壊れている — どちらでも受け入れは成立しない。",
         flush=True,
+    )
+
+
+@dataclass(frozen=True)
+class EvictSample:
+    """1 回の evict の同期解放時間と、**追い出された配列の出自**。
+
+    出自を持ち回すのが本体である (T5 レビュー I1): 同じループ・同じサイズでも、
+    実 asammdf デコード配列を落とすときと、直前に自分で置いた ``np.ones`` を
+    落とすときで実測が ~2 倍違う。主語を書かずに数値だけ記録すると、次に合成で
+    測った人が「速くなった」と誤読する。
+    """
+
+    ms: float
+    evicted_real: bool  # False = このループが直前に置いた合成 np.ones
+    evicted_bytes: int
+
+
+def _split_evict(samples: tuple[EvictSample, ...]) -> tuple[list[float], list[float]]:
+    """(実配列を落とした標本, 合成を落とした標本) の ms リスト。"""
+    real = [s.ms for s in samples if s.evicted_real]
+    synth = [s.ms for s in samples if not s.evicted_real]
+    return real, synth
+
+
+def _rewarm_one_channel(session: Any, key: str) -> int:
+    """広幅チャンネル 1 本をキャッシュへ戻し、そのバイト数を返す。
+
+    飽和 + evict 標本採取のあとキャッシュは空になる (標本を取るために自分で全部
+    追い出す)。回収 (T4) の観測はそこに**何かが載っている**ことが前提なので、
+    観測対象を明示的に作る段としてここに置く。
+
+    **未鋳造の列を選ぶ**のが要点: 既に鋳造済みの列は ``LazyMdfValues._cache`` に
+    自分の列配列を焼き付けているので、``values`` はチャンネルキャッシュを一度も
+    触らずに返る (飽和段で読んだ「各チャンネルの先頭リーフ」がまさにそれ) —
+    温め直したつもりで 0 バイトのまま進む。列名は見つかるまでしか作らない。
+    """
+    from valisync.core.loaders.column_names import leaf_names
+    from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
+
+    display, _width = _widest_channel(session, key)
+    records = session._groups.column_records(key)
+    already = session._groups.resolved_keys(key)
+    col = None
+    for leaf in leaf_names(display, records[display].spec):
+        col_key = f"{key}{KEY_SEPARATOR}{leaf}"
+        if col_key in already:
+            continue
+        col = session.resolve_signal(col_key)
+        break
+    assert col is not None, f"未鋳造の列が無い (channel={display})"
+    arr = col.values
+    assert len(arr) > 0
+    return int(
+        _handle_cache_bytes(_channel_cache(session), id(_handle_of(session, key)))
     )
 
 
@@ -953,38 +1099,55 @@ class SaturationResult:
     base_uss_mb: float
     rss_mb: float
     uss_mb: float
-    evict_ms: tuple[float, ...]
+    evict: tuple[EvictSample, ...]
     evict_entry_mb: float
 
 
 def evict_release_ms(
-    cache: Any, entry_bytes: int, samples: int = 5
-) -> tuple[float, ...]:
+    cache: Any, entry_bytes: int, samples: int = 32
+) -> tuple[EvictSample, ...]:
     """予算超の put が 1 エントリを追い出すときの**同期**解放時間 (ms)。
 
     LRU の evict は unload と違い TeardownService のペーシングを通らない (spec §5.7)
     ので、1 回の解放が呼び出しスレッドを止める時間そのものが受け入れ対象になる。
-    合成配列で追加するのは、実チャンネルを読むと select のデコード時間が同じ窓に
-    入って解放だけを取り出せないから。測っているのは **追い出される側** の解放で、
-    ``np.ones`` で埋めるのは ``np.zeros``/``np.empty`` が OS の遅延マップで触られて
-    いないページを返し、解放が実測より安く出るため。
+    追加する側を合成配列にするのは、実チャンネルを読むと select のデコード時間が
+    同じ窓に入って解放だけを取り出せないから。``np.ones`` で埋めるのは
+    ``np.zeros``/``np.empty`` が OS の遅延マップで触られていないページを返し、
+    解放が実測より安く出るため。
+
+    **測っているのは追い出される側**なので、標本は出自で分けて返す (I1)。飽和済みの
+    実キャッシュに対して呼ぶと、最初の n 本は実デコード配列を、それを出し切った
+    あとは自分が直前に置いた ``np.ones`` を落とす — 後者は同じ 12 MiB ブロックが
+    free 直後に再確保される warm-allocator バイアスが乗り、中央値が半分に出る。
+    既定 32 は「記録の方法論と同じ n=20 を実配列側で確保し、残りで合成側を同じ実行の
+    中に並べる」ための本数 (実キャッシュのエントリは実測 21 本)。
     """
     import numpy as np
 
-    out: list[float] = []
+    out: list[EvictSample] = []
     for i in range(samples * 8):
         if len(out) >= samples:
             break
         arr = np.ones(max(1, entry_bytes), dtype=np.uint8)
         before = cache.evictions
+        # 次に落ちる 1 本 (LRU 先頭) を put の**前**に覗く。キャッシュはファイル別・
+        # 出自別の会計を公開していないので、出自を知る観測点はここしかない。
+        victim = next(iter(cache._entries), None)
+        victim_bytes = 0 if victim is None else int(cache._entries[victim].nbytes)
         t0 = time.perf_counter()
         accepted = cache.put((_SYNTH_HANDLE_ID, 0, i), arr)
         elapsed = (time.perf_counter() - t0) * 1000.0
         del arr  # キャッシュを唯一の参照者にする (次の evict が実解放になる)
         if not accepted:
             break  # oversize: この予算では evict を起こせない
-        if cache.evictions - before == 1:
-            out.append(elapsed)
+        if cache.evictions - before == 1 and victim is not None:
+            out.append(
+                EvictSample(
+                    ms=elapsed,
+                    evicted_real=victim[0] != _SYNTH_HANDLE_ID,
+                    evicted_bytes=victim_bytes,
+                )
+            )
     cache.drop_handle(_SYNTH_HANDLE_ID)
     # 測定対象がゼロ件でも「解放は速い」と読めてしまう経路を塞ぐ。
     assert out, (
@@ -1074,22 +1237,40 @@ def cache_saturation(
         uss_mb=uss,
         # 追加サイズは実エントリと同程度にする: 小さすぎると 1 回の evict のあと
         # 何度 put しても予算に触れず、標本が集まらない。
-        evict_ms=evict_release_ms(cache, int(held / channels)),
+        evict=evict_release_ms(cache, int(held / channels)),
         evict_entry_mb=held / channels / MB,
+    )
+
+
+def _ms_line(label: str, xs: list[float]) -> str:
+    if not xs:
+        return f"    {label}: n=0 (標本なし)"
+    ordered = sorted(xs)
+    median = ordered[len(ordered) // 2]
+    if len(ordered) % 2 == 0:
+        median = (ordered[len(ordered) // 2 - 1] + median) / 2.0
+    return (
+        f"    {label}: n={len(xs)}  median {median:,.2f} ms  "
+        f"max {max(xs):,.2f} ms  min {min(xs):,.2f} ms"
     )
 
 
 def report_cache(sat: SaturationResult) -> None:
     delta_uss = sat.uss_mb - sat.base_uss_mb
-    verdict = "OK" if delta_uss <= CACHE_BUDGET_MB else "OVER"
+    overhead = delta_uss - sat.bytes_held_mb
+    uss_band = CACHE_BUDGET_MB + CACHE_USS_OVERHEAD_MB
+    # 一次判定は「予算の裁定が効いたか」= キャッシュ自身の会計。プロセス USS を
+    # 同じ 256 と比べる帯は構造的に達成不能だった (T5 レビュー I4)。
     held_verdict = "OK" if sat.bytes_held_mb <= CACHE_BUDGET_MB else "OVER"
-    print("\n=== CHANNEL CACHE saturation (U3 予算 256 MB・spec §9 の USS 天井) ===")
+    uss_verdict = "OK" if delta_uss <= uss_band else "OVER"
+    print("\n=== CHANNEL CACHE saturation (U3 予算 256 MB・spec §9) ===")
     print(
         f"  channels read (widest first) = {sat.channels_read}  in {sat.wall_s:,.1f}s"
         f"   hits/misses = {sat.hits}/{sat.misses}"
     )
     print(
-        f"  cache bytes_held = {sat.bytes_held_mb:,.1f} MB   [{held_verdict}]   "
+        f"  cache bytes_held [PRIMARY] = {sat.bytes_held_mb:,.1f} MB   "
+        f"[{held_verdict}]   (予算 <= {CACHE_BUDGET_MB} MB)   "
         f"evictions = {sat.evictions}   skipped_oversize = {sat.skipped_oversize}"
     )
     print(
@@ -1100,13 +1281,26 @@ def report_cache(sat: SaturationResult) -> None:
         f"  saturated              = {sat.rss_mb:,.0f} MB RSS / {sat.uss_mb:,.0f} MB USS"
     )
     print(
-        f"  USS delta [PRIMARY]    = +{delta_uss:,.0f} MB   [{verdict}]   "
-        f"(目標 <= {CACHE_BUDGET_MB} MB)"
+        f"  USS delta (参考)       = +{delta_uss:,.1f} MB   [{uss_verdict}]   "
+        f"(予算 {CACHE_BUDGET_MB} + オーバーヘッド許容 "
+        f"{CACHE_USS_OVERHEAD_MB:,.0f} = {uss_band:,.0f} MB)"
     )
     print(
-        f"  LRU evict 同期解放 ({sat.evict_entry_mb:,.1f} MB/エントリ): "
-        f"max {max(sat.evict_ms):,.2f} ms / "
-        f"mean {sum(sat.evict_ms) / len(sat.evict_ms):,.2f} ms  (n={len(sat.evict_ms)})"
+        f"    内訳: bytes_held {sat.bytes_held_mb:,.1f} + "
+        f"アロケータ/一時分 {overhead:,.1f} MB"
+    )
+    print(
+        "    (USS delta を予算 256 と直接比べてはならない: LRU は「次の 1 本が\n"
+        "     入らない」ところまで正当に保持するので構造的に ~4 MB しか残らない)"
+    )
+    real, synth = _split_evict(sat.evict)
+    print(f"  LRU evict 同期解放 (put するのは {sat.evict_entry_mb:,.1f} MB/エントリ):")
+    print(_ms_line("実 asammdf デコード配列を追い出した put", real))
+    print(_ms_line("リサイクルされた合成 np.ones を追い出した put", synth))
+    print(
+        "    (同じループ・同じサイズでも出自で ~2 倍違う。合成だけで測ると free 直後に\n"
+        "     同じブロックを再確保する warm-allocator バイアスが乗る — 単価を記録する\n"
+        "     ときは必ず「何がそのバイトを作ったか」を併記すること)"
     )
     print(
         "    (unload と違い evict はペーシングを通らない = この値がそのまま\n"
@@ -1212,14 +1406,28 @@ def core_footprint() -> None:
     report_cache(cache_saturation(session, key))
 
     cache = _channel_cache(session)
-    held_before = cache.bytes_held
+    hid = id(_handle_of(session, key))
+    # 飽和段は evict の標本 (実配列 20 本) を取る過程でこのファイルのエントリを
+    # **全部**追い出す。T4 の回収は「回収する物がある」ことが前提なので、1 本だけ
+    # 読み直して母数を作る。
+    _rewarm_one_channel(session, key)
+    held_before = _handle_cache_bytes(cache, hid)
+    # 母数ゼロで [OK] を刷らせない: 呼び出し順が変わって空のまま来ると
+    # "0.0 -> 0.0 [OK]" という**恒真な合格**になる (このタスクが塞いでいる失敗
+    # モードそのもの・T5 レビュー Minor)。
+    assert held_before > 0, (
+        "回収の観測対象がゼロ件 — キャッシュが空の状態で remove_group を測っている "
+        "(再ウォームが効いていない)"
+    )
+    process_before = cache.bytes_held
     session.remove_group(
         key
     )  # ハンドルを閉じる (計測プロセスがファイルを掴んだまま終わらない)
-    leak = "OK" if cache.bytes_held == 0 else "LEAK"
+    leak = "OK" if _handle_cache_bytes(cache, hid) == 0 else "LEAK"
     print(
-        f"\n  cache bytes at remove_group = {held_before / MB:,.1f} -> "
-        f"{cache.bytes_held / MB:,.1f} MB   [{leak}]"
+        f"\n  cache bytes at remove_group = このファイル {held_before / MB:,.1f} -> "
+        f"{_handle_cache_bytes(cache, hid) / MB:,.1f} MB   [{leak}]   "
+        f"(プロセス全体 {process_before / MB:,.1f} -> {cache.bytes_held / MB:,.1f} MB)"
     )
     print(
         "    (T4: remove_group は close の**前**に回収して teardown へ渡す。残ると\n"

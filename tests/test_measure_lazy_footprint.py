@@ -37,6 +37,11 @@ from valisync.core.loaders import mdf_loader
 from valisync.core.loaders.channel_cache import ChannelSampleCache
 from valisync.core.session import Session
 
+_SRC = str(Path(__file__).resolve().parents[1] / "src")
+# この基準は **collection 時** = どの fixture も走る前に取る。走ったあとに取ると
+# 「漏れた状態」を基準にしてしまい、恒真になる。
+_SRC_COUNT_AT_IMPORT = sys.path.count(_SRC)
+
 
 @pytest.fixture
 def mlf(monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -48,6 +53,14 @@ def mlf(monkeypatch: pytest.MonkeyPatch) -> Any:
 
     実 psutil があるならスタブは**作らない**。無いときだけ差し込み、その差し替えも
     このテストの外へは漏れない。
+
+    ``sys.path`` も同様に漏れない — ただし理由は自明でない: 計測器モジュールは
+    **自分自身の import 時に** ``sys.path.insert(0, <repo>/src)`` を実行する。それが
+    残らないのは ``monkeypatch.syspath_prepend`` が **prepend の前に** ``sys.path``
+    全体をスナップショットし、teardown でリスト丸ごと戻すためで、import を
+    monkeypatch の窓の**中**で行っていることに依存している。窓の外へ出すと
+    (module-level import・session fixture 化など) この巻き戻しは効かなくなる。
+    ``test_the_import_does_not_leak_syspath_entries`` がその性質を pin している。
     """
     try:
         import psutil  # noqa: F401
@@ -114,6 +127,31 @@ def test_the_psutil_stub_does_not_leak_into_the_session():
     )
 
 
+def test_the_import_does_not_leak_syspath_entries():
+    """計測器の import が ``sys.path`` を**セッション全体**に汚していないこと。
+
+    計測器は自分の import 時に ``sys.path.insert(0, <repo>/src)`` する。それが
+    残ると、以降の全テストが「editable install 由来のパス」ではなく「先頭に挿された
+    重複パス」から valisync を解決することになる (同じ木を指す限り無症状だが、
+    worktree のように木が 2 つある状況では**別ブランチのコードを import する**)。
+    残らないのは ``mlf`` fixture が ``monkeypatch`` の窓の中で import しているため
+    (fixture docstring 参照) — その依存関係を検査に変えるのがこのテスト。
+
+    観測は ``<repo>/src`` の**重複本数**で行う。``sys.path`` 全体の比較や scripts
+    パスの有無では観測できない: 他のテストモジュール (``test_demo_mf4.py`` /
+    ``test_compare_screenshots.py``) が module-level の ``sys.path.insert`` で
+    ``<repo>/scripts`` をセッションに残しており、それは本ファイルの責務ではない。
+    ``src`` を挿すのは計測器 1 つだけ (実測)。
+
+    ``mlf`` fixture を要求しない — 要求すると窓の中で観測することになり恒真になる。
+    """
+    assert sys.path.count(_SRC) == _SRC_COUNT_AT_IMPORT, (
+        f"<repo>/src が {sys.path.count(_SRC)} 回入っている "
+        f"(このモジュールの import 時点では {_SRC_COUNT_AT_IMPORT} 回) — "
+        "計測器の import が sys.path をセッションへ残した"
+    )
+
+
 def test_latency_starts_cold_even_when_the_channel_is_already_cached(mlf, tmp_path):
     """M5: 「未鋳造」は「キャッシュが冷たい」ではない — 測定側が明示的に冷やす。"""
     session, key = _loaded(tmp_path, cols=12)
@@ -158,8 +196,29 @@ def test_evict_release_measures_only_puts_that_evicted(mlf):
     out = mlf.evict_release_ms(cache, entry_bytes=1024, samples=3)
 
     assert len(out) == 3
-    assert all(ms >= 0.0 for ms in out)
+    # ``ms >= 0.0`` は経過時間なら何でも真になる恒真な「assert」だった。時計が
+    # put の前後を挟めていなければ 0 に潰れ、逆に窓が壊れて別の作業を巻き込めば
+    # 1 KiB の解放とは桁違いになる — その両側を締める。
+    assert all(0.0 < s.ms < 100.0 for s in out), [s.ms for s in out]
+    assert [s.evicted_bytes for s in out] == [1024, 1024, 1024], out
     assert cache.bytes_held == 0  # 合成エントリはキャッシュに残さない
+
+
+def test_evict_release_attributes_the_subject_of_each_sample(mlf):
+    """**何を追い出した標本か**を取り違えないこと (I1 の再発防止)。
+
+    合成 ``np.ones`` を落とした標本と、外から載せた別ハンドルの配列を落とした標本は
+    実測で ~2 倍違う。混ぜて 1 つの中央値にすると、次に測る人が主語の無い数値を
+    読んで「速くなった」と誤読する。
+    """
+    cache = ChannelSampleCache(budget_bytes=4 * 1024)
+    cache.put((999, 0, 0), np.ones(1024, dtype=np.uint8))  # 合成でない出自
+
+    out = mlf.evict_release_ms(cache, entry_bytes=1024, samples=3)
+
+    assert [s.evicted_real for s in out] == [True, False, False], out
+    real, synth = mlf._split_evict(out)
+    assert len(real) == 1 and len(synth) == 2, (real, synth)
 
 
 def test_evict_release_refuses_when_nothing_is_evicted(mlf):
