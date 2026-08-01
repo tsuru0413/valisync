@@ -2,6 +2,16 @@
 
 from __future__ import annotations
 
-from valisync.core.export.csv_exporter import CsvExporter
+from valisync.core.export.csv_exporter import (
+    CsvExporter,
+    CsvExportOptions,
+    ExportRequest,
+    passthrough_header_names,
+)
 
-__all__ = ["CsvExporter"]
+__all__ = [
+    "CsvExportOptions",
+    "CsvExporter",
+    "ExportRequest",
+    "passthrough_header_names",
+]

@@ -3,14 +3,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from valisync.core.export.csv_exporter import CsvExportOptions
-from valisync.core.models import Signal
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.views import main_window as mw_mod
-from valisync.gui.views.export_csv_dialog import ExportRequest
+from valisync.gui.views.export_csv_dialog import ExportRequest, csv_header_resolver
 from valisync.gui.views.main_window import MainWindow
 
 
@@ -28,19 +26,13 @@ def test_export_csv_runs_export_with_request(
     mw = MainWindow(AppViewModel())
     qtbot.addWidget(mw)
     target = tmp_path / "out.csv"
-    sig = Signal(
-        name="csv_1::a",
-        timestamps=np.array([0.0]),
-        values=np.array([1.0]),
-        file_format="CSV",
-        bus_type="",
-        source_file="",
-    )
+    # E-4b Task 4 supersede: ExportRequest は **列キー + header_resolver** を運ぶ
+    # (D1・spec §5.2 — Signal のリストは受けない)。Signal fixture が不要になった。
     req = ExportRequest(
-        signals=[sig],
+        keys=("csv_1::a",),
         output_path=target,
-        use_unified_timeline=False,
         options=CsvExportOptions(delimiter=";"),
+        header_resolver=csv_header_resolver,
     )
     # ダイアログを差し替え (要求を返す)
     monkeypatch.setattr(
@@ -53,10 +45,15 @@ def test_export_csv_runs_export_with_request(
     )
     mw.export_csv()
     qtbot.waitUntil(lambda: len(calls) == 1, timeout=3000)
-    args, _kwargs = calls[0]
-    assert args[0] == [sig] and args[1] == target
-    # 4引数転送の回帰捕捉 (Task 5 Minor): use_unified_timeline/options も転送されること
-    assert args[2] is req.use_unified_timeline and args[3] is req.options
+    args, kwargs = calls[0]
+    assert args[0] == ("csv_1::a",) and args[1] == target
+    # 「要求の全フィールドが転送されること」という契約の意図は保存する
+    # (E-4b Task 4 supersede: 旧 4 位置引数のうち use_unified_timeline は
+    # options.use_unified_timeline へ移り、header_resolver/extra_signals が
+    # キーワードで加わった — 転送漏れの回帰捕捉という役目は同じ)。
+    assert args[2] is req.options
+    assert kwargs["header_resolver"] is req.header_resolver
+    assert kwargs["extra_signals"] is req.extra_signals
 
 
 def test_export_csv_cancel_does_nothing(qtbot: QtBot, monkeypatch) -> None:

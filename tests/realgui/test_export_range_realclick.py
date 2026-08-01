@@ -187,11 +187,14 @@ def test_export_cursor_range_realclick_writes_bounded_file(
     req_all = dlg_all._result
     assert req_all is not None
     assert req_all.options.time_start is None and req_all.options.time_end is None
+    # E-4b Task 4 supersede: 境界は **列キー + header_resolver** になった
+    # (D1・spec §5.2)。実 OS クリックで得た要求をそのまま転送するという役目は
+    # 同じで、出力の期待 (行数・時間範囲) は 1 つも変えていない。
     session.export_csv(
-        req_all.signals,
+        req_all.keys,
         req_all.output_path,
-        req_all.use_unified_timeline,
         req_all.options,
+        header_resolver=req_all.header_resolver,
     )
     ts_all = _read_timestamps(out_all)
     assert len(ts_all) == _N, f"全期間エクスポートの行数が想定外: {len(ts_all)}"
@@ -220,11 +223,12 @@ def test_export_cursor_range_realclick_writes_bounded_file(
     assert req_cur is not None
     assert req_cur.options.time_start == _CURSOR_A
     assert req_cur.options.time_end == _CURSOR_B
+    # E-4b Task 4 supersede: 上と同じ (列キー + header_resolver への機械的付け替え)。
     session.export_csv(
-        req_cur.signals,
+        req_cur.keys,
         req_cur.output_path,
-        req_cur.use_unified_timeline,
         req_cur.options,
+        header_resolver=req_cur.header_resolver,
     )
 
     # ── 実出力ファイルの実読み直し: 行の時間範囲が A-B 閉区間に収まる ─────

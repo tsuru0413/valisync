@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import tempfile
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,6 +28,15 @@ EXPORT_CONTAINER_CHANNEL_ERROR_TMPL = (
     "信号 '{name}' は配列/構造体チャンネル本体のため CSV に書き出せません。"
     "展開された列 (例: '{example}') を選択してください。"
 )
+#: 境界 API (ExportRequest) の失敗文言。core に置く理由は上の 2 本と同じ —
+#: GUI ダイアログを通らない直呼び (scripted / realgui) まで守れる唯一の層。
+EXPORT_EMPTY_REQUEST_ERROR = (
+    "書き出す列が 1 つも指定されていません。信号を選択してください。"
+)
+EXPORT_HEADER_LENGTH_ERROR_TMPL = (
+    "ヘッダ名の本数 ({got}) が列数 ({want}) と一致しません。"
+)
+EXPORT_UNRESOLVED_KEYS_ERROR_TMPL = "{n} 件の列を解決できませんでした (例: '{name}')。ファイルが閉じられた可能性があります。"
 
 
 @dataclass(frozen=True)
@@ -49,6 +59,15 @@ class CsvExportOptions:
     #: 構築コードの後方互換のため末尾に追加 (F-0 spec §2.2)。
     time_start: float | None = None
     time_end: float | None = None
+    #: 統合タイムライン (各信号のタイムスタンプの和集合へ整列) で書き出すか。
+    #: E-4b spec §5.2 [M-1]: 新境界 (`ExportRequest`) では use_unified_timeline を
+    #: 独立引数で運ばず options に載せる (`Session.export_csv` の第 3 位置引数が
+    #: bool から options へ変わるため、bool を別に運ぶと 2 つの真実になる)。
+    #: **旧 `CsvExporter.export(..., use_unified_timeline=...)` は Task 4 では
+    #: 据え置き** (直呼び 56 サイトの契約) で、橋が options -> 旧引数へ写す。
+    #: Task 7 で旧引数が消え、このフィールドが唯一の真実になる。
+    #: 位置構築の後方互換のため必ず**末尾**に置く。
+    use_unified_timeline: bool = False
 
     def __post_init__(self) -> None:
         # 空区切り/空小数点は CSV 構造を壊す(列が融合する)ため核でも拒否。
@@ -136,6 +155,45 @@ def _join(cells: list[str], opts: CsvExportOptions) -> str:
     """
     d = opts.delimiter
     return d.join(_quote(c, d) for c in cells)
+
+
+def passthrough_header_names(keys: Sequence[str]) -> list[str]:
+    """既定のヘッダ解決器 — キーをそのままヘッダ名にする。
+
+    ``Session.export_csv`` を直呼びする経路 (テスト・scripted・realgui) の
+    **現行ヘッダバイトを保存する**ための既定 (spec §5.2 / MG-7)。旧実装は
+    ``header_names is None`` のとき ``signal.name`` を書いており、列キーは
+    名前空間つき Signal 名と 1:1 なので ``list(keys)`` と同じバイトになる。
+    GUI は ``gui.display_names.csv_header_names`` を束ねた resolver を注入する
+    (core は gui を import しない契約 — C-5)。
+    """
+    return list(keys)
+
+
+@dataclass(frozen=True)
+class ExportRequest:
+    """CSV 書き出しの確定要求 (E-4b spec §5.2 の境界 API)。
+
+    **Signal のリストを受けない**のが D1 の核心: prod 330,004 列を Signal で
+    運ぶと出口に立つ前に ~390 MB を確定させてしまう。列は *キー* で運び、
+    実体化は書き手 (Task 6/7 の列ブロック) がブロック単位で行う。
+
+    ``header_resolver`` を持たせるのは、ヘッダと値を**同じ keys から導出**する
+    ため (別持ちの ``CsvExportOptions.header_names`` は「header_names 指定時
+    =GUI 経路の対応崩しを守るテストがゼロ」という穴を構造的に持っていた —
+    C1/M7)。core は gui を import しないので、表示名の計算は callable として
+    注入する (C-5)。
+
+    ``extra_signals`` は Derived 信号の escape hatch (spec §5.2 [I-3])。Derived は
+    ``SignalGroupManager`` に登録されず keys では解決できないので、Signal 直渡しを
+    維持する。出力列順は **keys -> extra_signals** (混ぜない)。
+    """
+
+    keys: tuple[str, ...]
+    output_path: Path
+    options: CsvExportOptions
+    header_resolver: Callable[[Sequence[str]], list[str]]
+    extra_signals: tuple[Signal, ...] = ()
 
 
 class CsvExporter:

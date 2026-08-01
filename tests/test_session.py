@@ -447,7 +447,10 @@ def test_apply_offset_delegates_to_core():
 def test_export_csv_delegates_to_core(tmp_path):
     sig = _derived("speed", [0.0, 1.0], [10.0, 20.0])
     out = tmp_path / "e.csv"
-    Session().export_csv([sig], out)
+    # E-4b Task 4 supersede: Derived は SignalGroupManager に登録されず keys で
+    # 解決できないので escape hatch (extra_signals) 経由になる (spec §5.2 [I-3])。
+    # 出力バイトの期待 ("timestamp,speed") は不変 (ヘッダは Signal 自身の名前)。
+    Session().export_csv([], out, extra_signals=[sig])
     # supersede(E-4b §5.1-2): 出力に UTF-8 BOM が付いたため読み口のみ utf-8-sig 化 (期待値不変)
     assert out.read_text(encoding="utf-8-sig").splitlines()[0] == "timestamp,speed"
 

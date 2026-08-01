@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -11,7 +11,10 @@ from valisync.core.export.csv_exporter import (
     EXPORT_CONTAINER_CHANNEL_ERROR_TMPL,
     CsvExporter,
     CsvExportOptions,
+    ExportRequest,
+    passthrough_header_names,
 )
+from valisync.core.export.legacy_bridge import export_via_legacy_path
 from valisync.core.formula.engine import FormulaEngine
 from valisync.core.interpolation.interpolator import InterpolationMethod, Interpolator
 from valisync.core.loaders.channel_cache import ChannelSampleCache
@@ -501,26 +504,70 @@ class Session:
 
     def export_csv(
         self,
-        signals: list[Signal],
+        keys: Sequence[str],
         output_path: Path,
-        use_unified_timeline: bool = False,
         options: CsvExportOptions | None = None,
+        *,
+        header_resolver: Callable[[Sequence[str]], list[str]] | None = None,
+        extra_signals: Sequence[Signal] = (),
     ) -> None:
-        self._reject_container_channels(signals)
-        self._exporter.export(signals, output_path, use_unified_timeline, options)
+        """名前空間つき列キーで CSV を書き出す (E-4b spec §5.2・D1)。
 
-    def _reject_container_channels(self, signals: list[Signal]) -> None:
+        **Signal のリストは受けない** — prod 330,004 列を Signal で運ぶと出口に
+        立つ前に ~390 MB を確定させる。解決は書き手が行う (Task 4 の時点では
+        移行橋が全解決するので、メモリ挙動はまだ現状のまま)。
+
+        *header_resolver* 既定は passthrough (``list(keys)``) で、直呼び経路の
+        現行ヘッダバイトを保存する。GUI は ``csv_header_names`` を束ねた resolver を
+        注入する (core は gui を import しない — C-5)。
+        *extra_signals* は Derived の escape hatch (spec §5.2 [I-3])。
+        """
+        if isinstance(options, bool):
+            # 旧署名 (signals, path, use_unified_timeline, options) から移行し
+            # 損ねた呼び出し。黙って options 扱いすると `opts.delimiter` の
+            # AttributeError になるだけで原因が読めない。
+            raise TypeError(
+                "export_csv の第 3 引数は CsvExportOptions です "
+                "(use_unified_timeline は options.use_unified_timeline へ移動 — "
+                "E-4b spec §5.2)"
+            )
+        key_tuple = tuple(keys)
+        extras = tuple(extra_signals)
+        self._reject_container_channels((*key_tuple, *(s.name for s in extras)))
+        request = ExportRequest(
+            keys=key_tuple,
+            output_path=output_path,
+            options=options if options is not None else CsvExportOptions(),
+            header_resolver=(
+                header_resolver
+                if header_resolver is not None
+                else passthrough_header_names
+            ),
+            extra_signals=extras,
+        )
+        # 橋へ self._exporter を渡さないのは、Task 7 の差し替え点を Session 側
+        # 1 行 (`export_via_legacy_path(...)` -> `self._exporter.export(request,
+        # self.resolve_signal, ...)`) に閉じ込めるため。self._exporter は
+        # その受け皿として残す (未使用だが削除しない)。
+        export_via_legacy_path(request, self.resolve_signal)
+
+    def _reject_container_channels(self, keys: Sequence[str]) -> None:
         """配列/構造体チャンネルの親を、値を読む前に拒否する (E-3 C-d)。
 
         GUI のダイアログは親行をチェック不可にしている (C-a) が、scripted /
         realgui は ``session.export_csv`` を直呼びするため、ここが実効的な唯一の
-        防波堤になる。所属グループが引けない Signal (Derived・アンロード済み) は
+        防波堤になる。所属グループが引けないキー (Derived・アンロード済み) は
         列構造を知りようがないので通す — 判定不能を拒否に倒すと Derived_Signal の
         エクスポートが全滅する (最後の砦は CsvExporter 側の 1 時刻 1 値検査)。
+
+        E-4b: 判定材料が Signal から **キー** へ変わっただけで、述語も文言も不変。
+        値を読まない (ColumnRecord 由来) ので 0.1 ms fail-fast も維持される。
+        extra_signals の名前もここへ流す — escape hatch を guard の抜け道に
+        しないため。
         """
         loaded = set(self.group_keys())
-        for sig in signals:
-            group_key, sep, bare = sig.name.partition(KEY_SEPARATOR)
+        for key in keys:
+            group_key, sep, bare = key.partition(KEY_SEPARATOR)
             if not sep or group_key not in loaded:
                 continue
             # 述語は is_container_channel と同一 — ここでインライン展開するのは、

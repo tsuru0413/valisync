@@ -641,7 +641,7 @@ class MainWindow(QMainWindow):
             # = GUI スレッドなので、QTimer を持つ enqueue をここで呼んでよい。
             # なお本経路はエクスポートガードの対象外: このグループは register_loaded を
             # 通らず、エクスポートツリーの唯一のソース (app_vm.loaded_file_keys ->
-            # export_csv_dialog.py:114) に載らないためエクスポート中になり得ない。
+            # ExportCsvDialog._build_tree) に載らないためエクスポート中になり得ない。
             # 鋳造列も渡す (E-3 の 2 サイト目): session.load はグループ登録の**後**に
             # キャンセルが確定するので、その窓で resolve された列は実在しうる。
             # キャッシュ配列 (E-4a) も同様 — 完走したロードの窓で読まれた列があれば
@@ -978,7 +978,11 @@ class MainWindow(QMainWindow):
         session = self.app_vm.session
         self._export_controller.submit(
             lambda: session.export_csv(
-                req.signals, req.output_path, req.use_unified_timeline, req.options
+                req.keys,
+                req.output_path,
+                req.options,
+                header_resolver=req.header_resolver,
+                extra_signals=req.extra_signals,
             ),
             busy=self.busy_overlay,
             label=req.output_path.name,

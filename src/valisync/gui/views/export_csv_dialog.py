@@ -7,8 +7,8 @@ CsvFormatDialog.ask を前例に、ファイル別の信号ツリー(初期チ�
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -31,7 +31,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from valisync.core.export.csv_exporter import CsvExportOptions
+from valisync.core.export.csv_exporter import (
+    CsvExportOptions,
+    ExportRequest,  # 再輸出: `from ...export_csv_dialog import ExportRequest` を
+    # 使う既存テスト/realgui の import 経路を保存する (型は core の
+    # ものが唯一の真実・E-4b spec §5.2)。
+)
 from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
 from valisync.core.models import Signal
 from valisync.gui import strings as S
@@ -138,14 +143,16 @@ def _physical_channels(signals: list[Signal]) -> list[str]:
     return out
 
 
-@dataclass(frozen=True)
-class ExportRequest:
-    """ExportCsvDialog が返す確定要求。"""
+def csv_header_resolver(keys: Sequence[str]) -> list[str]:
+    """GUI 側のヘッダ解決器 — 選択集合内で衝突するときだけ qualified にする (E-0)。
 
-    signals: list[Signal]
-    output_path: Path
-    use_unified_timeline: bool
-    options: CsvExportOptions
+    **モジュール関数**であってダイアログのメソッドやクロージャではない。
+    この callable は ``ExportRequest`` に載って worker スレッドへ渡り、書き出しが
+    終わるまで生き続けるので、``self`` を捕まえるとダイアログ (と、その先の
+    QTreeWidget 全部) が export の全期間 GC されなくなる。
+    """
+    names = csv_header_names(keys)
+    return [names[k] for k in keys]
 
 
 class ExportCsvDialog(QDialog):
@@ -828,6 +835,9 @@ class ExportCsvDialog(QDialog):
                 precision=precision,
                 time_start=time_start,
                 time_end=time_end,
+                # E-4b spec §5.2 [M-1]: 統合タイムラインは独立引数をやめて
+                # options に載せる (境界の真実を 1 つにする)。
+                use_unified_timeline=self._unified.isChecked(),
             )
         except ValueError as exc:
             self._error.setText(str(exc))
@@ -968,20 +978,17 @@ class ExportCsvDialog(QDialog):
 
     def _on_accept(self) -> None:
         opts = self._current_options()
-        keys = self._checked_keys()
+        keys = tuple(self._checked_keys())
         if opts is None or not keys:
             return
-        # 選択列を **ここで初めて** 実体化する (C-b: 選択は名前だけ・実体は出口で
-        # 1 本ずつ)。鋳造は Signal オブジェクトを作るだけで値は読まない
-        # (LazyMdfValues) ので、保存先を訊く前に失敗を確定させてよい。
-        signals: list[Signal] = []
-        missing: list[str] = []
-        for k in keys:
-            sig = self._app_vm.session.resolve_signal(k)
-            if sig is None:
-                missing.append(k)
-            else:
-                signals.append(sig)
+        # 解決可能性の検証は **保存先を訊く前** (spec §5.2・既存 UX 契約)。
+        # E-4b: 結果の Signal は **保持しない** — 旧実装はここで作った
+        # list[Signal] をそのまま要求に載せていて、prod 330,004 列で ~390 MB を
+        # 出口の手前で確定させていた。鋳造は E-4a の LRU (容量 512) に載るので
+        # 同時生存は 512 本で頭打ちになり、参照を落とせば残らない。
+        # (Task 6 でここは `resolve_transient` へ差し替わり、帳簿にも載らなくなる。)
+        session = self._app_vm.session
+        missing = [k for k in keys if session.resolve_signal(k) is None]
         if missing:
             # 旧実装はここが素の KeyError でダイアログごとクラッシュしていた。
             # 無言で落とすと「選んだのに出ていない CSV」になるので、出力せずに
@@ -996,15 +1003,15 @@ class ExportCsvDialog(QDialog):
         if not path:
             return  # 保存ダイアログをキャンセル
         # E-0: CSV ヘッダ名は選択集合(+ "timestamp" 母集合注入)内の衝突時のみ
-        # qualified — core(csv_exporter)は名前を計算せず、渡された名前をそのまま
-        # 書くだけ(core→gui import の層違反を作らない・spec §1.2)。
-        header_map = csv_header_names(keys)
-        opts = replace(opts, header_names=tuple(header_map[k] for k in keys))
+        # qualified — core(csv_exporter)は名前を計算せず、渡された resolver を
+        # 呼ぶだけ(core→gui import の層違反を作らない・spec §1.2)。
+        # E-4b: 名前を**先に計算して options へ詰める**のをやめ、keys と同じ
+        # 場所から導出する callable を載せる (ヘッダと値の対応が by construction)。
         self._result = ExportRequest(
-            signals=signals,
+            keys=keys,
             output_path=Path(path),
-            use_unified_timeline=self._unified.isChecked(),
             options=opts,
+            header_resolver=csv_header_resolver,
         )
         self.accept()
 

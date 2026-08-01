@@ -159,13 +159,17 @@ def test_ask_builds_request_from_widgets(qtbot: QtBot, tmp_path: Path) -> None:
     dlg._on_accept()
     req = dlg._result
     assert isinstance(req, ExportRequest)
-    assert {s.name for s in req.signals} == {"csv_1::a", "csv_1::b"}
+    # E-4b Task 4 supersede: 要求は **列キー** を運ぶ (D1・spec §5.2)。右辺は不変。
+    assert set(req.keys) == {"csv_1::a", "csv_1::b"}
     assert req.output_path == target
     assert req.options.delimiter == ";"
     assert req.options.unit_row is True
-    # E-0: header_names carries the bare display names (no collision — both
-    # are from the same file "csv_1"), same order as req.signals/_checked_keys.
-    assert req.options.header_names == ("a", "b")
+    # E-0: ヘッダは bare display name (no collision — both are from the same
+    # file "csv_1"), same order as req.keys/_checked_keys.
+    # E-4b Task 4 supersede: 名前は options.header_names に**先に詰めない**で
+    # header_resolver として運ぶようになった (ヘッダと値を同じ keys から導出)。
+    # 期待値 ("a", "b") は 1 文字も変えず、読み口だけを resolver 適用へ移す。
+    assert req.header_resolver(req.keys) == ["a", "b"]
 
 
 # --- E-0: 葉テキスト/フィルタは display name (UX-19) -------------------------
@@ -855,7 +859,8 @@ def test_accept_resolves_only_the_selected_columns(
 
     req = dlg._result
     assert isinstance(req, ExportRequest)
-    assert [s.name for s in req.signals] == ["mf4_1::Mat[1]"]
+    # E-4b Task 4 supersede: 要求は **列キー** を運ぶ (D1・spec §5.2)。右辺は不変。
+    assert list(req.keys) == ["mf4_1::Mat[1]"]
     assert app_vm.session.resolve_calls == 1
 
 

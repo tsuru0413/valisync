@@ -140,8 +140,11 @@ def test_session_rejects_container_channel_without_reading_values(
     key = session.load(write_mdf4_2d(tmp_path)).key
     parent = next(s for s in session.group_signals(key) if s.name == f"{key}::Mat")
 
+    # E-4b Task 4 supersede: Session.export_csv の第 1 引数は **列キー** になった
+    # (D1・spec §5.2 — Signal のリストは受けない)。期待 (ValueError と match の
+    # "Mat[0]") は 1 文字も変えず、渡し方だけを機械的に付け替える。
     with pytest.raises(ValueError, match=r"Mat\[0\]"):
-        session.export_csv([parent], tmp_path / "out.csv")
+        session.export_csv([parent.name], tmp_path / "out.csv")
 
     # 判定に sig.values.ndim を使うとここが materialized になる
     # (prod では 1 本 96 MB のチャンネル全読み = 遅延展開の利得を捨てる)。
@@ -156,7 +159,9 @@ def test_session_exports_expanded_column(tmp_path: Path) -> None:
     assert col is not None
 
     out = tmp_path / "col.csv"
-    session.export_csv([col], out)
+    # E-4b Task 4 supersede: 列キーを渡す形へ (D1・spec §5.2)。ヘッダ期待
+    # `timestamp,{key}::Mat[0]` は既定 resolver (passthrough) で**バイト不変**。
+    session.export_csv([col.name], out)
 
     # supersede(E-4b §5.1-2): 出力に UTF-8 BOM が付いたため読み口のみ utf-8-sig 化 (期待値不変)
     lines = out.read_text(encoding="utf-8-sig").splitlines()
@@ -169,6 +174,9 @@ def test_session_export_allows_signal_without_loaded_group(tmp_path: Path) -> No
     判定不能を拒否に倒すと Derived_Signal のエクスポートが全滅する。"""
     session = Session()
     out = tmp_path / "derived.csv"
-    session.export_csv([_scalar_signal()], out)
+    # E-4b Task 4 supersede: Derived は SignalGroupManager に登録されず keys で
+    # 解決できないので escape hatch (extra_signals) 経由になる (spec §5.2 [I-3])。
+    # 出力バイトの期待は不変 (ヘッダは Signal 自身の名前)。
+    session.export_csv([], out, extra_signals=[_scalar_signal()])
     # supersede(E-4b §5.1-2): 出力に UTF-8 BOM が付いたため読み口のみ utf-8-sig 化 (期待値不変)
     assert out.read_text(encoding="utf-8-sig").splitlines()[0] == "timestamp,Plain"

@@ -76,8 +76,14 @@ def test_session_passthrough(tmp_path: Path) -> None:
     from valisync.core.session import Session
 
     out = tmp_path / "d.csv"
+    # E-4b Task 4 supersede: Derived は SignalGroupManager に登録されず keys で
+    # 解決できないので escape hatch (extra_signals) 経由になる (spec §5.2 [I-3])。
+    # 出力バイトの期待 ("timestamp;v") は不変 (ヘッダは Signal 自身の名前)。
     Session().export_csv(
-        [_sig("v", [0.0], [1.5])], out, options=CsvExportOptions(delimiter=";")
+        [],
+        out,
+        CsvExportOptions(delimiter=";"),
+        extra_signals=[_sig("v", [0.0], [1.5])],
     )
     assert _read(out)[0] == "timestamp;v"
 
