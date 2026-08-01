@@ -141,6 +141,36 @@ def test_export_csv_offset_for_resolves_selected_signal_offset(
     assert set(captured["offset_keys"]()) == {"csv_1::speed"}
 
 
+def test_export_csv_offset_keys_carries_both_offset_sources(
+    qtbot: QtBot, monkeypatch
+) -> None:
+    """`offset_keys` lambda は signal 辞書と file 辞書の**両方**を運ぶ。
+
+    再レビュー是正 (2026-08-01): 上のテストは signal スコープしか張らないため
+    lambda から `*file_offsets` を消しても緑のまま (実測 gui 1556 全緑)。
+    その退行では `_selection_touches` のセパレータ無し分岐 (グループキー専用)
+    が production で死に、ファイル単位の R14 オフセットが range-radio ガード
+    (F-0/UX-28 契約) を黙って失う。group スコープ適用は実効オフセットを
+    置き換えるため既存テストへは追記できず、専用テストで両源を束縛する。
+    """
+    mw = MainWindow(AppViewModel())
+    qtbot.addWidget(mw)
+    panel = mw.graph_area_vm.active_panel()
+    panel.add_signal("csv_1::speed")
+    # group 適用は同グループの signal オフセットを吸収して消す (R14 の
+    # 「ファイル全体に適用」の意味論) ので、group -> signal の順で両辞書を残す。
+    mw.app_vm.apply_offset("csv_1::speed", 2.0, "group")
+    mw.app_vm.apply_offset("csv_1::speed", 1.0, "signal")
+
+    captured = _capture_ask_kwargs(monkeypatch, mw_mod)
+    mw.export_csv()
+
+    keys = set(captured["offset_keys"]())
+    # 片側だけの assert はもう片側の削除に盲目 — 両源を明示的に要求する。
+    assert "csv_1" in keys, keys  # file 辞書由来 (グループキー)
+    assert any("::" in k for k in keys), keys  # signal 辞書由来が空でないこと
+
+
 def test_export_csv_offset_for_is_app_global_not_scoped_to_initial_selection(
     qtbot: QtBot, monkeypatch
 ) -> None:
