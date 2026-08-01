@@ -303,13 +303,15 @@ def test_prod_scale_estimate_stays_off_the_freeze_threshold(qtbot: QtBot) -> Non
     フォールバックへ落ちて 2.6 s = **26 倍** になるので、閾値の置き場所に
     余裕がある。
 
-    ついでに書き項も見る (I2): 2 項モデル化の前は同じ入力で 2,418 s (40 分) を
-    提示していた — spec §1 の外挿 (~18.4 分 = 1,104 s) の 2.19 倍。帯を
-    1,000-1,250 s (外挿の ±13%) と狭めに取るのは、**2 項をどう 1 項へ潰しても
-    帯の外へ出る**ようにするため (VALUE だけを全セルへ = 1,375 s / BASE+VALUE を
-    全セルへ = 2,010 s / 旧 6.1e-7 = 2,418 s)。**係数は Task 11 (T-M) が prod
-    1 点で検定するまで暫定**なので、この帯は検定と一緒に見直すこと (帯そのものが
-    受け入れ条件ではない — 桁が合っているかの見張り)。
+    ついでに書き項も見る (I2): **Task 11 (T-M・2026-08-02) が prod_demo 実測 2 点
+    (全列 ~66% 空セル・単一 master 部分集合 0% 空セル) で係数を検定済み**
+    (`estimate.py` の定数コメント参照)。検定後の係数 (BASE=0・VALUE=1.14e-6) に
+    よる決定論的な計算値は 1,541.5 s (nonempty_cells 1,352,208,000 x VALUE)。
+    帯を 1,450-1,650 s (計算値の ±7%) と狭めに取るのは、**空セルにも誤って
+    VALUE を掛ける退行** (total_cells x VALUE = 4,520 s) や **BASE の復活**
+    など、係数/セル数の取り違えが帯の外へ確実に出るようにするため。この帯は
+    最新の較正値に追随させる — 再検定で係数が変わったら帯も更新すること
+    (帯そのものが受け入れ条件ではない — 桁が合っているかの見張り)。
     """
     import time
 
@@ -339,7 +341,7 @@ def test_prod_scale_estimate_stays_off_the_freeze_threshold(qtbot: QtBot) -> Non
         assert elapsed < 0.1, (
             f"見積が {elapsed * 1000:.0f} ms かかった (表が届いていない)"
         )
-        assert 1000.0 < est.est_write_s < 1250.0, est.est_write_s
+        assert 1450.0 < est.est_write_s < 1650.0, est.est_write_s
     finally:
         # 1.36 GB のハンドルを後続テストへ引き継がない。
         session.remove_group(key, force=True)

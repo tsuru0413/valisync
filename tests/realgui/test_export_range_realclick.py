@@ -74,11 +74,30 @@ def _real_click_widget(widget) -> None:  # type: ignore[no-untyped-def]
     _pump_n(4)
 
 
-def _read_timestamps(path: Path) -> list[float]:
-    # supersede(E-4b §5.1-2): 出力に UTF-8 BOM が付いたため読み口のみ utf-8-sig 化 (期待値不変)
+def _read_rows(path: Path) -> list[list[str]]:
+    """全列を読む (G8 supersede)。
+
+    **supersede 記録**: 旧 `_read_timestamps` は時刻列だけを読んでいたため、値列が
+    全部空/全部ずれていても緑だった (spec §6 G8: 「時刻列しか読まない」を全列読みへ
+    強化する)。時刻の assert は下の `_read_timestamps` がそのまま残す (既存の
+    期待内容は 1 文字も変えない) — ここは列数と非空セルの存在を**足す**だけ。
+    BOM 読み口は spec §5.1-2 の 26 サイトのうちの 1 つ (utf-8-sig)。
+    """
     lines = path.read_text(encoding="utf-8-sig").splitlines()
     assert lines and lines[0].startswith("timestamp,"), f"想定外のヘッダ: {lines[:1]}"
-    return [float(line.split(",", 1)[0]) for line in lines[1:] if line]
+    header = lines[0].split(",")
+    rows = [line.split(",") for line in lines[1:] if line]
+    for row in rows:
+        assert len(row) == len(header), f"列数がヘッダと不一致: {len(row)}"
+    assert any(cell for row in rows for cell in row[1:]), (
+        "値列が全部空 (時刻だけの出力)"
+    )
+    return rows
+
+
+def _read_timestamps(path: Path) -> list[float]:
+    # supersede(E-4b §5.1-2): 出力に UTF-8 BOM が付いたため読み口のみ utf-8-sig 化 (期待値不変)
+    return [float(row[0]) for row in _read_rows(path)]
 
 
 def test_export_cursor_range_realclick_writes_bounded_file(
