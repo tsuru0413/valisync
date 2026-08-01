@@ -753,7 +753,13 @@ class CsvExporter:
                             "内部エラー: 列ブロックの行数が一致しません "
                             f"(段 {stage}・行 {row})"
                         )
-                    buf.append(opts.delimiter.join(f.rstrip("\n") for f in fragments))
+                    # CR も防御的に剥ぐ (T7 再レビューの 18 件目): CRLF 断片は
+                    # readline() が 1 行と数えるため行数 assert (MG-6) が構造的に
+                    # 盲目で、CR がセル内に残ると下流の universal-newline 読みが
+                    # 行を倍化させる (実測: 4 行が 7 行に見える・例外なし)。
+                    # 今日の writer は全て newline="" + 数値セルなので到達しないが、
+                    # 到達したときの症状が「黙って壊れた CSV」なのでここで断つ。
+                    buf.append(opts.delimiter.join(f.rstrip("\r\n") for f in fragments))
                     if len(buf) >= _FLUSH_ROWS:
                         out.write("\n".join(buf) + "\n")
                         buf.clear()

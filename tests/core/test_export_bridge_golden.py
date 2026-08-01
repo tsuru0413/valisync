@@ -60,6 +60,15 @@ class _KeyedSession(Session):
         super().__init__()
         self._by_key = by_key
 
+    def resolve_signal(self, key: str) -> Signal | None:
+        # 構造的硬化 (T7 再レビュー): 感度が「基底 Session に group が無い」偶然に
+        # 依存しないよう、帳簿経路は明示的に落とす。fixture が将来実ファイルを
+        # ロードする形になっても MG-1 の門番は弱まらない。
+        raise AssertionError(
+            "MG-1: Session.export_csv は resolve_signal_transient を読むこと "
+            "(LRU 帳簿経路への退行)"
+        )
+
     def resolve_signal_transient(self, key: str) -> Signal | None:
         return self._by_key.get(key)
 

@@ -160,7 +160,7 @@ def row_range(
 ) -> tuple[int, int]:
     """閉区間 ``[time_start, time_end]`` を覆う行範囲 ``[lo, hi)`` (None は無制限)。
 
-    行ごとの ``_in_range`` 比較と**同じ行集合**を searchsorted 1 回で出す。sides は
+    行ごとの ``_in_range_oracle`` 比較 (tests/core/export/test_timeline.py) と**同じ行集合**を searchsorted 1 回で出す。sides は
     閉区間の保存則そのもの (spec M-3): lo は ``side='left'`` で time_start に一致
     する行を**含み**、hi は ``side='right'`` で time_end に一致する行を**含む**。
     取り違えると両端が 1 行ずつ欠ける (境界にサンプルが無い fixture では緑のまま)。
