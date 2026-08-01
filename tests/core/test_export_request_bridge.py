@@ -9,20 +9,61 @@ Task 7 で橋が消えてもそのまま生き残る設計にしてある(本フ
 
 from __future__ import annotations
 
+import threading
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from tests.mdf4_helpers import write_mdf4_2d
+from tests.mdf4_helpers import CAN, write_mdf4, write_mdf4_2d
 from valisync.core.export.csv_exporter import (
+    CsvExporter,
     CsvExportOptions,
+    ExportCancelled,
     ExportRequest,
     passthrough_header_names,
 )
 from valisync.core.models import Signal
 from valisync.core.session import Session
+
+# ブロックを **複数** 作るための注入幅 (48 列 / 8 = 6 ブロック)。動的決定に任せると
+# 48 列は 1 ブロックに収まり、進捗が 1 回しか出ず「途中でキャンセル」の観測窓が
+# 消える (tests/gui/test_export_cancel_routing.py の G6/G7 と同じ理由)。
+_BLOCK_COLS = 8
+
+
+def _big_request(tmp_path: Path) -> tuple[Session, ExportRequest]:
+    """進捗が2回以上出る規模の実セッションと ExportRequest。
+
+    tests/gui/test_export_cancel_routing.py の `_big_request` (G6/G7) と同型 —
+    ここは Qt に依存しない core 側の境界検証なので、GUI テストとは別ファイルに
+    複製する (GUI テストから import すると core テストが GUI 依存を持ってしまう)。
+    """
+    path = tmp_path / "big.mf4"
+    ts = [round(i * 0.001, 6) for i in range(4000)]
+    write_mdf4(
+        path,
+        [
+            {
+                "name": f"Ch{i:03d}",
+                "bus_type": CAN,
+                "timestamps": ts,
+                "values": [float(i * 1000 + j) for j in range(len(ts))],
+            }
+            for i in range(48)
+        ],
+    )
+    session = Session()
+    key = session.load(path).key
+    keys = tuple(f"{key}::Ch{i:03d}" for i in range(48))
+    request = ExportRequest(
+        keys=keys,
+        output_path=tmp_path / "out.csv",
+        options=CsvExportOptions(),
+        header_resolver=list,
+    )
+    return session, request
 
 
 def _derived(name: str, ts: list[float], vs: list[float]) -> Signal:
@@ -218,6 +259,48 @@ def test_positional_bool_as_options_is_refused(tmp_path: Path) -> None:
     """
     with pytest.raises(TypeError, match="use_unified_timeline"):
         Session().export_csv([], tmp_path / "x.csv", True)  # type: ignore[arg-type]
+
+
+# ─── keys 経路 -> export_csv_request への progress/cancel 素通し (I1) ────────
+
+
+def test_export_csv_forwards_progress_and_cancel_to_the_pipeline(
+    tmp_path: Path,
+) -> None:
+    """I1 (T9 レビュー是正): `export_csv` -> `export_csv_request` の委譲
+    (session.py の `export_csv` 末尾) が `progress`/`cancel` を落とさず
+    素通しすることを核心で固定する。
+
+    ここを落としても既存 194/194 (`export_csv_request` を直接 grep しても
+    tests/ に 0 hits) が緑のまま通る盲点だった (reviewer 実測) — GUI の
+    キャンセルボタンやバーは `export_csv` (keys 形) 経由で呼ばれる
+    (`_run_export`) ので、ここが無いと実機で「押しても止まらない」
+    「バーが動かない」がまるごと無検出になる。
+    """
+    session, request = _big_request(tmp_path)
+    session._exporter = CsvExporter(block_cols=_BLOCK_COLS)
+    ticks: list[tuple[int, int]] = []
+    cancel = threading.Event()
+
+    def progress(done: int, total: int) -> None:
+        ticks.append((done, total))
+        # 最初の1単位 (時刻 temp) では止めない — ブロックを1本書いた後に
+        # 止めることで「途中でキャンセル」を実質完走と区別する (G6 と同型)。
+        if done >= 2:
+            cancel.set()
+
+    with pytest.raises(ExportCancelled):
+        session.export_csv(
+            request.keys,
+            request.output_path,
+            request.options,
+            header_resolver=list,
+            progress=progress,
+            cancel=cancel,
+        )
+
+    assert len(ticks) >= 2, f"ブロックが1本しかない fixture 規模不足 (ticks={ticks})"
+    assert ticks[-1][0] < ticks[-1][1], "最終単位まで走ってからの中止 = 実質完走"
 
 
 # ─── ExportRequest 自体 ──────────────────────────────────────────────────────

@@ -173,6 +173,67 @@ def test_eta_stops_promising_a_number_once_only_the_merge_stages_remain(
     )
 
 
+def test_eta_measures_on_the_first_production_shaped_tick_not_a_number(
+    qtbot: QtBot,
+) -> None:
+    """I2 (T9 レビュー是正): prod の最初のティックは done=0 でなく **done=1**
+    (`csv_exporter` の `tick()` は加算後に progress を呼ぶため done=0 は一度も
+    来ない)。上の3本 (既存) は done=0 の合成ティックで駆動しているため、この
+    穴には盲目だった。
+
+    旧実装は `done <= 0` だけを 0 除算ガードにしていたので、done=1 は素通しし、
+    起点 (`_progress_started`) をこの呼び出しその場で取るため elapsed もほぼ 0 =
+    最初のティックから「残り時間: 約 0 秒」と嘘をつく (2 時間かかるエクスポート
+    でも同じ)。起点を「最初に観測した done」自体へ固定して degenerate を防ぐ。
+    """
+    clock = _Clock()
+    overlay = BusyOverlay(clock=clock)
+    qtbot.addWidget(overlay)
+    owner = object()
+    overlay.acquire(owner, message="エクスポート中…")
+
+    overlay.set_progress(owner, 1, 8256)
+    assert "計測中" in overlay.eta_text(), overlay.eta_text()
+
+    clock.now = 10.0
+    overlay.set_progress(owner, 2, 8256)
+
+    # completed=2-1=1, remaining=8254, elapsed=10.0 -> 82,540 秒 = 22 時間 55 分。
+    # 起点を固定していない旧実装は、ここでも「残り時間: 約 0 秒」のまま
+    # (elapsed は progress_started からの経過であって、旧実装ではそこは合って
+    # いても done をそのまま割るので 10.0 * 8254 / 2 = 41,270 秒 = 11 時間台に
+    # なり、いずれにせよ最初のティックで既に出ていた嘘の「約 0 秒」を正の値で
+    # 上書きするだけで、その 1 発目の嘘自体は検出できない — 1 発目の assert が
+    # 本題)。
+    assert overlay.eta_text() == "残り時間: 約 22 時間 55 分", overlay.eta_text()
+
+
+def test_acquire_from_another_owner_does_not_undo_a_mid_cancel_disable(
+    qtbot: QtBot,
+) -> None:
+    """M6 (T9 レビュー是正): `cancel_active` が二重押し防止でボタンを disable
+    した直後に、無関係な acquire (例: 別の load が始まる) が来ても、その
+    disable を無条件の `setEnabled(True)` で踏み倒してはいけない。
+    """
+    overlay = BusyOverlay()
+    qtbot.addWidget(overlay)
+    export, load = object(), object()
+    overlay.acquire(export, message="out.csv をエクスポート中…")
+    overlay.set_cancel_enabled(False)  # ExportController.cancel_active 相当
+
+    overlay.acquire(load, message="a.mf4 を読み込み中…")
+
+    assert overlay.cancel_button.isEnabled() is False, "中止処理中にボタンが生き返った"
+
+    overlay.release(export)
+    assert overlay.cancel_button.isEnabled() is False, (
+        "他の所有者が残っているのに解除された"
+    )
+
+    overlay.release(load)
+    assert overlay.cancel_button.isEnabled() is True, "最後の解放で正しく戻らない"
+
+
 def test_zero_total_does_not_divide_by_zero(qtbot: QtBot) -> None:
     """総単位 0 (空選択の縁) でも例外を出さない。"""
     overlay = BusyOverlay()

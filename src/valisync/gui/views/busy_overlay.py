@@ -77,6 +77,17 @@ class BusyOverlay(QWidget):
         self._clock = clock
         self._progress_owner: object | None = None
         self._progress_started = 0.0
+        # I2: 進捗の外挿は「最初に観測した done」を起点にする (0 でなく)。
+        # prod の最初のティックは done=1 (csv_exporter の `tick()` は加算後に
+        # 呼ぶため done=0 は一度も来ない) — 起点を 0 で固定すると
+        # `completed = done - 0` が最初のティックから 1 以上になり、かつ
+        # elapsed もほぼ 0 なので「残り時間: 約 0 秒」と嘘をつく。
+        self._progress_base = 0
+        # M6: cancel_active が「二重押しを止める」ために外から無効化した後、
+        # 無関係な acquire (別の load/export の開始・進捗更新) が無条件に
+        # 再有効化してしまうと二重押し防止が意味を失う。set_cancel_enabled の
+        # 呼び出し履歴をここに憶えて acquire がそれを尊重する。
+        self._cancel_locked = False
 
     # ── 所有権 ────────────────────────────────────────────────────────────────
 
@@ -85,7 +96,12 @@ class BusyOverlay(QWidget):
         self._owners.pop(id(owner), None)  # 再取得は最新へ (文言の最終決定者)
         self._owners[id(owner)] = (owner, message)
         self._label.setText(message)
-        self.cancel_button.setEnabled(True)
+        # M6: 中止処理中 (set_cancel_enabled(False) 済み) に無関係な acquire
+        # (例: 別の load が始まる・進捗が別 owner から再取得される) が来ても、
+        # ボタンを無条件に生き返らせない。ロックの解除は _reset_progress
+        # (= 操作が実際に終わった時) だけの役目。
+        if not self._cancel_locked:
+            self.cancel_button.setEnabled(True)
         self.show()
 
     def release(self, owner: object) -> None:
@@ -121,6 +137,10 @@ class BusyOverlay(QWidget):
         if self._progress_owner is not owner:
             self._progress_owner = owner
             self._progress_started = self._clock()
+            # I2: prod の最初のティックは done=1 (csv_exporter.tick は加算後に
+            # 呼ぶ)。起点をここへ固定し、外挿は「この owner になってから進んだ
+            # 分」だけを見る。
+            self._progress_base = int(done)
         self.progress_bar.setRange(0, int(total))
         self.progress_bar.setValue(int(done))
         self._eta.setText(self._eta_text_for(int(done), int(total)))
@@ -132,12 +152,19 @@ class BusyOverlay(QWidget):
 
     def set_cancel_enabled(self, enabled: bool) -> None:
         """キャンセル要求が受理された後、二重押しを防ぐために落とす。"""
+        # M6: False の間は `acquire` に無条件の再有効化をさせない。True に
+        # 戻すのはここか _reset_progress (操作が実際に終わった時) だけ。
+        self._cancel_locked = not enabled
         self.cancel_button.setEnabled(enabled)
 
     def _eta_text_for(self, done: int, total: int) -> str:
-        if done <= 0:
-            # **0 除算ガードそのもの**。最初のブロックが終わるまでは外挿できない
-            # ことを人に見せる (「残り 0 秒」と嘘をつかない)。
+        # I2: 起点 (`_progress_base` = この owner で最初に観測した done) から
+        # まだ 1 単位も進んでいなければ外挿できない。**0 除算ガードそのもの**
+        # ("残り 0 秒" と嘘をつかない) — `done <= 0` だけを見ていた旧実装は、
+        # prod の最初のティック (done=1) をすり抜けて elapsed=0 のまま外挿し
+        # 「残り時間: 約 0 秒」を出していた。
+        completed = done - self._progress_base
+        if completed <= 0:
             return S.BUSY_ETA_MEASURING
         remaining = total - done
         # 進捗の単位は **等重でない** (csv_exporter の `n_units` コメント):
@@ -151,15 +178,19 @@ class BusyOverlay(QWidget):
         if remaining <= max(1, total // 100):
             return S.BUSY_ETA_FINISHING
         elapsed = self._clock() - self._progress_started
-        return S.BUSY_ETA_TMPL.format(eta=format_duration(elapsed * remaining / done))
+        return S.BUSY_ETA_TMPL.format(
+            eta=format_duration(elapsed * remaining / completed)
+        )
 
     def _reset_progress(self) -> None:
         """不確定へ戻す (次のロードが determinate のまま固着しないように)。"""
         self._progress_owner = None
+        self._progress_base = 0
         self.progress_bar.setRange(0, 0)
         self._eta.setText("")
         self._eta.setVisible(False)
         self.cancel_button.setEnabled(True)
+        self._cancel_locked = False  # M6: 操作が終わったのでロックも解除する
 
     # ── 既存の表示 API (直呼び経路・realgui が掴んでいる) ──────────────────────
 
@@ -212,6 +243,12 @@ class BusyOverlay(QWidget):
 
 def acquire_busy(busy: object, owner: object, message: str) -> None:
     """*owner* 名義で *busy* を出す (所有権を解さない相手なら旧 protocol へ)。"""
+    # M7: production の `busy` は常に BusyOverlay — else 分岐は
+    # tests/gui/test_export_worker.py の duck-typed fake **専用** (上のモジュール
+    # コメント参照)。ここに `assert isinstance(busy, BusyOverlay)` は入れない:
+    # それをやると else 分岐そのものが到達不能になり、あの fake を使うテストが
+    # 「所有権を解さない相手も受ける」という本橋の存在理由ごと壊れる。以下 4 関数
+    # 共通の契約。
     if isinstance(busy, BusyOverlay):
         busy.acquire(owner, message=message)
         return

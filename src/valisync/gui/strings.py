@@ -158,6 +158,12 @@ EXPORT_CANCELLED_TMPL: Final = (
     "エクスポートを中止しました（{columns} 列 × {rows} 行・推定 {size}）。"
     "出力範囲を狭めるか列を減らして再実行してください。"
 )
+# I3 (T9 レビュー是正): cancel は Event を立てるだけで worker の停止を待たない
+# 非対称設計 (衝突3・spec §5.5-1) なので、押した直後は `ExportController.is_busy()`
+# がまだ True の窓が実在する。その窓で 2 本目の export を弾く。
+EXPORT_ALREADY_RUNNING: Final = (
+    "エクスポートを実行中です。完了または中止が終わるまでお待ちください。"
+)
 
 # ── ダイアログ: 信号プレビュー (signal_preview_window・R-05 em ダッシュ) ─────
 PREVIEW_UNAVAILABLE: Final = "この信号はプレビューできません"

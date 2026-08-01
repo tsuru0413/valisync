@@ -170,6 +170,112 @@ def test_export_runs_off_the_gui_thread_at_resolve_and_at_write(
     assert set(at_resolve) == set(at_write), "解決と書きが別スレッドに分かれている"
 
 
+def test_second_export_is_rejected_while_the_first_is_mid_cancel(
+    qtbot: QtBot, tmp_path: Path, monkeypatch
+) -> None:
+    """I3 (T9 レビュー是正): cancel は Event を立てるだけで worker の停止を待たない
+    非対称設計 (§1 衝突3) — ボタンを押した直後、worker がまだ ExportCancelled を
+    返していない窓では `ExportController.is_busy()` が **まだ True**。この窓で
+    `_run_export` をもう一度呼ぶと 2 本目の worker が受理されてしまっていた
+    (reviewer 実測。task-9-report.md の「現状 GUI からは同時 export は起きない」
+    という記述は実測に反する)。
+
+    2 本目に渡す ``_tiny_request`` は未ロードのファイルを指すダミー鍵
+    (実行されれば必ず解決失敗で ``on_error`` -> 本物の `QMessageBox.critical` へ
+    落ちてテストがハングする — `test_cancel_callback_is_actually_wired_to_the_run_export_path`
+    と同じ罠)。ガードが効いていれば submit 自体が起きないので無害だが、
+    **ガードが壊れているケースを確かめるテストなので、壊れていても安全に RED で
+    終わるよう** 先に潰しておく。
+    """
+    from valisync.core.export.csv_exporter import CsvExportOptions
+    from valisync.gui import strings as S
+    from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+    from valisync.gui.views import main_window as mw_mod
+    from valisync.gui.views.main_window import MainWindow
+
+    window = MainWindow(AppViewModel())
+    qtbot.addWidget(window)
+    modals: list[object] = []
+    monkeypatch.setattr(
+        mw_mod.QMessageBox, "critical", lambda *a, **k: modals.append(a)
+    )
+    release = threading.Event()
+    run = window._export_controller.prepare()
+    window._export_controller.submit(
+        lambda: release.wait(5.0), run=run, busy=window.busy_overlay, label="out.csv"
+    )
+
+    window._cancel_busy_operations()
+    assert run.cancel.is_set(), "前提: 中止要求が届いている (worker はまだ停止前)"
+
+    blocked: list[str] = []
+    window._notify_blocked = blocked.append  # type: ignore[assignment]
+
+    window._run_export(_tiny_request(tmp_path, CsvExportOptions()), _tiny_estimate())
+
+    assert len(window._export_controller._active) == 1, "2 本目の export が投入された"
+    assert blocked == [S.EXPORT_ALREADY_RUNNING]
+    assert "中止" in window.busy_overlay.message(), "中止中の文言が上書きされた"
+
+    release.set()
+    qtbot.waitUntil(lambda: window.busy_overlay.isHidden(), timeout=5000)
+
+
+def test_run_export_captures_the_real_pipelines_thread_at_resolve_and_write(
+    qtbot: QtBot, tmp_path: Path, monkeypatch
+) -> None:
+    """M1 (T9 レビュー是正・G7 の再レビュー): G7 は `CsvExporter.export` を
+    **直呼び**しており、捕捉点は G7 テスト自身が組んだ resolve/progress。
+    `_run_export` が submit の **前**に列解決の一部を GUI スレッドでインライン
+    化しても、その捕捉点は素通りして緑になる (production の捕捉点でないため)。
+
+    ここでは `_run_export` を実際に走らせ、production 自身の捕捉点
+    (`session.resolve_signal_transient` と `ExportRun.progress`) にスパイを
+    刺して同じ性質 (2 点とも GUI スレッドでないこと・解決と書きが同一スレッド
+    に揃うこと) を確かめる。
+    """
+    from valisync.core.export.csv_exporter import CsvExporter
+    from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+    from valisync.gui.views.main_window import MainWindow
+    from valisync.gui.workers import export_worker as ew_mod
+
+    session, request = _big_request(tmp_path)
+    session._exporter = CsvExporter(block_cols=_BLOCK_COLS)
+    window = MainWindow(AppViewModel(session))
+    qtbot.addWidget(window)
+
+    main_ident = threading.get_ident()
+    at_resolve: list[int] = []
+    at_write: list[int] = []
+    errors: list[Exception] = []
+    base_resolve = session.resolve_signal_transient
+    base_progress = ew_mod.ExportRun.progress
+
+    def spy_resolve(key: str):  # type: ignore[no-untyped-def]
+        at_resolve.append(threading.get_ident())
+        return base_resolve(key)
+
+    def spy_progress(self_run: ew_mod.ExportRun, done: int, total: int) -> None:
+        at_write.append(threading.get_ident())
+        base_progress(self_run, done, total)
+
+    monkeypatch.setattr(session, "resolve_signal_transient", spy_resolve)
+    monkeypatch.setattr(ew_mod.ExportRun, "progress", spy_progress)
+    window._on_export_error = errors.append  # type: ignore[assignment]
+
+    window._run_export(request, _tiny_estimate())
+    qtbot.waitUntil(
+        lambda: bool((request.output_path.exists() and len(at_write) >= 2) or errors),
+        timeout=30000,
+    )
+
+    assert errors == [], f"エクスポートが失敗した: {errors}"
+    assert at_resolve, "列解決が一度も呼ばれていない"
+    assert main_ident not in at_resolve, "列解決が GUI スレッドで走っている"
+    assert main_ident not in at_write, "書き出しが GUI スレッドで走っている"
+    assert set(at_resolve) == set(at_write), "解決と書きが別スレッドに分かれている"
+
+
 def test_cancelled_export_reports_the_pre_start_estimate(qtbot: QtBot) -> None:
     """B6: キャンセル後は開始前の見積値を再掲し、削り方を促す。"""
     from valisync.core.export.csv_exporter import ExportCancelled

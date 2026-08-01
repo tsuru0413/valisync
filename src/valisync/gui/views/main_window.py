@@ -1011,6 +1011,15 @@ class MainWindow(QMainWindow):
         見積を引数で受けるのは、キャンセル時に **開始前の値** を再掲する (B6) ため
         — 後から計算し直すと、unload 済みのファイルでは値が変わる/出せなくなる。
         """
+        # I3 (T9 レビュー是正): cancel は Event を立てるだけで worker の停止を
+        # 待たない非対称設計 (§1 衝突3) — 押した直後は `is_busy()` がまだ True の
+        # 窓が実在する (reviewer 実測。「同時 export は起きない」という記録は
+        # 実測に反していた)。D5 より前で弾くのは、その窓で 2 本目を通してしまうと
+        # `ExportController._active` に worker が 2 本並び、1 本目の cancel が
+        # 2 本目の overlay 文言/ボタンまで巻き込むため。
+        if self._export_controller.is_busy():
+            self._notify_blocked(S.EXPORT_ALREADY_RUNNING)
+            return
         # **GUI 門番は core 門番を上界包含する** (順序逆転の構造排除・I-3)。
         # core (`csv_exporter._require_disk_space`) は粗い `_EST_BYTES_PER_CELL = 12`
         # で判定するので、GUI の推定 (実測校正済みの ~5.6 B/セル) だけを見ると
@@ -1077,6 +1086,10 @@ class MainWindow(QMainWindow):
         流れる)。Task 10b が `ExportSourceLost` を作った時点で、ここに
         `isinstance` の出し分けと診断 1 件の追記を足す。**今はその型が存在
         しない**ので分岐を書けない (書くと到達不能な死にコードになる)。
+
+        M2 (T9 レビュー是正): 診断は `self.diagnostics_vm.add(source, [Diagnostic(...)])`
+        を使うこと (`app_vm.add_diagnostic` は存在しない — ブリーフの想定と異なる・
+        T9 実測)。
         """
         del exc  # 現状はユーザー起点の中止のみ (出し分けは Task 10b)
         self.set_status_message(
