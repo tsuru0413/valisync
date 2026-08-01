@@ -144,7 +144,13 @@ class CsvFormatDetector:
 
     def _read_lines(self, file_path: Path, max_rows: int) -> list[str]:
         lines: list[str] = []
-        with file_path.open("r", encoding="utf-8", errors="replace", newline="") as fh:
+        # supersede(E-4b §5.1-2): 自製品の出力に BOM が付いたため検出器も utf-8-sig 読みへ。
+        # str.strip() は U+FEFF を落とさない (Cf であって空白ではない) ので、BOM が残ると
+        # _detect_timestamp_column の名前ヒントが列 0 で外れ、時間らしい名前の**信号**列が
+        # 時間軸に選ばれる。csv_loader.py:46 と対称。
+        with file_path.open(
+            "r", encoding="utf-8-sig", errors="replace", newline=""
+        ) as fh:
             for i, line in enumerate(fh):
                 if i >= max_rows:
                     break

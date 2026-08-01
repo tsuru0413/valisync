@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from valisync.core.export.csv_exporter import CsvExporter, CsvExportOptions
+from valisync.core.loaders.csv_format_detector import CsvFormatDetector
 from valisync.core.loaders.csv_loader import CsvLoader
 from valisync.core.models import Delimiter, FormatDefinition, Signal
 
@@ -54,6 +55,10 @@ def test_nan_value_becomes_empty_cell_shared_timeline(tmp_path: Path) -> None:
     """裸の ``nan`` は Excel で文字列・pandas で NaN・CANape で不明の三者三様。
 
     欠測 (統合タイムラインでサンプルが無い) と**同じ**空セル表現へ揃える。
+
+    PBT (``tests/test_pbt_csv.py``) の roundtrip は ``valid_signals`` が
+    ``allow_nan_values=False`` を既定にするため (``tests/conftest.py:124``)、
+    この空セル経路を構造的に踏まない — 契約はこのファイルが単独で背負う。
     """
     s = _sig("x", [0.0, 1.0], [1.5, float("nan")])
     out = tmp_path / "d.csv"
@@ -124,6 +129,26 @@ def test_japanese_header_survives_as_utf8_after_the_bom(tmp_path: Path) -> None:
     CsvExporter().export([s], out, options=CsvExportOptions(header_names=("車速",)))
     raw = out.read_bytes()
     assert raw == _BOM + "timestamp,車速\n0.0,1.5\n".encode()
+
+
+def test_detector_finds_the_timestamp_column_in_our_own_bom_output(
+    tmp_path: Path,
+) -> None:
+    """BOM は CsvLoader だけでなく**検出器**も通る (main_window.py:675 の開く経路)。
+
+    ``str.strip()`` は U+FEFF を落とさないので ``\ufefftimestamp`` が時間列の
+    名前ヒントに一致しなくなり、時間らしい名前を持つ**信号**列が時間軸に選ばれる。
+    単調列フォールバックが大半のケースを覆い隠すため、名前ヒントを持つ信号が
+    あるときだけ表面化する — だから fixture に ``TimeSync_ECU`` が要る。
+    """
+    a = _sig("VehSpd", [0.0, 1.0, 2.0], [10.0, 20.0, 30.0])
+    b = _sig("TimeSync_ECU", [0.0, 1.0, 2.0], [1.0, 2.0, 3.0])
+    out = tmp_path / "d.csv"
+    CsvExporter().export([a, b], out, use_unified_timeline=True)
+    d = CsvFormatDetector().detect(out)
+    assert d.timestamp_column == 0
+    assert (d.signal_start_column, d.signal_end_column) == (1, 2)
+    assert not d.preview_lines[0].startswith("\ufeff")
 
 
 # ─── 3. RFC 4180 最小クォート (spec §5.1-3 [M-2]) ─────────────────────────────
@@ -295,12 +320,41 @@ def test_loader_still_rejects_an_empty_timestamp(tmp_path: Path) -> None:
     assert any("タイムスタンプ" in d.message for d in result.diagnostics)
 
 
+def test_loader_strips_the_bom_before_parsing_cells(tmp_path: Path) -> None:
+    """``csv_loader.py:46`` の utf-8-sig が実際に効く唯一の形を直接固定する。
+
+    BOM は列 0 にしか載らない。自製品の出力では列 0 = timestamp なので
+    roundtrip テストは構造的に無感 (信号名は列 1.. から取り、データ行の列 0 に
+    BOM は無い)。効くのは**列 0 が信号列**の第三者 CSV で、そのとき
+    ``float('\ufeff0')`` が落ちる。
+    """
+    src = tmp_path / "in.csv"
+    src.write_bytes("\ufeffidx,t,v\n0,0.0,10.0\n1,1.0,20.0\n".encode())
+    fd = FormatDefinition(
+        name="rt",
+        delimiter=Delimiter.COMMA,
+        timestamp_column=1,
+        timestamp_unit="sec",
+        signal_start_column=0,
+        signal_end_column=0,
+        has_header=True,
+    )
+    result = CsvLoader().load(src, fd)
+    assert result.signal_group is not None, [d.message for d in result.diagnostics]
+    assert result.signal_group.signals[0].name == "idx"
+
+
 def test_export_then_reload_roundtrips_missing_cells_as_nan(tmp_path: Path) -> None:
     """自製品の出力を自製品が読み戻せる (spec §9-3 に valisync 自身を加えた根拠)。
 
-    BOM (エクスポータ) と utf-8-sig 読み (csv_loader.py:46) の噛み合わせも
-    ここで同時に効いている — BOM を剥がし損ねるとヘッダ名 ``timestamp`` が
-    ``\\ufefftimestamp`` になり列検出がずれる。
+    supersede (レビュー是正・2026-08-01): 従前の docstring は「BOM を剥がし損ねると
+    ヘッダ名検出がずれる」と書いていたが誤り — ``CsvLoader`` は列を**位置**
+    (``FormatDefinition`` の ``timestamp_column``/``signal_*_column``) で解決し、
+    ヘッダの文字列は信号名ラベルとしてしか読まない。BOM が列検出をずらしうるのは
+    ヘッダの**名前ヒント**で時間列を選ぶ ``CsvFormatDetector`` 側であり、それは
+    ``test_detector_finds_the_timestamp_column_in_our_own_bom_output`` が担う。
+    ここでの本当の価値は**欠測セルの往復**(エクスポータが空セルを書き、ローダーが
+    NaN として読み戻す)の一次確認。
     """
     a = _sig("a", [0.0, 1.0], [10.0, float("nan")])
     b = _sig("b", [0.0], [20.0])

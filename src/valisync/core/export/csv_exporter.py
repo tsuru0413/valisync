@@ -59,6 +59,11 @@ class CsvExportOptions:
         # 区切りと小数点が同一だと CSV が曖昧になる(ダイアログでも防ぐが核でも拒否)。
         if self.delimiter == self.decimal:
             raise ValueError("区切り文字と小数点記号に同じ文字は使えません")
+        # `_quote` は `"` を RFC 4180 最小クォートの制御文字として新たに特別扱いする
+        # (spec §5.1-3 [M-2])。delimiter/decimal に `"` を許すと `'"' in cell` の
+        # 判定と衝突し、クォート開始位置が区切り文字と紛れて出力が壊れる。
+        if self.delimiter == '"' or self.decimal == '"':
+            raise ValueError("区切り文字と小数点記号に二重引用符は使えません")
         if self.precision is not None and self.precision < 0:
             raise ValueError("小数点以下の桁数は 0 以上を指定してください")
         if (

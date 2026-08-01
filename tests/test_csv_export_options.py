@@ -145,6 +145,19 @@ def test_empty_decimal_rejected() -> None:
         CsvExportOptions(decimal="")
 
 
+def test_quote_char_as_delimiter_rejected() -> None:
+    # `_quote` は `"` を新たに特別扱いする (RFC 4180 最小クォート・spec §5.1-3)。
+    # delimiter に `"` を許すと、クォート判定の `"` in cell が delimiter 自身と
+    # 衝突し出力が壊れる。
+    with pytest.raises(ValueError):
+        CsvExportOptions(delimiter='"')
+
+
+def test_quote_char_as_decimal_rejected() -> None:
+    with pytest.raises(ValueError):
+        CsvExportOptions(decimal='"')
+
+
 # --- header_names (E-0, spec §1.2 — GUI-computed display header override) ----
 
 
