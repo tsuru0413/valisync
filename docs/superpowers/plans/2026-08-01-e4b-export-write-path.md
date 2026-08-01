@@ -5403,7 +5403,7 @@ def test_cancel_before_a_column_read_stops_within_that_block(tmp_path: Path) -> 
     assert seen == ["a"], "2 列目を読み始めている (チェック点が列の前に無い)"
 
 
-def test_cancel_inside_a_long_row_loop_stops_before_the_end(tmp_path: Path) -> None:
+def test_cancel_inside_a_long_row_loop_stops_before_the_end（実績注記: T6 実測で本テストは**列ループ**検査で止まると判明し `test_cancel_set_before_the_call_stops_at_the_first_column` へ改名。行ループの実ガードは追加の polls==3 テスト — commit 5b28923）(tmp_path: Path) -> None:
     n = 50_000
     a = _sig("a", np.arange(n).tolist(), np.arange(n).tolist())
     cancel = threading.Event()
@@ -5912,7 +5912,7 @@ pristine copy（`signal.py` / `signal_group_manager.py` / `channel_cache.py` / `
 | S3 | `Signal.__slots__` から `"__weakref__"` を削除 | `test_signal_supports_weakref` / `test_transient_columns_die_when_dropped` / `test_transient_columns_do_not_accumulate_across_blocks` の **3 件**（すべて `TypeError: cannot create weak reference`）。**RED の形が TypeError であること**まで確認する（値の不一致ではない = オラクル自体が消える形） |
 | S4 | `_write_block_temp` の `del sig, ts, vs` を削除し `aligned` の隣に `sig` を保持するリストを足す | `test_transient_columns_do_not_accumulate_across_blocks` の **1 件のみ**。他は出力が同じなので緑 — G2/G5 が「出力テスト」では絶対に代替できないことの実証 |
 | S5 | `_write_block_temp` の列ループ先頭の `_check_cancel` を削除（ブロック境界だけにする）| `test_cancel_before_a_column_read_stops_within_that_block` の **1 件**（`seen == ["a", "b"]` になる） |
-| S6 | 行ループの `_check_cancel` を削除 | `test_cancel_inside_a_long_row_loop_stops_before_the_end` の **1 件** |
+| S6 | 行ループの `_check_cancel` を削除 | `test_cancel_inside_a_long_row_loop_stops_before_the_end（実績注記: T6 実測で本テストは**列ループ**検査で止まると判明し `test_cancel_set_before_the_call_stops_at_the_first_column` へ改名。行ループの実ガードは追加の polls==3 テスト — commit 5b28923）` の **1 件** |
 | S7 | `plan_blocks` の run 境界判定を消し単純に `block_cols` で切る | `test_plan_blocks_keeps_a_channel_whole` の **1 件のみ**（`((0,4),(4,8),(8,9))` になる） |
 | S8 | `block_columns` の `max(_MIN_BLOCK_COLS, ...)` を外す | `test_block_columns_is_clamped_to_the_minimum_when_the_budget_is_tiny` の **1 件**（0 になり、後段が無限ループ化しうる形）|
 | S9 | `scan_masters` の identity dedup を外す | `test_scan_masters_dedups_by_identity_and_counts_channel_runs` の **1 件**（`len(masters) == 3`）|

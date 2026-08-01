@@ -63,11 +63,13 @@ def test_signal_supports_weakref() -> None:
     無いと ``weakref.ref(sig)`` が TypeError になり、帳簿以外の観測手段が
     1 つも無くなる (resolved_keys は transient に盲目・bytes_held は pin 前提)。
 
-    M5 (レビュー): 旧 ``ref() is not None or ref() is None`` は真理値表そのものが
-    恒真 (対象が存在しても TypeError で ``weakref.ref`` が例外を投げても、この式
-    自体は評価に到達すれば必ず True になる) — ``__weakref__`` を消しても
-    RED にならない空虚な assert だった。生成できることに加え、生きている間は
-    ``()`` が対象そのものを返すことを直接 pin する。
+    M5 (レビュー・再レビューで是正): 旧 ``ref() is not None or ref() is None`` は
+    **式としては恒真**だが、テストは RED になった — ``__weakref__`` を消すと
+    ``weakref.ref()`` の呼び出し自体が TypeError を投げ、assert に到達する前に
+    落ちる (S3 実測 3 RED)。つまり式は 1 バイトも検証していない
+    (``__weakref__`` があるかぎり ``ref()`` が何を返しても通る) が、テストの
+    load-bearing 性は呼び出しの側に在った。書き換えは「生きている間は ``()`` が
+    対象そのものを返す」ことまで直接 pin する強化。
     """
     sig = _sig("x")
     # 生成できる (weakref.ref(sig) が TypeError にならない) ことと、生存中は

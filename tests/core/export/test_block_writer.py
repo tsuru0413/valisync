@@ -119,6 +119,11 @@ def test_plan_blocks_splits_exactly_at_the_boundary() -> None:
     収まってしまい (上限超過の実体化)、この 1 本だけが RED になる。
     """
     assert plan_blocks([5], block_cols=4) == ((0, 4), (4, 5))
+    # Minor A (再レビュー 2026-08-01): 最小の合法幅 1 の正側 pin。Task 7 の
+    # BLOCK_COLS_VARIANTS = (None, 1, 2) が実際に通す幅で、ガードを `< 2` へ
+    # 広げる過剰防御は合法な 1 を拒否するが他のどのテストも 1 を通さない
+    # (実測: `< 2` 化で本行のみ RED)。
+    assert plan_blocks([2, 1], block_cols=1) == ((0, 1), (1, 2), (2, 3))
 
 
 def test_plan_blocks_rejects_a_non_positive_width() -> None:
