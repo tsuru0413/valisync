@@ -963,6 +963,15 @@ class MainWindow(QMainWindow):
             cursor_a=cursor_state.cursor_t,
             cursor_b=cursor_state.cursor_t_b,
             offset_for=panel.offset_for,
+            # E-4b spec §5.6 [I5]: ガードは「オフセット辞書側 -> 選択集合」へ
+            # 反転した。列ごとの probe は `_select_all` の O(1) 化で消えるので、
+            # 少数側 (今 0 でないオフセットを持つキー) を列挙する口を渡す。
+            # signal 側は名前空間つき列キー・file 側はグループキーで、
+            # ダイアログはどちらの形も解釈する。
+            offset_keys=lambda: (
+                *self.app_vm.signal_offsets,
+                *self.app_vm.file_offsets,
+            ),
         )
         if req is None:
             return
