@@ -17,6 +17,7 @@ import math
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from valisync.core.export.csv_exporter import CsvExporter, CsvExportOptions
 from valisync.core.loaders.csv_format_detector import CsvFormatDetector
@@ -320,16 +321,34 @@ def test_loader_still_rejects_an_empty_timestamp(tmp_path: Path) -> None:
     assert any("タイムスタンプ" in d.message for d in result.diagnostics)
 
 
-def test_loader_strips_the_bom_before_parsing_cells(tmp_path: Path) -> None:
-    """``csv_loader.py:46`` の utf-8-sig が実際に効く唯一の形を直接固定する。
+@pytest.mark.parametrize(
+    ("has_header", "content", "expected_name"),
+    [
+        (True, "\ufeffidx,t,v\n0,0.0,10.0\n1,1.0,20.0\n", "idx"),
+        (False, "\ufeff0,0.0,10.0\n1,1.0,20.0\n", "ch_1"),
+    ],
+    ids=["bom_on_header_cell", "bom_on_parsed_data_cell"],
+)
+def test_loader_strips_the_bom_before_parsing_cells(
+    tmp_path: Path, has_header: bool, content: str, expected_name: str
+) -> None:
+    """``csv_loader.py:46`` の utf-8-sig が効く形は **2 つある**。
 
-    BOM は列 0 にしか載らない。自製品の出力では列 0 = timestamp なので
+    BOM は物理的に列 0 にしか載らない。自製品の出力では列 0 = timestamp なので
     roundtrip テストは構造的に無感 (信号名は列 1.. から取り、データ行の列 0 に
-    BOM は無い)。効くのは**列 0 が信号列**の第三者 CSV で、そのとき
-    ``float('\ufeff0')`` が落ちる。
+    BOM は無い)。効くのは**列 0 が信号列**の第三者 CSV で、そこから先が
+    ``has_header`` で分岐する:
+
+    - ``has_header=True``  -> 行 0 = ヘッダ。BOM はヘッダセルに載り信号名として
+      保持される。退行時の症状は名前が ``'\ufeffidx'`` になること (ロードは成功)。
+    - ``has_header=False`` -> 行 0 = データ。BOM は ``float()`` に渡るセルに載る。
+      退行時の症状は ``ValueError`` -> ``signal_group is None`` = **ロード全滅**。
+
+    2 ケース置くのは冗長ではない: ヘッダ名だけ BOM を剥がす対症修正を当てると
+    前者は GREEN に戻り、後者は壊れたまま残る (実測・レビュー是正 2026-08-01)。
     """
     src = tmp_path / "in.csv"
-    src.write_bytes("\ufeffidx,t,v\n0,0.0,10.0\n1,1.0,20.0\n".encode())
+    src.write_bytes(content.encode())
     fd = FormatDefinition(
         name="rt",
         delimiter=Delimiter.COMMA,
@@ -337,11 +356,13 @@ def test_loader_strips_the_bom_before_parsing_cells(tmp_path: Path) -> None:
         timestamp_unit="sec",
         signal_start_column=0,
         signal_end_column=0,
-        has_header=True,
+        has_header=has_header,
     )
     result = CsvLoader().load(src, fd)
     assert result.signal_group is not None, [d.message for d in result.diagnostics]
-    assert result.signal_group.signals[0].name == "idx"
+    (sig,) = result.signal_group.signals
+    assert sig.name == expected_name
+    np.testing.assert_array_equal(sig.values, np.array([0.0, 1.0]))
 
 
 def test_export_then_reload_roundtrips_missing_cells_as_nan(tmp_path: Path) -> None:
