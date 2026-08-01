@@ -72,8 +72,16 @@ _READ_S_PER_COLD_CHANNEL: Final = 0.316
 # **Task 11 (T-M) は 2 項とも検定すること**。特に `total_cells` だけを母数に
 # 再導出してはならない — それがこの過大報告の入口だった。加えて (a) の絶対値を
 # そのまま採ると prod は 2,299 s (38 分) になり (b) の外挿と ~2.1 倍食い違う
-# (しかも (a) はブロック分割とマージ段の再読みを含まないので下限側)。どちらが
-# 実機かは prod 1 点の実測でしか決まらない。
+# (しかも (a) はブロック分割とマージ段の再読みを含まないので下限側)。
+#
+# **「prod 1 点で検定」は 2 項モデルでは数学的に不能** (T8 再レビュー): 1 回の
+# 計測は 2 未知数への方程式 1 本で、1 点フィットは比 2.167 を固定した連動
+# スケールにしかならない — 2 項較正に見えて単一パラメータ思考が静かに戻る。
+# **空セル率が実質的に異なる 2 点**が要る。同一 prod ファイルでタダで取れる:
+#   点 1 = 全列 (空セル率 ~66%) / 点 2 = 単一 master チャンネルの部分集合
+#   (空セル率 ~0%)。(a) と (b) のどちらが実機かは、読み項を分離した end-to-end
+#   の全列書き 1 本が判別する。spec §6 の「prod_demo 1 点実測で見積係数を検定」
+#   の行はこのモデルでは不十分 — T11 が spec 側も追随させること。
 _WRITE_S_PER_CELL_BASE: Final = 1.60e-7
 _WRITE_S_PER_CELL_VALUE: Final = 3.47e-7
 
@@ -111,7 +119,7 @@ class ExportEstimate:
     empty_ratio: float  # 正確 (searchsorted ヒット数から)
     est_bytes: int  # 推定
     est_read_s: float  # 推定 (cold チャンネル数 x チャンネル単価)
-    est_write_s: float  # 推定 (セル数 x セル単価)
+    est_write_s: float  # 推定 (2 項: 全セル x 基本単価 + 非空セル x 値単価)
 
 
 def estimate_export(
@@ -155,7 +163,8 @@ def estimate_export(
     #    直す方がよい (遅いが正しい)。空 dict (ask() を差し替えたテスト・表を持たない
     #    直呼び) もこの一致検査で自然にフォールバックへ落ちる。
     cols_per_channel: dict[str, int]
-    if channel_columns is not None and sum(channel_columns.values()) == columns:
+    used_hint = channel_columns is not None and sum(channel_columns.values()) == columns
+    if used_hint and channel_columns is not None:
         cols_per_channel = dict(channel_columns)
     else:
         # フォールバック: channel_key_of は ColumnRecord の最長一致だけを見る
@@ -182,24 +191,48 @@ def estimate_export(
             cols_per_channel[channel] = cols_per_channel.get(channel, 0) + 1
 
     # 2) チャンネル -> master。identity dedup は union と同じ規則 (spec §5.4)。
-    masters: dict[int, np.ndarray] = {}
-    cols_per_master: dict[int, int] = {}
-    lazy_channels = 0
-    for channel, n_cols in cols_per_channel.items():
-        master = session.channel_master(channel)
-        if master is None:
-            continue  # アンロード済み / 未知キー: master を持たない
-        mid = id(master)
-        masters.setdefault(mid, master)
-        cols_per_master[mid] = cols_per_master.get(mid, 0) + n_cols
-        if session.is_lazy_channel(channel):
-            # 実体化済み (CSV/Derived) のチャンネルは読み直さないので 0 秒。
-            # **lazy を cold の代理にしている**: E-4a のチャンネルキャッシュに
-            # 既に載っている (warm) チャンネルも lazy なので、読み項は安全側
-            # (過大) へ倒れる。キャッシュを覗いて減算しないのは、pin の増減で
-            # 見積が呼ぶたびに変わる数字になるより、常に上限を出す方が
-            # 「思ったより早く終わった」に倒れて B2 の目的に合うため。
-            lazy_channels += 1
+    def _masters_of(
+        table: dict[str, int],
+    ) -> tuple[dict[int, np.ndarray], dict[int, int], int, int]:
+        masters: dict[int, np.ndarray] = {}
+        cols_per_master: dict[int, int] = {}
+        lazy_channels = 0
+        resolved_cols = 0
+        for channel, n_cols in table.items():
+            master = session.channel_master(channel)
+            if master is None:
+                continue  # アンロード済み / 未知キー: master を持たない
+            resolved_cols += n_cols
+            mid = id(master)
+            masters.setdefault(mid, master)
+            cols_per_master[mid] = cols_per_master.get(mid, 0) + n_cols
+            if session.is_lazy_channel(channel):
+                # 実体化済み (CSV/Derived) のチャンネルは読み直さないので 0 秒。
+                # **lazy を cold の代理にしている**: E-4a のチャンネルキャッシュに
+                # 既に載っている (warm) チャンネルも lazy なので、読み項は安全側
+                # (過大) へ倒れる。キャッシュを覗いて減算しないのは、pin の増減で
+                # 見積が呼ぶたびに変わる数字になるより、常に上限を出す方が
+                # 「思ったより早く終わった」に倒れて B2 の目的に合うため。
+                lazy_channels += 1
+        return masters, cols_per_master, lazy_channels, resolved_cols
+
+    masters, cols_per_master, lazy_channels, resolved_cols = _masters_of(
+        cols_per_channel
+    )
+    if used_hint and resolved_cols != columns:
+        # 関連性の破れ (T8 再レビュー Minor 1): 総和の一致は「量」しか見ておらず、
+        # 総和が合っていてもキーが誤っていれば channel_master が解決できない列が
+        # 出る — そのまま進むと B2 が「正確値」と名乗る行数/空セル率が黙って嘘に
+        # なる (実測: 誤キーのヒントで rows=0)。解決不能が混ざったヒントは捨てて
+        # 自己解決へ落とす (遅いが正しい)。happy path はこの分岐に入らないので
+        # コストゼロ。なお「本当にアンロードされた列」もここでフォールバックする
+        # が、フォールバック側も同じ列を解決できず同じ結果に収束するだけで害は
+        # 無い (2 回目の _masters_of が僅かに走るのみ)。
+        cols_per_channel = {}
+        for key in key_tuple:
+            channel = session.channel_key_of(key) or key
+            cols_per_channel[channel] = cols_per_channel.get(channel, 0) + 1
+        masters, cols_per_master, lazy_channels, _ = _masters_of(cols_per_channel)
 
     union = union_timeline(list(masters.values()))
     # 行範囲は **Task 5 の `row_range` をそのまま消費する** (自前で searchsorted を

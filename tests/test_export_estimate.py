@@ -363,6 +363,28 @@ def test_channel_columns_hint_is_ignored_when_it_disagrees_with_keys(
         assert got == expected, bogus
 
 
+def test_channel_columns_hint_with_matching_sum_but_wrong_keys_falls_back(
+    tmp_path: Path,
+) -> None:
+    """関連性の破れの安全網 (T8 再レビュー Minor 1)。
+
+    総和の一致検査は「量」しか見ない — **総和が合っていてキーが誤っている**表は
+    素通りし、`channel_master` が解決できない列が黙って消えて rows=0 の嘘を
+    「正確値」として提示していた (レビュー実測)。step 2 で解決列数を数え、
+    不足したらヒントを捨てて自己解決へ落ちることを固定する。
+    """
+    session, keys = _wide_session(tmp_path)
+    expected = estimate_export(session, keys, CsvExportOptions())
+
+    # 総和 == 列数 だがキーが実在しない (量は正しく関連が誤り)
+    wrong_key_hint = {"gone_1::Nope": len(keys)}
+    got = estimate_export(
+        session, keys, CsvExportOptions(), channel_columns=wrong_key_hint
+    )
+    assert got == expected
+    assert got.rows > 0  # 反 vacuous: フォールバックが本当に解決した
+
+
 def test_time_range_narrows_rows_on_a_closed_interval(tmp_path: Path) -> None:
     """範囲は閉区間 (lo=left / hi=right — M-3)。境界サンプルは残る。"""
     session, keys = _two_rate_session(tmp_path)
