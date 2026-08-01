@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import tempfile
 from dataclasses import dataclass
@@ -86,6 +87,52 @@ def _fmt(value: float, options: CsvExportOptions) -> str:
     return s
 
 
+def _fmt_value(value: float, options: CsvExportOptions) -> str:
+    """値セルを書式化する。非有限 (NaN/±inf) は**空セル**にする (B1・spec §5.1-1)。
+
+    欠測 (統合タイムラインでサンプルが無い) と同じ表現へ揃えるのが目的。裸の
+    ``nan`` は Excel で文字列・pandas で NaN・CANape で不明の三者三様になり、
+    analysis-correctness が ``Signal.finite_view()`` で確定させた「非有限は値と
+    して扱わない」判断とエクスポートだけが逆を向いていた。
+
+    ``_fmt`` を分岐させず**手前で**返すのは、``_fmt`` が時刻セル (:163/:194) と
+    共用だから — 時刻は ``Signal.__init__`` (signal.py:80-82) が全構築経路で
+    非有限を拒否しており、``_fmt`` 側の分岐は永久に到達しない死んだ枝になる。
+    precision 指定時の ``f"{nan:.3f}"`` -> ``"nan"`` 漏れもここで同時に塞がる。
+    """
+    v = float(value)
+    if not math.isfinite(v):
+        return ""
+    return _fmt(v, options)
+
+
+def _quote(cell: str, delimiter: str) -> str:
+    """RFC 4180 の**最小**クォート: 区切り/二重引用符/改行を含むときだけ囲む。
+
+    「最小」であることが load-bearing — 常時クォートに変えると全セルのバイトが
+    変わり、Task 2 のゴールデン全本が差分になる。それ以外のセルはバイト不変。
+
+    判定に使うのは ``delimiter`` であって ``","`` ではない。``delimiter=";"`` +
+    ``decimal=","`` の出力 (``0,5;1,5``) は**クォートしてはならない**
+    (test_comma_decimal_with_semicolon_delimiter が pin)。
+    """
+    if delimiter in cell or '"' in cell or "\n" in cell or "\r" in cell:
+        return '"' + cell.replace('"', '""') + '"'
+    return cell
+
+
+def _join(cells: list[str], opts: CsvExportOptions) -> str:
+    """セル列を最小クォートしてから区切りで連結する — **join の唯一の出口**。
+
+    ヘッダ行・単位行・データ行 (統合/共有) の 4 サイトすべてがここを通る。
+    サイトごとに ``delimiter.join`` を直書きすると、信号名/単位だけクォートが
+    抜ける非対称が入る (信号名と単位こそ区切り文字混入の主経路・spec §5.1-3
+    [M-2])。
+    """
+    d = opts.delimiter
+    return d.join(_quote(c, d) for c in cells)
+
+
 class CsvExporter:
     """CSV exporter. Writes Signal data as a single CSV file.
 
@@ -141,10 +188,15 @@ class CsvExporter:
             if opts.header_names is not None
             else [s.name for s in signals]
         )
-        lines = [opts.delimiter.join([_TIMESTAMP_HEADER, *names])]
+        lines = [_join([_TIMESTAMP_HEADER, *names], opts)]
         if opts.unit_row:
-            units = [s.metadata.get("unit", "") for s in signals]
-            lines.append(opts.delimiter.join([_TIMESTAMP_UNIT, *units]))
+            # None / キー欠落 / 空文字はすべて空セルへ畳む。production の
+            # mdf_loader は truthy ガード (mdf_loader.py:159-161) で None を
+            # 載せないが、手組み metadata (Derived・テスト) は None を持ちうる。
+            # 畳まないと _quote の `delimiter in None` が TypeError になる
+            # (spec §9-6 が T-G へ defer した点をここで確定させる)。
+            units = [s.metadata.get("unit") or "" for s in signals]
+            lines.append(_join([_TIMESTAMP_UNIT, *units], opts))
         return lines
 
     def _rows_unified_timeline(
@@ -161,8 +213,8 @@ class CsvExporter:
             if not _in_range(ts, opts):
                 continue
             cells = [_fmt(ts, opts)]
-            cells.extend(_fmt(lk[ts], opts) if ts in lk else "" for lk in lookups)
-            lines.append(opts.delimiter.join(cells))
+            cells.extend(_fmt_value(lk[ts], opts) if ts in lk else "" for lk in lookups)
+            lines.append(_join(cells, opts))
         return lines
 
     def _rows_shared_timeline(
@@ -192,8 +244,8 @@ class CsvExporter:
             if not _in_range(timestamps[i], opts):
                 continue
             cells = [_fmt(timestamps[i], opts)]
-            cells.extend(_fmt(vs[i], opts) for vs in sorted_values)
-            lines.append(opts.delimiter.join(cells))
+            cells.extend(_fmt_value(vs[i], opts) for vs in sorted_values)
+            lines.append(_join(cells, opts))
         return lines
 
     def _atomic_write(self, output_path: Path, lines: list[str]) -> None:
