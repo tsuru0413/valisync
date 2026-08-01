@@ -589,6 +589,10 @@ def _build_unified_cross_file_collision(work: Path) -> GoldenInput:
 #   対照的)。書き経路を再構築する Task 6/7 がデータ行のクォートを落としても、
 #   既定 delimiter のケースだけでは誰も落ちない — 非既定 delimiter の単体テストと
 #   g06 の両方を保つことがレビューでの担保点になる。
+#   **サイトは 2 つあり片方ずつ独立にブラインドになりうる** (再レビュー実測:
+#   unified 側の ``_join`` だけを落とすと当時の単体テストは shared 駆動のため
+#   27 passed / RED ゼロ)。よって単体テストは shared/unified を parametrize で
+#   両駆動する — 片翼だけのテストに戻す変更はこの穴の再導入。
 GOLDEN_CASES: tuple[GoldenCase, ...] = (
     GoldenCase(
         "g01_shared_basic",

@@ -296,7 +296,9 @@ def test_empty_selection_fails_loudly_and_writes_no_file(tmp_path: Path) -> None
 # ─── I1 (レビュー指摘): データ行クォート抜けの検出 ───────────────────────────
 
 
+@pytest.mark.parametrize("unified", [False, True], ids=["shared", "unified"])
 def test_data_cells_are_quoted_when_the_delimiter_can_appear_in_a_number(
+    unified: bool,
     tmp_path: Path,
 ) -> None:
     """データ行の _join を落とすと RED になる唯一のオラクル (T-G sabotage M4b)。
@@ -305,10 +307,16 @@ def test_data_cells_are_quoted_when_the_delimiter_can_appear_in_a_number(
     構造的に現れないため、_rows_*_timeline の _join を素の delimiter.join へ
     落としても全緑になる (実測)。float の repr は負値/指数で '-' と '+' を出すので、
     合法な delimiter='-' がこの穴を塞ぐ最小の入力。
+
+    **両タイムラインで駆動する** (再レビュー是正 2026-08-01): _join のサイトは
+    _rows_unified_timeline と _rows_shared_timeline の 2 箇所にあり、片方だけ
+    落とす変異は他方を駆動するテストでは捕まらない (実測: unified 側だけ落とすと
+    27 passed / RED ゼロ)。統合 TL は GUI の既定かつ Task 6/7 が最も作り替える
+    経路。出力バイトは両モードで同一 (1 信号なので union == 元の ts)。
     """
     out = tmp_path / "d.csv"
     sig = _sig("mf4_1::v", [0.0, 1.0], [-1.5, 1e300])
-    CsvExporter().export([sig], out, False, CsvExportOptions(delimiter="-"))
+    CsvExporter().export([sig], out, unified, CsvExportOptions(delimiter="-"))
     # header_names 未指定なので header セルは raw name ("mf4_1::v")。
     # -1.5 の repr は '-1.5' -> delimiter '-' を含むのでクォート必須。
     # 1e300 の repr は '1e+300' -> '-' を含まないので non-quoted のまま (正しい)。
