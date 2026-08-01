@@ -362,3 +362,19 @@ def test_time_range_prod_scale_unified_timeline_row_count_correct(
     assert len(data_lines) == 11  # union covers 100000..100010 inclusive
     assert data_lines[0].split(",")[0] == "100000.0"
     assert data_lines[-1].split(",")[0] == "100010.0"
+
+
+# --- I3 (T4 レビュー): 旧署名の非対称ガード ------------------------------------
+
+
+def test_options_unified_true_with_positional_false_raises(tmp_path: Path) -> None:
+    """options.use_unified_timeline=True が位置引数 False (既定) と矛盾すると
+    黙って共有タイムラインへ落ちる — 旧署名では位置引数が唯一の真実 (56 の
+    直呼びサイトに実在する罠)。loud-fail で構造的に踏めなくする。"""
+    s = _sig("speed", [0.0, 1.0], [10.0, 20.0])
+    out = tmp_path / "d.csv"
+    with pytest.raises(ValueError, match="矛盾"):
+        CsvExporter().export(
+            [s], out, options=CsvExportOptions(use_unified_timeline=True)
+        )
+    assert not out.exists()

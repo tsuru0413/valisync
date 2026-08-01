@@ -3,9 +3,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from valisync.core.export.csv_exporter import CsvExportOptions
+from valisync.core.models import Signal
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.views import main_window as mw_mod
 from valisync.gui.views.export_csv_dialog import ExportRequest, csv_header_resolver
@@ -28,11 +30,24 @@ def test_export_csv_runs_export_with_request(
     target = tmp_path / "out.csv"
     # E-4b Task 4 supersede: ExportRequest は **列キー + header_resolver** を運ぶ
     # (D1・spec §5.2 — Signal のリストは受けない)。Signal fixture が不要になった。
+    # Minor 2 (T4 レビュー): extra_signals は空タプルのままだと `() is ()` が
+    # CPython の空タプル共有により無条件で真になり、下の identity assert が
+    # 中身を見ずに常に通る vacuous なガードになっていた。1 本の Derived Signal を
+    # 持たせて実際に運搬されることを確かめる。
+    extra_sig = Signal(
+        name="derived::x",
+        timestamps=np.array([0.0]),
+        values=np.array([1.0]),
+        file_format="Derived",
+        bus_type="",
+        source_file="",
+    )
     req = ExportRequest(
         keys=("csv_1::a",),
         output_path=target,
         options=CsvExportOptions(delimiter=";"),
         header_resolver=csv_header_resolver,
+        extra_signals=(extra_sig,),
     )
     # ダイアログを差し替え (要求を返す)
     monkeypatch.setattr(

@@ -14,7 +14,7 @@ Pure Python — no Qt/PySide6 imports (spec §1.1).
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
 
@@ -108,3 +108,22 @@ def csv_header_names(keys: Iterable[str]) -> dict[str, str]:
         else:
             result[key] = bare
     return result
+
+
+def csv_header_resolver(keys: Sequence[str]) -> list[str]:
+    """CSV エクスポートのヘッダ解決器 — 選択集合内で衝突するときだけ qualified
+    にする (E-0)。
+
+    Minor 3 (T4 レビュー): 元は ``gui.views.export_csv_dialog`` に置いていたが、
+    その位置だと Qt-free であるべき ``tests/core/`` の一部 (ゴールデン橋テスト)
+    がこの純関数 1 つのために QtWidgets を import する dialog モジュールへ依存
+    してしまっていた。ここ (``display_names`` — pure Python・spec §1.1) が本来
+    の置き場所で、dialog 側は再輸出するだけにする。
+
+    **モジュール関数**であってダイアログのメソッドやクロージャではない。
+    この callable は ``ExportRequest`` に載って worker スレッドへ渡り、書き出しが
+    終わるまで生き続けるので、``self`` を捕まえるとダイアログ (と、その先の
+    QTreeWidget 全部) が export の全期間 GC されなくなる。
+    """
+    names = csv_header_names(keys)
+    return [names[k] for k in keys]

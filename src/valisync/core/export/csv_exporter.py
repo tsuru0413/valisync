@@ -211,6 +211,23 @@ class CsvExporter:
         use_unified_timeline: bool = False,
         options: CsvExportOptions | None = None,
     ) -> None:
+        # I3 fix (T4 レビュー): 旧署名では位置引数 use_unified_timeline が唯一の
+        # 真実 (options.use_unified_timeline は E-4b で新設した新境界向けフィールド
+        # で、この経路では読まれない)。options 側だけ True にして位置引数を False
+        # (既定) のまま呼ぶと、呼び出し元は「統合タイムラインで書き出した」つもりで
+        # 実際は共有タイムライン(無警告)になる — 56 の旧署名直呼びサイトに実在する
+        # 罠を無言で踏める形だったので loud-fail にする。このガードは旧署名ごと
+        # Task 7 で消える。
+        if (
+            options is not None
+            and options.use_unified_timeline
+            and not use_unified_timeline
+        ):
+            raise ValueError(
+                "options.use_unified_timeline=True と位置引数 "
+                "use_unified_timeline=False が矛盾しています "
+                "(旧署名では位置引数が唯一の真実 — E-4b Task 7 まで)"
+            )
         opts = options if options is not None else CsvExportOptions()
         self._require_single_value_columns(signals)
         if use_unified_timeline:

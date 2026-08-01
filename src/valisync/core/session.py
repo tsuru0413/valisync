@@ -521,6 +521,17 @@ class Session:
         現行ヘッダバイトを保存する。GUI は ``csv_header_names`` を束ねた resolver を
         注入する (core は gui を import しない — C-5)。
         *extra_signals* は Derived の escape hatch (spec §5.2 [I-3])。
+
+        Minor 1 (T4 レビュー): *options* に ``header_names`` を自分で詰めて渡しても
+        **無視される**。keys 境界はヘッダを常に *header_resolver* (未指定なら
+        passthrough) から導出する契約 (spec §10・ヘッダと値を同じ keys から作る)
+        で、``CsvExportOptions.header_names`` は移行橋 (``legacy_bridge.py``) が
+        旧 ``CsvExporter.export`` へ運ぶための**内部搬送路**にすぎない —
+        ``export_via_legacy_path`` が resolver の解決結果で必ず上書きする
+        (``replace(request.options, header_names=names)``)。ここを loud-fail に
+        する案も検討したが、``header_names`` を設定してこの経路を呼ぶ現存の呼び
+        出し元が無いこと、そして ``header_names`` フィールド自体が橋と運命を
+        共にし Task 7 で消えることから見送った。
         """
         if isinstance(options, bool):
             # 旧署名 (signals, path, use_unified_timeline, options) から移行し

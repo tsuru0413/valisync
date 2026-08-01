@@ -7,7 +7,7 @@ CsvFormatDialog.ask を前例に、ファイル別の信号ツリー(初期チ�
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -40,7 +40,13 @@ from valisync.core.export.csv_exporter import (
 from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
 from valisync.core.models import Signal
 from valisync.gui import strings as S
-from valisync.gui.display_names import csv_header_names, display_names
+from valisync.gui.display_names import (
+    csv_header_resolver,  # 再輸出: Minor 3 (T4 レビュー) で display_names.py へ
+    # 移動 (Qt-free core テストが Qt を import する dialog モジュールへ依存する
+    # のを避けるため)。既存の import 経路 (`from ...export_csv_dialog import
+    # csv_header_resolver`) を壊さないために ExportRequest と同じ形で再輸出する。
+    display_names,
+)
 from valisync.gui.theme import qss
 
 if TYPE_CHECKING:
@@ -141,18 +147,6 @@ def _physical_channels(signals: list[Signal]) -> list[str]:
             seen.add(phys)
             out.append(phys)
     return out
-
-
-def csv_header_resolver(keys: Sequence[str]) -> list[str]:
-    """GUI 側のヘッダ解決器 — 選択集合内で衝突するときだけ qualified にする (E-0)。
-
-    **モジュール関数**であってダイアログのメソッドやクロージャではない。
-    この callable は ``ExportRequest`` に載って worker スレッドへ渡り、書き出しが
-    終わるまで生き続けるので、``self`` を捕まえるとダイアログ (と、その先の
-    QTreeWidget 全部) が export の全期間 GC されなくなる。
-    """
-    names = csv_header_names(keys)
-    return [names[k] for k in keys]
 
 
 class ExportCsvDialog(QDialog):

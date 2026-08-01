@@ -26,7 +26,7 @@ from tests.golden_csv_cases import GOLDEN_CASES, GOLDEN_DIR, GoldenCase
 from tests.test_golden_csv import _diff_message  # 診断の二重実装を避ける
 from valisync.core.models import Signal
 from valisync.core.session import Session
-from valisync.gui.views.export_csv_dialog import csv_header_resolver
+from valisync.gui.display_names import csv_header_resolver
 
 
 class _KeyedSession(Session):
