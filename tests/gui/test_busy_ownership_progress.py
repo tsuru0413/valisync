@@ -288,3 +288,33 @@ def test_a_finished_load_does_not_take_the_overlay_from_a_running_export(
     export_release.set()
     qtbot.waitUntil(lambda: overlay.isHidden(), timeout=5000)
     assert overlay.owner_count() == 0
+
+
+def test_cancel_lock_dies_with_its_owner_not_with_the_progress_owner(
+    qtbot: QtBot,
+) -> None:
+    """path B (T9 再レビュー trailer): 初ティック前キャンセルでロックが残らない。
+
+    export が**進捗の持ち主にならないまま** (初ティック前にキャンセルされて)
+    抜けると、release の「他の所有者が残っている」早期経路を通り
+    _reset_progress に到達しない。owner 無しの全域ロックだとここでロックが
+    生き残り、**残った並行ロードのキャンセルボタンが死んだまま**になる
+    (実測: 修正前 path B で enabled=False が恒久化)。ロックを設定者へ紐付け、
+    設定者の release を解除点にする。
+    """
+    overlay = BusyOverlay()
+    qtbot.addWidget(overlay)
+    export, load = object(), object()
+
+    overlay.acquire(export, message="exporting")
+    overlay.acquire(load, message="loading")
+    # 初ティック前のキャンセル受理 — set_progress は一度も呼ばれていない。
+    overlay.set_cancel_enabled(False, export)
+    assert overlay.cancel_button.isEnabled() is False
+
+    overlay.release(export)  # 進捗の持ち主でないまま抜ける (path B)
+
+    # 残ったロードのボタンは生きていること。
+    assert overlay.owner_count() == 1
+    assert overlay.cancel_button.isEnabled() is True
+    assert overlay._cancel_locked is False

@@ -1006,7 +1006,13 @@ class MainWindow(QMainWindow):
         self._run_export(req, est)
 
     def _run_export(self, req: ExportRequest, est: ExportEstimate) -> None:
-        """D5 検査 -> 確認 -> 投入。**拒否は D5 のディスク不足のみ** (B2)。
+        """実行中ガード -> D5 検査 -> 確認 -> 投入。
+
+        拒否は 2 種 (再レビュー trailer で B2 の記述を supersede): **実行中の
+        export がある** (I3 — キャンセル待ち窓での 2 本目受理を防ぐ) と
+        **D5 のディスク不足**。B2 の「拒否は D5 のみ」は I3 導入前の記述。
+        なお `estimate_export` は `export_csv` 側でこの前に走るため、busy 窓の
+        Ctrl+E はダイアログ完遂と見積のコストを払ってから弾かれる (既知・許容)。
 
         見積を引数で受けるのは、キャンセル時に **開始前の値** を再掲する (B6) ため
         — 後から計算し直すと、unload 済みのファイルでは値が変わる/出せなくなる。

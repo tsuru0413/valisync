@@ -169,7 +169,9 @@ class ExportController(QObject):
                 # 所有者の記録側も書き換えるため。set_message だけだと、同時に走る
                 # ロードが完了したときに release が **中止前の文言** を復元する。
                 acquire_busy(worker.busy, self, S.BUSY_EXPORT_CANCELLING)
-                set_busy_cancel_enabled(worker.busy, False)  # 二重押しを止める
+                set_busy_cancel_enabled(
+                    worker.busy, False, owner=self
+                )  # 二重押しを止める
 
     def _release(self, worker: ExportWorker) -> None:
         """*worker* の名義を返す (同じ overlay を掴む別 export が残っていれば保留)。"""

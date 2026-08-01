@@ -88,6 +88,7 @@ class BusyOverlay(QWidget):
         # 再有効化してしまうと二重押し防止が意味を失う。set_cancel_enabled の
         # 呼び出し履歴をここに憶えて acquire がそれを尊重する。
         self._cancel_locked = False
+        self._cancel_lock_owner_id: int | None = None
 
     # ── 所有権 ────────────────────────────────────────────────────────────────
 
@@ -108,6 +109,14 @@ class BusyOverlay(QWidget):
         """*owner* の名義を返す。**最後の 1 人が返したときだけ** 隠す。"""
         if self._owners.pop(id(owner), None) is None:
             return  # 非所有者の解放は no-op (遅れて届いた完了で他人を消さない)
+        if self._cancel_lock_owner_id == id(owner):
+            # ロックした本人が抜けた — 残る所有者 (別のロード等) のボタンを
+            # 死なせない。進捗の持ち主でないまま抜ける経路 (初ティック前の
+            # キャンセル) では下の _reset_progress に到達しないので、ここが
+            # 唯一の解除点になる。
+            self._cancel_locked = False
+            self._cancel_lock_owner_id = None
+            self.cancel_button.setEnabled(True)
         if self._progress_owner is owner:
             # 進捗の持ち主だけが抜けた場合も不確定へ戻す — 戻さないと残った
             # 所有者 (ロード) の overlay が他人の「12 分の 3」で固まる。
@@ -150,10 +159,21 @@ class BusyOverlay(QWidget):
         """現在の ETA 表示 (test-facing)."""
         return self._eta.text()
 
-    def set_cancel_enabled(self, enabled: bool) -> None:
-        """キャンセル要求が受理された後、二重押しを防ぐために落とす。"""
+    def set_cancel_enabled(self, enabled: bool, owner: object | None = None) -> None:
+        """キャンセル要求が受理された後、二重押しを防ぐために落とす。
+
+        再レビュー trailer: ロックは**設定者に紐付ける**。owner 無しの全域ロックだと
+        「初ティック前にキャンセルされた export」(進捗の持ち主にならないまま抜ける)
+        が release の早期 return を通り、ロックが残った overlay で**並行ロードの
+        キャンセルボタンが死んだまま**になる (実測 path B)。修正前は acquire が
+        無条件に生き返らせて自己回復していた — その誤りとこの誤りの交換は
+        net-negative (押せないボタン > 古い affordance) なので、両方を直す。
+        """
         # M6: False の間は `acquire` に無条件の再有効化をさせない。True に
-        # 戻すのはここか _reset_progress (操作が実際に終わった時) だけ。
+        # 戻すのはここか _reset_progress / ロック設定者の release だけ。
+        self._cancel_lock_owner_id = (
+            id(owner) if (not enabled and owner is not None) else None
+        )
         self._cancel_locked = not enabled
         self.cancel_button.setEnabled(enabled)
 
@@ -191,6 +211,7 @@ class BusyOverlay(QWidget):
         self._eta.setVisible(False)
         self.cancel_button.setEnabled(True)
         self._cancel_locked = False  # M6: 操作が終わったのでロックも解除する
+        self._cancel_lock_owner_id = None
 
     # ── 既存の表示 API (直呼び経路・realgui が掴んでいる) ──────────────────────
 
@@ -271,7 +292,13 @@ def set_busy_progress(busy: object, owner: object, done: int, total: int) -> Non
         busy.set_progress(owner, done, total)
 
 
-def set_busy_cancel_enabled(busy: object, enabled: bool) -> None:
-    """キャンセルボタンの有効/無効 (所有権を解さない相手では no-op)。"""
+def set_busy_cancel_enabled(
+    busy: object, enabled: bool, owner: object | None = None
+) -> None:
+    """キャンセルボタンの有効/無効 (所有権を解さない相手では no-op)。
+
+    *owner* を渡すとロックが設定者に紐付き、その owner の release で自動解除
+    される (初ティック前キャンセル + 並行ロードの path B を参照)。
+    """
     if isinstance(busy, BusyOverlay):
-        busy.set_cancel_enabled(enabled)
+        busy.set_cancel_enabled(enabled, owner)
