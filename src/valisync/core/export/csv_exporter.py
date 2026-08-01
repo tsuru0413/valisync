@@ -311,6 +311,14 @@ def plan_blocks(runs: Sequence[int], block_cols: int) -> tuple[tuple[int, int], 
     ではなくヒットになるから — 「絶対に割らない」にすると幅 1,100 のチャンネルで
     1 ブロックが上限の 2 倍を実体化する。
     """
+    if block_cols < 1:
+        # ガード無しでは `cur - start > block_cols` が block_cols<=0 のとき常に真になり、
+        # while ループが `start` を進めないまま空区間 (0, 0) を無限 append する
+        # (レビュー実測: 無限ループ + blocks の無限リスト成長)。唯一の生産者
+        # `block_columns` は下限 16 でクランプするので今日は到達しないが、
+        # 別経路 (Task 7 が block_cols を公開注入にする) から 0 以下が渡ると
+        # ループへ入る**前**に落とす必要がある。
+        raise ValueError(f"block_cols は 1 以上が必要です (got {block_cols})")
     blocks: list[tuple[int, int]] = []
     start = cur = 0
     for run in runs:

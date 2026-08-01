@@ -181,6 +181,19 @@ def test_set_reserved_keeps_the_newest_entry_even_when_pins_eat_the_budget() -> 
     assert cache.get((1, 0, 0)) is None
 
 
+def test_available_bytes_is_budget_minus_reserved_clamped_at_zero() -> None:
+    """D3 のブロック幅決定 (`予算 - 現在の pin 済み`) が読む唯一の入口。
+
+    下限 0 の clamp は pin が予算を食い尽くしたときに負値を返さないための保険
+    (`budget + reserved` に反転すると符号が消えて予算超のブロック幅を許してしまう)。
+    """
+    cache = ChannelSampleCache(budget_bytes=1000)
+    cache.set_reserved(400)
+    assert cache.available_bytes == 600
+    cache.set_reserved(5000)
+    assert cache.available_bytes == 0
+
+
 # ─── oversize (D7) ───────────────────────────────────────────────────────────
 
 

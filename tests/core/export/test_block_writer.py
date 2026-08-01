@@ -17,6 +17,7 @@ import pytest
 
 from valisync.core.export.csv_exporter import (
     _CANCEL_ROW_INTERVAL,
+    _FLUSH_ROWS,
     CsvExporter,
     CsvExportOptions,
     ExportCancelled,
@@ -111,6 +112,27 @@ def test_plan_blocks_of_no_columns_is_empty() -> None:
     assert plan_blocks([], block_cols=4) == ()
 
 
+def test_plan_blocks_splits_exactly_at_the_boundary() -> None:
+    """境界ぴったり (5 列を上限 4 で割ると 4+1) — 分割条件が厳密な ``>`` であることの pin。
+
+    ``> block_cols`` を ``> block_cols + 1`` に緩めると 5 列がまだ 1 ブロックに
+    収まってしまい (上限超過の実体化)、この 1 本だけが RED になる。
+    """
+    assert plan_blocks([5], block_cols=4) == ((0, 4), (4, 5))
+
+
+def test_plan_blocks_rejects_a_non_positive_width() -> None:
+    """block_cols <= 0 はガード無しでは無限ループになる (csv_exporter.py 実測)。
+
+    ``plan_blocks([1], 0)``: while ループの ``cur - start > block_cols`` が
+    ``block_cols=0`` のとき常に真になり、``start`` が進まないまま ``blocks`` へ
+    空区間 ``(0, 0)`` を無限 append し続ける。ガードは**ループへ入る前**に落とすので、
+    ここでハングする経路には構造的に到達しない。
+    """
+    with pytest.raises(ValueError, match="1 以上"):
+        plan_blocks([1], block_cols=0)
+
+
 # ─── scan_masters (値を読まない前走査) ────────────────────────────────────────
 
 
@@ -165,6 +187,47 @@ def test_scan_masters_raises_for_an_unresolvable_key() -> None:
         scan_masters([("mf4_1::Nope", None)], lambda _k: None)
 
 
+def test_scan_masters_holds_one_column_at_a_time() -> None:
+    """G2 相当のオラクル: 前走査は 1 本ずつ捨てる (csv_exporter.py:280 の ``del sig``)。
+
+    ``del sig`` を保持 (例: ``_LEAK.append(sig)``) に置き換えても値ベースの
+    既存テストは全て緑のまま通る (レビュー実測) — 帳簿外の参照保持に構造的に
+    盲目。ブロック writer の weakref オラクル (下の
+    ``test_transient_columns_do_not_accumulate_across_blocks``) と同じ形で、
+    前走査側にも独立の観測点を置く。
+    """
+    n_cols = 8
+    master = np.arange(50, dtype=np.float64)
+    master.flags.writeable = False
+    refs: list[weakref.ref[Signal]] = []
+    # resolve が呼ばれた直後 (= その列がまだ生きている瞬間) の生存数を採る。
+    marks: list[int] = []
+
+    def resolve(key: str) -> Signal | None:
+        sig = Signal(
+            name=key,
+            timestamps=master,
+            values=np.arange(50, dtype=np.float64),
+            file_format="t",
+            bus_type="",
+            source_file="",
+            metadata={"physical_channel": key},  # 列ごとに別チャンネル = 8 run
+        )
+        refs.append(weakref.ref(sig))
+        gc.collect()
+        marks.append(sum(1 for r in refs if r() is not None))
+        return sig
+
+    keys = [f"c{i}" for i in range(n_cols)]
+    scan_masters([(k, None) for k in keys], resolve)
+    gc.collect()
+    tail = sum(1 for r in refs if r() is not None)
+
+    assert len(refs) == n_cols  # 反 vacuous: 実際に 8 本鋳造している
+    assert marks == [1] * n_cols, marks  # 常に「今回の 1 本」だけが生きている
+    assert tail == 0, "前走査を終えても参照が残った"
+
+
 # ─── block-temp の中身 ────────────────────────────────────────────────────────
 
 
@@ -197,6 +260,22 @@ def test_block_temp_row_count_equals_the_union_view_length(tmp_path: Path) -> No
     a = _sig("a", [0.0, 2.0], [10.0, 12.0])
     rows, _units = _write_block(tmp_path, [a])
     assert len(rows) == 2
+
+
+def test_block_temp_spans_several_flush_chunks(tmp_path: Path) -> None:
+    """行数 > _FLUSH_ROWS は**この 1 本以外**で駆動されない (ゴールデン最大 57 行)。
+
+    buf.clear() 落ちは最初のチャンク以降を全部重複させ、production の
+    12,012 行ブロックは ~23,000 行のゴミになる — Task 7 のゴールデン再駆動は
+    57 行止まりでこの経路に構造的に入れない (レビュー実測: clear 削除で 195 passed)。
+    """
+    n = _FLUSH_ROWS * 2 + 7
+    a = _sig("a", np.arange(n, dtype=np.float64).tolist(), np.arange(n).tolist())
+    rows, _units = _write_block(tmp_path, [a])
+    assert len(rows) == n
+    assert len(set(rows)) == n
+    assert rows[_FLUSH_ROWS] == f"{float(_FLUSH_ROWS)}"
+    assert rows[-1] == f"{float(n - 1)}"
 
 
 def test_block_temp_of_zero_rows_is_an_empty_file(tmp_path: Path) -> None:
@@ -255,6 +334,20 @@ def test_block_temp_rejects_a_container_column_before_reading_rows(
     assert (tmp_path / "block.tmp").exists() is False
 
 
+# ─── _write_time_temp (時刻列専用の幅 1 ブロック) ────────────────────────────
+
+
+def test_write_time_temp_writes_one_formatted_timestamp_per_line(
+    tmp_path: Path,
+) -> None:
+    """時刻列は他ブロックと対称な「幅 1 のブロック」(spec §5.3)。"""
+    temp = tmp_path / "time.tmp"
+    CsvExporter()._write_time_temp(
+        np.array([0.0, 1.5, 2.0]), CsvExportOptions(), temp, None
+    )
+    assert temp.read_text(encoding="utf-8") == "0.0\n1.5\n2.0\n"
+
+
 # ─── キャンセル (I8: 3 つのチェック点) ────────────────────────────────────────
 
 
@@ -282,7 +375,15 @@ def test_cancel_before_a_column_read_stops_within_that_block(tmp_path: Path) -> 
     assert seen == ["a"], "2 列目を読み始めている (チェック点が列の前に無い)"
 
 
-def test_cancel_inside_a_long_row_loop_stops_before_the_end(tmp_path: Path) -> None:
+def test_cancel_set_before_the_call_stops_at_the_first_column(tmp_path: Path) -> None:
+    """cancel が呼び出し前に立っていると**列ループ**の先頭で止まる (M3 改名)。
+
+    旧名 ``test_cancel_inside_a_long_row_loop_stops_before_the_end`` は行ループを
+    守っていると主張していたが、``cancel.set()`` は呼び出し**前**なので実際は
+    列ループ先頭のチェック点で止まる (行ループへは一度も入らない) — 行ループの
+    番人は下の ``test_cancel_is_polled_inside_the_row_loop_not_only_at_its_start``
+    (レビュー D-1: vacuous-assert 形の誤称)。
+    """
     n = 50_000
     a = _sig("a", np.arange(n).tolist(), np.arange(n).tolist())
     cancel = threading.Event()
@@ -393,4 +494,10 @@ def test_transient_columns_do_not_accumulate_across_blocks(tmp_path: Path) -> No
     assert len(refs) == n_cols  # 反 vacuous: 実際に 12 本鋳造している
     assert max(live_marks) >= 1, "1 本も生存を観測していない (上界 0 の空虚形)"
     assert max(live_marks) <= block_cols, live_marks  # G2: 同時生存 <= block_cols
+    # M2 (レビュー): 上の <= block_cols は spec の契約上の上限 (代替実装が block_cols
+    # 本まで溜めても違反ではない) であり、csv_exporter.py:552 の
+    # ``del sig, ts, vs`` は**それより強く**「列を読むたびに即解放する」と主張している
+    # (block_cols=3 でも常に 1 本しか生きていない)。del を落としても上の緩い上界は
+    # 通ってしまう (block_cols 以内には収まる) ため、実装の具体的な主張を別途 pin する。
+    assert max(live_marks) == 1, live_marks
     assert tails == [0] * len(tails), f"ブロック終端で参照が残った: {tails}"  # G5

@@ -4822,7 +4822,7 @@ EOF
 - Modify: `src/valisync/core/loaders/signal_group_manager.py:308`（`resolved_keys` の直前へ `resolve_transient` を挿入）＋ `:82`（`transient_mint_count` の初期化）＋ `:540-568`（`_mint_column` の最長一致ループを共有ヘルパ `_owning_channel` へ抽出し、`channel_key_of(group_key, column_key)` として公開）
 - Modify: `src/valisync/core/loaders/channel_cache.py:281`（`reserved` プロパティの直後へ `available_bytes` を追加）
 - Modify: `src/valisync/core/session.py:299`（`resolve_signal` の直後へ `resolve_signal_transient` を追加）＋ `channel_key_of` の委譲
-- Modify: `src/valisync/core/export/csv_exporter.py`（`ExportCancelled` / `MasterScan` / `scan_masters` / `block_columns` / `plan_blocks` / `CsvExporter.__init__` / `_write_time_temp` / `_write_block_temp` / `_require_single_value_column` を追加。**`export()` は 1 行も変えない**＝この時点でも Task 4 の橋がそのまま走る）
+- Modify: `src/valisync/core/export/csv_exporter.py`（`ExportCancelled` / `MasterScan` / `scan_masters` / `block_columns` / `plan_blocks` / `CsvExporter.__init__` / `_write_time_temp` / `_write_block_temp` / `_require_single_value_column` を追加。**`export()` は 1 行も変えない**＝この時点でも Task 4 の橋がそのまま走る）。**実績注記（Task 6 完了・commit `b0e7278`）**: `CsvExporter.__init__` は本タスクで**入れていない**（意図的な繰越）— 入れると Task 2 の ratchet（`test_block_cols_handoff_is_not_forgotten`、下記 `BLOCK_COLS_VARIANTS` 拡幅の項）が「`export()` が 1 行も変わらない = block_cols を読まない」状態のまま満たされてしまい、空虚な緑になって以後の強制力を失う（実測記録あり）。`__init__` 追加と `BLOCK_COLS_VARIANTS` 拡幅は**同一コミット**で行うこと
 - Test: `tests/core/loaders/test_resolver_transient.py`（新規）
 - Test: `tests/core/export/test_block_writer.py`（新規）
 - **触らない**: `tests/core/loaders/test_resolver.py`（D4 identity 契約の既存 test-lock。**無編集で緑**であることが本タスクの受け入れ条件）
@@ -4844,7 +4844,7 @@ EOF
   - `scan_masters(columns: Sequence[tuple[str, Signal | None]], resolve: Callable[[str], Signal | None]) -> MasterScan`
   - `block_columns(n_rows: int, max_master_len: int, budget_bytes: int) -> int`
   - `plan_blocks(runs: Sequence[int], block_cols: int) -> tuple[tuple[int, int], ...]`
-  - `CsvExporter(*, block_cols: int | None = None, budget_fn: Callable[[], int] | None = None, merge_fan_in: int | None = None)`
+  - `CsvExporter(*, block_cols: int | None = None, budget_fn: Callable[[], int] | None = None, merge_fan_in: int | None = None)` — **Task 7 へ意図的に繰越**（`__init__` は Task 6 で入れていない。本タスクで入れると T2 ratchet が空虚に緑になる〔commit `b0e7278` に実測記録〕。`BLOCK_COLS_VARIANTS` 拡幅と同一コミットで入れること）
   - `CsvExporter._write_time_temp(...)` / `CsvExporter._write_block_temp(...) -> list[str]`（単位行の側帯を返す）
 
 **実装前に必ず確定させること（別タスクが名前を持っている箇所）:**

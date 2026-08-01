@@ -62,9 +62,17 @@ def test_signal_supports_weakref() -> None:
 
     無いと ``weakref.ref(sig)`` が TypeError になり、帳簿以外の観測手段が
     1 つも無くなる (resolved_keys は transient に盲目・bytes_held は pin 前提)。
+
+    M5 (レビュー): 旧 ``ref() is not None or ref() is None`` は真理値表そのものが
+    恒真 (対象が存在しても TypeError で ``weakref.ref`` が例外を投げても、この式
+    自体は評価に到達すれば必ず True になる) — ``__weakref__`` を消しても
+    RED にならない空虚な assert だった。生成できることに加え、生きている間は
+    ``()`` が対象そのものを返すことを直接 pin する。
     """
-    ref = weakref.ref(_sig("x"))
-    assert ref() is not None or ref() is None  # 生成できること自体が契約
+    sig = _sig("x")
+    # 生成できる (weakref.ref(sig) が TypeError にならない) ことと、生存中は
+    # ref() が対象そのものを返すことの両方をここで pin する。
+    assert weakref.ref(sig)() is sig
 
 
 def test_transient_resolve_mints_without_touching_the_ledger(tmp_path: Path) -> None:
