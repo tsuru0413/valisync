@@ -305,7 +305,7 @@ def test_export_csv_forwards_progress_and_cancel_to_the_pipeline(
         if done >= 2:
             cancel.set()
 
-    with pytest.raises(ExportCancelled):
+    with pytest.raises(ExportCancelled) as excinfo:
         session.export_csv(
             request.keys,
             request.output_path,
@@ -317,6 +317,13 @@ def test_export_csv_forwards_progress_and_cancel_to_the_pipeline(
 
     assert len(ticks) >= 2, f"ブロックが1本しかない fixture 規模不足 (ticks={ticks})"
     assert ticks[-1][0] < ticks[-1][1], "最終単位まで走ってからの中止 = 実質完走"
+    # Minor 5 (Task 10b レビュー是正): ここはユーザー起点キャンセルを実 Session
+    # 経由で駆動する唯一のサイト — decay (`ExportSourceLost`) が退行してこの
+    # 経路へ紛れ込んでも `ExportCancelled` の isinstance では区別できないので、
+    # 型を否定形で明示的に締め出す。
+    assert not isinstance(excinfo.value, ExportSourceLost), (
+        "ユーザー中止のはずが decay (ExportSourceLost) に化けている"
+    )
 
 
 # ─── ExportRequest 自体 ──────────────────────────────────────────────────────

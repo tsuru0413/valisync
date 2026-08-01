@@ -15,6 +15,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
 from pytestqt.qtbot import QtBot  # type: ignore[import-untyped]
 
 from valisync.core.session import LoadOutcome
@@ -326,6 +327,127 @@ def test_source_lost_is_recorded_as_a_diagnostic_not_just_a_status_line(
     msg = window.status_message()
     assert "狭め" not in msg and "減らし" not in msg
     assert "閉じられ" in msg
+
+
+def test_source_lost_diagnostic_uses_the_file_basename_on_the_mid_read_path(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """I1 (Task 10b レビュー是正・「23rd blind spot」): mid-read decay
+    (`exc.source_file` は実測でフルパスが載る) の診断は **basename** を宛先に
+    する。旧実装は入口を問わず常に定数ラベル `EXPORT_DIAG_SOURCE` へ丸めており、
+    どのファイルで起きたかが診断だけからは辿れなかった —
+    `_handle_sample_read_error` (main_window.py L623) と同じ「basename・
+    無ければ定数」規約をここにも適用する。
+
+    対照 (定数ラベルへ落ちる解決器 None 経路) は次のテスト
+    (`test_source_lost_diagnostic_falls_back_to_the_constant_label_when_unresolved`)。
+    両方向を固定しないと `EXPORT_DIAG_SOURCE` をゴミ値へ差し替えても検出できない
+    (レビュー実測: 差し替えても 22 passed のまま)。
+    """
+    from tests.mdf4_helpers import CAN, write_mdf4
+    from valisync.core.export.csv_exporter import CsvExportOptions, ExportSourceLost
+    from valisync.core.session import Session
+    from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+    from valisync.gui.views.main_window import MainWindow
+
+    path = tmp_path / "decay.mf4"
+    write_mdf4(
+        path,
+        [
+            {
+                "name": "C0",
+                "bus_type": CAN,
+                "timestamps": [0.0, 1.0],
+                "values": [0.0, 1.0],
+            }
+        ],
+    )
+    session = Session()
+    key = session.load(path).key
+    handle = session._groups.group(key).handle
+    assert handle is not None
+    sig = session.resolve_signal_transient(f"{key}::C0")
+    assert sig is not None
+    del sig
+    handle.close()  # グループは残す = 解決は通り、読みだけが落ちる (mid-read 窓)
+
+    with pytest.raises(ExportSourceLost) as excinfo:
+        session.export_csv(
+            [f"{key}::C0"], tmp_path / "decay_out.csv", CsvExportOptions()
+        )
+    assert excinfo.value.source_file is not None, "前提: mid-read 実測でフルパスが載る"
+
+    window = MainWindow(AppViewModel(session))
+    qtbot.addWidget(window)
+    window._on_export_cancelled(excinfo.value, _tiny_estimate())
+
+    entries = window.diagnostics_vm.entries()
+    assert len(entries) == 1
+    assert entries[0].source == "decay.mf4", (
+        f"source がフルパスのまま basename に丸めていない: {entries[0].source!r}"
+    )
+
+
+def test_source_lost_diagnostic_falls_back_to_the_constant_label_when_unresolved(
+    qtbot: QtBot,
+) -> None:
+    """I1 対照: 解決器 None 経路は `source_file=None` (グループが session から
+    既に消えており実ファイル名を引けない) — 定数ラベル `EXPORT_DIAG_SOURCE` の
+    まま残ることを固定する (basename 化の否定側)。
+    """
+    from valisync.core.export.csv_exporter import ExportSourceLost
+    from valisync.gui import strings as S
+    from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+    from valisync.gui.views.main_window import MainWindow
+
+    window = MainWindow(AppViewModel())
+    qtbot.addWidget(window)
+
+    window._on_export_cancelled(
+        ExportSourceLost("グループが見つかりません", key="mf4_1::A"),
+        _tiny_estimate(),
+    )
+
+    entries = window.diagnostics_vm.entries()
+    assert len(entries) == 1
+    assert entries[0].source == S.EXPORT_DIAG_SOURCE
+
+
+def test_source_lost_message_normalizes_the_namespaced_key(qtbot: QtBot) -> None:
+    """Minor 1 (Task 10b レビュー是正): `exc.key` の形は入口によって 2 通り
+    (解決器 None 経路 = "group::bare" の namespaced 形 / mid-read 経路 = 既に
+    bare)。解決器 None 経路の decay メッセージは `EXPORT_SOURCE_LOST_TMPL` が
+    キーをそのまま埋め込むため、production では namespaced 形が診断の
+    メッセージへ漏れる (E-0 がユーザー面から撤去したはずの内部キー形)。
+
+    signal_name 列の正規化は既存テスト
+    (`test_source_lost_is_recorded_as_a_diagnostic_not_just_a_status_line`) が
+    namespaced 形を pin しているため本 Task では見送り (follow-up)。message の
+    みを対象にする。
+    """
+    from valisync.core.export.csv_exporter import (
+        EXPORT_SOURCE_LOST_TMPL,
+        ExportSourceLost,
+    )
+    from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+    from valisync.gui.views.main_window import MainWindow
+
+    window = MainWindow(AppViewModel())
+    qtbot.addWidget(window)
+
+    window._on_export_cancelled(
+        ExportSourceLost(
+            EXPORT_SOURCE_LOST_TMPL.format(key="mf4_1::A"), key="mf4_1::A"
+        ),
+        _tiny_estimate(),
+    )
+
+    entries = window.diagnostics_vm.entries()
+    assert len(entries) == 1
+    assert "::" not in entries[0].message, (
+        f"namespaced キーが診断メッセージへ漏れた: {entries[0].message!r}"
+    )
+    assert "'A'" in entries[0].message, "正規化後の bare キーが残っていない"
 
 
 def test_a_user_cancel_leaves_no_diagnostic(qtbot: QtBot) -> None:

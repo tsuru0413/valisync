@@ -86,11 +86,21 @@ EXPORT_EMPTY_REQUEST_ERROR = (
 EXPORT_HEADER_LENGTH_ERROR_TMPL = (
     "ヘッダ名の本数 ({got}) が列数 ({want}) と一致しません。"
 )
-#: ブロック writer が 1 列を解決できなかったときの文言 (エクスポート中にファイルが
-#: アンロードされた場合)。上の複数形と別なのは、writer が最初の 1 本で中断するため
-#: (全列を数え上げてから報告すると、その数え上げ自体が 330,004 列の再走査になる)。
+#: ブロック writer が 1 列を解決できなかったときの文言。上の複数形と別なのは、
+#: writer が最初の 1 本で中断するため (全列を数え上げてから報告すると、その
+#: 数え上げ自体が 330,004 列の再走査になる)。
+#:
+#: Minor 6 (Task 10b レビュー是正): 旧文言「(ファイルがアンロードされた可能性が
+#: あります)」は `EXPORT_SOURCE_LOST_TMPL` (decay の文言) と近すぎて、読み手が
+#: 「同じ失敗の 2 通りの言い方」と誤読しかねなかった。この ValueError は
+#: **`Session` を経由しない直呼び (呼び出し規約違反)** でしか到達しない
+#: (`Session.export_resolver()` が先に `ExportSourceLost` を投げるため) —
+#: 文言でその違いを名指しし、2 つの近い文言が指す事象が別物であることを
+#: 明示する。
 EXPORT_UNRESOLVABLE_KEY_ERROR_TMPL = (
-    "列 '{key}' を解決できません (ファイルがアンロードされた可能性があります)。"
+    "列 '{key}' を解決できません"
+    "（呼び出し規約違反: resolve が None を返しました。"  # noqa: RUF001
+    "Session 経由の呼び出しでは ExportSourceLost になります）。"  # noqa: RUF001
 )
 
 
@@ -260,8 +270,11 @@ class ExportCancelled(Exception):
 #: で、こちらは Session が張る「エクスポート中の unload」という**想定内の decay**
 #: (spec §5.7 [I7c]) の文言。同じ文字列を使い回すと GUI 側の出し分け
 #: (isinstance) と文言が二重管理になる。
+#: Minor 2 (Task 10b レビュー是正・表記規約 R-02): 括る内容に日本語 ("列") を
+#: 含むため全角括弧が正 — 半角のままだと R-02 違反 (lint 回避で表記を歪めない、
+#: 全角は noqa 既定)。
 EXPORT_SOURCE_LOST_TMPL = (
-    "エクスポート中に元ファイルが閉じられたため中止しました (列: '{key}')。"
+    "エクスポート中に元ファイルが閉じられたため中止しました（列: '{key}'）。"  # noqa: RUF001
 )
 
 
@@ -581,54 +594,65 @@ class CsvExporter:
         columns: list[tuple[str, Signal | None]] = [(k, None) for k in request.keys]
         columns.extend((s.name, s) for s in request.extra_signals)
 
-        # --- 前走査 -> union -> 前提検証 -> 行範囲 (すべて値を読まない) --------
-        scan = scan_masters(columns, resolve)
-        # **ヘッダ長の検査は temp を 1 バイトも書く前** (橋の撤去で消える検査の移設)。
-        # resolver 呼び出しを最終段まで遅らせると、ヘッダ長不一致が「全ブロックを
-        # 書き切ってから落ちる」形になり、prod では ~18 分の無駄と temp 生成を伴う。
-        names = list(request.header_resolver(request.keys))
-        if len(names) != len(request.keys):
-            raise ValueError(
-                EXPORT_HEADER_LENGTH_ERROR_TMPL.format(
-                    got=len(names), want=len(request.keys)
-                )
-            )
-        union = union_timeline(scan.masters)
-        if not opts.use_unified_timeline:
-            self._require_shared_timeline(scan.masters)
-        lo, hi = row_range(union, opts.time_start, opts.time_end)
-        union_view = union[lo:hi]
-
-        budget = (
-            self._budget_fn()
-            if self._budget_fn is not None
-            else _DEFAULT_EXPORT_BUDGET_BYTES
-        )
-        block_cols = self._block_cols_override or block_columns(
-            len(union_view), scan.max_master_len, budget
-        )
-        fan_in = self._merge_fan_in or _MERGE_FAN_IN
-        blocks = plan_blocks(scan.runs, block_cols)
-        _require_disk_space(out_dir, len(union_view), len(columns))
-
-        # 単位は等重でない (M3 レビュー): マージ段 1 単位は実時間で
-        # ブロック多数分に相当しうる。prod 形 (§5.3 コメント参照) では 2 段の
-        # マージが ~10 GB の全列を 2 回フル読み書きするのに、単位数で見ると
-        # 全体 (時刻 1 + ブロック ~8,253 + マージ 2 = 8,256) の 0.024% しか
-        # 占めない。今は reweight しない (ETA は Task 9 が作る) が、線形 ETA を
-        # 出すならここで段の重みを入力本数で補正すること。
-        n_units = 1 + len(blocks) + merge_stage_count(1 + len(blocks), fan_in)
-        done = 0
-
-        def tick() -> None:
-            nonlocal done
-            done += 1
-            if progress is not None:
-                progress(done, n_units)
-
+        # Minor 3 (Task 10b レビュー是正): temps は scan_masters より**前**に
+        # 用意し、scan_masters 自体を try の内側へ移す。今日の scan_masters は
+        # 値を読まない (I/O を伴わない) ので無害だが、将来 lazy master
+        # (union/走査を値から導く実装) が入ると SampleReadError を投げうる —
+        # その呼び出しが try の外にあると、下の `except SampleReadError` の網から
+        # 漏れて decay ではなく**エラーモーダル**へ戻る穴が黙って開く。temps を
+        # 先に空リストで用意しておけば、scan_masters 段の例外 (今日の
+        # ValueError・将来の SampleReadError とも) は `finally` で「temps が
+        # 空だから何もしない」no-op を通るだけで、既存の失敗経路 (ヘッダ長
+        # 不一致等) の挙動は変わらない。
         token = uuid.uuid4().hex[:12]
         temps: list[Path] = []
         try:
+            # --- 前走査 -> union -> 前提検証 -> 行範囲 (すべて値を読まない) ----
+            scan = scan_masters(columns, resolve)
+            # **ヘッダ長の検査は temp を 1 バイトも書く前** (橋の撤去で消える
+            # 検査の移設)。resolver 呼び出しを最終段まで遅らせると、ヘッダ長
+            # 不一致が「全ブロックを書き切ってから落ちる」形になり、prod では
+            # ~18 分の無駄と temp 生成を伴う。
+            names = list(request.header_resolver(request.keys))
+            if len(names) != len(request.keys):
+                raise ValueError(
+                    EXPORT_HEADER_LENGTH_ERROR_TMPL.format(
+                        got=len(names), want=len(request.keys)
+                    )
+                )
+            union = union_timeline(scan.masters)
+            if not opts.use_unified_timeline:
+                self._require_shared_timeline(scan.masters)
+            lo, hi = row_range(union, opts.time_start, opts.time_end)
+            union_view = union[lo:hi]
+
+            budget = (
+                self._budget_fn()
+                if self._budget_fn is not None
+                else _DEFAULT_EXPORT_BUDGET_BYTES
+            )
+            block_cols = self._block_cols_override or block_columns(
+                len(union_view), scan.max_master_len, budget
+            )
+            fan_in = self._merge_fan_in or _MERGE_FAN_IN
+            blocks = plan_blocks(scan.runs, block_cols)
+            _require_disk_space(out_dir, len(union_view), len(columns))
+
+            # 単位は等重でない (M3 レビュー): マージ段 1 単位は実時間で
+            # ブロック多数分に相当しうる。prod 形 (§5.3 コメント参照) では 2 段の
+            # マージが ~10 GB の全列を 2 回フル読み書きするのに、単位数で見ると
+            # 全体 (時刻 1 + ブロック ~8,253 + マージ 2 = 8,256) の 0.024% しか
+            # 占めない。今は reweight しない (ETA は Task 9 が作る) が、線形 ETA
+            # を出すならここで段の重みを入力本数で補正すること。
+            n_units = 1 + len(blocks) + merge_stage_count(1 + len(blocks), fan_in)
+            done = 0
+
+            def tick() -> None:
+                nonlocal done
+                done += 1
+                if progress is not None:
+                    progress(done, n_units)
+
             # --- 時刻列 (幅 1 のブロック・マージ器に特別扱いを作らない) --------
             time_temp = out_dir / f".tmp_export_{token}_time.csv"
             temps.append(time_temp)

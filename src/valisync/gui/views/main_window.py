@@ -1106,9 +1106,36 @@ class MainWindow(QMainWindow):
             # 「閉じられた」以外に I/O 失敗もありうるので (csv_exporter の
             # `except SampleReadError` を参照)、ここで文言を作り直すと原因を
             # 誤って断定する。signal_name には失われた列/チャンネルを入れる。
+            #
+            # I1 (Task 10b レビュー是正): 診断の宛先 (source) はフルパスでなく
+            # basename ― `_handle_sample_read_error` (L623) の「basename・
+            # 無ければ定数」規約をここにも適用する。`exc.source_file` は
+            # mid-read decay (csv_exporter の `except SampleReadError`) では
+            # 実測でフルパスが載るが、解決器 None 経路 (グループが session から
+            # 既に消えている) では None のまま ― この場合だけ定数ラベルへ
+            # フォールバックする。
+            source = (
+                Path(exc.source_file).name if exc.source_file else S.EXPORT_DIAG_SOURCE
+            )
+            # Minor 1 (Task 10b レビュー是正): exc.key の形は入口によって 2 通り
+            # (解決器 None 経路 = "group::bare" の namespaced 形 / mid-read 経路
+            # = 既に bare)。E-0 でユーザー面から `::` を撤去した契約
+            # (`display_names`) はメッセージにも及ぶべき ― namespaced な文字列を
+            # そのまま出すと内部キーの実装詳細が診断へ漏れる。bare な mid-read
+            # 側は split_key が事実上の no-op (置換対象なし) なので文言は不変。
+            # signal_name 列は既存テスト
+            # (test_source_lost_is_recorded_as_a_diagnostic_not_just_a_status_line)
+            # が namespaced 形をそのまま pin しているため、本 Task では
+            # signal_name の正規化は見送る (follow-up ― 診断ドックの「対象」列は
+            # 解決器 None 経路に限り `::` を表示しうる)。
+            message = str(exc)
+            if exc.key:
+                bare = split_key(exc.key)[1]
+                if bare != exc.key:
+                    message = message.replace(exc.key, bare)
             self.diagnostics_vm.add(
-                S.EXPORT_DIAG_SOURCE,
-                [Diagnostic(level="error", message=str(exc), signal_name=exc.key)],
+                source,
+                [Diagnostic(level="error", message=message, signal_name=exc.key)],
             )
             self.set_status_message(S.EXPORT_SOURCE_LOST_STATUS)
             return

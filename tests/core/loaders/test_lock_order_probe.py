@@ -22,6 +22,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 
 def assert_no_resolve_under_handle_lock(handle: Any, resolve: Any) -> Any:
     """*resolve* を包み、呼び出し時に *handle.lock* が保持されていたら即座に落とす。
@@ -119,3 +121,90 @@ def test_block_pipeline_never_resolves_under_the_handle_lock(tmp_path: Path) -> 
     # 反 vacuous その 2: 実際に**読み**まで到達している。resolve が 1 度も
     # 呼ばれない (前走査だけで落ちる) 構成では probe は何も見ていない。
     assert out.exists() and len(out.read_text(encoding="utf-8-sig").splitlines()) == 3
+
+
+def test_a_pipeline_shaped_violation_is_caught(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Minor 4 (Task 10b レビュー是正): probe が「本物の壊れた実装」を検出する
+    ことの permanent positive control。
+
+    `test_probe_detects_a_violation` は probe 自身のロジックを固定し、
+    `test_block_pipeline_never_resolves_under_the_handle_lock` は**今日の**
+    実パイプラインが契約を守っていることを固定する ― だが両方あわせても
+    「実パイプラインが**破った形**を probe が検出できる」ことまでは実証しない
+    (probe ロジックだけ壊れて実パイプラインだけ緑、という取り違えを別々には
+    捕まえられない)。ここでその隙間を埋める: モジュール docstring が言う
+    「ブロックの最も自然な誤書き方」―
+
+        with handle.lock:
+            for k in block:
+                resolve(k)
+
+    ―を `_write_block_temp` (実 API) の呼び出しへ monkeypatch でそのまま
+    再現する。
+
+    最初に試した src サボタージュ (``LazyMdfValues.array()`` の末尾で lock を
+    握りっぱなしにする) は 1 度取った lock を誰も解放しないため、次の
+    ``array()``/``close()`` が同じ非再帰 Lock へ**再入**して自スレッド
+    deadlock を起こし、pytest ごと 300 秒ハングした (S12 misfire ―
+    task-10b-report.md §3 参照。ハングは RED でも GREEN でもなく「サボタージュが
+    効いたか不明」になるだけ)。ここでは逆に「`_write_block_temp` **1 回分**を
+    lock で包む」形にする ― probe の `acquire(blocking=False)` はブロッキングで
+    待たずその場で False を返すので、`with handle.lock:` を抜けるより前に
+    `AssertionError` で即 unwind し、lock は `with` の後始末で確実に解放される
+    (握りっぱなしの窓が存在しないので S12 のハング要因が構造的に無い)。
+    src には 1 バイトも触れない (monkeypatch はテストプロセス内限定)。
+    """
+    from tests.mdf4_helpers import CAN, write_mdf4
+    from valisync.core.export.csv_exporter import (
+        CsvExporter,
+        CsvExportOptions,
+        ExportRequest,
+    )
+    from valisync.core.session import Session
+
+    path = tmp_path / "pipeline_violation.mf4"
+    write_mdf4(
+        path,
+        [
+            {
+                "name": f"C{i}",
+                "bus_type": CAN,
+                "timestamps": [0.0, 1.0],
+                "values": [float(i), float(i + 1)],
+            }
+            for i in range(6)
+        ],
+    )
+    session = Session()
+    key = session.load(path).key
+    handle = session._groups.group(key).handle
+    assert handle is not None
+    keys = [f"{key}::C{i}" for i in range(6)]
+    probed = assert_no_resolve_under_handle_lock(handle, session.export_resolver())
+
+    original_write_block_temp = CsvExporter._write_block_temp
+
+    def pipeline_shaped_violation(
+        self: CsvExporter, columns: Any, **kwargs: Any
+    ) -> list[str]:
+        # spec §10 が禁じる「最も自然な書き方」そのもの: ブロック全体を
+        # handle.lock で包んでから列を解決する。
+        with handle.lock:
+            return original_write_block_temp(self, columns, **kwargs)
+
+    monkeypatch.setattr(CsvExporter, "_write_block_temp", pipeline_shaped_violation)
+
+    with pytest.raises(
+        AssertionError, match=r"handle\.lock を保持したまま resolve\(\) が呼ばれた"
+    ):
+        CsvExporter(block_cols=2).export(
+            ExportRequest(
+                keys=tuple(keys),
+                output_path=tmp_path / "pipeline_violation_out.csv",
+                options=CsvExportOptions(),
+                header_resolver=list,
+            ),
+            probed,
+        )
