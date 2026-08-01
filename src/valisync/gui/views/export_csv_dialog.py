@@ -196,7 +196,8 @@ class ExportCsvDialog(QDialog):
         self._total = 0
         # ファイルごとの選択列数。ファイルオフセット (グループキー) が選択集合に
         # 触れているかを O(1) で答えるためだけの覚え書き (`_set_row` が唯一の
-        # 更新者)。走査で答えると、ファイル行 1 クリック (行ごとに `_validate()`
+        # **増分** 更新者 — 一括リセットは `_select_none` が `.clear()` で直接
+        # 行う)。走査で答えると、ファイル行 1 クリック (行ごとに `_validate()`
         # を通る) が prod で 行数 x 行数 回の走査になる。
         self._total_per_file: dict[str, int] = {}
         # 選択キー -> 行番号。列キーから所属行を最長一致で引く唯一の索引
@@ -516,11 +517,15 @@ class ExportCsvDialog(QDialog):
         return 0 if sel is None else sel.count(row.count)
 
     def _set_row(self, row_index: int, sel: ColumnSelection | None) -> None:
-        """行の選択状態を差し替える (``_selected`` への **唯一** の書き口)。
+        """行の選択状態を差し替える (``_selected`` への **唯一の増分** 書き口)。
 
         総数カウンタ (`_total` / `_total_per_file`) をここでしか動かさないので、
         「経路を 1 つ足したらカウンタだけ更新し忘れる」形の破綻が構造的に起きない。
         *sel* が None、または空の PARTIAL ならエントリを消す (NONE = 不在)。
+
+        **唯一の書き口ではない**: 一括リセットは `_select_none` が
+        `_selected.clear()` / `_total = 0` / `_total_per_file.clear()` で
+        1 行ずつでなく直接行う (行数ぶんの `_set_row` 呼び出しを避けるため)。
         """
         row = self._rows[row_index]
         before = self._row_count(row_index)
@@ -888,6 +893,14 @@ class ExportCsvDialog(QDialog):
         (= 過保護に disabled)。旧実装はキーごとに合成値を見ていたのでここだけ
         厳密だった。エクスポート可否ではなく **範囲ラジオの enabled** の話なので、
         過保護側へ倒すことを設計判断として受容する。
+
+        もう一つの既知の非対称 (同じく安全側): `_row_of_key` は自分の行を
+        持たないキーを、より短い兄弟行の接頭辞へ誤って解決しうる (最長一致が
+        途中の行境界で止まらない限り)。これも `_selection_touches` を
+        誤って True にする方向 (= 過保護に disabled) にしか転ばない。
+        到達可能性は無い — プロットされたキーは常に自分の行を持つ
+        (`_build_tree` が全信号を行化する) ので、行を持たないキーが
+        `_offset_keys()` 経由でここへ渡ることはない。
         """
         if self._offset_keys is None:
             return bool(self._legacy_offset_hits)

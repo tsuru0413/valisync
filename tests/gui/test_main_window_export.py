@@ -135,6 +135,10 @@ def test_export_csv_offset_for_resolves_selected_signal_offset(
     offset_for = captured["offset_for"]
     assert callable(offset_for)
     assert offset_for("csv_1::speed") == 1.0
+    # I2 fix (task-3-review.md #1): `offset_keys` が注入されて初めて prod は
+    # 反転済み (Task 3) のガード経路を通る — 未注入だと legacy 経路へ黙って
+    # 戻ってしまうのに、このファイルにはその配線を確認する assert が無かった。
+    assert set(captured["offset_keys"]()) == {"csv_1::speed"}
 
 
 def test_export_csv_offset_for_is_app_global_not_scoped_to_initial_selection(

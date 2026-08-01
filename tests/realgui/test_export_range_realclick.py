@@ -156,6 +156,14 @@ def test_export_cursor_range_realclick_writes_bounded_file(
             cursor_a=cursor_state.cursor_t,
             cursor_b=cursor_state.cursor_t_b,
             offset_for=panel.offset_for,
+            # Minor 3 (task-3-review.md): offset_keys 未注入だとこのダイアログは
+            # legacy のオフセットガード経路を通ってしまい prod (Task 3 以降の
+            # main_window.export_csv が注入する反転済み経路) を被覆しない ——
+            # 同じ配線を揃えて Layer C が実際の prod 経路を検証するようにする。
+            offset_keys=lambda: (
+                *window.app_vm.signal_offsets,
+                *window.app_vm.file_offsets,
+            ),
         )
         dlg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         dlg.move(screen.x() + 80, screen.y() + 80)

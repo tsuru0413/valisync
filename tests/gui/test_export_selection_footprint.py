@@ -156,6 +156,10 @@ def test_unchecking_one_column_does_not_inflate_the_other_rows(
     partial = [k for k, v in dlg._selected.items() if not v.is_all]
     assert len(partial) == 1
     assert dlg.selected_count() == _ROWS * _COLS_PER_ROW - 1
+    # Minor 5 (task-3-review.md): 上の `selected_count()` は `_total` という
+    # 並走カウンタで、PARTIAL 状態でも実際の展開 (`_checked_keys()`) と一致する
+    # ことまでは確認していなかった (カウンタ側だけがずれる退行を見逃す穴)。
+    assert len(dlg._checked_keys()) == _ROWS * _COLS_PER_ROW - 1
 
 
 def test_checking_every_column_individually_folds_back_to_all(qtbot: QtBot) -> None:

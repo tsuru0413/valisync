@@ -78,6 +78,40 @@ class _AppVM:
         self.loaded_file_keys = ["csv_1", "mf4_1", "csv_2"]
 
 
+class _WideSession:
+    """500 列の物理チャンネル 1 本だけを持つ Session (I1 レビュー指摘用)。
+
+    幅 <= 8 程度の行では CPython の small-int frozenset が偶然昇順に反復する
+    (hash(n) == n) ため、上の `_Session` (最大 3 列) では `sorted()` の削除を
+    検出できない。500 列という幅そのものが検出器の一部 — 散らした添字を選ぶと
+    frozenset の内部反復順が sorted() と食い違う。
+    """
+
+    def __init__(self) -> None:
+        self._cols = tuple(f"Wide[{i}]" for i in range(500))
+
+    def source_name(self, key: str) -> str:
+        return f"{key}.file"
+
+    def group_signals(self, key: str) -> list[Signal]:
+        return [_sig("mf4_1::Wide", "Wide")]
+
+    def column_names_of(self, key: str, display_name: str) -> tuple[str, ...]:
+        return self._cols
+
+    def has_column(self, key: str, display_name: str) -> bool:
+        return False  # 500 列に展開される行 (単一列ではない)
+
+    def resolve_signal(self, key: str) -> Signal | None:
+        return _sig(key, key.split("::", 1)[1])
+
+
+class _WideAppVM:
+    def __init__(self) -> None:
+        self.session = _WideSession()
+        self.loaded_file_keys = ["mf4_1"]
+
+
 #: ツリー表示順の全列 (ファイル順 -> ローダー順 -> 列順)。
 _TREE_ORDER = [
     "csv_1::alpha",
@@ -169,13 +203,13 @@ def test_deselect_then_reselect_does_not_move_a_column_to_the_end(
 
 
 @pytest.mark.parametrize("bulk", ["file_row", "select_all"])
-def test_bulk_paths_produce_the_same_order_as_individual_checks(
-    qtbot: QtBot, bulk: str
-) -> None:
-    """一括経路 (ファイル行 / すべて選択) と個別チェックが**同じ列**を出す。
+def test_bulk_paths_produce_tree_order(qtbot: QtBot, bulk: str) -> None:
+    """一括経路 (ファイル行 / すべて選択) はどちらもツリー順 `_TREE_ORDER` を出す。
 
-    圧縮後は一括経路が O(1) の ALL に化けるので、個別経路とのズレ (例: ALL が
-    行の列数を取り違えて 1 列落とす) はここでしか出ない。
+    Minor 7 (task-3-review.md): 旧名 `..._as_individual_checks` は個別チェック
+    との比較を示唆していたが、本体は両方の一括経路を `_TREE_ORDER` という
+    **リテラル**とだけ比較しており、個別チェック経路は 1 度も駆動しない
+    (それは `test_check_order_does_not_leak_into_output_order` 等が別途担う)。
     """
     dlg = ExportCsvDialog(_AppVM(), initial_selected=set())  # type: ignore[arg-type]
     qtbot.addWidget(dlg)
@@ -189,3 +223,22 @@ def test_bulk_paths_produce_the_same_order_as_individual_checks(
             top.setCheckState(0, Qt.CheckState.Checked)
 
     assert dlg._checked_keys() == _TREE_ORDER
+
+
+def test_partial_order_within_a_wide_row_is_sorted_not_frozenset_iteration(
+    qtbot: QtBot,
+) -> None:
+    """500 列の行から散らした添字を選ぶと frozenset の反復順は昇順にならない。
+
+    小さい行 (幅 <= 8 程度) では CPython の small-int frozenset が偶然昇順に
+    反復するため、既存の partial-order テストは sorted() の削除に構造的に盲目
+    (実測: sorted を消しても 1780 passed)。この幅とこの添字の散らしが
+    「明示 sort が要る」ことの唯一の検出器。
+    """
+    dlg = ExportCsvDialog(_WideAppVM(), initial_selected=set())  # type: ignore[arg-type]
+    qtbot.addWidget(dlg)
+    keys = dlg._column_keys(0)
+    picked = [82, 130, 201, 288, 347, 411, 499]  # 散らし: 反復順 != sorted
+    for c in picked:
+        dlg._add_selection(0, c, keys[c])
+    assert dlg._checked_keys() == [keys[c] for c in picked]
