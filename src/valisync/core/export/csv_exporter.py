@@ -147,22 +147,6 @@ class CsvExportOptions:
             raise ValueError("time_start must be <= time_end")
 
 
-def _in_range(t: float, opts: CsvExportOptions) -> bool:
-    """行時刻 t が opts の閉区間 [time_start, time_end] に含まれるか (None=無制限)。
-
-    **書き経路からは呼ばれない** (E-4b Task 7): 範囲は `timeline.row_range` が
-    union に対し searchsorted 1 回で `[lo, hi)` を出す。ここに残しているのは
-    `row_range` の**独立オラクル**としての役目のため — 閉区間の保存則 (lo は
-    `side='left'`・hi は `side='right'`) を「行ごとの素朴な比較」と突き合わせる
-    `test_row_range_agrees_with_in_range_row_by_row` が唯一の検証点で、その
-    比較相手を最適化された実装と同じファイルに置くと二重実装の同時退行を検出
-    できなくなる。**述語を変えるときは `row_range` と対で変えること**。
-    """
-    return (opts.time_start is None or t >= opts.time_start) and (
-        opts.time_end is None or t <= opts.time_end
-    )
-
-
 def _fmt(value: float, options: CsvExportOptions) -> str:
     """値を書式化。precision=None は round-trip(repr)、指定時は固定小数桁。"""
     if options.precision is None:
@@ -474,6 +458,9 @@ class CsvExporter:
         2.14 GiB) が legacy 経路にだけ生き残り、既存テスト 40 サイトが全部緑の
         ままそこを通り続ける。落としたことで、その 40 サイトが**そのまま**
         ブロックパイプラインの回帰網になる。
+
+        *progress* の単位は等重でない — マージ段 1 単位は実時間でブロック多数分に
+        相当しうる。ETA を線形で出すなら段の重みを入力本数で補正すること (Task 9)。
         """
         if isinstance(request, ExportRequest):
             if not callable(resolve):
@@ -584,6 +571,12 @@ class CsvExporter:
         blocks = plan_blocks(scan.runs, block_cols)
         _require_disk_space(out_dir, len(union_view), len(columns))
 
+        # 単位は等重でない (M3 レビュー): マージ段 1 単位は実時間で
+        # ブロック多数分に相当しうる。prod 形 (§5.3 コメント参照) では 2 段の
+        # マージが ~10 GB の全列を 2 回フル読み書きするのに、単位数で見ると
+        # 全体 (時刻 1 + ブロック ~8,253 + マージ 2 = 8,256) の 0.024% しか
+        # 占めない。今は reweight しない (ETA は Task 9 が作る) が、線形 ETA を
+        # 出すならここで段の重みを入力本数で補正すること。
         n_units = 1 + len(blocks) + merge_stage_count(1 + len(blocks), fan_in)
         done = 0
 
@@ -811,6 +804,12 @@ class CsvExporter:
         """時刻列を **幅 1 のブロック** として書く (マージ器に特別扱いを作らない)。"""
         with open(temp_path, "w", encoding="utf-8", newline="") as f:
             buf: list[str] = []
+            # `tolist()` は union 全体 (行数ぶん) を Python float のリストへ一括
+            # 実体化する唯一の非ストリーミング箇所。prod 実測 ~25.7k union 行
+            # なら無視できるサイズ (数百 KB) だが、ULP 分裂 (spec §1・C-1) が
+            # 多いデータセットは union が信号本数に近い倍率まで膨らみうるので、
+            # そこだけはこの一括変換のコストが目立ちうる。列ブロック側
+            # (`_write_block_temp`) は numpy 配列のまま持ち回るのと非対称。
             for i, ts in enumerate(union_view.tolist()):
                 if i % _CANCEL_ROW_INTERVAL == 0:
                     _check_cancel(cancel)

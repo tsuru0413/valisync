@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from valisync.core.export.csv_exporter import CsvExportOptions, _in_range
+from valisync.core.export.csv_exporter import CsvExportOptions
 from valisync.core.export.timeline import (
     canonical_master,
     column_on_union,
@@ -316,8 +316,29 @@ def test_row_range_outside_the_data_is_empty() -> None:
     assert lo == hi  # 行 0 本 (ヘッダのみのファイルになる)
 
 
+def _in_range_oracle(t: float, opts: CsvExportOptions) -> bool:
+    """行時刻 t が opts の閉区間 [time_start, time_end] に含まれるか (None=無制限)。
+
+    **E-4b Task 7 supersede (レビュー M2)**: 元は
+    ``valisync.core.export.csv_exporter._in_range`` として src にあったが、
+    書き経路からは 1 度も呼ばれなくなった (範囲は ``timeline.row_range`` が
+    union に対し searchsorted 1 回で ``[lo, hi)`` を出す)。production dead な
+    素朴実装を src に残す理由が「行ごとの素朴な比較」というテストの独立オラクル
+    役だけだったため、ここへ**移設**した (E-3 の ``_flatten`` 移設と同じ判断:
+    素朴な per-row 述語であること自体が独立性の根拠で、置き場所が src かテストか
+    は関係ない)。閉区間の保存則 (lo は ``side='left'``・hi は ``side='right'``) を
+    突き合わせる ``test_row_range_agrees_with_in_range_row_by_row`` が唯一の
+    検証点で、その比較相手を最適化された実装 (``row_range``) と同じ実装ファイルに
+    置くと二重実装の同時退行を検出できなくなる。**述語を変えるときは
+    `row_range` と対で変えること**。
+    """
+    return (opts.time_start is None or t >= opts.time_start) and (
+        opts.time_end is None or t <= opts.time_end
+    )
+
+
 def test_row_range_agrees_with_in_range_row_by_row() -> None:
-    """``_in_range`` (行ごとの比較) と**同じ行集合**であることの独立オラクル。
+    """``_in_range_oracle`` (行ごとの比較) と**同じ行集合**であることの独立オラクル。
 
     sides を取り違えると両端が 1 行ずつ欠ける — 値ベースの assert では
     「境界にサンプルが無い」fixture で緑のまま通るので、境界に必ずサンプルが
@@ -329,6 +350,8 @@ def test_row_range_agrees_with_in_range_row_by_row() -> None:
             if start is not None and end is not None and start > end:
                 continue
             opts = CsvExportOptions(time_start=start, time_end=end)
-            expected = [i for i, t in enumerate(union.tolist()) if _in_range(t, opts)]
+            expected = [
+                i for i, t in enumerate(union.tolist()) if _in_range_oracle(t, opts)
+            ]
             lo, hi = row_range(union, start, end)
             assert list(range(lo, hi)) == expected, (start, end)

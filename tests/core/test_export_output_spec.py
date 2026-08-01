@@ -110,9 +110,18 @@ def test_nonfinite_is_indistinguishable_from_a_missing_sample(tmp_path: Path) ->
 def test_output_starts_with_a_single_utf8_bom(tmp_path: Path) -> None:
     """BOM は**先頭 1 回だけ**。
 
-    ``_atomic_write`` は ``write`` を 2 回呼ぶ (本文 + 末尾改行)。utf-8-sig の
-    IncrementalEncoder が first フラグを持つので 1 回で済むが、行ごとに
-    ``open`` し直す実装へ変えると各行頭に BOM が入る — ``count`` で塞ぐ。
+    ``_merge_one_stage`` の最終段 (``is_last``) が ``encoding="utf-8-sig"`` で
+    開いたハンドルへ、ヘッダ (prefix 行) とデータ行を**複数回に分けて**
+    ``write`` する (prefix 1 回 + データのバッファ書き込み N 回)。utf-8-sig の
+    IncrementalEncoder が「最初の書き込みでだけ BOM を出す」first フラグを
+    持つので、呼び出し回数によらず BOM は 1 回で済む。行ごとに ``open``
+    し直す実装へ変えると各行頭に BOM が入る — ``count`` で塞ぐ。
+
+    **E-4b Task 7 supersede (レビュー M5)**: 旧単一実装 ``_atomic_write``
+    (本文 + 末尾改行の 2 回書き) は Task 7 の列ブロック化で消え、書き込みは
+    時刻 temp・列ブロック temp・多段マージの複数箇所に分かれた。BOM を持つのは
+    最終マージ段だけ (中間段は素の ``utf-8``)。assert 自体 (先頭 1 回・バイト
+    完全一致) は変えていない。
     """
     s = _sig("x", [0.0], [1.5])
     out = tmp_path / "d.csv"

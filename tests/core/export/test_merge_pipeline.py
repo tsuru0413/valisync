@@ -60,11 +60,22 @@ def _read(p: Path) -> list[str]:
 
 
 def test_merge_stage_count_matches_the_prod_shape() -> None:
-    """prod 3 ファイル全列 = block ~8,253 + 時刻 1 -> F=512 で 2 段 (MG-2)。"""
-    assert merge_stage_count(8254, _MERGE_FAN_IN) == 2
+    """prod 3 ファイル全列 = block ~8,253 + 時刻 1 -> F=512 で 2 段 (MG-2)。
+
+    先頭の assert は ``512`` を**直書き**する — ここが縛っているのは「prod 形が
+    2 段で畳めること」であって「``_MERGE_FAN_IN`` が今いくつか」ではない。旧版は
+    ``_MERGE_FAN_IN`` を象徴的に使いながら ``== 2`` という F=512 前提の具体値を
+    混ぜていたため、定数を正当な理由で変える (例: FD 天井の再測定で 256 へ下げる)
+    だけでここが意味不明に RED になっていた。残りの assert は fan-in に依存しない
+    一般則なので symbolic のまま。
+    """
+    assert merge_stage_count(8254, 512) == 2
     assert merge_stage_count(_MERGE_FAN_IN, _MERGE_FAN_IN) == 1
     assert merge_stage_count(_MERGE_FAN_IN + 1, _MERGE_FAN_IN) == 2
     assert merge_stage_count(2, _MERGE_FAN_IN) == 1
+    assert _MERGE_FAN_IN == 512, (
+        "FD 天井 8,189 の実測が前提 (MG-2) — 再チューニングなら spec を読み直せ"
+    )
 
 
 def test_merge_stage_count_is_at_least_one() -> None:
@@ -213,13 +224,11 @@ def test_merge_writes_every_row_across_flush_chunks(tmp_path: Path) -> None:
     )
     lines = _read(out)
     assert len(lines) == n + 1  # header + n rows
-    assert lines[0] == "timestamp,a,b"
-    assert lines[1] == "0.0,0.0,0.0"
-    assert (
-        lines[_FLUSH_ROWS]
-        == f"{float(_FLUSH_ROWS - 1)},{float(_FLUSH_ROWS - 1)},{float((_FLUSH_ROWS - 1) * 2)}"
-    )
-    assert lines[-1] == f"{float(n - 1)},{float(n - 1)},{float((n - 1) * 2)}"
+    # 全行の内容そのものを assert する (4 点スポットチェックだと、正味の行数が
+    # 変わらない「1 行落として別の 1 行を複製する」変異に盲目になる)。
+    assert lines == ["timestamp,a,b"] + [
+        f"{float(i)},{float(i)},{float(i * 2)}" for i in range(n)
+    ]
 
 
 # ─── 出力の形 ─────────────────────────────────────────────────────────────────
@@ -392,6 +401,34 @@ def test_disk_space_shortage_is_rejected_before_writing(
     )
     with pytest.raises(ValueError, match="空き容量"):
         CsvExporter().export(_request([a], out), _resolve([a]))
+    assert list(tmp_path.iterdir()) == []
+
+
+# ─── 段数算術の防御 (S15) ───────────────────────────────────────────────────────
+
+
+def test_stage_arithmetic_mismatch_is_loud_and_leaves_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``merge_stage_count`` の算術と実マージループがずれたら、列を落とした
+    ファイルを黙って出さない (:667-671 の ``len(current) != 1`` ガード)。
+
+    ``merge_stage_count`` を過小な段数へ差し替えると、マージのステージ数
+    ループが ``current`` を 1 本まで畳み切れずに終わる。ガードが無いと
+    ``current[0]`` (=一部の temp しか畳んでいない・列を落としたファイル) が
+    そのまま ``os.replace`` で最終ファイルへ化ける — 例外も長さ検証も出ない
+    サイレント列欠損。到達させる入力を作れない (算術は正しいので) ため
+    ``merge_stage_count`` そのものを monkeypatch で嘘つきにする。
+    """
+    from valisync.core.export import csv_exporter
+
+    signals = [_sig(f"s{i}", [0.0, 1.0], [1.0, 2.0]) for i in range(4)]
+    out = tmp_path / "o.csv"
+    monkeypatch.setattr(csv_exporter, "merge_stage_count", lambda _n, _f: 1)  # 過小
+    with pytest.raises(ValueError, match="マージ段数の算術"):
+        CsvExporter(block_cols=1, merge_fan_in=2).export(
+            _request(signals, out), _resolve(signals)
+        )
     assert list(tmp_path.iterdir()) == []
 
 

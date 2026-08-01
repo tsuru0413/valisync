@@ -101,15 +101,25 @@ def test_exporter_writes_nothing_when_rejected(
 ) -> None:
     """拒否したら 1 行も組み立てず、ファイルも残さない (**ガードの位置** の pin)。
 
-    ``assert not out.exists()`` **だけでは落ちない**: ``_atomic_write`` は mkstemp の
-    兄弟ファイルへ書いて ``BaseException`` で unlink するので、ガードを
-    ``os.replace`` の直前まで下げても出力ファイルは現れない。それでも 2-D 親の
-    全行を組み立てる = ガードが防いでいるコストそのものを払っている (M-2)。
-    なので位置を直接観測する: 行組み立ては ``Signal.sorted_view()`` を通るので、
-    拒否時にその呼び出しが **1 度も無い** ことを見る (拒否判定自体は ``.values``
-    を読むので、この観測点は判定と混ざらない)。
-    sabotage: ``_require_single_value_columns`` の呼び出しを ``export`` 冒頭から
-    ``_atomic_write`` の ``os.replace`` 直前へ移すと sorted_view が呼ばれて RED。
+    ``assert not out.exists()`` **だけでは落ちない**: ``export()`` の ``finally``
+    (csv_exporter.py の全 temp 掃除・B6) が失敗時も temp を全部消すので、ガードを
+    ``os.replace`` (最終段マージの直前) まで下げても出力ファイルは現れない。
+    それでも 2-D 親の全行を組み立てる = ガードが防いでいるコストそのものを
+    払っている (M-2)。なので位置を直接観測する: 行組み立ては
+    ``Signal.sorted_view()`` を通るので、拒否時にその呼び出しが **1 度も無い**
+    ことを見る (拒否判定自体は ``.values`` を読むので、この観測点は判定と
+    混ざらない)。
+
+    **E-4b Task 7 supersede (レビュー M5)**: 旧単一実装 ``_atomic_write``
+    (mkstemp の兄弟ファイルへ書いて ``BaseException`` で unlink する形) と、
+    export 冒頭で全信号を一括検査していた旧 ``_require_single_value_columns``
+    (複数形) は、Task 7 の列ブロック化でどちらも消えた。現行のガードは
+    ``_require_single_value_column`` (単数形) — ``_write_block_temp`` の中で
+    列を 1 本読むたびに行組み立ての前で呼ぶ。掃除役も個々の writer でなく
+    ``export()`` の ``finally`` 1 か所に一本化されている。構造は変わったが
+    「行組み立て前に拒否する」不変条件は保たれており、下の assert 自体は変えていない。
+    sabotage: ``_require_single_value_column`` の呼び出しを ``_write_block_temp``
+    の行組み立ての前から後ろへ移すと sorted_view が呼ばれて RED。
     """
     seen: list[str] = []
     original = Signal.sorted_view

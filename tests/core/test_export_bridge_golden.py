@@ -36,12 +36,20 @@ class _KeyedSession(Session):
     ``SignalGroupManager`` に登録されていない (g08/g11 だけがローダーを通る)。
     ``Session.export_csv`` の解決口を差すのが「境界を通す」最小の介入になる。
 
-    **E-4b Task 7 supersede**: 差す口が ``resolve_signal`` から
+    **E-4b Task 7 supersede (レビュー I1)**: 差す口が ``resolve_signal`` から
     ``resolve_signal_transient`` へ移った (spec §5.2 MG-1 が Task 6 で名指しした
-    まさにその 1 点を、Task 7 が `Session.export_csv` へ配線した)。**両方を
-    override する** — 片方だけにすると「production が読む口」と「テストが差す口」が
-    ずれても誰も落ちず、`export_csv` が transient 経路をやめて LRU 帳簿へ戻る
-    退行 (MG-1 の破棄) がこのファイルからは見えなくなる。
+    まさにその 1 点を、Task 7 が `Session.export_csv` へ配線した)。**override
+    するのは ``resolve_signal_transient`` だけ** — 旧版は ``resolve_signal`` も
+    残していたが、両方 override すると「``export_csv`` が transient 経路をやめて
+    LRU 帳簿 (``resolve_signal``) へ戻る」という MG-1 の退行が**このファイルからは
+    見えなくなる**ことを実測した: ``Session.export_csv`` の解決呼び出しを
+    ``self.resolve_signal_transient`` から ``self.resolve_signal`` へサボタージュ
+    しても、両方 override していると全 534 本中 **0 RED**。``resolve_signal_transient``
+    だけに絞ると本ファイルの 11 本が **11 RED** になる — この 1 点が MG-1 の
+    唯一の門番。``resolve_signal`` を override しない今の形は、答えるのが
+    transient口だけなので、``export_csv`` がその口を読まなくなった瞬間に
+    ``_by_key`` へ届かず (基底 ``Session.resolve_signal`` は未登録キーに ``None``
+    を返す) ``scan_masters`` の ``ValueError`` で即座に落ちる。
 
     **解決そのものは本ファイルの検証対象ではない** (それは
     ``test_export_request_bridge`` と、実ローダーの Signal を流す g08/g11 が持つ)。
@@ -51,9 +59,6 @@ class _KeyedSession(Session):
     def __init__(self, by_key: dict[str, Signal]) -> None:
         super().__init__()
         self._by_key = by_key
-
-    def resolve_signal(self, key: str) -> Signal | None:
-        return self._by_key.get(key)
 
     def resolve_signal_transient(self, key: str) -> Signal | None:
         return self._by_key.get(key)
