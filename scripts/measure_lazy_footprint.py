@@ -850,7 +850,7 @@ def _channel_cache(session: Any) -> Any:
 
 
 def _handle_of(session: Any, key: str) -> Any:
-    """グループの MdfHandle (キャッシュキー ``(id(handle), gi, ci)`` の第 1 成分)。"""
+    """グループの MdfHandle (キャッシュキー ``(handle.serial, gi, ci)`` の第 1 成分)。"""
     return session.group_signals(key)[0]._values_source._handle
 
 
@@ -931,7 +931,9 @@ def column_read_latency(
     mgr = session._groups
     cache = _channel_cache(session)
     handle = _handle_of(session, key)
-    hid = id(handle)
+    # 旧: id(handle)。serial 化 (E-4b) 後に id のまま残すと 1 件もヒットせず
+    # **例外を出さずに 0** を刷る — 計測器の追随漏れは常にサイレントになる。
+    hid = handle.serial
 
     display, width = _widest_channel(session, key)
     col_keys = _column_keys_of(session, key, display)

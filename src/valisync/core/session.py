@@ -443,10 +443,9 @@ class Session:
         # (AppViewModel.unload_file の述語ガード)。
         cached: tuple[np.ndarray, ...] = ()
         if group.handle is not None:
-            # **close の前**に落とす (spec §5.7)。キーは id(handle) を含むだけで
-            # ハンドルを所有しないので、エントリを残したままハンドルが死ぬと、
-            # 次のロードが同じアドレスを再利用したときに古いファイルの 2-D を
-            # 引き当てる (長さが合えば例外も出ない = 値の無言すり替え)。
+            # **close の前**に落とす (spec §5.7)。E-4b でキーを serial 化したので
+            # 「id 再利用で別ファイルの 2-D を引き当てる」経路は**構造的に消えた**が、
+            # この順序は維持する — 残る根拠は **解放のペーシング** である。
             #
             # E-4a: 回収した配列は捨てずに呼び出し側へ渡す。close() は自ハンドルの
             # エントリを ChannelSampleCache から落として**その場で同期解放**するので、
@@ -469,7 +468,7 @@ class Session:
                 if group.handle.cache is not None
                 else self._channel_cache
             )
-            cached = cache.drop_handle(id(group.handle))
+            cached = cache.drop_handle(group.handle.serial)
             group.handle.close()
         return RemovalResult(
             removed=True,

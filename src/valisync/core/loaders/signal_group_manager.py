@@ -65,6 +65,10 @@ class SignalGroupManager:
         self._namespaced_list: list[Signal] | None = None
         self._namespaced_map: dict[str, Signal] | None = None
         self._namespaced_by_key: dict[str, list[Signal]] = {}
+        # 名前空間キャッシュの世代 (E-4b)。lost-update (古いスナップショットの
+        # 焼き付け) を閉じるための唯一の観測点で、_invalidate_namespaced が増やし
+        # _ensure_namespaced / group_signals が commit 前に照合する。
+        self._namespaced_gen = 0
         # 鋳造した列 Signal (E-1)。**_invalidate_namespaced() に相乗りさせない** —
         # 相乗りすると 2 ファイル目のロードごとに全プロット列がフルチャンネル再読み
         # (実測 0.73-1.18 s/列) になる純粋な回帰。切り離しは remove(key) と
@@ -107,15 +111,25 @@ class SignalGroupManager:
         prefix = _FORMAT_KEY_PREFIX.get(group.file_format)
         if prefix is None:
             raise ValueError(f"unsupported file_format: {group.file_format!r}")
-        self._counters[prefix] = self._counters.get(prefix, 0) + 1
-        key = f"{prefix}_{self._counters[prefix]}"
-        self._groups[key] = group
-        self._physical_by_name[key] = self._index_physical(group)
-        if column_records:
-            # 呼び出し側の dict と縁を切る (ローダーの一時表が後から変わっても
-            # 登録済みグループの列構造は動かない)。物理チャンネル数ぶんなので安い。
-            self._column_records[key] = dict(column_records)
-        self._invalidate_namespaced()
+        # E-4b (spec §5.7-2): 連番の read-modify-write と表の更新を **_resolved_lock 下**
+        # で不可分にする。今日ロック外なので、2 ファイル同時ドロップで同じキーが
+        # 2 グループへ割り当たり後勝ちで 1 つ消える (消えたグループは _groups から
+        # 辿れず、その handle は remove -> close へ到達できない = ファイルが開いたまま)。
+        # ロード経路 (LoadWorker -> session.load -> add) にこの lock の再入は無い。
+        with self._resolved_lock:
+            self._counters[prefix] = self._counters.get(prefix, 0) + 1
+            key = f"{prefix}_{self._counters[prefix]}"
+            self._physical_by_name[key] = self._index_physical(group)
+            if column_records:
+                # 呼び出し側の dict と縁を切る (ローダーの一時表が後から変わっても
+                # 登録済みグループの列構造は動かない)。物理チャンネル数ぶんなので安い。
+                self._column_records[key] = dict(column_records)
+            # 書き順は「内部表 -> _groups[key] -> _invalidate_namespaced」(I7b)。
+            # 「最後に書く」の字義どおり (invalidate -> _groups) にすると、invalidate 後の
+            # 間隙で走った再構築が **新グループを含まない** map を焼き付け、次の
+            # invalidate までそのファイルの信号が引けない。
+            self._groups[key] = group
+            self._invalidate_namespaced()
         return key
 
     def remove(self, key: str) -> tuple[SignalGroup, tuple[Signal, ...]]:
@@ -144,9 +158,14 @@ class SignalGroupManager:
             for column_key in table:
                 self._resolved_order.pop(column_key, None)
             columns = tuple(table.values())
-        self._column_records.pop(key, None)
-        self._physical_by_name.pop(key, None)
-        self._invalidate_namespaced()
+            # E-4b: 副表の掃除と無効化も **lock の中** (add() と対称にする)。
+            # _mint_column はロック下でこの 2 表を読むので、外に置くと「読みながら
+            # 消える」窓が残る。無効化を外に出すと、_groups から消えてから世代が
+            # 上がるまでの間隙で走った再構築が「消えたグループを含む map」を
+            # 焼き付ける (= 閉じたのに信号が引ける)。
+            self._column_records.pop(key, None)
+            self._physical_by_name.pop(key, None)
+            self._invalidate_namespaced()
         return group, columns
 
     @property
@@ -196,16 +215,22 @@ class SignalGroupManager:
         return result
 
     def _invalidate_namespaced(self) -> None:
-        """Drop the namespaced caches; rebuilt lazily on next access."""
+        """Drop the namespaced caches; rebuilt lazily on next access.
+
+        **呼び出し側が ``_resolved_lock`` を保持していること** (E-4b)。世代の +1 が
+        非アトミックなうえ、これと ``_groups`` の書きが別トランザクションだと
+        lost-update の窓が残る。
+        """
         self._namespaced_list = None
         self._namespaced_map = None
         self._namespaced_by_key = {}
+        self._namespaced_gen += 1
         # NOTE: _resolved_by_key はここで**捨てない** (Critical 1)。捨てると 2 ファイル目の
         # ロードごとに全プロット列が新オブジェクト (空キャッシュ) となり、次の render で
         # フルチャンネル再読み (実測 0.73-1.18 s/列) が走る。切り離しは remove(key) と
         # E-4a の LRU evict のみ。
 
-    def _ensure_namespaced(self) -> None:
+    def _ensure_namespaced(self) -> tuple[list[Signal], dict[str, Signal]]:
         """Build and cache the namespaced signal list/map once (idempotent).
 
         The expensive work — creating one namespaced Signal wrapper per signal
@@ -214,14 +239,53 @@ class SignalGroupManager:
         every signal (duplicate namespaced names included); the map is keyed by
         name with last-wins dedupe, matching the historical ``signals()``-to-dict
         behaviour its callers relied on.
+
+        E-4b (spec §5.7-3): 反復は **スナップショット** に対して行い、書き戻しは
+        **世代照合つき** で行う。旧実装は無ロックで ``self._groups.items()`` を直に
+        回しており、export worker の resolve が ~18 分走る本増分では
+        ``dictionary changed size during iteration`` が窓ではなく常態になる。
+
+        ビルドを lock の中でやらないのは、O(全信号) のラッパ構築が export worker の
+        取る lock を占有し、正しさの修正が待ちの回帰に化けるため。ただしスナップ
+        ショットだけでは **lost-update** (古いスナップショットを構築後に焼き付け、
+        新グループが次の invalidate まで見えない) が残るので、commit 時の世代照合で
+        閉じる。**この 2 段構えが「ロックにしない」ことの対価**であり、片方だけでは
+        不完全。
+
+        **値を返すのが契約** (brief の ``-> None`` からの意図的逸脱・報告済み):
+        呼び出し側が ``self._namespaced_map`` を**もう一度**読む形にすると、その
+        1 バイトコードの隙に別スレッドの add/remove が invalidate して None になり、
+        ``resolve()`` (E-4b で最もホットな経路) が AttributeError で落ちる。返り値
+        経由なら呼び出し側は自分が見たスナップショットを握り続けられる。
         """
-        if self._namespaced_list is not None:
-            return
-        result: list[Signal] = []
-        for key, group in self._groups.items():
-            result.extend(self._namespaced(key, group))
-        self._namespaced_list = result
-        self._namespaced_map = {sig.name: sig for sig in result}
+        cached_list = self._namespaced_list
+        cached_map = self._namespaced_map
+        if cached_list is not None and cached_map is not None:
+            return cached_list, cached_map
+        while True:
+            with self._resolved_lock:
+                cached_list = self._namespaced_list
+                cached_map = self._namespaced_map
+                if cached_list is not None and cached_map is not None:
+                    return cached_list, cached_map
+                gen = self._namespaced_gen
+                snapshot = list(self._groups.items())  # C レベルで完結 = 原子的
+            result: list[Signal] = []
+            for group_key, group in snapshot:
+                result.extend(self._namespaced(group_key, group))
+            mapping = {sig.name: sig for sig in result}
+            with self._resolved_lock:
+                if self._namespaced_gen != gen:
+                    continue  # 途中で add/remove が入った — 作り直す (lost-update 閉鎖)
+                cached_list = self._namespaced_list
+                cached_map = self._namespaced_map
+                if cached_list is not None and cached_map is not None:
+                    # 同世代で別スレッドが先に commit 済み — 正典を返す
+                    # (同じ入力から作った等価物なので、どちらでも値は同じ)。
+                    return cached_list, cached_map
+                self._namespaced_list = result
+                self._namespaced_map = mapping
+                return result, mapping
 
     def group_signals(self, key: str) -> list[Signal]:
         """Namespaced signals for a single group (KeyError if key is unknown).
@@ -230,19 +294,29 @@ class SignalGroupManager:
         Cached per key on the same invalidation lifecycle as the whole-session
         caches (FU-08); rebuilt only after add()/remove(). Prevents the
         per-call rebuild of every namespaced wrapper (FU-11).
+
+        E-4b: per-key キャッシュにも ``_ensure_namespaced`` と同じ lost-update が
+        あるので、書き戻しは世代照合つきで行う (下のコメント参照)。
         """
-        group = self._groups[key]  # 未知 key は従来どおり KeyError
-        cached = self._namespaced_by_key.get(key)
+        with self._resolved_lock:
+            group = self._groups[key]  # 未知 key は従来どおり KeyError
+            cached = self._namespaced_by_key.get(key)
+            gen = self._namespaced_gen
         if cached is None:
             cached = self._namespaced(key, group)
-            self._namespaced_by_key[key] = cached
+            with self._resolved_lock:
+                # remove 済みキーの復活を防ぐ (復活すると「閉じたのに信号が引ける」
+                # 状態が次の invalidate まで残る)。世代照合と在籍再確認の両方が要る:
+                # 世代は「ビルド中に何かが起きた」を、在籍は「起きたのがこの key の
+                # remove だった」を見る。
+                if self._namespaced_gen == gen and key in self._groups:
+                    self._namespaced_by_key[key] = cached
         return list(cached)  # 防御コピー(signals() と同契約) — Signal は共有
 
     def signals(self) -> list[Signal]:
         """Return every signal across all groups, name-spaced by its group key."""
-        self._ensure_namespaced()
-        assert self._namespaced_list is not None
-        return list(self._namespaced_list)
+        namespaced, _mapping = self._ensure_namespaced()
+        return list(namespaced)
 
     def signal_map(self) -> Mapping[str, Signal]:
         """読み取り専用 ``{namespaced_name: Signal}`` ビュー (FU-08 でキャッシュ)。
@@ -255,9 +329,8 @@ class SignalGroupManager:
         キーの列挙は 330k 列を鋳造して ~390 MB を再導入するため提供しない —
         ``dict(signal_map())`` は使ってはならない。
         """
-        self._ensure_namespaced()
-        assert self._namespaced_map is not None
-        return _ResolvingMap(self._namespaced_map, self.resolve)
+        _namespaced, mapping = self._ensure_namespaced()
+        return _ResolvingMap(mapping, self.resolve)
 
     def resolve(self, key: str) -> Signal | None:
         """名前空間つきキーを Signal へ解決する (無ければ列として鋳造を試みる)。
@@ -271,9 +344,8 @@ class SignalGroupManager:
         値・名前・時刻軸は同じで、読みも T2 のチャンネルキャッシュに当たるため
         安い。列 Signal を ``is`` で追跡するコードを書いてはならない。
         """
-        self._ensure_namespaced()
-        assert self._namespaced_map is not None
-        hit = self._namespaced_map.get(key)
+        _namespaced, mapping = self._ensure_namespaced()
+        hit = mapping.get(key)
         if hit is not None:
             return hit
         group_key = key.split(KEY_SEPARATOR, 1)[0]

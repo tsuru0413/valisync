@@ -185,7 +185,11 @@ class LazyMdfValues:
             # 「in-flight select 1 本」に縮める (belt-and-braces)。
             raise self._closed_error()
         channel_cache = self._handle.cache
-        key = (id(self._handle), self._gi, self._ci)
+        # キーの第 1 成分は **serial** (E-4b・spec §5.7-1): id はハンドルが死ぬと
+        # 次のロードへ再利用され、長さが合えば例外も出ないまま別ファイルの 2-D を
+        # 返す。ここを id へ戻すと test_handle_serial.py の production 経路テストが
+        # 「100% 要素不一致」で落ちる。
+        key = (self._handle.serial, self._gi, self._ci)
         # E-4a: デコード済みチャンネル 2-D は同一チャンネルの全列で共有する。
         # ここで **lock を取らない** のが要点 (spec §5.8) — ヒットの意味は
         # 「ファイルに触らない」なので、他スレッドの in-flight select

@@ -284,12 +284,17 @@ def test_drop_handle_of_unknown_file_is_a_no_op() -> None:
 
 
 def test_drop_handle_makes_a_recycled_handle_id_safe() -> None:
-    """``id()`` は生存中のオブジェクト間でのみ一意 — 閉じたハンドルの id は次の
-    ロードが再利用しうる (実測 100% 再利用・memory gui_id_reuse_flake_object_recreation)。
+    """``drop_handle`` の後に**同じ第 1 成分**でエントリを載せ直せる。
 
-    キー一意性の前提条件は「close の**前**に drop_handle で外す」であり、これが
-    T4 の close 順序を要求する理由。外さないと、新しいハンドルが同じ id を得た
-    瞬間に別ファイルのデコード結果を返す。
+    **supersede (E-4b)**: 旧 docstring は「``id()`` は生存中のオブジェクト間でのみ
+    一意なので、close の前に drop_handle で外すことがキー一意性の前提」と書いて
+    いた。キーが ``handle.serial`` (プロセス単調 int) になった今、同じ第 1 成分を
+    2 つのハンドルが持つことは production では起こらない — この test が残って
+    守るのは「``drop_handle`` が会計ごとエントリを外し切る (残骸が次の put を
+    汚さない)」という **キャッシュ側の純粋な性質** だけである。
+    id 再利用そのものの構造的閉鎖は
+    ``test_handle_serial.py::test_a_recycled_address_does_not_serve_another_handles_channel``
+    (production の読み経路を通す) が受け持つ。
     """
     cache = ChannelSampleCache(budget_bytes=1000)
     old = _arr(32)

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import itertools
 import threading
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     # 実行時 import は不要 (注釈は from __future__ で文字列化済み)。
     from valisync.core.loaders.channel_cache import ChannelSampleCache
+
+# プロセス単調な連番。**id() の再利用を構造的に消す** (E-4b・spec §5.7-1): id は
+# 生存中のオブジェクト間でのみ一意で、閉じたハンドルのアドレスは次のロードが
+# 再利用する。itertools.count の __next__ は C 実装で GIL を離さないため、
+# 2 スレッド同時ロードでも重複しない (専用 lock は要らない)。
+_HANDLE_SERIAL = itertools.count(1)
 
 
 class MdfHandle:
@@ -15,7 +22,15 @@ class MdfHandle:
     非安全。グループ内の全 LazyMdfValues はこの lock で読みを直列化する。ハンドルは
     SignalGroup が 1 個所有し、unload/エラー経路で close() する (増分B/M3)。"""
 
-    __slots__ = ("_close_lock", "_closed", "cache", "lock", "mdf", "source_path")
+    __slots__ = (
+        "_close_lock",
+        "_closed",
+        "cache",
+        "lock",
+        "mdf",
+        "serial",
+        "source_path",
+    )
 
     def __init__(
         self,
@@ -39,6 +54,10 @@ class MdfHandle:
         # 信号 26 万個に別の参照を配らずに全列へ届く唯一の場所である。
         # None ならキャッシュ無し = E-3 と同一挙動 (MdfLoader を直接使う経路)。
         self.cache = cache
+        # ChannelSampleCache のキー第 1 成分 (E-4b)。ハンドルの生死と無関係な
+        # プロセス単調 int なので、閉じたハンドルのアドレスを次のロードが再利用
+        # しても別ファイルの 2-D を引き当てる窓が構造的に存在しない。
+        self.serial = next(_HANDLE_SERIAL)
 
     @property
     def is_closed(self) -> bool:
@@ -60,8 +79,10 @@ class MdfHandle:
         # 守られているので、in-flight な select の完了を待つ理由が無い。
         # 通常の unload はここへ来る前に remove_group が drop_handle() で回収済み
         # なので空振りする — 回収されない close (ローダーのエラー/キャンセル経路)
-        # でエントリが恒久滞留するのを防ぐのがここの役目。キーは id(self) なので、
-        # 残すと予算が目減りするだけでなく id 再利用時に別ファイルの配列を引く。
+        # でエントリが恒久滞留するのを防ぐのがここの役目。E-4b でキーを serial 化
+        # したので「id 再利用で別ファイルの配列を引く」害は構造的に消えたが、
+        # 残さない理由は**予算の返却**として残る (回収されない close でエントリが
+        # 恒久滞留すると 256 MB 予算が黙って目減りする)。
         #
         # 呼ぶのは drop_handle ではなく release_handle: close には回収した配列を
         # 手渡す相手が居ないので、ここは**同期解放**である。返り値を捨てる形にすると
@@ -71,7 +92,7 @@ class MdfHandle:
         # 使う経路 — ローダー単体テスト・load() のエラー/キャンセル経路の finally・
         # MdfHandle(_FakeMdf()) — が全て cache=None のまま close() を呼ぶ。
         if self.cache is not None:
-            self.cache.release_handle(id(self))
+            self.cache.release_handle(self.serial)
         # mdf.close() 自体は読み直列化 lock 下で行う: in-flight な select を
         # 中断せず完走させ、mmap の native アクセス違反を防ぐ。
         with self.lock:
