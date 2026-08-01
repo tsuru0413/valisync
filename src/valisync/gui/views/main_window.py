@@ -1117,25 +1117,25 @@ class MainWindow(QMainWindow):
             source = (
                 Path(exc.source_file).name if exc.source_file else S.EXPORT_DIAG_SOURCE
             )
-            # Minor 1 (Task 10b レビュー是正): exc.key の形は入口によって 2 通り
-            # (解決器 None 経路 = "group::bare" の namespaced 形 / mid-read 経路
-            # = 既に bare)。E-0 でユーザー面から `::` を撤去した契約
-            # (`display_names`) はメッセージにも及ぶべき ― namespaced な文字列を
+            # Minor 1 (Task 10b レビュー是正・コントローラ裁定で signal_name も
+            # 対象化): exc.key の形は入口によって 2 通り (解決器 None 経路 =
+            # "group::bare" の namespaced 形 / mid-read 経路 = 既に bare)。E-0
+            # の「対象列は raw チャンネル名表示・`::` 全撤去」契約は message
+            # だけでなく signal_name (診断ドックの「対象」列がそのまま描画する
+            # ― diagnostics_view.py:235) にも及ぶ ― namespaced な文字列を
             # そのまま出すと内部キーの実装詳細が診断へ漏れる。bare な mid-read
-            # 側は split_key が事実上の no-op (置換対象なし) なので文言は不変。
-            # signal_name 列は既存テスト
-            # (test_source_lost_is_recorded_as_a_diagnostic_not_just_a_status_line)
-            # が namespaced 形をそのまま pin しているため、本 Task では
-            # signal_name の正規化は見送る (follow-up ― 診断ドックの「対象」列は
-            # 解決器 None 経路に限り `::` を表示しうる)。
+            # 側は split_key が事実上の no-op (置換対象なし) なので挙動は不変。
+            # bare 化ロジックを message/signal_name の 2 箇所で重複させない。
             message = str(exc)
+            bare_key: str | None = exc.key
             if exc.key:
-                bare = split_key(exc.key)[1]
-                if bare != exc.key:
-                    message = message.replace(exc.key, bare)
+                candidate = split_key(exc.key)[1]
+                if candidate != exc.key:
+                    message = message.replace(exc.key, candidate)
+                bare_key = candidate
             self.diagnostics_vm.add(
                 source,
-                [Diagnostic(level="error", message=message, signal_name=exc.key)],
+                [Diagnostic(level="error", message=message, signal_name=bare_key)],
             )
             self.set_status_message(S.EXPORT_SOURCE_LOST_STATUS)
             return

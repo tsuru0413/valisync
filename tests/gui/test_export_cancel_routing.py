@@ -303,6 +303,11 @@ def test_source_lost_is_recorded_as_a_diagnostic_not_just_a_status_line(
 
     ステータス行は次の操作で上書きされ数秒で消える — 「なぜ出力が無いのか」を
     後から辿れる記録はここにしか残らない。
+
+    signal_name は bare 名 ("C0") を pin する ― E-0 の「対象列は raw チャンネル
+    名表示・`::` 全撤去」契約 (コントローラ裁定・Task 10b Minor 1 完遂): 旧 pin
+    (`"mf4_1::C0"`) はレビューが欠陥と宣告した旧挙動 (`::` のユーザー表面露出)
+    をそのまま固定していたもので、この 1 箇所に限り expectation を更新する。
     """
     from valisync.core.export.csv_exporter import ExportSourceLost
     from valisync.core.export.estimate import ExportEstimate
@@ -322,7 +327,7 @@ def test_source_lost_is_recorded_as_a_diagnostic_not_just_a_status_line(
     assert len(entries) == 1, f"診断が {len(entries)} 件 (decay は 1 件)"
     assert entries[0].level == "error"
     assert "閉じられています" in entries[0].message
-    assert entries[0].signal_name == "mf4_1::C0", "どの列で失われたかが残っていない"
+    assert entries[0].signal_name == "C0", "どの列で失われたかが残っていない (bare 名)"
     # 中止の助言 (範囲を狭める/列を減らす) は decay には的外れ — 出さない。
     msg = window.status_message()
     assert "狭め" not in msg and "減らし" not in msg
@@ -414,16 +419,18 @@ def test_source_lost_diagnostic_falls_back_to_the_constant_label_when_unresolved
 
 
 def test_source_lost_message_normalizes_the_namespaced_key(qtbot: QtBot) -> None:
-    """Minor 1 (Task 10b レビュー是正): `exc.key` の形は入口によって 2 通り
-    (解決器 None 経路 = "group::bare" の namespaced 形 / mid-read 経路 = 既に
-    bare)。解決器 None 経路の decay メッセージは `EXPORT_SOURCE_LOST_TMPL` が
-    キーをそのまま埋め込むため、production では namespaced 形が診断の
-    メッセージへ漏れる (E-0 がユーザー面から撤去したはずの内部キー形)。
+    """Minor 1 (Task 10b レビュー是正・コントローラ裁定で signal_name も完遂):
+    `exc.key` の形は入口によって 2 通り (解決器 None 経路 = "group::bare" の
+    namespaced 形 / mid-read 経路 = 既に bare)。解決器 None 経路の decay
+    メッセージは `EXPORT_SOURCE_LOST_TMPL` がキーをそのまま埋め込むため、
+    production では namespaced 形が診断の message/signal_name 両方へ漏れる
+    (E-0 の「対象列は raw チャンネル名表示・`::` 全撤去」契約への違反)。
 
-    signal_name 列の正規化は既存テスト
-    (`test_source_lost_is_recorded_as_a_diagnostic_not_just_a_status_line`) が
-    namespaced 形を pin しているため本 Task では見送り (follow-up)。message の
-    みを対象にする。
+    signal_name の正規化は
+    `test_source_lost_is_recorded_as_a_diagnostic_not_just_a_status_line` /
+    `test_a_decayed_export_reaches_the_cancelled_callback_not_the_error_modal`
+    が既に bare 名で pin している ― ここでは message 側 (この 2 本がカバーしない
+    独立の観測点) を対象にする。
     """
     from valisync.core.export.csv_exporter import (
         EXPORT_SOURCE_LOST_TMPL,
@@ -448,6 +455,7 @@ def test_source_lost_message_normalizes_the_namespaced_key(qtbot: QtBot) -> None
         f"namespaced キーが診断メッセージへ漏れた: {entries[0].message!r}"
     )
     assert "'A'" in entries[0].message, "正規化後の bare キーが残っていない"
+    assert entries[0].signal_name == "A", "signal_name も bare 化されていない"
 
 
 def test_a_user_cancel_leaves_no_diagnostic(qtbot: QtBot) -> None:
@@ -481,6 +489,11 @@ def test_a_decayed_export_reaches_the_cancelled_callback_not_the_error_modal(
 
     基底を `Exception` へ戻すと `ExportController._fail` の isinstance を外れ、
     ここがモーダル側で RED になる (= 継承が「配線を増やさずに済む」根拠の実証)。
+
+    signal_name は bare 名 ("C0") を pin する (Task 10b Minor 1 完遂と同じ
+    bare 化契約 ― `test_source_lost_is_recorded_as_a_diagnostic_not_just_a_status_line`
+    参照)。この assert 自体は継承の実効を見るテストの副次確認だが、正規化前の
+    namespaced 形 ("mf4_1::C0") のまま残すと契約の不整合が再生産される。
     """
     from valisync.core.export.csv_exporter import CsvExportOptions, ExportSourceLost
     from valisync.gui.viewmodels.app_viewmodel import AppViewModel
@@ -504,7 +517,7 @@ def test_a_decayed_export_reaches_the_cancelled_callback_not_the_error_modal(
 
     qtbot.waitUntil(lambda: len(window.diagnostics_vm.entries()) == 1, timeout=5000)
     assert modals == [], "decay がエラーモーダルへ流れた (継承が効いていない)"
-    assert window.diagnostics_vm.entries()[0].signal_name == "mf4_1::C0"
+    assert window.diagnostics_vm.entries()[0].signal_name == "C0"
 
 
 def test_cancel_callback_is_actually_wired_to_the_run_export_path(
