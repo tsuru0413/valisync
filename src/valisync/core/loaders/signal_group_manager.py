@@ -658,6 +658,14 @@ class SignalGroupManager:
         **表を持つグループ (MDF) では走査しない**のが load-bearing: prod の
         330,004 列が全部解決不能な形 (アンロード直後など) になったとき、1 キューに
         つき 4,324 信号を走査すると 1.4e9 回の比較 = 見積が固まる。
+
+        **残る限界 (既知・繰越)**: 表を持たないグループでは 1 チャンネル = 1 列
+        なので、全列を見積もると走査は「列数 x 信号数」= O(N^2) になる。本機実測
+        (見積全体・`estimate_export`): 500 列 5.9 ms / 2,000 列 74.8 ms /
+        5,000 列 458 ms。**`estimate_export(channel_columns=...)` の表を渡しても
+        消えない** (表が消すのは列 -> チャンネル解決の方で、走査はチャンネルごとに
+        残る — 同条件で 5.3 / 67.5 / 442 ms)。実 ADAS CSV の列幅 (数十〜数百) では
+        無視できるが、数千列の CSV が現れたら `_physical_by_name` と同型の索引が要る。
         """
         sig = self._physical_by_name.get(group_key, {}).get(display_name)
         if sig is None and not self._column_records.get(group_key):

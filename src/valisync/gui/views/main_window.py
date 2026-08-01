@@ -967,6 +967,11 @@ class MainWindow(QMainWindow):
         )
         panel = self.graph_area_vm.active_panel()
         cursor_state = self.graph_area_vm.active_tab().cursor_state
+        # 見積を O(1) 化するための {物理チャンネルキー: 選択列数}。ダイアログは
+        # 選択をこの単位で持っている (spec §5.6) ので確定時に書き戻してもらう —
+        # 見積側で keys から組み直すと prod 330,004 列で 2.6 s、つまり
+        # 「エクスポートを押すと 3 秒固まる」を GUI スレッドで作ることになる。
+        channel_columns: dict[str, int] = {}
         req = ExportCsvDialog.ask(
             self.app_vm,
             initial,
@@ -984,10 +989,18 @@ class MainWindow(QMainWindow):
                 *self.app_vm.signal_offsets,
                 *self.app_vm.file_offsets,
             ),
+            channel_columns_out=channel_columns,
         )
         if req is None:
             return
-        est = estimate_export(self.app_vm.session, req.keys, req.options)
+        # `ask` を差し替えたテスト経路では空のまま — 見積側の合計一致検査が
+        # 自力解決へ落とすので、ここで分岐は要らない。
+        est = estimate_export(
+            self.app_vm.session,
+            req.keys,
+            req.options,
+            channel_columns=channel_columns,
+        )
         self._run_export(req, est)
 
     def _run_export(self, req: ExportRequest, est: ExportEstimate) -> None:

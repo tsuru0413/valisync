@@ -543,6 +543,29 @@ class ExportCsvDialog(QDialog):
                 self._total_per_file.get(row.file_key, 0) + delta
             )
 
+    def channel_columns(self) -> dict[str, int]:
+        """``{名前空間つき物理チャンネルキー: 選択列数}`` (見積へ渡すヒント)。
+
+        ``estimate_export`` は本来これを ``keys`` から `channel_key_of` で
+        組み直すが、prod の 330,004 列では **2.6 s** かかり、GUI スレッドで
+        呼ぶ `MainWindow.export_csv` が「押すと 3 秒固まる」になる。選択の表現は
+        既に物理チャンネル 1 行 = 1 エントリ (spec §5.6) なので、ここでは
+        **作るのではなく持っているものを渡す** (行数ぶん = prod 4,324 の走査)。
+
+        キーが `channel_key_of` の返り値と一致するのは偶然ではない: 行キーは
+        `{file_key}::{physical_channel}` で組まれており (`_build_tree`)、これは
+        `column_records` のキー空間 = `channel_key_of` が返す表示名と同一。
+        表を持たないグループ (CSV/Derived) では 1 信号 = 1 列なので、行キーは
+        列キーそのもの = 見積側の `or key` フォールバックと一致する。
+        合計が ``len(keys)`` と一致しない表は見積側が無視して解決し直す
+        (取り違えで「正確値」が黙って嘘をつくのを防ぐ安全網)。
+        """
+        return {
+            row.sel_key: n
+            for row_index, row in enumerate(self._rows)
+            if (n := self._row_count(row_index))
+        }
+
     def selected_count(self) -> int:
         """総選択 **列** 数 (O(1))。
 
@@ -1021,7 +1044,15 @@ class ExportCsvDialog(QDialog):
         cursor_b: float | None = None,
         offset_for: Callable[[str], float] | None = None,
         offset_keys: Callable[[], Iterable[str]] | None = None,
+        channel_columns_out: dict[str, int] | None = None,
     ) -> ExportRequest | None:
+        """モーダルを回して ``ExportRequest`` を返す (キャンセルは None)。
+
+        *channel_columns_out* を渡すと、確定時にそこへ :meth:`channel_columns`
+        を書き込む。返り値の型を変えない (tuple 化しない) のは、`ask` を
+        差し替えて `ExportRequest` を直接返す既存の呼び出し側/テストを
+        壊さないため — それらは表を受け取らず、見積は自力の解決へ落ちる。
+        """
         dlg = cls(
             app_vm,
             initial_selected,
@@ -1033,5 +1064,7 @@ class ExportCsvDialog(QDialog):
             offset_keys=offset_keys,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
+            if channel_columns_out is not None:
+                channel_columns_out.update(dlg.channel_columns())
             return dlg._result
         return None

@@ -20,6 +20,7 @@ CI に生成ステップが無く、そこへ置くと丸ごと skip される (
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -64,6 +65,62 @@ def _two_rate_session(tmp_path: Path) -> tuple[Session, list[str]]:
     session = Session()
     key = session.load(path).key
     return session, [f"{key}::Fast", f"{key}::Slow"]
+
+
+def _dense_session(tmp_path: Path) -> tuple[Session, list[str]]:
+    """10 行 x 2 列で **空セルゼロ** (2 チャンネルが同一の 10 時刻を持つ)。
+
+    ``_two_rate_session`` と **セル総数が同じ** (10 x 2 = 20) で非空セル数だけが
+    違う (20 対 12) — 書き項の 2 項モデル (基礎項 x 全セル + 増分項 x 値セル) を
+    「1 項 x 全セル」から区別できる唯一の形。
+    """
+    path = tmp_path / "dense.mf4"
+    stamps = [round(i * 0.01, 4) for i in range(10)]
+    write_mdf4(
+        path,
+        [
+            {
+                "name": "A",
+                "bus_type": CAN,
+                "timestamps": stamps,
+                "values": [float(i) for i in range(10)],
+            },
+            {
+                "name": "B",
+                "bus_type": CAN,
+                "timestamps": stamps,
+                "values": [float(i) * 2 for i in range(10)],
+            },
+        ],
+    )
+    session = Session()
+    key = session.load(path).key
+    return session, [f"{key}::A", f"{key}::B"]
+
+
+def _eager_csv_session(tmp_path: Path) -> tuple[Session, list[str]]:
+    """CSV グループ 1 列 (EagerValues・``ColumnRecord`` を持たない唯一の形)。
+
+    MDF 系 fixture (``_two_rate_session`` / ``_wide_session``) が踏まない
+    ``SignalGroupManager.channel_master`` の **record-less 分岐** (信号名の線形
+    走査) はここでしか通らない。
+    """
+    from valisync.core.models import Delimiter, FormatDefinition
+
+    csv = tmp_path / "eager.csv"
+    csv.write_text("t,A\n0.0,1.0\n1.0,2.0\n", encoding="utf-8")
+    fmt = FormatDefinition(
+        name="f",
+        delimiter=Delimiter.COMMA,
+        timestamp_column=0,
+        timestamp_unit="sec",
+        signal_start_column=1,
+        signal_end_column=1,
+        has_header=True,
+    )
+    session = Session()
+    key = session.load(csv, fmt).key
+    return session, [f"{key}::A"]
 
 
 def test_rows_and_columns_are_exact(tmp_path: Path) -> None:
@@ -173,8 +230,8 @@ def test_estimate_reads_no_values_and_mints_no_columns(tmp_path: Path) -> None:
     assert mgr.resolved_keys(group_key) == before_resolved
 
 
-@pytest.mark.parametrize("wide", [False, True])
-def test_estimate_never_calls_sorted_view(tmp_path: Path, wide: bool) -> None:
+@pytest.mark.parametrize("shape", ["two_rate", "wide", "eager_csv"])
+def test_estimate_never_calls_sorted_view(tmp_path: Path, shape: str) -> None:
     """``sorted_view()`` も呼ばない — ``array()`` の boom とは**別の口**。
 
     ``LazyMdfValues.array`` だけを塞ぐと、EagerValues (CSV/Derived) 側の
@@ -183,12 +240,22 @@ def test_estimate_never_calls_sorted_view(tmp_path: Path, wide: bool) -> None:
     増やした」という別種の退行になる (memory:
     signal_range_via_sorted_view_materializes_float64_cache)。
 
-    複数 master (two_rate) と列キー (wide) の両方で見るのは、master 取得の経路が
-    2 つある (物理索引 / 列 -> チャンネル解決) ため。
+    3 形すべてを踏むのは master 取得の経路が 3 本あるため:
+    two_rate = 物理索引 / wide = 列 -> チャンネル解決 / **eager_csv =
+    ``channel_master`` の record-less 走査**。3 本目は MDF の 2 形では構造的に
+    到達不能で、しかも走査は ``Signal`` オブジェクトを掴むため、そこで
+    ``sorted_view()`` に触れると EagerValues の値キャッシュが焼き付く
+    (``array()`` の boom は EagerValues を通らないので**この経路には盲目**)。
     """
     from valisync.core.models import Signal
 
-    session, keys = _wide_session(tmp_path) if wide else _two_rate_session(tmp_path)
+    builders = {
+        "two_rate": _two_rate_session,
+        "wide": _wide_session,
+        "eager_csv": _eager_csv_session,
+    }
+    expected_rows = {"two_rate": 10, "wide": 3, "eager_csv": 2}
+    session, keys = builders[shape](tmp_path)
     calls: list[str] = []
     original = Signal.sorted_view
 
@@ -202,7 +269,7 @@ def test_estimate_never_calls_sorted_view(tmp_path: Path, wide: bool) -> None:
     finally:
         Signal.sorted_view = original  # type: ignore[method-assign]
     assert calls == []
-    assert est.rows == (3 if wide else 10)
+    assert est.rows == expected_rows[shape]
 
 
 def test_read_term_counts_physical_channels_not_columns(tmp_path: Path) -> None:
@@ -227,26 +294,73 @@ def test_eager_csv_group_contributes_no_read_time(tmp_path: Path) -> None:
     ここを 0 にしないと、CSV だけを選んだ小さなエクスポートでも確認ダイアログが
     出て「5 秒かかります」と嘘をつく。
     """
-    from valisync.core.models import Delimiter, FormatDefinition
-
-    csv = tmp_path / "eager.csv"
-    csv.write_text("t,A\n0.0,1.0\n1.0,2.0\n", encoding="utf-8")
-    fmt = FormatDefinition(
-        name="f",
-        delimiter=Delimiter.COMMA,
-        timestamp_column=0,
-        timestamp_unit="sec",
-        signal_start_column=1,
-        signal_end_column=1,
-        has_header=True,
-    )
-    session = Session()
-    key = session.load(csv, fmt).key
-    est = estimate_export(session, [f"{key}::A"], CsvExportOptions())
+    session, keys = _eager_csv_session(tmp_path)
+    est = estimate_export(session, keys, CsvExportOptions())
     assert est.est_read_s == 0.0
     # rows が 0 にならないことが要点: CSV グループは ColumnRecord を持たないので
     # `channel_key_of` が None を返す。そこで諦めると「0 列 0 行」を提示する。
     assert est.rows == 2
+
+
+def test_write_term_charges_empty_and_value_cells_differently(tmp_path: Path) -> None:
+    """書き項は **2 項** (全セル基礎 + 値セル増分)。空セルは値セルより安い。
+
+    ``_write_block_temp`` の行ループは空セルなら ``""`` を置くだけで、
+    ``vals[i]`` の索引も repr も払わない (実測: 333.6 ns 対 1,056.4 ns)。
+    1 つの単価を全セルに掛けると **空セルの多い出力ほど過大**に見積もる —
+    prod (セルの 66% が空) では 2.19 倍・18 分の待ちを 40 分と提示していた。
+
+    2 つの fixture は **セル総数が同一** (20) で非空セル数だけが違う (12 対 20)
+    ので、1 項モデルでは両者が**厳密に等しく**なる = このテストが唯一の識別点。
+    """
+    sparse_session, sparse_keys = _two_rate_session(tmp_path)
+    dense_session, dense_keys = _dense_session(tmp_path)
+    sparse = estimate_export(sparse_session, sparse_keys, CsvExportOptions())
+    dense = estimate_export(dense_session, dense_keys, CsvExportOptions())
+
+    assert sparse.rows * sparse.columns == dense.rows * dense.columns == 20
+    assert sparse.empty_ratio == pytest.approx(0.4)
+    assert dense.empty_ratio == pytest.approx(0.0)
+    assert dense.est_write_s > sparse.est_write_s
+    # 基礎項が残っていること (増分項だけにすると空セルが 0 秒になり、空セルが
+    # 支配的な出力の待ちを今度は過小に提示する)。
+    assert sparse.est_write_s > 0.0
+
+
+def test_channel_columns_hint_gives_the_identical_estimate(tmp_path: Path) -> None:
+    """呼び出し側の {チャンネル: 列数} 表は **速い経路であって別の答えではない**。
+
+    GUI (``ExportCsvDialog``) はこの表を渡して列 -> チャンネル解決を丸ごと飛ばす
+    (prod 330,004 列で 2.6 s = GUI スレッドのフリーズ)。速い経路が僅かでも違う
+    数字を出すと、B2 が「正確値」と名乗る行数/空セル率が**表示経路でだけ**
+    ずれる — 突き合わせるのは 6 フィールド全部。
+    """
+    session, keys = _wide_session(tmp_path)
+    group_key = keys[0].split("::", 1)[0]
+    hint = {f"{group_key}::Wide": len(keys)}
+
+    slow = estimate_export(session, keys, CsvExportOptions())
+    fast = estimate_export(session, keys, CsvExportOptions(), channel_columns=hint)
+    assert fast == slow
+
+
+def test_channel_columns_hint_is_ignored_when_it_disagrees_with_keys(
+    tmp_path: Path,
+) -> None:
+    """列数の合計が合わない表は**無視して解決し直す** (安全網)。
+
+    表は呼び出し側の内部状態から来るので、選択とキー列の同期が崩れれば黙って
+    ずれる。空セル率と行数は「正確値」として提示されるので、速い経路が疑わしい
+    ときは遅くても正しい方を採る。空 dict (``ask`` を差し替えたテスト経路) も
+    同じ検査で自然にフォールバックへ落ちる。
+    """
+    session, keys = _wide_session(tmp_path)
+    group_key = keys[0].split("::", 1)[0]
+    expected = estimate_export(session, keys, CsvExportOptions())
+
+    for bogus in ({}, {f"{group_key}::Wide": 1}, {"gone_1::Nope": len(keys) + 5}):
+        got = estimate_export(session, keys, CsvExportOptions(), channel_columns=bogus)
+        assert got == expected, bogus
 
 
 def test_time_range_narrows_rows_on_a_closed_interval(tmp_path: Path) -> None:
@@ -294,12 +408,17 @@ def test_disk_shortfall_requires_the_temp_amplification(
     import valisync.core.export.estimate as est_mod
 
     free_bytes = 1_000
+    # 差し替えるのは **module 属性 `est_mod.shutil`** であって `shutil.disk_usage`
+    # ではない。後者は素の shutil module オブジェクトを書き換える = テスト中
+    # 他のあらゆる import 元 (asammdf の一時ファイル操作等) が偽物を掴む。
     monkeypatch.setattr(
-        est_mod.shutil,
-        "disk_usage",
-        lambda _p: type(
-            "U", (), {"total": free_bytes, "used": 0, "free": free_bytes}
-        )(),
+        est_mod,
+        "shutil",
+        SimpleNamespace(
+            disk_usage=lambda _p: SimpleNamespace(
+                total=free_bytes, used=0, free=free_bytes
+            )
+        ),
     )
     # 2.3 x 500 = 1150 > 1000 -> 150 不足
     assert disk_shortfall(tmp_path / "out.csv", 500) == 150
@@ -317,7 +436,8 @@ def test_disk_shortfall_passes_when_the_volume_cannot_be_probed(
     def blow(_p: str) -> object:
         raise OSError("probe failed")
 
-    monkeypatch.setattr(est_mod.shutil, "disk_usage", blow)
+    # 上と同じ理由で module 属性ごと差し替える (グローバル shutil を汚さない)。
+    monkeypatch.setattr(est_mod, "shutil", SimpleNamespace(disk_usage=blow))
     assert disk_shortfall(tmp_path / "out.csv", 10**12) == 0
 
 
@@ -348,3 +468,29 @@ def test_confirm_threshold_is_time_based_not_size_based() -> None:
     assert needs_confirmation(tiny_but_slow) is True
     assert needs_confirmation(big_but_fast) is False
     assert CONFIRM_THRESHOLD_S == 5.0
+
+
+@pytest.mark.parametrize(
+    ("total_s", "expected"),
+    [(4.999, False), (5.0, True), (5.001, True)],
+)
+def test_confirm_threshold_includes_its_boundary(
+    total_s: float, expected: bool
+) -> None:
+    """閾値ちょうどは **確認する** 側 (``>=``)。
+
+    3 点で挟むのは、`>` / `>=` の取り違えが片側 1 点の assert では検出できない
+    ため — 4.999 だけを見ると `>` でも緑、5.001 だけを見ると `<` 以外はすべて緑。
+    読み項と書き項の和で判定するので、片方に寄せて合計を作る。
+    """
+    from valisync.gui.views.export_confirm import needs_confirmation
+
+    est = ExportEstimate(
+        columns=2,
+        rows=10,
+        empty_ratio=0.0,
+        est_bytes=100,
+        est_read_s=total_s,
+        est_write_s=0.0,
+    )
+    assert needs_confirmation(est) is expected

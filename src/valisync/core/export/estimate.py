@@ -16,7 +16,7 @@ master (``Signal.timestamps`` — ロード時点で既にメモリに在る) �
 from __future__ import annotations
 
 import shutil
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -50,10 +50,32 @@ __all__ = [
 # ~95 倍) を提示する = 見積が桁で嘘をつく。逸脱を spec §5.5 へ追記するのは Task 11。
 _READ_S_PER_COLD_CHANNEL: Final = 0.316
 
-# 書き: spec §1 の prod 全列外挿 (出力 ~10.1 GB・純 Python ~18.4 分) と平均セル長
-# 4.57 文字から 1,104 s / (10.1e9 B / 5.57 B) ~= 6.1e-7 s/セル。per-cell repr の
-# 単価 (0.3-1 us) とも桁が合う。
-_WRITE_S_PER_CELL: Final = 6.1e-7
+# 書き: **2 項モデル**。空セルと値セルは構造的に単価が違う — `_write_block_temp`
+# の行ループは `_fmt_value(vals[i], opts) if present[i] else ""` で、空セルは
+# `present[i]` の索引と "" だけ、値セルはそれに加えて `vals[i]` の索引・float 化・
+# shortest round-trip repr・最小クォートを払う。単価を 1 つにして全セルへ掛けると
+# prod (セルの 66% が空) で **構造的に 2.19 倍の過大報告** になる: 旧
+# `_WRITE_S_PER_CELL = 6.1e-7` は「1,104 s / (10.1e9 B / 5.57 B)」= **バイトを
+# 持つセル 1 個あたり** (prod 1.81e9 個) として導出しながら、`total_cells`
+# (prod 3.96e9 個) に掛けていた。40 分と提示していたものの実体は ~18 分。
+#
+# 暫定値の導出 (2 点で決める):
+#   (a) **比** — `_write_block_temp` の行ループをそのまま再現した実測 (本機・
+#       40 列 x 20,000 行): 空セル 333.6 ns / 値セル 1,056.4 ns。値セルの
+#       *増分* は 722.8 ns で空セルの 2.167 倍。非空率 34% の混合は予測
+#       579.4 ns に対し実測 570.4 ns (誤差 1.6%) = **2 項の加法性が成立**する
+#       ことも同時に確認済み (モデルの形そのものの検証)。
+#   (b) **絶対** — spec §1 の prod 全列外挿 (3.964e9 セル・うち非空 1.352e9・
+#       純 Python ~18.4 分 = 1,104 s) を (a) の比で分配する:
+#       BASE = 1,104 / (3.964e9 + 2.167 x 1.352e9) = 1.60e-7 / VALUE = 3.47e-7。
+#
+# **Task 11 (T-M) は 2 項とも検定すること**。特に `total_cells` だけを母数に
+# 再導出してはならない — それがこの過大報告の入口だった。加えて (a) の絶対値を
+# そのまま採ると prod は 2,299 s (38 分) になり (b) の外挿と ~2.1 倍食い違う
+# (しかも (a) はブロック分割とマージ段の再読みを含まないので下限側)。どちらが
+# 実機かは prod 1 点の実測でしか決まらない。
+_WRITE_S_PER_CELL_BASE: Final = 1.60e-7
+_WRITE_S_PER_CELL_VALUE: Final = 3.47e-7
 
 # 値セルの平均文字数。spec §1 で「uint8 量子化の repr 長 4.57 文字」を実測済み
 # (初版の 18.63 は反証された)。
@@ -93,7 +115,11 @@ class ExportEstimate:
 
 
 def estimate_export(
-    session: Session, keys: Sequence[str], options: CsvExportOptions
+    session: Session,
+    keys: Sequence[str],
+    options: CsvExportOptions,
+    *,
+    channel_columns: Mapping[str, int] | None = None,
 ) -> ExportEstimate:
     """列キー集合から出力の規模を見積もる (**値を読まない・鋳造しない**)。
 
@@ -101,6 +127,18 @@ def estimate_export(
     spec §5.2 [I-3]) は数えない。今日の GUI 経路 (``ExportCsvDialog``) は extras を
     1 本も作らないので B2 が提示する「正確値」は GUI 上では正確だが、直呼びで
     extras を渡すと行数/列数がその分だけ**過小**になる (Task 9/11 への繰越)。
+    この限界は **条件つき不変条件**として名前を付けておく: GUI が組んだ要求では
+    ``est.columns == len(req.keys)`` が成り立ち、それが `_run_export` の D5 門番
+    (``estimate_output_bytes(est.rows, est.columns)`` が core の門番を上界包含する)
+    の前提になっている。extras が到達可能になった時点でこの前提は**無効**なので、
+    Task 9/11 は D5 の門番を見直すこと (extras 込みの列数で上界を取り直す)。
+
+    *channel_columns* は ``{名前空間つき物理チャンネルキー: 選択列数}``。渡されると
+    列 -> チャンネルの解決 (``channel_key_of``) を **1 回も行わない**。prod で
+    330,004 列を 1 本ずつ解決すると 2.6 s かかり、GUI スレッドで呼ぶ本経路が
+    そのまま「エクスポートを押すと 3 秒固まる」になる。``ExportCsvDialog`` は
+    選択を物理チャンネル 1 行 = 1 エントリで持っている (spec §5.6) ので、この表は
+    そこでは**ただで手に入る** — 作るのでなく持っているものを渡す口。
 
     ``options.use_unified_timeline`` は見ない: 共有タイムライン形では全 master が
     同一内容なので union は master そのものと一致し、行数は同じになる (一致しない
@@ -111,17 +149,37 @@ def estimate_export(
     if columns == 0:
         return ExportEstimate(0, 0, 0.0, 0, 0.0, 0.0)
 
-    # 1) 列 -> 物理チャンネル。channel_key_of は ColumnRecord の最長一致だけを見る
-    #    (Task 6 のブロック割当と **同じ解決器** — 2 つ持つと見積と出力がずれる)。
-    #    None へのフォールバックが `key` そのものなのは、ColumnRecord を持たない
-    #    グループ (CSV/Derived) では 1 信号 = 1 列で列キーがそのままチャンネルキー
-    #    だから — 書き手の `scan_masters` も同じ形のフォールバック
-    #    (`metadata.get("physical_channel", sig.name)`) を持つ。ここで諦めると
-    #    CSV だけの選択が「0 行 0 列」になる。
-    cols_per_channel: dict[str, int] = {}
-    for key in key_tuple:
-        channel = session.channel_key_of(key) or key
-        cols_per_channel[channel] = cols_per_channel.get(channel, 0) + 1
+    # 1) 列 -> 物理チャンネル。呼び出し側が表を持っているならそれを使う (GUI の
+    #    本経路)。合計が列数と一致しない表は**信用しない**: 空セル率と行数は B2 が
+    #    「正確値」として提示するので、ヒントの取り違えで黙って嘘をつくより解決し
+    #    直す方がよい (遅いが正しい)。空 dict (ask() を差し替えたテスト・表を持たない
+    #    直呼び) もこの一致検査で自然にフォールバックへ落ちる。
+    cols_per_channel: dict[str, int]
+    if channel_columns is not None and sum(channel_columns.values()) == columns:
+        cols_per_channel = dict(channel_columns)
+    else:
+        # フォールバック: channel_key_of は ColumnRecord の最長一致だけを見る
+        # (Task 6 のブロック割当と **同じ解決器** — 2 つ持つと見積と出力がずれる)。
+        # None へのフォールバックが `key` そのものなのは、ColumnRecord を持たない
+        # グループ (CSV/Derived) では 1 信号 = 1 列で列キーがそのままチャンネルキー
+        # だから — 書き手の `scan_masters` も同じ形のフォールバック
+        # (`metadata.get("physical_channel", sig.name)`) を持つ。ここで諦めると
+        # CSV だけの選択が「0 行 0 列」になる。
+        # **この枝は prod の本経路ではない**: 実測 330,004 列で 2.6 s かかり、
+        # GUI スレッドで呼ぶ `MainWindow.export_csv` がそのまま「エクスポートを
+        # 押すと 3 秒固まる」になる。表を渡す経路 (GUI) はこの解決を 1 回も
+        # 行わない。
+        # **表を渡しても消えない別のコストがある**: ColumnRecord を持たない
+        # グループ (CSV/Derived) では `channel_master` が信号名の線形走査へ
+        # 落ちるので、列数 N の CSV は「チャンネル数 x 信号数」= O(N^2) になる
+        # (本機実測・表あり/なしでほぼ同値: 500 列 5.9/5.3 ms・2,000 列
+        # 74.8/67.5 ms・5,000 列 458/442 ms)。実 ADAS CSV の列幅 (数十〜数百)
+        # では無視できるが、数千列の CSV が現れたら索引化が要る
+        # (`signal_group_manager.channel_master` の走査側に同じ注記あり)。
+        cols_per_channel = {}
+        for key in key_tuple:
+            channel = session.channel_key_of(key) or key
+            cols_per_channel[channel] = cols_per_channel.get(channel, 0) + 1
 
     # 2) チャンネル -> master。identity dedup は union と同じ規則 (spec §5.4)。
     masters: dict[int, np.ndarray] = {}
@@ -167,6 +225,7 @@ def estimate_export(
             * cols_per_master[mid]
         )
     total_cells = rows * columns
+    nonempty_cells = filled  # 正確値 (率と同じ 1 つの走査から出る)
     empty_ratio = 0.0 if total_cells == 0 else 1.0 - filled / total_cells
     # master を持たない列 (アンロード済み) は filled に寄与しないので、僅かに
     # 過大へ倒れうる。率なので [0, 1] へ丸める (負の空セル率を人に見せない)。
@@ -190,7 +249,12 @@ def estimate_export(
         empty_ratio=empty_ratio,
         est_bytes=int(header_bytes + per_row * rows),
         est_read_s=lazy_channels * _READ_S_PER_COLD_CHANNEL,
-        est_write_s=total_cells * _WRITE_S_PER_CELL,
+        # 全セルに掛かる基礎項 + 値セルにだけ掛かる増分項。1 項にすると空セルが
+        # 支配的な出力 (prod は 66% が空) で 2.19 倍の過大報告になる。
+        est_write_s=(
+            total_cells * _WRITE_S_PER_CELL_BASE
+            + nonempty_cells * _WRITE_S_PER_CELL_VALUE
+        ),
     )
 
 

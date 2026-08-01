@@ -176,6 +176,10 @@ def test_disk_shortfall_refuses_before_asking_anything(
     assert submitted == []
     assert asked == [], "ディスク不足なのに続行可否を訊いた (答えても書けない)"
     assert blocked and "空き容量" in blocked[0]
+    # 不足量そのものが文言に載ること。「空き容量」だけを見ていると、
+    # `_fmt_size(shortfall)` を落として「足りません」とだけ言う退行
+    # (= どれだけ空ければよいか分からない) を素通しする。4,096 B -> "4.0 KB"。
+    assert "4.0 KB" in blocked[0], blocked[0]
 
 
 def test_disk_gate_upper_bounds_the_core_gate(
@@ -210,3 +214,132 @@ def test_disk_gate_upper_bounds_the_core_gate(
 
     assert seen == [estimate_output_bytes(small.rows, small.columns)]
     assert seen[0] > small.est_bytes
+
+
+# --- 見積を GUI スレッドで固まらせない配線 (I1) --------------------------------
+
+
+def _wide_app_vm(tmp_path: Path) -> Any:
+    """幅 16 の 2-D チャンネル + スカラー 1 本を積んだ実 AppViewModel。"""
+    from tests.mdf4_helpers import write_mdf4_wide_2d
+    from valisync.core.session import Session
+    from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+
+    path = write_mdf4_wide_2d(tmp_path, cols=16)
+    session = Session()
+    key = session.load(path).key
+    app_vm = AppViewModel(session)
+    app_vm.register_loaded(key)
+    return app_vm, key
+
+
+def test_export_csv_hands_the_dialogs_channel_map_to_the_estimate(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ダイアログが持っている {チャンネル: 列数} が見積まで届く配線 (I1)。
+
+    `estimate_export` は表が無ければ列キー 1 本ずつを `channel_key_of` で解決する
+    — prod 330,004 列で **2.6 s** かかり、`export_csv` は GUI スレッドなので
+    そのまま「押すと 3 秒固まる」になる。ダイアログは選択を物理チャンネル単位で
+    持っている (spec §5.6) ので、確定時に書き戻してもらう。
+
+    ここが見るのは **配線** (表が非空で・キーが物理チャンネル・合計が列数と一致)。
+    速さそのものは prod 実データの demo-gated テストが見る (合成 16 列では
+    フォールバックも速く、閾値を置いても意味がない)。
+    """
+    from PySide6.QtWidgets import QDialog
+
+    import valisync.gui.views.main_window as mw_mod
+    from valisync.core.export.estimate import ExportEstimate
+    from valisync.gui.views.export_csv_dialog import ExportCsvDialog
+    from valisync.gui.views.main_window import MainWindow
+
+    app_vm, key = _wide_app_vm(tmp_path)
+    window = MainWindow(app_vm)
+    qtbot.addWidget(window)
+
+    target = tmp_path / "out.csv"
+
+    def _auto_accept(self: Any) -> QDialog.DialogCode:
+        self._select_all()
+        self._save_path_provider = lambda: str(target)
+        self._on_accept()
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(ExportCsvDialog, "exec", _auto_accept)
+
+    captured: dict[str, Any] = {}
+
+    def _fake_estimate(session: Any, keys: Any, options: Any, **kwargs: Any) -> Any:
+        captured["keys"] = tuple(keys)
+        captured.update(kwargs)
+        return ExportEstimate(2, 10, 0.0, 100, 0.1, 0.1)
+
+    monkeypatch.setattr(mw_mod, "estimate_export", _fake_estimate)
+    monkeypatch.setattr(window, "_run_export", lambda req, est: None)
+
+    window.export_csv()
+
+    plan = captured["channel_columns"]
+    # 幅 16 の "Wide" は **1 チャンネル 16 列**、"Clean" は 1 列。列ごとに 1 本の
+    # エントリを作る表 (= 圧縮前の形) だと 17 エントリになるので、ここは
+    # 「チャンネル単位で持っている」ことの assert でもある。
+    assert plan == {f"{key}::Wide": 16, f"{key}::Clean": 1}, plan
+    assert sum(plan.values()) == len(captured["keys"]) == 17
+
+
+_PROD_DEMO = Path("demo_data/prod_demo.mf4")
+
+
+@pytest.mark.skipif(not _PROD_DEMO.exists(), reason="prod demo mf4 not generated")
+def test_prod_scale_estimate_stays_off_the_freeze_threshold(qtbot: QtBot) -> None:
+    """prod 実データ (330,004 列) の見積が **GUI スレッドを固めない**。
+
+    合成 fixture では捕まらない: フォールバック解決のコストは列数に比例するので、
+    16 列でも 5,000 列でも「速い」に見える。実ファイルでしか 2.6 s は出ない。
+
+    閾値 100 ms は「1 フレーム (16 ms) は超えるが人には引っかからない」帯で、
+    実測 (下の print) はこれより 1 桁小さい。ダイアログが表を渡さなくなると
+    フォールバックへ落ちて 2.6 s = **26 倍** になるので、閾値の置き場所に
+    余裕がある。
+
+    ついでに書き項も見る (I2): 2 項モデル化の前は同じ入力で 2,418 s (40 分) を
+    提示していた — spec §1 の外挿 (~18.4 分 = 1,104 s) の 2.19 倍。帯を
+    1,000-1,250 s (外挿の ±13%) と狭めに取るのは、**2 項をどう 1 項へ潰しても
+    帯の外へ出る**ようにするため (VALUE だけを全セルへ = 1,375 s / BASE+VALUE を
+    全セルへ = 2,010 s / 旧 6.1e-7 = 2,418 s)。**係数は Task 11 (T-M) が prod
+    1 点で検定するまで暫定**なので、この帯は検定と一緒に見直すこと (帯そのものが
+    受け入れ条件ではない — 桁が合っているかの見張り)。
+    """
+    import time
+
+    from valisync.core.export.csv_exporter import CsvExportOptions
+    from valisync.core.export.estimate import estimate_export
+    from valisync.core.session import Session
+    from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+    from valisync.gui.views.export_csv_dialog import ExportCsvDialog
+
+    session = Session()
+    key = session.load(_PROD_DEMO).key
+    try:
+        app_vm = AppViewModel(session)
+        app_vm.register_loaded(key)
+        dlg = ExportCsvDialog(app_vm, initial_selected=set())
+        qtbot.addWidget(dlg)
+        dlg._select_all()
+        plan = dlg.channel_columns()
+        keys = dlg._checked_keys()
+        assert len(keys) > 300_000, len(keys)
+
+        started = time.perf_counter()
+        est = estimate_export(session, keys, CsvExportOptions(), channel_columns=plan)
+        elapsed = time.perf_counter() - started
+
+        assert est.columns == len(keys)
+        assert elapsed < 0.1, (
+            f"見積が {elapsed * 1000:.0f} ms かかった (表が届いていない)"
+        )
+        assert 1000.0 < est.est_write_s < 1250.0, est.est_write_s
+    finally:
+        # 1.36 GB のハンドルを後続テストへ引き継がない。
+        session.remove_group(key, force=True)

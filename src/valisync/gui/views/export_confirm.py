@@ -24,7 +24,16 @@ def needs_confirmation(est: ExportEstimate) -> bool:
 
 
 def confirm_body(est: ExportEstimate) -> str:
-    """B2 の 5 点。正確値と推定値を文言で区別する (「推定」の 2 文字が唯一の目印)。"""
+    """B2 の 5 点。正確値と推定値を文言で区別する (「推定」の 2 文字が唯一の目印)。
+
+    spec §5.5 の文言例からの **意図的逸脱が 2 点**ある (どちらも D-1 文言 OS 側が
+    優先):
+    1. 「約 66 %」— 例は「約 66%」だが R-06 (数値と単位の間に半角スペース) を採る。
+    2. 「〜を書き出します。」— R-08 の確認形 (「〜しますか」+ 全角疑問符) でなく
+       平叙形。動詞はボタン (`EXPORT_CONFIRM_YES` = 「書き出す」) が担う規約
+       (`CONFIRM_CLOSE_YES` と同型) なので、本文を疑問形にすると本文とボタンで
+       動詞が二重になる。
+    """
     return S.EXPORT_CONFIRM_BODY_TMPL.format(
         columns=est.columns,
         rows=est.rows,
