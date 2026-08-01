@@ -295,6 +295,96 @@ def test_cancelled_export_reports_the_pre_start_estimate(qtbot: QtBot) -> None:
     assert "狭め" in msg or "減らし" in msg
 
 
+def test_source_lost_is_recorded_as_a_diagnostic_not_just_a_status_line(
+    qtbot: QtBot,
+) -> None:
+    """[I7c] decay は **診断 1 件** を残す (押していないのに出力が無いため)。
+
+    ステータス行は次の操作で上書きされ数秒で消える — 「なぜ出力が無いのか」を
+    後から辿れる記録はここにしか残らない。
+    """
+    from valisync.core.export.csv_exporter import ExportSourceLost
+    from valisync.core.export.estimate import ExportEstimate
+    from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+    from valisync.gui.views.main_window import MainWindow
+
+    window = MainWindow(AppViewModel())
+    qtbot.addWidget(window)
+    est = ExportEstimate(1234, 5678, 0.66, 10_100_000_000, 600.0, 504.0)
+
+    window._on_export_cancelled(
+        ExportSourceLost("信号 'C0' のファイルは既に閉じられています", key="mf4_1::C0"),
+        est,
+    )
+
+    entries = window.diagnostics_vm.entries()
+    assert len(entries) == 1, f"診断が {len(entries)} 件 (decay は 1 件)"
+    assert entries[0].level == "error"
+    assert "閉じられています" in entries[0].message
+    assert entries[0].signal_name == "mf4_1::C0", "どの列で失われたかが残っていない"
+    # 中止の助言 (範囲を狭める/列を減らす) は decay には的外れ — 出さない。
+    msg = window.status_message()
+    assert "狭め" not in msg and "減らし" not in msg
+    assert "閉じられ" in msg
+
+
+def test_a_user_cancel_leaves_no_diagnostic(qtbot: QtBot) -> None:
+    """出し分けの反対側 (これが無いと「常に診断を出す」実装でも緑になる)。
+
+    「メッセージが出た」だけを見るテストはこの分岐に**構造的に盲目** — 両側を
+    同じファイルで測って初めて isinstance の分岐が意味を持つ。
+    """
+    from valisync.core.export.csv_exporter import ExportCancelled
+    from valisync.core.export.estimate import ExportEstimate
+    from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+    from valisync.gui.views.main_window import MainWindow
+
+    window = MainWindow(AppViewModel())
+    qtbot.addWidget(window)
+    est = ExportEstimate(1234, 5678, 0.66, 10_100_000_000, 600.0, 504.0)
+
+    window._on_export_cancelled(ExportCancelled("cancelled"), est)
+
+    assert window.diagnostics_vm.entries() == [], (
+        "ユーザーが押した中止で診断が残った (押した本人には自明な事実の水増し)"
+    )
+    assert "1234" in window.status_message()
+
+
+def test_a_decayed_export_reaches_the_cancelled_callback_not_the_error_modal(
+    qtbot: QtBot, tmp_path: Path, monkeypatch
+) -> None:
+    """継承 (`ExportSourceLost(ExportCancelled)`) の実効: 実 `_run_export` 経路で
+    エラーモーダルではなく `on_cancelled` 側へ流れる。
+
+    基底を `Exception` へ戻すと `ExportController._fail` の isinstance を外れ、
+    ここがモーダル側で RED になる (= 継承が「配線を増やさずに済む」根拠の実証)。
+    """
+    from valisync.core.export.csv_exporter import CsvExportOptions, ExportSourceLost
+    from valisync.gui.viewmodels.app_viewmodel import AppViewModel
+    from valisync.gui.views import main_window as mw_mod
+    from valisync.gui.views.main_window import MainWindow
+
+    window = MainWindow(AppViewModel())
+    qtbot.addWidget(window)
+    window._confirm_export_fn = lambda _e: True
+    modals: list[object] = []
+    monkeypatch.setattr(
+        mw_mod.QMessageBox, "critical", lambda *a, **k: modals.append(a)
+    )
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise ExportSourceLost("元ファイルが閉じられました", key="mf4_1::C0")
+
+    monkeypatch.setattr(window.app_vm.session, "export_csv", boom)
+
+    window._run_export(_tiny_request(tmp_path, CsvExportOptions()), _tiny_estimate())
+
+    qtbot.waitUntil(lambda: len(window.diagnostics_vm.entries()) == 1, timeout=5000)
+    assert modals == [], "decay がエラーモーダルへ流れた (継承が効いていない)"
+    assert window.diagnostics_vm.entries()[0].signal_name == "mf4_1::C0"
+
+
 def test_cancel_callback_is_actually_wired_to_the_run_export_path(
     qtbot: QtBot, tmp_path: Path, monkeypatch
 ) -> None:

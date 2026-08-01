@@ -164,6 +164,17 @@ EXPORT_CANCELLED_TMPL: Final = (
 EXPORT_ALREADY_RUNNING: Final = (
     "エクスポートを実行中です。完了または中止が終わるまでお待ちください。"
 )
+# [I7c] decay (元ファイルが閉じられた) は**ユーザーが押した中止と別文言**にする。
+# EXPORT_CANCELLED_TMPL の「範囲を狭めるか列を減らして再実行」は decay には
+# 誤った助言で (狭めても閉じたファイルは読めない)、ユーザーを的外れな操作へ誘導する。
+EXPORT_SOURCE_LOST_STATUS: Final = (
+    "⛔ エクスポートを中止しました（元ファイルが閉じられました）。"
+    "ファイルを開き直してから再実行してください。"
+)
+# 診断の「データソース」列に出すラベル。実ファイル名を使わないのは、decay の時点で
+# そのグループは既に session から消えており source_name が引けないため
+# (SAMPLE_READ_ERROR_SOURCE と同じ「サブシステム名で代用する」規約)。
+EXPORT_DIAG_SOURCE: Final = "エクスポート"
 
 # ── ダイアログ: 信号プレビュー (signal_preview_window・R-05 em ダッシュ) ─────
 PREVIEW_UNAVAILABLE: Final = "この信号はプレビューできません"

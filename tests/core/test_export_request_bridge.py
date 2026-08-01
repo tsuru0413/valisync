@@ -22,6 +22,7 @@ from valisync.core.export.csv_exporter import (
     CsvExportOptions,
     ExportCancelled,
     ExportRequest,
+    ExportSourceLost,
     passthrough_header_names,
 )
 from valisync.core.models import Signal
@@ -144,11 +145,26 @@ def test_header_resolver_length_mismatch_fails_loudly(tmp_path: Path) -> None:
 
 
 def test_unresolvable_key_fails_loudly_without_writing(tmp_path: Path) -> None:
+    """**E-4b Task 10b supersede (spec §5.7 [I7c])**: 型が ValueError -> ExportSourceLost。
+
+    「大声で落ちる・1 バイトも書かない」という本テストの契約は不変で、動いたのは
+    **例外の種別だけ**。`Session` 境界の欠落キーは「想定外の内部エラー」ではなく
+    「エクスポート中に元ファイルが消えた」= 想定内の decay なので、`export_csv` は
+    `export_resolver()` を通して `ExportSourceLost` (= `ExportCancelled` の
+    サブクラス) を投げる。これにより GUI はエラーモーダルではなく
+    B6 経路 (ステータス + 診断 1 件) へ落とせる — ValueError のままだと
+    「なぜ出力が無いのか」の記録が 1 件も残らない。
+
+    writer 内部の loud-fail (解決器が None を返した = 呼び出し規約違反) 側の
+    ValueError は**据え置き**で、`tests/core/export/test_block_writer.py::
+    test_scan_masters_raises_for_an_unresolvable_key` が引き続き pin する。
+    区別が付くのは Session 境界を通ったかどうか (= decay か規約違反か)。
+    """
     session = Session()
     key = session.load(write_mdf4_2d(tmp_path)).key
     out = tmp_path / "missing.csv"
 
-    with pytest.raises(ValueError, match="解決"):
+    with pytest.raises(ExportSourceLost, match="NoSuchColumn"):
         session.export_csv([f"{key}::NoSuchColumn"], out)
     assert not out.exists()
 

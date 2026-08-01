@@ -10,9 +10,11 @@ import numpy as np
 from valisync.core.downsampler.downsampler import Downsampler
 from valisync.core.export.csv_exporter import (
     EXPORT_CONTAINER_CHANNEL_ERROR_TMPL,
+    EXPORT_SOURCE_LOST_TMPL,
     CsvExporter,
     CsvExportOptions,
     ExportRequest,
+    ExportSourceLost,
     passthrough_header_names,
 )
 from valisync.core.formula.engine import FormulaEngine
@@ -23,6 +25,7 @@ from valisync.core.loaders.mdf_loader import MdfLoader
 from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR, SignalGroupManager
 from valisync.core.models import FormatDefinition, Signal, SignalGroup
 from valisync.core.models.load_result import Diagnostic, LoadCancelled
+from valisync.core.models.sample_source import SampleReadError
 from valisync.core.statistics.range_stats import RangeStatistics, StatisticsResult
 from valisync.core.sync.synchronizer import TimeSynchronizer
 
@@ -329,6 +332,42 @@ class Session:
         """
         return self._groups.resolve_transient(key)
 
+    def export_resolver(self) -> Callable[[str], Signal]:
+        """エクスポート専用の列解決器 (**帳簿に載せない**・decay を loud にする)。
+
+        unload との競合契約 (spec §5.7 [I7c]): GUI 側の busy ガード
+        (``AppViewModel.unload_file`` の述語) は維持したうえで、core 側の振る舞いを
+        **クラッシュではなく decay** として定義する。``None`` と ``SampleReadError``
+        のどちらも ``ExportSourceLost`` へ畳むのは、呼び出し側 (パイプライン) に
+        「None なら何を書くか」という 2 つ目の分岐を作らせないため — 部分的に
+        空セルで埋めた CSV が出るくらいなら、何も残さない方が正しい (B6)。
+
+        **必ず ``resolve_signal_transient`` を呼ぶ** (``resolve_signal`` ではない):
+        鋳造列を LRU 帳簿へ載せると全列エクスポートの定常が容量ぶん (512 本) 常駐し、
+        選択列 < 512 の範囲エクスポートでは 1 本も evict されない (spec §5.3 MG-1)。
+        この 1 点は ``tests/core/test_export_bridge_golden.py`` の ``_KeyedSession``
+        が門番で、帳簿経路へ退行すると 11 本が RED になる。
+
+        **戻り値の Signal は「読める」ことまでは保証しない**: 鋳造は I/O を伴わず
+        (``_mint_column`` は ``LazyMdfValues`` を組むだけ)、閉じたハンドルでも
+        Signal は返る。読みの最中に閉じられた場合の decay は
+        ``CsvExporter._export_request`` の ``except SampleReadError`` が受ける —
+        ここの ``except`` は「解決そのものが読みを始めた」将来形への保険。
+        """
+
+        def resolve(key: str) -> Signal:
+            try:
+                sig = self.resolve_signal_transient(key)
+            except SampleReadError as exc:
+                raise ExportSourceLost(
+                    str(exc), key=key, source_file=exc.source_file
+                ) from exc
+            if sig is None:
+                raise ExportSourceLost(EXPORT_SOURCE_LOST_TMPL.format(key=key), key=key)
+            return sig
+
+        return resolve
+
     def column_names_of(self, key: str, display_name: str) -> tuple[str, ...]:
         """物理チャンネル 1 本の列名を順序どおり返す (名前空間なし・E-3)。
 
@@ -621,15 +660,15 @@ class Session:
         届ける唯一の口で、これが無いと `ExportRun` の進捗もキャンセルも
         `CsvExporter` に到達しない (キャンセルボタンが押せるのに効かない)。
 
-        解決は `resolve_signal_transient` — 鋳造列を LRU 帳簿へ載せない
-        (載せると全列エクスポートの定常が容量ぶん 512 本になり、選択列 < 512 の
-        範囲エクスポートでは 1 本も evict されない・spec §5.3 MG-1)。
+        解決は `export_resolver()` (中身は `resolve_signal_transient`) — 鋳造列を
+        LRU 帳簿へ載せない (載せると全列エクスポートの定常が容量ぶん 512 本になり、
+        選択列 < 512 の範囲エクスポートでは 1 本も evict されない・spec §5.3 MG-1)。
 
-        **Task 10b への引き継ぎ (spec §5.7 [I7c])**: ここは Task 10b が
-        `self.export_resolver()` へ差し替える (1 行)。差し替えないと
-        `ExportSourceLost` が production から到達不能なまま (欠落キーは
-        `scan_masters` の ValueError になり decay 経路へ落ちない) で、
-        「診断 1 件」も誰も出さない。**差し替え点は本メソッドの 1 箇所だけ**
+        **Task 10b (spec §5.7 [I7c])**: `resolve_signal_transient` を直接渡さず
+        `export_resolver()` を挟むのは、欠落キーを `scan_masters` の ValueError
+        (= 想定外の内部エラー) ではなく `ExportSourceLost` (= 想定内の decay) に
+        するため。ValueError のままだと GUI はエラーモーダルを出すだけで、
+        「診断 1 件」を誰も出さない。**差し替え点は本メソッドの 1 箇所だけ**
         (`export_csv` はここへ委譲するので二重管理にならない)。
         """
         self._reject_container_channels(
@@ -637,7 +676,7 @@ class Session:
         )
         self._exporter.export(
             request,
-            self.resolve_signal_transient,
+            self.export_resolver(),
             progress=progress,
             cancel=cancel,
         )

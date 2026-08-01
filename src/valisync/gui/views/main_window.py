@@ -46,7 +46,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from valisync.core.export.csv_exporter import ExportRequest, estimate_output_bytes
+from valisync.core.export.csv_exporter import (
+    ExportRequest,
+    ExportSourceLost,
+    estimate_output_bytes,
+)
 from valisync.core.export.estimate import (
     ExportEstimate,
     disk_shortfall,
@@ -1085,19 +1089,29 @@ class MainWindow(QMainWindow):
         エラー面 (モーダル) へは流さない — ユーザーが押した中止は正常系で、
         `LoadCancelled` がステータス行だけで終わるのと同型。
 
-        **Task 10b への引き継ぎ (spec §5.7 [I7c])**: `ExportSourceLost`
-        (= unload との競合で元ファイルが読めなくなった decay) は本メソッドへ
-        `ExportCancelled` として届くが、ユーザー起点の中止と違って
-        「なぜ出力が無いのか」を後から辿れる記録が要る (ステータス行は数秒で
-        流れる)。Task 10b が `ExportSourceLost` を作った時点で、ここに
-        `isinstance` の出し分けと診断 1 件の追記を足す。**今はその型が存在
-        しない**ので分岐を書けない (書くと到達不能な死にコードになる)。
+        **Task 10b (spec §5.7 [I7c])**: `ExportSourceLost` (= unload との競合で
+        元ファイルが読めなくなった decay) は `ExportCancelled` のサブクラスなので
+        ここへ届くが、ユーザー起点の中止と**別扱い**にする:
+
+        - ユーザー起点 = ステータス行のみ (本人が押したので理由は自明)。
+        - decay = ステータス行 + **診断 1 件**。押していないのに出力が無いので、
+          「なぜ出力が無いのか」を後から辿れる記録が要る (ステータス行は次の操作で
+          上書きされ、数秒で消える)。
 
         M2 (T9 レビュー是正): 診断は `self.diagnostics_vm.add(source, [Diagnostic(...)])`
-        を使うこと (`app_vm.add_diagnostic` は存在しない — ブリーフの想定と異なる・
-        T9 実測)。
+        を使う (`app_vm.add_diagnostic` は存在しない — T9 実測)。
         """
-        del exc  # 現状はユーザー起点の中止のみ (出し分けは Task 10b)
+        if isinstance(exc, ExportSourceLost):
+            # メッセージは例外が運んできたものをそのまま出す — decay の理由は
+            # 「閉じられた」以外に I/O 失敗もありうるので (csv_exporter の
+            # `except SampleReadError` を参照)、ここで文言を作り直すと原因を
+            # 誤って断定する。signal_name には失われた列/チャンネルを入れる。
+            self.diagnostics_vm.add(
+                S.EXPORT_DIAG_SOURCE,
+                [Diagnostic(level="error", message=str(exc), signal_name=exc.key)],
+            )
+            self.set_status_message(S.EXPORT_SOURCE_LOST_STATUS)
+            return
         self.set_status_message(
             S.EXPORT_CANCELLED_TMPL.format(
                 columns=est.columns, rows=est.rows, size=_fmt_size(est.est_bytes)

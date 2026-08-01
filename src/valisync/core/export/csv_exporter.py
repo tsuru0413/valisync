@@ -20,6 +20,7 @@ from valisync.core.export.timeline import (
     union_timeline,
 )
 from valisync.core.models import Signal
+from valisync.core.models.sample_source import SampleReadError
 
 # ブロック幅の下限/上限 (spec D3)。下限 16 は「予算を守れない」ではなく **進める**
 # ための床で、union が極端に長い (= 1 列が予算を超える) ときでも 16 列ずつ進む。
@@ -251,6 +252,45 @@ class ExportCancelled(Exception):
     束ねる ``export()`` が持ち、そこの ``finally`` が一括で消す)。個々の writer にも
     消させると「誰が消したか」が 2 か所になり、部分削除の競合が入る。
     """
+
+
+#: 列が解決できなくなった (= 元ファイルがアンロードされた) ときの decay 文言。
+#: `EXPORT_UNRESOLVABLE_KEY_ERROR_TMPL` と別なのは**宛先が違う**から — あちらは
+#: 「解決器が None を返した」という writer 内部の loud-fail (ValueError = 想定外)
+#: で、こちらは Session が張る「エクスポート中の unload」という**想定内の decay**
+#: (spec §5.7 [I7c]) の文言。同じ文字列を使い回すと GUI 側の出し分け
+#: (isinstance) と文言が二重管理になる。
+EXPORT_SOURCE_LOST_TMPL = (
+    "エクスポート中に元ファイルが閉じられたため中止しました (列: '{key}')。"
+)
+
+
+class ExportSourceLost(ExportCancelled):
+    """エクスポート中に元ファイルが閉じられ、列が読めなくなった (decay)。
+
+    ``ExportCancelled`` を **継承する** のは、temp 削除と「失敗ならファイルが存在
+    しない」契約 (spec §10) の経路を 1 本に保つため — 別系統の例外にすると
+    ``_export_request`` の ``finally`` の網から漏れて残骸が出るうえ、
+    ``ExportController._fail`` の ``isinstance(exc, ExportCancelled)`` 分岐から
+    外れてエラーモーダルへ流れる。GUI は逆向きの isinstance で「ユーザーが押した」
+    と「ファイルが消えた」を出し分ける (前者はステータスのみ・後者は診断 1 件)。
+
+    *key* は失われた列キー、*source_file* は元ファイルのパス (分かる範囲で)。
+    診断の宛先を決めるためのコンテキストで、``SampleReadError`` が
+    ``signal_key`` / ``source_file`` を提げているのと同じ規約 — 投げ手だけが
+    知っている情報なので、ここへ載せないと GUI 側では復元できない。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        key: str | None = None,
+        source_file: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.key = key
+        self.source_file = source_file
 
 
 @dataclass(frozen=True)
@@ -665,6 +705,31 @@ class CsvExporter:
             final_temp = current[0]
             os.replace(final_temp, output_path)
             temps.remove(final_temp)
+        except SampleReadError as exc:
+            # **decay の第 2 の入口** (spec §5.7 [I7c])。`Session.export_resolver`
+            # が閉じるのは「解決が None を返す」窓だけで、production の実レースは
+            # ここ — `Session.remove_group` は _groups.remove -> handle.close の順
+            # なので、既に解決済みの列を `sorted_view()` で**読む**瞬間に閉じられる
+            # (session.py の WHY: in-flight の select は lock で完走し、
+            # SampleReadError になるのは「次の列」)。解決と読みは
+            # `_write_block_temp` で隣接しており窓は狭いが、~18 分走る prod では
+            # 常態になる。
+            #
+            # 包まないと SampleReadError がそのまま外へ出て、GUI の
+            # `ExportController._fail` の `isinstance(exc, ExportCancelled)` を
+            # 外れ、B6 の decay 経路 (ステータス + 診断 1 件) ではなく
+            # **エラーモーダル**になる (temp 削除だけは下の finally で成立するので、
+            # 症状はユーザー向けの出方だけ = 数字にもテストにも出ない)。
+            #
+            # 文言は差し替えず `str(exc)` を運ぶ: SampleReadError は「閉じられた」
+            # 以外に I/O 失敗・長さ不一致でも上がるので、`EXPORT_SOURCE_LOST_TMPL`
+            # で上書きすると原因を誤って断定した診断が残る。型 (= 扱い) だけを
+            # decay へ寄せ、理由は元の文言のまま伝える。
+            raise ExportSourceLost(
+                str(exc),
+                key=exc.signal_key,
+                source_file=exc.source_file,
+            ) from exc
         finally:
             # B6「何も残さない」: 成功でも失敗でもキャンセルでも temp は残さない。
             # **束ねる側 (ここ) が唯一の掃除役** — 個々の writer にも消させると
