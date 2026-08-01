@@ -247,6 +247,11 @@ class CsvLoader:
 
         # --- Build Signal objects ---
         timestamps = np.array(timestamps_list, dtype=np.float64)
+        # read-only にすると Signal.__init__ (signal.py:83) がコピーせず**共有**する
+        # ため、CSV グループでも「1 グループ = master 1 個」になる。writeable のままだと
+        # 列ごとにコピーが生まれ、E-4b の union identity dedup が構造的に 1 件も効かない
+        # (spec §5.4 [I-9])。mdf_loader.py:431 の master 凍結と同型。
+        timestamps.flags.writeable = False
         abs_path = str(file_path.resolve())
 
         # LD-04: 非単調/重複はファイル単位で1件の warning(全列が同一時間軸)
