@@ -79,6 +79,16 @@ BUSY_LOADING_TMPL: Final = "{label} を読み込み中…"
 BUSY_LOADING_MULTI_TMPL: Final = "{n} ファイルを読み込み中…"
 BUSY_EXPORTING_TMPL: Final = "{label} をエクスポート中…"
 
+# ── BusyOverlay の ETA / エクスポート中止 (E-4b・spec §5.5-3 / B6) ────────────
+# 「計測中…」は最初のブロックが終わるまでの表示 = 0 除算ガードの人向けの顔。
+# 「仕上げ処理中…」は末尾のマージ段 — 進捗の単位は等重でないので、そこで線形
+# 外挿の数字を出すと「残り 約 0 秒」と言いながら数分回る (csv_exporter の
+# `n_units` コメントが根拠)。数字を出さないことが正しい表示。
+BUSY_ETA_MEASURING: Final = "残り時間: 計測中…"
+BUSY_ETA_TMPL: Final = "残り時間: 約 {eta}"
+BUSY_ETA_FINISHING: Final = "仕上げ処理中…"
+BUSY_EXPORT_CANCELLING: Final = "エクスポートを中止しています…"
+
 # ── ステータスバー: 読込完了時の診断誘導 (判断点 #13) ────────────────────────
 STATUS_DIAG_ALERT_TMPL: Final = f" ・ ⚠ 警告/エラー {{n}} 件（{REF_DIAGNOSTICS}）"
 STATUS_DIAG_INFO_TMPL: Final = f" ・ ℹ 情報 {{n}} 件（{REF_DIAGNOSTICS}）"
@@ -140,6 +150,13 @@ EXPORT_CONFIRM_NO: Final = "キャンセル"
 EXPORT_DISK_SHORT_TMPL: Final = (
     "保存先の空き容量が足りません（あと約 {shortfall} 必要です）。"
     "出力範囲を狭めるか列を減らしてください。"
+)
+# 中止後は **開始前の見積値** をそのまま再掲する (B6)。中止後に測り直さないのは、
+# unload 済み/範囲変更後では値が変わってしまい「なぜ止めたのか」の手がかりに
+# ならないため。桁区切りは付けない (EXPORT_CONFIRM_BODY_TMPL と同規約)。
+EXPORT_CANCELLED_TMPL: Final = (
+    "エクスポートを中止しました（{columns} 列 × {rows} 行・推定 {size}）。"
+    "出力範囲を狭めるか列を減らして再実行してください。"
 )
 
 # ── ダイアログ: 信号プレビュー (signal_preview_window・R-05 em ダッシュ) ─────

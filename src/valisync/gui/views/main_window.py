@@ -218,7 +218,9 @@ class MainWindow(QMainWindow):
         self._csv_format_resolver: Callable[[Path], FormatDefinition | None] = (
             self._default_csv_format_resolver
         )
-        self.busy_overlay.cancel_requested.connect(self._load_controller.cancel_active)
+        # 旧: connect(self._load_controller.cancel_active) — **恒久配線**だったので
+        # エクスポート中のキャンセルボタンは押しても何も起きなかった (spec §5.5-1)。
+        self.busy_overlay.cancel_requested.connect(self._cancel_busy_operations)
         self.data_explorer: DataExplorerView | None = None
 
         # ── File Browser dock (right top) ────────────────────────────────────
@@ -1025,6 +1027,9 @@ class MainWindow(QMainWindow):
         if needs_confirmation(est) and not self._confirm_export_fn(est):
             return
         session = self.app_vm.session
+        # 進捗/キャンセルのハンドルは submit の **前** に取る (callable を組むのが
+        # 呼び出し側なので、submit 後では進捗を差し込む窓が無い)。
+        run = self._export_controller.prepare()
         self._export_controller.submit(
             lambda: session.export_csv(
                 req.keys,
@@ -1032,13 +1037,52 @@ class MainWindow(QMainWindow):
                 req.options,
                 header_resolver=req.header_resolver,
                 extra_signals=req.extra_signals,
+                progress=run.progress,
+                cancel=run.cancel,
             ),
+            run=run,
             busy=self.busy_overlay,
             label=req.output_path.name,
             on_success=lambda: self.set_status_message(
                 f"エクスポートしました: {req.output_path.name}"
             ),
             on_error=self._on_export_error,
+            on_cancelled=lambda exc: self._on_export_cancelled(exc, est),
+        )
+
+    def _cancel_busy_operations(self) -> None:
+        """BusyOverlay のキャンセルを **実行中の全操作** へ配る (spec §5.5-1)。
+
+        「今アクティブなのはどれか」をルータ側に持たない: 各コントローラは自分の
+        active 集合を既に持っており、アイドルなら cancel_active は no-op。ルータに
+        状態を作ると 2 つ目の真実になり必ず腐る — 旧実装が load へ恒久配線されて
+        いたのがまさにその腐り方だった。
+        """
+        self._load_controller.cancel_active()
+        self._export_controller.cancel_active()
+
+    def _on_export_cancelled(self, exc: Exception, est: ExportEstimate) -> None:
+        """B6: 中止を告げ、**開始前の見積値** を再掲して削り方を促す。
+
+        中止後に測り直さないのは、unload 済み/範囲変更後では値が変わってしまい、
+        「なぜ止めたのか」の手がかりにならないため。
+
+        エラー面 (モーダル) へは流さない — ユーザーが押した中止は正常系で、
+        `LoadCancelled` がステータス行だけで終わるのと同型。
+
+        **Task 10b への引き継ぎ (spec §5.7 [I7c])**: `ExportSourceLost`
+        (= unload との競合で元ファイルが読めなくなった decay) は本メソッドへ
+        `ExportCancelled` として届くが、ユーザー起点の中止と違って
+        「なぜ出力が無いのか」を後から辿れる記録が要る (ステータス行は数秒で
+        流れる)。Task 10b が `ExportSourceLost` を作った時点で、ここに
+        `isinstance` の出し分けと診断 1 件の追記を足す。**今はその型が存在
+        しない**ので分岐を書けない (書くと到達不能な死にコードになる)。
+        """
+        del exc  # 現状はユーザー起点の中止のみ (出し分けは Task 10b)
+        self.set_status_message(
+            S.EXPORT_CANCELLED_TMPL.format(
+                columns=est.columns, rows=est.rows, size=_fmt_size(est.est_bytes)
+            )
         )
 
     def _default_confirm_export(self, est: ExportEstimate) -> bool:

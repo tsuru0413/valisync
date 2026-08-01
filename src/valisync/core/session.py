@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -552,6 +553,8 @@ class Session:
         *,
         header_resolver: Callable[[Sequence[str]], list[str]] | None = None,
         extra_signals: Sequence[Signal] = (),
+        progress: Callable[[int, int], None] | None = None,
+        cancel: threading.Event | None = None,
     ) -> None:
         """名前空間つき列キーで CSV を書き出す (E-4b spec §5.2・D1)。
 
@@ -573,6 +576,12 @@ class Session:
         存続する (spec §5.1-4 [MG-7] の「別持ちを廃止」は本境界に限って達成)。
         ここを loud-fail にする案は、``header_names`` を設定してこの経路を呼ぶ
         現存の呼び出し元が無いため引き続き見送る。
+
+        Task 9: *progress* / *cancel* は素通しで ``export_csv_request`` へ渡す
+        (実体はあちら)。keys 形にも口を開けるのは、GUI の ``_run_export`` が
+        この形で呼んでおり、進捗/キャンセルだけのために呼び出し形を変えると
+        「要求の全フィールドが転送される」ことを固定している既存テストが
+        呼び出し経路ごと見えなくなるため。
         """
         if isinstance(options, bool):
             # 旧署名 (signals, path, use_unified_timeline, options) から移行し
@@ -583,11 +592,8 @@ class Session:
                 "(use_unified_timeline は options.use_unified_timeline へ移動 — "
                 "E-4b spec §5.2)"
             )
-        key_tuple = tuple(keys)
-        extras = tuple(extra_signals)
-        self._reject_container_channels((*key_tuple, *(s.name for s in extras)))
         request = ExportRequest(
-            keys=key_tuple,
+            keys=tuple(keys),
             output_path=output_path,
             options=options if options is not None else CsvExportOptions(),
             header_resolver=(
@@ -595,19 +601,46 @@ class Session:
                 if header_resolver is not None
                 else passthrough_header_names
             ),
-            extra_signals=extras,
+            extra_signals=tuple(extra_signals),
         )
-        # 解決は `resolve_signal_transient` — 鋳造列を LRU 帳簿へ載せない
-        # (載せると全列エクスポートの定常が容量ぶん 512 本になり、選択列 < 512 の
-        # 範囲エクスポートでは 1 本も evict されない・spec §5.3 MG-1)。
-        #
-        # **Task 10b への引き継ぎ (spec §5.7 [I7c])**: ここは Task 10b が
-        # `self.export_resolver()` へ差し替える (1 行)。差し替えないと
-        # `ExportSourceLost` が production から到達不能なまま (欠落キーは
-        # `scan_masters` の ValueError になり decay 経路へ落ちない) で、
-        # 「診断 1 件」も誰も出さない。差し替え点は本メソッドと
-        # (Task 9 が作る) `Session.export_csv_request` の 2 箇所。
-        self._exporter.export(request, self.resolve_signal_transient)
+        self.export_csv_request(request, progress=progress, cancel=cancel)
+
+    def export_csv_request(
+        self,
+        request: ExportRequest,
+        *,
+        progress: Callable[[int, int], None] | None = None,
+        cancel: threading.Event | None = None,
+    ) -> None:
+        """組み立て済みの *request* をそのまま書き出す (progress/cancel つき)。
+
+        `export_csv(keys, ...)` との違いは 2 点だけ: **要求を組み直さない**
+        (GUI が `header_resolver` まで決めた `ExportRequest` を持っているので、
+        keys へ分解して組み直すと resolver が既定へ落ちてヘッダが変わる) と、
+        **progress/cancel を通す**こと。GUI 経路がこの 2 つをパイプラインへ
+        届ける唯一の口で、これが無いと `ExportRun` の進捗もキャンセルも
+        `CsvExporter` に到達しない (キャンセルボタンが押せるのに効かない)。
+
+        解決は `resolve_signal_transient` — 鋳造列を LRU 帳簿へ載せない
+        (載せると全列エクスポートの定常が容量ぶん 512 本になり、選択列 < 512 の
+        範囲エクスポートでは 1 本も evict されない・spec §5.3 MG-1)。
+
+        **Task 10b への引き継ぎ (spec §5.7 [I7c])**: ここは Task 10b が
+        `self.export_resolver()` へ差し替える (1 行)。差し替えないと
+        `ExportSourceLost` が production から到達不能なまま (欠落キーは
+        `scan_masters` の ValueError になり decay 経路へ落ちない) で、
+        「診断 1 件」も誰も出さない。**差し替え点は本メソッドの 1 箇所だけ**
+        (`export_csv` はここへ委譲するので二重管理にならない)。
+        """
+        self._reject_container_channels(
+            (*request.keys, *(s.name for s in request.extra_signals))
+        )
+        self._exporter.export(
+            request,
+            self.resolve_signal_transient,
+            progress=progress,
+            cancel=cancel,
+        )
 
     def _reject_container_channels(self, keys: Sequence[str]) -> None:
         """配列/構造体チャンネルの親を、値を読む前に拒否する (E-3 C-d)。
