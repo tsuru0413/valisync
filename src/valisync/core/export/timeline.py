@@ -72,6 +72,13 @@ def canonical_master(master: np.ndarray) -> np.ndarray:
     **同一オブジェクト**を返す — ``union_timeline`` の identity dedup が
     canonical 化の後でも効き続けるための前提条件 (test-lock:
     ``test_canonical_master_preserves_identity_dedup_in_union``)。
+
+    **逆側の罠 (T5 レビュー Minor 2)**: 非単調 master は呼び出しごとに
+    **新しい** ``np.unique`` 配列を返す。列ごとに呼ぶと共有 master が N 個の
+    別オブジェクトに化け、``union_timeline`` の identity dedup が全滅する
+    (prod なら 1.35e9 要素 concat の復活)。**master ごとに 1 回だけ呼び、
+    ``id(master)`` で結果を使い回すこと** — Task 6 の ``scan_masters`` と
+    Task 8 の見積はどちらもこの規約に従う。
     """
     if len(master) < 2 or bool(np.all(np.diff(master) > 0)):
         return master
@@ -132,7 +139,9 @@ def column_on_union(
     ``sorted_view`` の keep-last (CAN の「最後に受けた値が勝つ」) が崩れる。
 
     返す値は行数が必ず ``len(union_ts)`` に揃う (存在しない行の値は未定義・
-    呼び出し側はフラグを見てから読むこと)。
+    呼び出し側はフラグを見てから読むこと)。dtype は ``sig_vals`` のまま
+    (len 0 信号のみ float64 — 全行 absent なので値は読まれない前提。列をまたいで
+    ``vals`` を stack する下流が現れたら LD-09 形で無言 upcast になる点に注意)。
 
     存在フラグは ``hit_mask`` と**同一の内部実装** (``_align``) から来る。
     ``hit_mask`` を呼び直さないのは、prod (union 12,012 行 x 330,004 列) で

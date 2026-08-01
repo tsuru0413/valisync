@@ -113,7 +113,10 @@ def test_union_does_not_freeze_the_caller_master() -> None:
     呼び出し側の配列が黙って read-only 化し、無関係な書き込みが ValueError で
     落ちる (loader/GUI 側の master は共有物なので影響範囲が広い)。
     """
-    master = np.array([2.0, 0.0, 1.0])  # 非単調 = unique が並べ替える形
+    # 昇順・一意 = 短絡最適化が「そのまま返す」形。非単調 fixture だと
+    # 短絡が絶対に取らない形なので、guarded aliasing 実装 (concat 後に
+    # array_equal で入力へ差し替える) が 27 passed 全盲になる (レビュー実測)。
+    master = np.arange(5.0)
     union_timeline([master])
     assert master.flags.writeable is True
 
