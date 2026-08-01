@@ -5538,9 +5538,13 @@ Expected: 両ファイルとも **collection error / AttributeError**（`resolve
         pin・evict・``mint_count`` のいずれにも触れないので、D4 の identity 契約
         (pin 中は同一オブジェクト) は不変。
         """
-        self._ensure_namespaced()
-        assert self._namespaced_map is not None
-        hit = self._namespaced_map.get(key)
+        # 10a (spec §5.7-3・PR 1d51f85) supersede: `self._ensure_namespaced()` を
+        # discard-return で呼び `assert self._namespaced_map is not None` する形は
+        # コンパイルもテストも通るが、assert 直後の 1 バイトコードの隙に別スレッドの
+        # add/remove が invalidate すると再び None に戻り `.get` が NoneType.get で
+        # 落ちる窓を再導入する。以下の返り値経由の形をそのまま写すこと。
+        _namespaced, mapping = self._ensure_namespaced()
+        hit = mapping.get(key)
         if hit is not None:
             return hit  # 物理チャンネルは既存オブジェクト (鋳造経路に入らない)
         group_key = key.split(KEY_SEPARATOR, 1)[0]
@@ -9633,7 +9637,11 @@ Expected: **0 件**（`mdf_handle.py` の `id(self)` を含めて残っていな
 - ただしスナップショットだけでは **lost-update**（古いスナップショットを構築後に焼き付け、新グループが次の invalidate まで見えない）が残る。これを世代照合（commit 時に `_namespaced_gen` が動いていたらやり直す）で閉じる。**この 2 段構えが「ロックにしない」ことの対価**であり、片方だけでは不完全。
 
 ```python
-    def _ensure_namespaced(self) -> None:
+    # 10a (spec §5.7-3・PR 1d51f85) supersede: 実装は `-> None` でなく
+    # `-> tuple[list[Signal], dict[str, Signal]]` を返す (呼び出し側が
+    # self._namespaced_map を**もう一度**読むと invalidate との競合窓が開くため)。
+    # さらに無ロック再試行に attempt>=3 の前進保証を追加した — 詳細は src の実装参照。
+    def _ensure_namespaced(self) -> tuple[list[Signal], dict[str, Signal]]:
         """Build and cache the namespaced signal list/map once (idempotent).
 
         E-4b (spec §5.7-3): 反復は **スナップショット** に対して行い、書き戻しは

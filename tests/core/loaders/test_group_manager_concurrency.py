@@ -321,3 +321,120 @@ def test_group_signals_cache_is_not_resurrected_after_removal(
     )
     with pytest.raises(KeyError):
         mgr.group_signals(key)
+
+
+class _ChurnAborted(Exception):
+    """ウォッチドッグが打ち切ったことを示す内部シグナル (テスト外に漏らさない)。"""
+
+
+def test_ensure_namespaced_bounds_the_unlocked_retry_under_sustained_churn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """add churn の下で無ロック再試行が無限に負け続けない (I1・spec §5.7-3)。
+
+    修正前 (S4/S5 相当・``attempt >= 3`` の前進保証なし) は、構築時間より速い
+    add churn の下で無ロック 2 段リトライが**無限に負け続けうる** (前進の保証が
+    無い)。実測 (prod 形 4,324 チャンネル・ロック外ビルド 1 回 76 ms・add 間隔
+    0.5 ms の連続 churn): 修正前は ``resolve()`` が 2 秒に 1 回しか完了せず最大待ち
+    3,113 ms。``resolve()`` は GUI の render パスと 18 分走る export worker の
+    両方が通る最もホットな経路なので、この待ちはどちらも巻き込む。修正後
+    (``attempt >= 3`` で lock を握ったまま作り切る) は 7,852 完了・最大待ち 163 ms。
+
+    ここでは「ビルド中に必ず gen をずらす」を hook で**無条件に** (回数上限なし
+    で) 強制する — 上限を設けると、無ロック経路のままでも「churn がたまたま止ま
+    れば次の 1 回で自然に勝つ」ため、修正前の実装でもテストが緑になってしまい
+    検出器にならない。``_resolved_lock.locked()`` で「今 lock を保持しているか」
+    を見分けて churn を止めるのが唯一の正しい区別点: 修正後は 3 回目が
+    ``add()``/``remove()`` と同じ lock を握ったまま作られるので churn が
+    物理的に割り込めなくなり、そこで初めて前進する。修正前はこの区別点が
+    存在しない (どの attempt も無ロック) ので churn は無条件に効き続け、
+    ``while True`` が終わらない。
+
+    churn は**別スレッドを起こさず同一スレッドで直接** ``mgr.add()`` を呼ぶ
+    (hook 呼び出し時点で lock 未保持と確認済みなので安全・非決定性ゼロ)。この
+    ため下の trace は完全に決定的 — attempt1 は 1 グループ (元の "g") だけを見て
+    1 回負け、attempt2 は churn で増えた 2 グループを見て 2 回負け、attempt3 は
+    さらに増えた 4 グループを lock 下で 4 回とも作り切る。
+
+    ビルド自体は ``build()`` を**別スレッド**で走らせ、メインスレッドは
+    ``join(timeout=...)`` で待つ (ウォッチドッグ)。前進保証が無い実装だと
+    ``while True`` は単一スレッド上で無限に (かつ 1 周ごとに仕事が増える形で)
+    回り続けるので、タイムアウト後に ``stop_event`` を立てて hook から
+    ``_ChurnAborted`` を送出させ、テストの外へ**ハングを持ち越さない**
+    (アサーションの失敗として RED にする)。
+
+    Sabotage (実施・記録): ``attempt >= 3`` の分岐を ``if False:`` に潰して実行
+    すると、予測どおり ``calls`` は ``False`` のまま増え続け、最初の
+    ``t.join(_BOUND_S)`` (10 s) 後も ``t.is_alive()`` が True のまま — ここで
+    ``stop_event`` を立てて 2 回目の ``join`` (最大 10 s) を待つと、hook が
+    ``_ChurnAborted`` を送出して ``while True`` を打ち切るので**その時点では
+    ``not t.is_alive()`` は通ってしまう** (ハングを持ち越さない設計どおり)。
+    実際に RED になるのはその次の ``assert errors == []``
+    (``[_ChurnAborted()]`` を検出) — 予測は「ハングでなく失敗」だったが、
+    どの assert で失敗するかまでは事前に特定していなかった点を記録する。
+    全体は 11.35 s で完走 (ハングせず) し、パッチを戻すと 7 テスト全て 1.94 s で
+    緑に復帰することも確認した。
+    """
+    mgr = SignalGroupManager()
+    mgr.add(_group("g"))  # 1 グループ = attempt1 で _namespaced 呼び出し 1 回
+
+    original = SignalGroupManager._namespaced
+    calls: list[bool] = []
+    stop_event = threading.Event()
+
+    def hook(key: str, group: SignalGroup) -> list[Signal]:
+        if stop_event.is_set():
+            raise _ChurnAborted
+        held = mgr._resolved_lock.locked()
+        calls.append(held)
+        if not held:
+            # lock 未保持と確認済みなので同一スレッドでの add() は安全 (デッド
+            # ロックしない) — 別スレッドを起こす必要が無い分、非決定性も無い。
+            mgr.add(_group("churn"))
+        return original(key, group)
+
+    monkeypatch.setattr(SignalGroupManager, "_namespaced", staticmethod(hook))
+
+    result_box: list[tuple[list[Signal], dict[str, Signal]]] = []
+    errors: list[BaseException] = []
+
+    def build() -> None:
+        try:
+            result_box.append(mgr._ensure_namespaced())
+        except BaseException as exc:
+            # _ChurnAborted も含め、ハングでなく例外として捕まえて thread を終わらせる。
+            errors.append(exc)
+
+    t = threading.Thread(target=build, daemon=True)
+    t.start()
+    t.join(timeout=_BOUND_S)
+    if t.is_alive():
+        stop_event.set()  # 前進保証が効いていない — 次の hook 呼び出しで打ち切る
+        t.join(timeout=_BOUND_S)
+
+    assert not t.is_alive(), (
+        "_ensure_namespaced が有界時間で終わらない — 無ロック再試行が無限に "
+        "負け続けている (I1 の attempt>=3 前進保証が効いていない)"
+    )
+    assert errors == [], f"構築中に想定外の例外: {errors!r}"
+
+    # 決定的 trace (すべて同一スレッドの同期呼び出し・非決定性なし):
+    # attempt1: 1 グループ (g) を見て False x1 で敗北 (churn 1 グループ追加)
+    # attempt2: 2 グループ (g, churn1) を見て False x2 で敗北 (churn 2 グループ追加)
+    # attempt3: 4 グループ (g, churn1, churn2, churn3) を lock 下で True x4 作り切る
+    assert calls == [False, False, False, True, True, True, True], (
+        f"attempt 境界がズレた (観測: {calls!r}) — 前進保証が 3 回目で発火して"
+        "いない、または無ロック経路の負け方が変わった"
+    )
+    assert len(mgr._groups) == 4
+
+    assert len(result_box) == 1
+    signals, mapping = result_box[0]
+    expected_names = {
+        f"{k}::{sig.name}" for k, g in mgr._groups.items() for sig in g.signals
+    }
+    assert {s.name for s in signals} == expected_names
+    assert set(mapping) == expected_names
+    # 3 回目 (lock 下) の commit が正典としてキャッシュに乗っている。
+    assert mgr._namespaced_list is signals
+    assert mgr._namespaced_map is mapping

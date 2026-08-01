@@ -240,6 +240,15 @@ class SignalGroupManager:
         name with last-wins dedupe, matching the historical ``signals()``-to-dict
         behaviour its callers relied on.
 
+        **先頭 2 行 (lock なし高速路) はペアの世代整合を保証しない** (Minor 3):
+        ``self._namespaced_list`` と ``self._namespaced_map`` を別々に読むので、
+        その間に別スレッドの invalidate → 再構築 → commit が挟まると、古い世代の
+        list と新しい世代の map を組にして返しうる。今日の呼び出し側 (``signals()``
+        / ``signal_map()``) はどちらか一方しか消費しないので実害は無いが、将来
+        両方を**同時に**消費する呼び出し側を足すなら、下のロック付き経路
+        (list/map を同じ ``with`` の中で読む) を通すこと — ペアの整合が要るなら
+        高速路を素通りしてはならない。
+
         E-4b (spec §5.7-3): 反復は **スナップショット** に対して行い、書き戻しは
         **世代照合つき** で行う。旧実装は無ロックで ``self._groups.items()`` を直に
         回しており、export worker の resolve が ~18 分走る本増分では
@@ -252,6 +261,21 @@ class SignalGroupManager:
         閉じる。**この 2 段構えが「ロックにしない」ことの対価**であり、片方だけでは
         不完全。
 
+        **無ロック経路は 2 回まで、3 回目は lock 下で作り切る** (I1・実測):
+        「ロックにしない」対価には裏があり、add churn がビルド時間より速いと
+        無ロック経路は commit のたびに世代がずれて**無限に負け続ける** — 修正前は
+        進行の保証が無く、``resolve()`` (GUI の render パスと 18 分走る export
+        worker の両方が通る最もホットな経路) がスレッドを握ったまま戻らない。
+        実測 (prod 形 4,324 チャンネル・ロック外ビルド 1 回 76 ms・add 間隔 0.5 ms の
+        連続 churn): 修正前は resolve() が 2 秒に 1 回しか完了せず最大待ち
+        3,113 ms、``attempt >= 3`` の前進保証を入れた後は 7,852 完了・最大待ち
+        163 ms。3 回目に限り lock を手放さずスナップショット取得から commit まで
+        終わらせる (下の実装参照) — ``add()``/``remove()`` も同じ lock を取るので
+        その中では churn が起こりえず必ず前進する。「O(全信号) の構築を lock 下で
+        やらない」という上の意図は *毎回* ではなく *通常経路 (attempt 1-2)* の話
+        として保たれる: 3 回目に限り、正しさ (有界な前進) を lock 保持時間より
+        優先する。
+
         **値を返すのが契約** (brief の ``-> None`` からの意図的逸脱・報告済み):
         呼び出し側が ``self._namespaced_map`` を**もう一度**読む形にすると、その
         1 バイトコードの隙に別スレッドの add/remove が invalidate して None になり、
@@ -262,14 +286,29 @@ class SignalGroupManager:
         cached_map = self._namespaced_map
         if cached_list is not None and cached_map is not None:
             return cached_list, cached_map
+        attempt = 0
         while True:
+            attempt += 1
             with self._resolved_lock:
                 cached_list = self._namespaced_list
                 cached_map = self._namespaced_map
                 if cached_list is not None and cached_map is not None:
                     return cached_list, cached_map
                 gen = self._namespaced_gen
-                snapshot = list(self._groups.items())  # C レベルで完結 = 原子的
+                # lock 下なので安全 (C の原子性には依存しない — この行を with の
+                # 外へ出さないこと。Minor 2)。
+                snapshot = list(self._groups.items())
+                if attempt >= 3:
+                    # 前進保証 (I1): ここへ来るのは無ロック経路が 2 回とも churn に
+                    # 負けた後だけ。lock を握ったまま作り切る — add()/remove() も
+                    # この lock を取るので、この中では二度と負けない。_namespaced()
+                    # は Signal ラッパの構築のみで I/O を行わないので lock 下で
+                    # 呼んでよい (docstring の測定値・上のコメント参照)。
+                    built = [s for k, g in snapshot for s in self._namespaced(k, g)]
+                    built_map = {sig.name: sig for sig in built}
+                    self._namespaced_list = built
+                    self._namespaced_map = built_map
+                    return built, built_map
             result: list[Signal] = []
             for group_key, group in snapshot:
                 result.extend(self._namespaced(group_key, group))
@@ -306,9 +345,10 @@ class SignalGroupManager:
             cached = self._namespaced(key, group)
             with self._resolved_lock:
                 # remove 済みキーの復活を防ぐ (復活すると「閉じたのに信号が引ける」
-                # 状態が次の invalidate まで残る)。世代照合と在籍再確認の両方が要る:
-                # 世代は「ビルド中に何かが起きた」を、在籍は「起きたのがこの key の
-                # remove だった」を見る。
+                # 状態が次の invalidate まで残る)。防御的 — 今日は世代照合だけで
+                # 足りる (全 `_groups` 変異が同一 lock 下で invalidate を呼ぶため、
+                # 世代不変 ⇒ 在籍不変)。在籍再確認は将来 invalidate を伴わない変異が
+                # 入った場合の保険。
                 if self._namespaced_gen == gen and key in self._groups:
                     self._namespaced_by_key[key] = cached
         return list(cached)  # 防御コピー(signals() と同契約) — Signal は共有
