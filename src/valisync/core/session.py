@@ -14,7 +14,6 @@ from valisync.core.export.csv_exporter import (
     ExportRequest,
     passthrough_header_names,
 )
-from valisync.core.export.legacy_bridge import export_via_legacy_path
 from valisync.core.formula.engine import FormulaEngine
 from valisync.core.interpolation.interpolator import InterpolationMethod, Interpolator
 from valisync.core.loaders.channel_cache import ChannelSampleCache
@@ -163,7 +162,12 @@ class Session:
         self._interpolator = Interpolator()
         self._statistics = RangeStatistics()
         self._downsampler = Downsampler()
-        self._exporter = CsvExporter()
+        # budget_fn は**呼び出し時に読む** — pin の増減 (プロット操作) を次の
+        # エクスポートのブロック幅へ反映させるため (D3「予算 - 現在の pin 済み」)。
+        # 値で渡すと Session 構築時点の空き予算が恒久に焼き付く。
+        self._exporter = CsvExporter(
+            budget_fn=lambda: self._channel_cache.available_bytes
+        )
         self._derived: list[_DerivedRecord] = []
 
     @property
@@ -536,8 +540,8 @@ class Session:
         """名前空間つき列キーで CSV を書き出す (E-4b spec §5.2・D1)。
 
         **Signal のリストは受けない** — prod 330,004 列を Signal で運ぶと出口に
-        立つ前に ~390 MB を確定させる。解決は書き手が行う (Task 4 の時点では
-        移行橋が全解決するので、メモリ挙動はまだ現状のまま)。
+        立つ前に ~390 MB を確定させる。解決は書き手 (列ブロック) が 1 列ずつ行い、
+        ブロック終端で参照を落とす。
 
         *header_resolver* 既定は passthrough (``list(keys)``) で、直呼び経路の
         現行ヘッダバイトを保存する。GUI は ``csv_header_names`` を束ねた resolver を
@@ -547,13 +551,12 @@ class Session:
         Minor 1 (T4 レビュー): *options* に ``header_names`` を自分で詰めて渡しても
         **無視される**。keys 境界はヘッダを常に *header_resolver* (未指定なら
         passthrough) から導出する契約 (spec §10・ヘッダと値を同じ keys から作る)
-        で、``CsvExportOptions.header_names`` は移行橋 (``legacy_bridge.py``) が
-        旧 ``CsvExporter.export`` へ運ぶための**内部搬送路**にすぎない —
-        ``export_via_legacy_path`` が resolver の解決結果で必ず上書きする
-        (``replace(request.options, header_names=names)``)。ここを loud-fail に
-        する案も検討したが、``header_names`` を設定してこの経路を呼ぶ現存の呼び
-        出し元が無いこと、そして ``header_names`` フィールド自体が橋と運命を
-        共にし Task 7 で消えることから見送った。
+        で、``ExportRequest`` 経路は ``header_names`` を 1 度も読まない。
+        E-4b Task 7 supersede: ``header_names`` フィールド自体は残った —
+        ``CsvExporter.export`` の **legacy overload の唯一のヘッダ搬送路**として
+        存続する (spec §5.1-4 [MG-7] の「別持ちを廃止」は本境界に限って達成)。
+        ここを loud-fail にする案は、``header_names`` を設定してこの経路を呼ぶ
+        現存の呼び出し元が無いため引き続き見送る。
         """
         if isinstance(options, bool):
             # 旧署名 (signals, path, use_unified_timeline, options) から移行し
@@ -578,11 +581,17 @@ class Session:
             ),
             extra_signals=extras,
         )
-        # 橋へ self._exporter を渡さないのは、Task 7 の差し替え点を Session 側
-        # 1 行 (`export_via_legacy_path(...)` -> `self._exporter.export(request,
-        # self.resolve_signal, ...)`) に閉じ込めるため。self._exporter は
-        # その受け皿として残す (未使用だが削除しない)。
-        export_via_legacy_path(request, self.resolve_signal)
+        # 解決は `resolve_signal_transient` — 鋳造列を LRU 帳簿へ載せない
+        # (載せると全列エクスポートの定常が容量ぶん 512 本になり、選択列 < 512 の
+        # 範囲エクスポートでは 1 本も evict されない・spec §5.3 MG-1)。
+        #
+        # **Task 10b への引き継ぎ (spec §5.7 [I7c])**: ここは Task 10b が
+        # `self.export_resolver()` へ差し替える (1 行)。差し替えないと
+        # `ExportSourceLost` が production から到達不能なまま (欠落キーは
+        # `scan_masters` の ValueError になり decay 経路へ落ちない) で、
+        # 「診断 1 件」も誰も出さない。差し替え点は本メソッドと
+        # (Task 9 が作る) `Session.export_csv_request` の 2 箇所。
+        self._exporter.export(request, self.resolve_signal_transient)
 
     def _reject_container_channels(self, keys: Sequence[str]) -> None:
         """配列/構造体チャンネルの親を、値を読む前に拒否する (E-3 C-d)。

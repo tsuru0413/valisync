@@ -683,3 +683,19 @@ claude.ai/design 側の検討結果（決定メモ・提案）をリポジトリ
   （501 列で 1503 → 501 回・メモを外す sabotage で 1503 に戻ることを確認）。設計は
   [deferred-column-expansion spec](superpowers/specs/2026-07-24-deferred-column-expansion-design.md)
   （§技術判断に「1 打鍵で 3 パス」→「入力停止ごとに 3 パス（200 ms debounce）」の訂正も同載）。
+- 2026-08-01: CSV エクスポートの書き経路を**列ブロック × 行ストリーム × 多段マージ**へ
+  再構築し、Task 4 の移行橋（`core/export/legacy_bridge.py`）を撤去（トークン変更なし・
+  core のみ・ユーザー可視の出力バイトは**1 バイトも変えない**）。ブランチ
+  `feature/e4b-export-write-path`（E-4b Task 7）。旧一括実装
+  （`_rows_unified_timeline`/`_rows_shared_timeline`/`_atomic_write`）を削除し、
+  **legacy overload（`export(signals, path, use_unified_timeline, options)`）も同じ
+  パイプラインへ落とした** — 旧実装を legacy にだけ残すと `dict(zip(...tolist()))`
+  （実測 97 B/サンプル）が既存 40 サイトの下で生き残り、全部緑のままそこを通り続ける。
+  **`CsvExportOptions.header_names` の裁定（spec §5.1-4 [MG-7] の supersede・同 spec に
+  記録済み）**: 撤去せず**残置**する。legacy overload の唯一のヘッダ搬送路であり、
+  撤去すると `test_csv_export_options.py:158-171` の期待が動き（既存テストの期待は
+  編集しない原則の違反）、golden 10 本（g01/g03-g11）が GUI 形ヘッダから raw 名へ
+  退行する。「別持ちを廃止」は **`ExportRequest` 経路に限って達成**と読み替える
+  （新境界では `header_resolver` が唯一の真実で `header_names` は 1 度も読まれない）。
+  完全撤去は legacy overload 退役時の別増分。設計は
+  [e4b spec](superpowers/specs/2026-08-01-e4b-export-write-path-design.md) §5.3。

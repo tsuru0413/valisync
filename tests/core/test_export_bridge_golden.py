@@ -34,9 +34,14 @@ class _KeyedSession(Session):
 
     ゴールデン 11 本のうち 9 本は素の Derived Signal を組み立てるだけで
     ``SignalGroupManager`` に登録されていない (g08/g11 だけがローダーを通る)。
-    ``Session.export_csv`` の解決口は ``resolve_signal`` — spec §5.2 が Task 6 で
-    ``resolve_transient`` へ差し替えると名指ししている、まさにその 1 点なので、
-    ここを差すのが「境界を通す」最小の介入になる。
+    ``Session.export_csv`` の解決口を差すのが「境界を通す」最小の介入になる。
+
+    **E-4b Task 7 supersede**: 差す口が ``resolve_signal`` から
+    ``resolve_signal_transient`` へ移った (spec §5.2 MG-1 が Task 6 で名指しした
+    まさにその 1 点を、Task 7 が `Session.export_csv` へ配線した)。**両方を
+    override する** — 片方だけにすると「production が読む口」と「テストが差す口」が
+    ずれても誰も落ちず、`export_csv` が transient 経路をやめて LRU 帳簿へ戻る
+    退行 (MG-1 の破棄) がこのファイルからは見えなくなる。
 
     **解決そのものは本ファイルの検証対象ではない** (それは
     ``test_export_request_bridge`` と、実ローダーの Signal を流す g08/g11 が持つ)。
@@ -48,6 +53,9 @@ class _KeyedSession(Session):
         self._by_key = by_key
 
     def resolve_signal(self, key: str) -> Signal | None:
+        return self._by_key.get(key)
+
+    def resolve_signal_transient(self, key: str) -> Signal | None:
         return self._by_key.get(key)
 
 

@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import contextlib
 import math
 import os
-import tempfile
+import shutil
 import threading
+import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import IO
 
 import numpy as np
 
-from valisync.core.export.timeline import column_on_union
+from valisync.core.export.timeline import (
+    canonical_master,
+    column_on_union,
+    row_range,
+    union_timeline,
+)
 from valisync.core.models import Signal
 
 # ブロック幅の下限/上限 (spec D3)。下限 16 は「予算を守れない」ではなく **進める**
@@ -27,6 +35,30 @@ _CANCEL_ROW_INTERVAL = 1024
 # ブロック = 99M 回) で write のオーバーヘッドだけが積み上がる。1,024 行 x 512 列で
 # バッファは ~2.4 MB に収まる。
 _FLUSH_ROWS = 1024
+# 多段マージの fan-in。同時 open = F + 1 本。**本環境実測の FD 天井は 8,189 本**
+# (OSError errno 24・CPython 3.13.7 / Win11) で、prod 3 ファイル比較の全列
+# エクスポートは block 数 ~8,253 = 単段では確実に超える (MG-2)。512 なら 8,254 本が
+# 2 段で畳める。
+_MERGE_FAN_IN = 512
+# 中間 temp を含むディスクピークの見積係数 (spec §5.3: 出力 x (1 + 1/F の等比和 +
+# 安全率))。**設計値であって実測値ではない** — T-M で検証する (§9-5)。
+#
+# **この 1 つが唯一の実体** (`_DISK_HEADROOM` という private 名は作らない):
+# GUI 側の門番 (`estimate.disk_shortfall`) が同じ係数を別に持つと、Task 11 の検定で
+# 片方だけ更新されたときに「GUI の D5 を通過 -> 確認 Yes -> core で ValueError」
+# という UX 破綻窓が開く。`estimate.py` はこれを import して再輸出する。
+TEMP_AMPLIFICATION = 2.3
+# 1 セルあたりの推定バイト (区切り込み)。spec §1 の訂正済み見積 (uint8 量子化の
+# repr 長 4.57 文字・float64 は ~17 文字) の中間を採った**開始前の粗い門番**。
+# Task 11 が単価 3 定数 (estimate.py) と同時にこれも prod 1 点で検定する — core の
+# 門番 (ここ) が GUI の門番より緩いと、GUI が通した要求を core が弾く順序逆転が
+# 起きる。
+_EST_BYTES_PER_CELL = 12
+# `budget_fn` が注入されなかったときのブロック幅予算 (直接 `CsvExporter()` を組む
+# 経路 = テスト・scripted 用の代替値)。`ChannelSampleCache` の既定予算と同値に
+# 揃えてある — production は `Session.__init__` が `budget_fn` を注入するので、
+# ここが読まれるのは Session を経由しない呼び出しだけ。
+_DEFAULT_EXPORT_BUDGET_BYTES = 256 * 1024 * 1024
 
 #: Header name for the leading timestamp column (Req 7.3).
 _TIMESTAMP_HEADER = "timestamp"
@@ -53,7 +85,6 @@ EXPORT_EMPTY_REQUEST_ERROR = (
 EXPORT_HEADER_LENGTH_ERROR_TMPL = (
     "ヘッダ名の本数 ({got}) が列数 ({want}) と一致しません。"
 )
-EXPORT_UNRESOLVED_KEYS_ERROR_TMPL = "{n} 件の列を解決できませんでした (例: '{name}')。ファイルが閉じられた可能性があります。"
 #: ブロック writer が 1 列を解決できなかったときの文言 (エクスポート中にファイルが
 #: アンロードされた場合)。上の複数形と別なのは、writer が最初の 1 本で中断するため
 #: (全列を数え上げてから報告すると、その数え上げ自体が 330,004 列の再走査になる)。
@@ -117,7 +148,16 @@ class CsvExportOptions:
 
 
 def _in_range(t: float, opts: CsvExportOptions) -> bool:
-    """行時刻 t が opts の閉区間 [time_start, time_end] に含まれるか (None=無制限)。"""
+    """行時刻 t が opts の閉区間 [time_start, time_end] に含まれるか (None=無制限)。
+
+    **書き経路からは呼ばれない** (E-4b Task 7): 範囲は `timeline.row_range` が
+    union に対し searchsorted 1 回で `[lo, hi)` を出す。ここに残しているのは
+    `row_range` の**独立オラクル**としての役目のため — 閉区間の保存則 (lo は
+    `side='left'`・hi は `side='right'`) を「行ごとの素朴な比較」と突き合わせる
+    `test_row_range_agrees_with_in_range_row_by_row` が唯一の検証点で、その
+    比較相手を最適化された実装と同じファイルに置くと二重実装の同時退行を検出
+    できなくなる。**述語を変えるときは `row_range` と対で変えること**。
+    """
     return (opts.time_start is None or t >= opts.time_start) and (
         opts.time_end is None or t <= opts.time_end
     )
@@ -334,6 +374,44 @@ def plan_blocks(runs: Sequence[int], block_cols: int) -> tuple[tuple[int, int], 
     return tuple(blocks)
 
 
+def merge_stage_count(n_inputs: int, fan_in: int) -> int:
+    """*n_inputs* 本を fan-in *fan_in* で畳むのに要する段数 (最低 1 段)。
+
+    最低 1 段なのは、**ヘッダ行と単位行を書くのが最終段の役目**だから。入力が
+    1 本でも 1 段走らせて先頭に付ける (最終段の後に別パスを足すと出力全体を
+    もう 1 回コピーすることになり、prod の 10 GB では丸ごと 1 往復になる)。
+
+    ``fan_in < 2`` を**ループへ入る前に**弾くのは、``fan_in == 1`` だと
+    ``remaining`` が永久に減らず無限ループになるから (``plan_blocks`` の
+    ``block_cols < 1`` ガードと同型の理由)。``merge_fan_in`` は Task 7 で
+    ``CsvExporter.__init__`` の公開注入口になったので、別経路から 1 以下が渡る。
+    """
+    if fan_in < 2:
+        raise ValueError(f"merge の fan-in は 2 以上が必要です (got {fan_in})")
+    stages = 0
+    remaining = n_inputs
+    while remaining > 1:
+        remaining = -(-remaining // fan_in)  # ceil
+        stages += 1
+    return max(1, stages)
+
+
+def estimate_output_bytes(n_rows: int, n_columns: int) -> int:
+    """出力サイズの粗い推定 (時刻列を含む)。T-UX が係数を実測で差し替える起点。"""
+    return n_rows * (n_columns + 1) * _EST_BYTES_PER_CELL
+
+
+def _require_disk_space(out_dir: Path, n_rows: int, n_columns: int) -> None:
+    """D5: 中間 temp を含むピーク (`TEMP_AMPLIFICATION` x 推定出力) が入らないなら開始しない。"""
+    need = int(estimate_output_bytes(n_rows, n_columns) * TEMP_AMPLIFICATION)
+    free = shutil.disk_usage(out_dir).free
+    if free < need:
+        raise ValueError(
+            f"出力先の空き容量が不足しています (推定 {need:,} バイト必要・"
+            f"空き {free:,} バイト)。範囲を狭めるか列を減らしてください。"
+        )
+
+
 def _check_cancel(cancel: threading.Event | None) -> None:
     if cancel is not None and cancel.is_set():
         raise ExportCancelled("エクスポートはキャンセルされました")
@@ -345,22 +423,72 @@ class CsvExporter:
     Columns are the timestamp (first) followed by one column per Signal value
     (Req 7.2, 7.3). Writing is atomic (Req 7.7). Formatting is governed by
     :class:`CsvExportOptions`; the default reproduces the original behavior.
+
+    書きパイプラインは **列ブロック x 行ストリーム x 多段マージ** (spec §5.3)。
+    コンストラクタの 3 つの注入口はいずれも**テストと Session からの配線専用**で、
+    既定 (すべて None) が production の振る舞い:
+
+    - ``block_cols``: ブロック幅を固定する (既定は ``block_columns`` の動的決定)。
+      ゴールデンを**複数ブロック・境界跨ぎ**で駆動するための口 (spec G1)。
+    - ``budget_fn``: ブロック幅の予算を**呼び出し時に**読む (D3「予算 - 現在の
+      pin 済み」)。値でなく callable なのは、pin の増減 (プロット操作) を次の
+      エクスポートへ反映させるため。
+    - ``merge_fan_in``: マージの fan-in を固定する (既定 ``_MERGE_FAN_IN``)。
+      小さな fixture で**多段**を実際に走らせるための口。
     """
+
+    def __init__(
+        self,
+        *,
+        block_cols: int | None = None,
+        budget_fn: Callable[[], int] | None = None,
+        merge_fan_in: int | None = None,
+    ) -> None:
+        # 下限は `plan_blocks` / `merge_stage_count` 側にもあるが、**注入の瞬間に**
+        # 落とす: ブロック writer を 1 本も走らせてから無限ループ/例外になるより、
+        # 構築時に原因の分かる形で止める方が診断が短い。
+        if block_cols is not None and block_cols < 1:
+            raise ValueError(f"block_cols は 1 以上が必要です (got {block_cols})")
+        if merge_fan_in is not None and merge_fan_in < 2:
+            raise ValueError(f"merge_fan_in は 2 以上が必要です (got {merge_fan_in})")
+        self._block_cols_override = block_cols
+        self._budget_fn = budget_fn
+        self._merge_fan_in = merge_fan_in
 
     def export(
         self,
-        signals: list[Signal],
-        output_path: Path,
+        request: ExportRequest | list[Signal],
+        resolve: Callable[[str], Signal | None] | Path | None = None,
         use_unified_timeline: bool = False,
         options: CsvExportOptions | None = None,
+        *,
+        progress: Callable[[int, int], None] | None = None,
+        cancel: threading.Event | None = None,
     ) -> None:
-        # I3 fix (T4 レビュー): 旧署名では位置引数 use_unified_timeline が唯一の
-        # 真実 (options.use_unified_timeline は E-4b で新設した新境界向けフィールド
-        # で、この経路では読まれない)。options 側だけ True にして位置引数を False
-        # (既定) のまま呼ぶと、呼び出し元は「統合タイムラインで書き出した」つもりで
-        # 実際は共有タイムライン(無警告)になる — 56 の旧署名直呼びサイトに実在する
-        # 罠を無言で踏める形だったので loud-fail にする。このガードは旧署名ごと
-        # Task 7 で消える。
+        """CSV を書き出す (2 形の dispatch)。
+
+        正準形は ``export(request, resolve, progress=..., cancel=...)``。
+        legacy 形 ``export(signals, output_path, use_unified_timeline, options)``
+        は**同じパイプラインへ落とす** — 旧一括実装を残すと
+        ``dict(zip(...tolist()))`` (実測 97 B/サンプル・20 列で Win32 working set
+        2.14 GiB) が legacy 経路にだけ生き残り、既存テスト 40 サイトが全部緑の
+        ままそこを通り続ける。落としたことで、その 40 サイトが**そのまま**
+        ブロックパイプラインの回帰網になる。
+        """
+        if isinstance(request, ExportRequest):
+            if not callable(resolve):
+                raise TypeError(
+                    "ExportRequest 形の第 2 引数は resolve (列キー -> Signal) です"
+                )
+            self._export_request(request, resolve, progress, cancel)
+            return
+
+        # ─ legacy 形 ─────────────────────────────────────────────────────────
+        # I3 (T4 レビュー): 旧署名では位置引数 use_unified_timeline が唯一の真実。
+        # options 側だけ True にして位置引数を False (既定) のまま呼ぶと、呼び出し元は
+        # 「統合タイムラインで書き出した」つもりで実際は共有タイムライン(無警告)に
+        # なる — 旧署名直呼びサイトに実在する罠なので loud-fail のまま残す
+        # (旧署名は 36 サイト + ゴールデン駆動が使うので Task 7 でも撤去しない)。
         if (
             options is not None
             and options.use_unified_timeline
@@ -369,117 +497,303 @@ class CsvExporter:
             raise ValueError(
                 "options.use_unified_timeline=True と位置引数 "
                 "use_unified_timeline=False が矛盾しています "
-                "(旧署名では位置引数が唯一の真実 — E-4b Task 7 まで)"
+                "(旧署名では位置引数が唯一の真実)"
             )
+        if resolve is None or callable(resolve):
+            raise TypeError("legacy 形の第 2 引数は出力パスです")
+        signals = list(request)
         opts = options if options is not None else CsvExportOptions()
-        self._require_single_value_columns(signals)
-        if use_unified_timeline:
-            rows = self._rows_unified_timeline(signals, opts)
+        # 名前の重複 (同名 Signal 2 本) が dict で潰れないよう、**位置**をキーにする。
+        keys = tuple(f"#{i}" for i in range(len(signals)))
+        table = dict(zip(keys, signals, strict=True))
+        # **`options.header_names` を読む**のがここの要点 (旧 `_header_rows` の
+        # 「header_names があればそれ・無ければ signal.name」を逐語で保存する)。
+        # 読まないと golden driver が GUI 形ヘッダを header_names へ詰めている
+        # 10 本 (g01/g03-g11) が raw 名へ退行し、既存
+        # test_csv_export_options.py:158-171 も RED になる。header_names は
+        # **legacy overload の唯一のヘッダ搬送路**として残置する
+        # (spec §5.1-4 [MG-7] の「別持ちを廃止」は ExportRequest 経路に限って達成
+        # と読み替える — 新境界では header_resolver が唯一の真実で header_names は
+        # 1 度も読まれない)。
+        resolver: Callable[[Sequence[str]], list[str]]
+        if opts.header_names is not None:
+            fixed = list(opts.header_names)
+            resolver = lambda _ks: list(fixed)  # noqa: E731
         else:
-            rows = self._rows_shared_timeline(signals, opts)
-        self._atomic_write(Path(output_path), rows)
+            resolver = lambda ks: [table[k].name for k in ks]  # noqa: E731
+        self._export_request(
+            ExportRequest(
+                keys=keys,
+                output_path=Path(resolve),
+                options=replace(opts, use_unified_timeline=use_unified_timeline),
+                header_resolver=resolver,
+            ),
+            table.get,
+            progress,
+            cancel,
+        )
+
+    def _export_request(
+        self,
+        request: ExportRequest,
+        resolve: Callable[[str], Signal | None],
+        progress: Callable[[int, int], None] | None,
+        cancel: threading.Event | None,
+    ) -> None:
+        opts = request.options
+        # **空リクエストの loud-fail はここが本体** (橋の撤去で消える検査の移設)。
+        # 無いと `union_timeline([])` が長さ 0 を返し -> ブロック 0 本 -> 「ヘッダ
+        # だけのファイルを成功として書く」へ degrade する。
+        # 注: 「列 >= 1 本だが範囲外 = ヘッダのみのファイル」は**別契約**で、
+        # 現行どおり成功として書く (空**列**とは区別する)。
+        if not request.keys and not request.extra_signals:
+            raise ValueError(EXPORT_EMPTY_REQUEST_ERROR)
+        output_path = Path(request.output_path)
+        out_dir = output_path.parent
+        out_dir.mkdir(parents=True, exist_ok=True)
+        columns: list[tuple[str, Signal | None]] = [(k, None) for k in request.keys]
+        columns.extend((s.name, s) for s in request.extra_signals)
+
+        # --- 前走査 -> union -> 前提検証 -> 行範囲 (すべて値を読まない) --------
+        scan = scan_masters(columns, resolve)
+        # **ヘッダ長の検査は temp を 1 バイトも書く前** (橋の撤去で消える検査の移設)。
+        # resolver 呼び出しを最終段まで遅らせると、ヘッダ長不一致が「全ブロックを
+        # 書き切ってから落ちる」形になり、prod では ~18 分の無駄と temp 生成を伴う。
+        names = list(request.header_resolver(request.keys))
+        if len(names) != len(request.keys):
+            raise ValueError(
+                EXPORT_HEADER_LENGTH_ERROR_TMPL.format(
+                    got=len(names), want=len(request.keys)
+                )
+            )
+        union = union_timeline(scan.masters)
+        if not opts.use_unified_timeline:
+            self._require_shared_timeline(scan.masters)
+        lo, hi = row_range(union, opts.time_start, opts.time_end)
+        union_view = union[lo:hi]
+
+        budget = (
+            self._budget_fn()
+            if self._budget_fn is not None
+            else _DEFAULT_EXPORT_BUDGET_BYTES
+        )
+        block_cols = self._block_cols_override or block_columns(
+            len(union_view), scan.max_master_len, budget
+        )
+        fan_in = self._merge_fan_in or _MERGE_FAN_IN
+        blocks = plan_blocks(scan.runs, block_cols)
+        _require_disk_space(out_dir, len(union_view), len(columns))
+
+        n_units = 1 + len(blocks) + merge_stage_count(1 + len(blocks), fan_in)
+        done = 0
+
+        def tick() -> None:
+            nonlocal done
+            done += 1
+            if progress is not None:
+                progress(done, n_units)
+
+        token = uuid.uuid4().hex[:12]
+        temps: list[Path] = []
+        try:
+            # --- 時刻列 (幅 1 のブロック・マージ器に特別扱いを作らない) --------
+            time_temp = out_dir / f".tmp_export_{token}_time.csv"
+            temps.append(time_temp)
+            self._write_time_temp(union_view, opts, time_temp, cancel)
+            tick()
+
+            # --- 列ブロック -----------------------------------------------------
+            units: list[str] = []
+            for i, (start, stop) in enumerate(blocks):
+                _check_cancel(cancel)  # ブロック境界 [I8]
+                temp = out_dir / f".tmp_export_{token}_b{i:05d}.csv"
+                temps.append(temp)
+                units.extend(
+                    self._write_block_temp(
+                        columns[start:stop],
+                        resolve=resolve,
+                        union_view=union_view,
+                        opts=opts,
+                        temp_path=temp,
+                        cancel=cancel,
+                    )
+                )
+                tick()
+
+            # --- ヘッダ/単位行 (keys から導出・単位は側帯から) -----------------
+            # `names` は temp を書く**前**に解決済み (長さ検査も済み)。ここで
+            # resolver を呼び直さない — 2 回呼ぶと副作用つき resolver でヘッダと
+            # 検査対象がずれる。単位はブロックパス中の側帯 (`units`) から取り、
+            # マージ段で再 resolve しない (330k 再解決 = ~390 MB の一撃・MG-4)。
+            names.extend(s.name for s in request.extra_signals)
+            prefix = [_join([_TIMESTAMP_HEADER, *names], opts)]
+            if opts.unit_row:
+                prefix.append(_join([_TIMESTAMP_UNIT, *units], opts))
+
+            # --- 多段マージ -----------------------------------------------------
+            stages = merge_stage_count(len(temps), fan_in)
+            current = list(temps)
+            for stage in range(stages):
+                is_last = stage == stages - 1
+                outputs: list[Path] = []
+                for chunk_start in range(0, len(current), fan_in):
+                    chunk = current[chunk_start : chunk_start + fan_in]
+                    merged = (
+                        out_dir / f".tmp_export_{token}_s{stage}_{len(outputs):05d}.csv"
+                    )
+                    # **作らせる前に登録する**。`_merge_one_stage` の内側で
+                    # 名前を決めさせて戻り値で受け取る形にすると、マージ途中の
+                    # 例外 (キャンセル・行数不一致) で「既に open 済みだが誰も
+                    # 知らない temp」が残る — 実測で 1 本残った (B6 違反)。
+                    # 時刻/ブロック temp と同じく**経路を束ねる側が全パスを持つ**。
+                    temps.append(merged)
+                    self._merge_one_stage(
+                        chunk,
+                        merged_path=merged,
+                        stage=stage,
+                        prefix_lines=tuple(prefix) if is_last else (),
+                        opts=opts,
+                        cancel=cancel,
+                    )
+                    outputs.append(merged)
+                    for spent in chunk:
+                        spent.unlink(missing_ok=True)
+                        temps.remove(spent)
+                current = outputs
+                tick()
+            # `merge_stage_count` の算術と実ループがずれると `current[0]` が
+            # **列を落としたファイル**になる (残りは finally で消えるので誰も
+            # 気付かない)。段数の一致は出力の正しさそのものなので loud-fail。
+            if len(current) != 1:
+                raise ValueError(
+                    f"内部エラー: マージ段数の算術が実際と一致しません "
+                    f"(残 {len(current)} 本・段数 {stages}・fan-in {fan_in})"
+                )
+            final_temp = current[0]
+            os.replace(final_temp, output_path)
+            temps.remove(final_temp)
+        finally:
+            # B6「何も残さない」: 成功でも失敗でもキャンセルでも temp は残さない。
+            # **束ねる側 (ここ) が唯一の掃除役** — 個々の writer にも消させると
+            # 「誰が消したか」が 2 か所になり部分削除の競合が入る
+            # (`ExportCancelled` の docstring が記録している契約)。
+            for leftover in temps:
+                # OSError を握り潰すのは、掃除の失敗 (Windows で別プロセスが
+                # 掴んでいる等) で**元の例外を差し替えない**ため。1 本消せなくても
+                # 残りは消す。
+                with contextlib.suppress(OSError):
+                    leftover.unlink(missing_ok=True)
 
     @staticmethod
-    def _require_single_value_columns(signals: list[Signal]) -> None:
-        """1 時刻 1 値でない Signal (配列チャンネルの親) を拒否する (E-3 C-d)。
+    def _require_shared_timeline(masters: Sequence[np.ndarray]) -> None:
+        """全 master が同一時間軸であることを **値を読まずに** 検証する (MG-6)。
 
-        **値を読まずに**親を弾くのは ``Session.export_csv`` の役目 (ColumnRecord
-        由来)。ここは CsvExporter を直接呼ぶ経路の最後の砦で、numpy の生 TypeError
-        を意味の分かる日本語エラーへ変える。判定を ``sorted_view()`` の結果で行うのは、
-        直後に同じ (キャッシュされた) ビューを読むため健全な経路には追加コストが
-        無いから — 拒否される側だけが一度の読みを払う。
+        比較は ``canonical_master`` 同士 — 旧実装は ``sorted_view()[0]`` を比べて
+        いたので、生 master のまま比べると「非単調だが整列すれば同じ」信号を
+        誤って拒否する。
+
+        ``masters`` は ``scan_masters`` の identity dedup 済みなので、prod の
+        「全列が同一 master オブジェクト」構成では 1 本しか来ず比較が 0 回になる。
         """
-        for sig in signals:
-            # 判定は `sorted_view()` ではなく `values` で行う。**構造化の親では
-            # sorted_view 自身が先に落ちる** — `astype(np.float64)` が複合 dtype を
-            # キャストできず `TypeError: Cannot cast array data from
-            # dtype([('x','<f8'),('y','<f8')])` になり、この層が置き換えるはずの
-            # 生 numpy エラーがそのまま出てしまう。
-            values = sig.values
-            # **構造化の親は ndim == 1** — 複合は shape でなく dtype 側にある
-            # (`[('x','f8'),('y','f8')]` の shape は (n,))。ndim だけを見ると
-            # 配列の親しか捕まらない。
-            if values.ndim != 1 or values.dtype.names is not None:
-                raise ValueError(
-                    EXPORT_MULTI_COLUMN_VALUES_ERROR_TMPL.format(name=sig.name)
-                )
-
-    def _header_rows(self, signals: list[Signal], opts: CsvExportOptions) -> list[str]:
-        """ヘッダ行(+ unit_row 指定時は単位行)を返す。"""
-        names = (
-            list(opts.header_names)
-            if opts.header_names is not None
-            else [s.name for s in signals]
-        )
-        lines = [_join([_TIMESTAMP_HEADER, *names], opts)]
-        if opts.unit_row:
-            # None / キー欠落 / 空文字はすべて空セルへ畳む。production の
-            # mdf_loader は truthy ガード (mdf_loader.py:159-161) で None を
-            # 載せないが、手組み metadata (Derived・テスト) は None を持ちうる。
-            # 畳まないと _quote の `delimiter in None` が TypeError になる
-            # (spec §9-6 が T-G へ defer した点をここで確定させる)。
-            units = [s.metadata.get("unit") or "" for s in signals]
-            lines.append(_join([_TIMESTAMP_UNIT, *units], opts))
-        return lines
-
-    def _rows_unified_timeline(
-        self, signals: list[Signal], opts: CsvExportOptions
-    ) -> list[str]:
-        """Align all signals onto the sorted union of their timestamps (Req 7.4)."""
-        views = [s.sorted_view() for s in signals]
-        unified = np.unique(np.concatenate([ts for ts, _vs in views]))
-        lookups = [dict(zip(ts.tolist(), vs.tolist(), strict=True)) for ts, vs in views]
-
-        lines = self._header_rows(signals, opts)
-        # 範囲フィルタはタイムライン解決 (union) 後に適用する (F-0 spec §2.2)。
-        for ts in unified.tolist():
-            if not _in_range(ts, opts):
-                continue
-            cells = [_fmt(ts, opts)]
-            cells.extend(_fmt_value(lk[ts], opts) if ts in lk else "" for lk in lookups)
-            lines.append(_join(cells, opts))
-        return lines
-
-    def _rows_shared_timeline(
-        self, signals: list[Signal], opts: CsvExportOptions
-    ) -> list[str]:
-        """Build CSV lines assuming all signals share one timestamp axis.
-
-        Multi-rate signals (e.g. independent MDF channel rasters) do not
-        share a timeline, so blindly indexing by position would silently
-        truncate, misalign, or IndexError. Verify the shared-axis
-        precondition up front and fail loudly instead of writing corrupt
-        data (whole-branch review Important #1).
-        """
-        views = [s.sorted_view() for s in signals]
-        base_ts = views[0][0]
-        for ts, _vs in views:
-            if ts.shape != base_ts.shape or not np.array_equal(ts, base_ts):
+        if not masters:
+            return
+        base = canonical_master(masters[0])
+        for master in masters[1:]:
+            other = canonical_master(master)
+            if other.shape != base.shape or not np.array_equal(other, base):
                 raise ValueError(
                     "選択した信号が同一の時間軸を共有していません。"
                     "共有タイムラインで書き出すには統合タイムラインを有効にしてください。"
                 )
-        timestamps = base_ts
-        sorted_values = [vs for _ts, vs in views]
-        lines = self._header_rows(signals, opts)
-        # 範囲フィルタはタイムライン共有検証 (loud-fail) 後に適用する (F-0 spec §2.2)。
-        for i in range(len(timestamps)):
-            if not _in_range(timestamps[i], opts):
-                continue
-            cells = [_fmt(timestamps[i], opts)]
-            cells.extend(_fmt_value(vs[i], opts) for vs in sorted_values)
-            lines.append(_join(cells, opts))
-        return lines
 
-    # ─── 列ブロックパイプライン (E-4b spec §5.3・export() へは Task 7 で配線) ───
+    def _merge_one_stage(
+        self,
+        inputs: Sequence[Path],
+        *,
+        merged_path: Path,
+        stage: int,
+        prefix_lines: Sequence[str],
+        opts: CsvExportOptions,
+        cancel: threading.Event | None,
+    ) -> None:
+        """*inputs* を横に繋いで *merged_path* を作る (同時 open = len(inputs) + 1)。
+
+        **出力パスは受け取る** (自分で決めない): 途中で落ちたときに残る temp を
+        掃除できるのは、パスを**呼ぶ前から**知っている ``_export_request`` だけ。
+
+        **全入力の行数一致を assert する** (MG-6): ずれたまま繋ぐと、ある列から
+        先が 1 行ずれた別時刻の値になる — 例外も長さ検証も出ないサイレント誤データ
+        なので、ここで loud-fail させて B6 (全 temp 削除) へ倒す。
+
+        断片に改行は入りえない (値セルは数値であり、クォートが要る文字を含むのは
+        ヘッダ/単位行だけで、それは最終段でここへ prefix として渡される) ので、
+        行単位の読み出しで正しい。
+
+        断片同士は ``opts.delimiter`` で**素に**繋ぐ — クォートは断片を作った
+        ブロック writer の ``_join`` が既に適用済みで、ここで再適用すると
+        既にクォート済みのセルの二重引用符がさらにエスケープされ、囲みが 1 重から
+        3 重へ膨らむ (ブロック数で重複の出方が変わるので、分割不変テストでしか
+        捕まらない)。
+        """
+        # utf-8-sig は**最終段のみ**が付ける BOM。中間 temp は素の utf-8。
+        encoding = "utf-8-sig" if prefix_lines else "utf-8"
+        # SIM115 抑止: 同時に F 本開いて**行ごとに横断する**のがこの関数の要点で、
+        # 個々を `with` に入れることはできない (ExitStack を使っても閉じる責務が
+        # 分散するだけ)。下の `finally` が全数 close の唯一の出口。
+        handles: list[IO[str]] = []
+        try:
+            for path in inputs:
+                handles.append(open(path, encoding="utf-8", newline=""))  # noqa: SIM115
+            with open(merged_path, "w", encoding=encoding, newline="") as out:
+                for line in prefix_lines:
+                    out.write(line + "\n")
+                buf: list[str] = []
+                row = 0
+                while True:
+                    if row % _CANCEL_ROW_INTERVAL == 0:
+                        _check_cancel(cancel)
+                    fragments = [h.readline() for h in handles]
+                    if all(f == "" for f in fragments):
+                        break
+                    if any(f == "" for f in fragments):
+                        raise ValueError(
+                            "内部エラー: 列ブロックの行数が一致しません "
+                            f"(段 {stage}・行 {row})"
+                        )
+                    buf.append(opts.delimiter.join(f.rstrip("\n") for f in fragments))
+                    if len(buf) >= _FLUSH_ROWS:
+                        out.write("\n".join(buf) + "\n")
+                        buf.clear()
+                    row += 1
+                if buf:
+                    out.write("\n".join(buf) + "\n")
+        finally:
+            for handle in handles:
+                handle.close()
+
+    # ─── 列ブロックパイプライン (E-4b spec §5.3) ───────────────────────────────
 
     @staticmethod
     def _require_single_value_column(sig: Signal) -> None:
         """1 時刻 1 値でない列 (配列/構造化の親) を拒否する (E-3 C-d)。
 
-        判定を ``sorted_view()`` ではなく ``values`` で行う理由は
-        ``_require_single_value_columns`` の docstring と同一 (構造化の親では
-        ``astype(np.float64)`` が先に生 TypeError を出す)。
+        ここは ``CsvExporter`` を直接呼ぶ経路の最後の砦で、numpy の生 TypeError
+        ("float() argument must be ... not 'list'") を意味の分かる日本語エラーへ
+        変える (値を読まずに親を弾くのは ``Session._reject_container_channels``
+        の役目)。
+
+        判定は ``sorted_view()`` ではなく ``values`` で行う。**構造化の親では
+        sorted_view 自身が先に落ちる** — ``astype(np.float64)`` が複合 dtype を
+        キャストできず ``TypeError: Cannot cast array data from
+        dtype([('x','<f8'),('y','<f8')])`` になり、この層が置き換えるはずの生
+        numpy エラーがそのまま出てしまう。**構造化の親は ndim == 1** (複合は
+        shape でなく dtype 側にある) ので、``ndim`` だけを見ると配列の親しか
+        捕まらない。
+
+        呼び出し位置は ``_write_block_temp`` の**行組み立ての前**。E-4b Task 7 で
+        「export 冒頭の全信号一括検査 (旧 ``_require_single_value_columns``)」が
+        消えたが、拒否が ``sorted_view`` より前に来る不変条件は保たれている
+        (``test_exporter_writes_nothing_when_rejected`` の spy が pin)。
         """
         values = sig.values
         if values.ndim != 1 or values.dtype.names is not None:
@@ -567,26 +881,3 @@ class CsvExporter:
             if buf:
                 f.write("\n".join(buf) + "\n")
         return units
-
-    def _atomic_write(self, output_path: Path, lines: list[str]) -> None:
-        """Write lines to a temp file in the target dir, then atomically rename."""
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(
-            dir=str(output_path.parent), prefix=".tmp_", suffix=".csv"
-        )
-        try:
-            # UTF-8 BOM つきで書く (E-4b B1・spec §5.1-2)。ヘッダは
-            # csv_header_names のファイルキー併記や日本語信号名を含みうるため、
-            # BOM が無いと Excel(ja) が cp932 と誤認して化ける。pandas は
-            # utf-8-sig 相当で自動除去し、自製品の CsvLoader は既に utf-8-sig
-            # 読み (csv_loader.py:46) なので往復は無修正で生存する。
-            # BOM はストリーム先頭の 1 回だけ (utf-8-sig の IncrementalEncoder が
-            # first フラグを持つ) なので、write を 2 回に分けても二重に付かない。
-            with os.fdopen(fd, "w", encoding="utf-8-sig", newline="") as f:
-                f.write("\n".join(lines))
-                f.write("\n")
-            os.replace(tmp_name, output_path)
-        except BaseException:
-            if os.path.exists(tmp_name):
-                os.unlink(tmp_name)
-            raise

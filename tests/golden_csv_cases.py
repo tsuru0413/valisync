@@ -41,11 +41,14 @@ from valisync.gui.display_names import csv_header_names
 #: コミット済みゴールデンの置き場 (このファイルからの相対で解決する)。
 GOLDEN_DIR = Path(__file__).resolve().parent / "golden_csv"
 
-#: Task 7 が block_cols を導入したら「複数ブロックでも同じバイト」を駆動する
-#: ための変種。T-G 時点では 1 ブロック相当の (None,) のみ。
+#: E-4b Task 7 が列ブロック化したので、ゴールデンは **複数ブロック (境界跨ぎ) でも
+#: 駆動する** (spec G1)。None = 自動決定 (`block_columns` の下限 16 に当たるので
+#: 全ケースが 1 ブロック)・1 と 2 が境界跨ぎ。
 #: test_block_cols_handoff_is_not_forgotten がこの定数と __init__ の signature の
-#: 同期を強制する (spec G1)。
-BLOCK_COLS_VARIANTS: tuple[int | None, ...] = (None,)
+#: 同期を強制し、test_multi_column_goldens_really_cross_a_block_boundary が
+#: 「実際に 2 ブロック以上になっている」ことを直接観測する (variants を広げただけで
+#: 1 ブロックのままなら G1 は空虚)。
+BLOCK_COLS_VARIANTS: tuple[int | None, ...] = (None, 1, 2)
 
 
 # ─── 値の生成規則 ─────────────────────────────────────────────────────────────
@@ -157,20 +160,17 @@ def export_case(
     呼び出しを閉じ込めることで、「生成時は unified・照合時は shared」のような
     ずれが起こりえなくなる。
 
-    ``block_cols`` (I2): T-G 時点では ``None`` のみが渡る (生成器も既定呼び出しも
-    未指定)。Task 7 が ``BLOCK_COLS_VARIANTS`` を複数値へ広げた瞬間、ここで
-    ``CsvExporter(block_cols=block_cols)`` を呼ぶ経路が生きて **TypeError** で
-    落ちる (今日の ``CsvExporter.__init__`` は ``block_cols`` を受け付けない) —
-    driver 側の追随を強制する仕掛けそのもの (``test_block_cols_handoff_is_not_forgotten``
-    と対になる)。
+    ``block_cols`` (I2): 生成器は既定 (``None``) でしか呼ばない — ゴールデンの
+    **生成**は 1 通りで、``BLOCK_COLS_VARIANTS`` の全変種は同じ 1 本のファイルと
+    突き合わされる (期待バイトは分岐しない)。``None`` をそのまま
+    ``CsvExporter(block_cols=None)`` へ渡すのが正しい (= 自動決定)。
     """
     inp = case.build(work_dir)
     try:
         out = work_dir / f"{case.case_id}.csv"
-        exporter = (
-            CsvExporter() if block_cols is None else CsvExporter(block_cols=block_cols)
+        CsvExporter(block_cols=block_cols).export(
+            inp.signals, out, inp.use_unified_timeline, build_options(inp)
         )
-        exporter.export(inp.signals, out, inp.use_unified_timeline, build_options(inp))
         return out.read_bytes()
     finally:
         inp.close()

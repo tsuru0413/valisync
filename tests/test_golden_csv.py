@@ -47,6 +47,7 @@ from tests.golden_csv_cases import (  # noqa: E402  (sys.path 調整の後でし
     build_options,
     export_case,
 )
+from valisync.core.export import csv_exporter  # noqa: E402
 from valisync.core.export.csv_exporter import (  # noqa: E402
     CsvExporter,
     CsvExportOptions,
@@ -88,6 +89,11 @@ def _diff_message(case: GoldenCase, expected: bytes, actual: bytes) -> str:
 # ─── 本体: バイト一致 ────────────────────────────────────────────────────────
 
 
+# E-4b Task 7 supersede: ``BLOCK_COLS_VARIANTS`` を ``(None, 1, 2)`` へ広げた
+# (spec G1「ゴールデンは複数ブロック・境界跨ぎで駆動」)。**期待バイトは 1 バイトも
+# 変えていない** — 全変種が同じ golden ファイルと突き合わされる。駆動側だけが
+# parametrize される形であることが要点で、期待側を block_cols で分岐させたら
+# 「どう分割しても同じバイト」という主張そのものが消える。
 @pytest.mark.parametrize("block_cols", BLOCK_COLS_VARIANTS, ids=lambda b: f"bc{b}")
 @pytest.mark.parametrize("case", GOLDEN_CASES, ids=lambda c: c.case_id)
 def test_golden_bytes_match(
@@ -279,12 +285,15 @@ def test_range_boundary_off_by_one_sample_changes_the_bytes(
 def test_empty_selection_fails_loudly_and_writes_no_file(tmp_path: Path) -> None:
     """空選択の**現行**契約を凍結する: 例外・ファイル無し。
 
-    今日は ``_rows_shared_timeline`` が ``views[0]`` で IndexError、
-    ``_rows_unified_timeline`` が ``np.concatenate([])`` で ValueError になる。
+    T-G 時点は ``_rows_shared_timeline`` の ``views[0]`` で IndexError、
+    ``_rows_unified_timeline`` の ``np.concatenate([])`` で ValueError だった。
+    **E-4b Task 7 supersede**: 両実装は消え、``_export_request`` 冒頭の
+    ``EXPORT_EMPTY_REQUEST_ERROR`` (ValueError) が唯一の loud-fail になった —
+    期待は ``(IndexError, ValueError)`` のまま 1 文字も変えていない (契約は
+    「例外・ファイル無し」であって例外クラスではない)。
     GUI は ``_on_accept`` の ``if not keys: return`` で到達させないが、
     ``Session.export_csv`` 直呼びは到達する。**沈黙して空ファイルを書く**
-    (ヘッダだけの CSV を「成功」として渡す) 形へ degrade させないことが要点で、
-    Task 6/7 の再構築後も何らかの loud-fail が残ることをここで縛る。
+    (ヘッダだけの CSV を「成功」として渡す) 形へ degrade させないことが要点。
     """
     out = tmp_path / "empty.csv"
     for unified in (False, True):
@@ -304,15 +313,20 @@ def test_data_cells_are_quoted_when_the_delimiter_can_appear_in_a_number(
     """データ行の _join を落とすと RED になる唯一のオラクル (T-G sabotage M4b)。
 
     ゴールデン 11 本と既存 65 本は、既定 delimiter では数値セルに区切り文字が
-    構造的に現れないため、_rows_*_timeline の _join を素の delimiter.join へ
-    落としても全緑になる (実測)。float の repr は負値/指数で '-' と '+' を出すので、
+    構造的に現れないため、データ行の _join を素の delimiter.join へ落としても
+    全緑になる (実測)。float の repr は負値/指数で '-' と '+' を出すので、
     合法な delimiter='-' がこの穴を塞ぐ最小の入力。
 
-    **両タイムラインで駆動する** (再レビュー是正 2026-08-01): _join のサイトは
-    _rows_unified_timeline と _rows_shared_timeline の 2 箇所にあり、片方だけ
-    落とす変異は他方を駆動するテストでは捕まらない (実測: unified 側だけ落とすと
-    27 passed / RED ゼロ)。統合 TL は GUI の既定かつ Task 6/7 が最も作り替える
-    経路。出力バイトは両モードで同一 (1 信号なので union == 元の ts)。
+    **両タイムラインで駆動する** (再レビュー是正 2026-08-01): T-G 時点では _join の
+    サイトが _rows_unified_timeline と _rows_shared_timeline の 2 箇所にあり、
+    片方だけ落とす変異は他方を駆動するテストでは捕まらなかった (実測: unified 側
+    だけ落とすと 27 passed / RED ゼロ)。**E-4b Task 7 supersede**: 両実装が消え
+    データ行の _join は `_write_block_temp` / `_write_time_temp` の 2 箇所
+    (値側と時刻側) になった — サイトが片翼ずつ独立に盲目になりうる構造は
+    変わらないので、両モード駆動は維持する (union==元 ts なので出力は同一)。
+    さらに Task 7 のマージ器は断片を**素の delimiter で繋ぐ** (二重クォート禁止)
+    ので、このテストは「ブロック内でクォート済み・マージで再クォートしない」の
+    合成結果も同時に縛っている。
     """
     out = tmp_path / "d.csv"
     sig = _sig("mf4_1::v", [0.0, 1.0], [-1.5, 1e300])
@@ -351,6 +365,13 @@ def test_block_cols_handoff_is_not_forgotten() -> None:
     注入口** に置く (``export()`` の署名は共有インターフェース契約で凍結されて
     いるため)。``export`` の署名を見ると block_cols は永久に現れず、この
     ガードは恒久的に空虚になる (G1「複数ブロック駆動」の強制が消える)。
+
+    **E-4b Task 7 で発火済み** (両辺 True で緑)。Task 6 の実測どおり、
+    ``__init__`` の ``block_cols`` と ``BLOCK_COLS_VARIANTS`` の拡張は片方だけでは
+    通らない (param だけ足すとここが RED・variants だけ広げると
+    ``export_case`` の ``CsvExporter(block_cols=...)`` が TypeError) ので、
+    **1 コミットで同時に landing させた**。以後は「片方を戻す」退行の門番として
+    残る — 恒真ではなく、両辺が同時に倒れる形の双方向 assert であることが要点。
     """
     params = inspect.signature(CsvExporter.__init__).parameters
     has_block_cols = "block_cols" in params
@@ -358,6 +379,48 @@ def test_block_cols_handoff_is_not_forgotten() -> None:
         "block_cols の導入とゴールデンの複数ブロック駆動は同時に行うこと "
         f"(signature={list(params)}, variants={BLOCK_COLS_VARIANTS})"
     )
+
+
+def test_multi_column_goldens_really_cross_a_block_boundary(tmp_path: Path) -> None:
+    """``block_cols=1`` の駆動が**実際に 2 ブロック以上**を作っていること (G1)。
+
+    ``BLOCK_COLS_VARIANTS`` を広げるだけでは G1 は空虚になりうる — 実装が
+    ``block_cols`` を無視 (あるいは下限で握り潰) しても、出力バイトは同じなので
+    ``test_golden_bytes_match`` は全数緑のままになる。**Task 6 のレビューで
+    一度この空虚な緑が返ってきた**ので、「境界を跨いだ」ことを出力ではなく
+    **ブロック計画そのもの**で観測する。
+
+    観測点を ``plan_blocks`` にするのは、ここが「列 -> ブロック」の唯一の決定点
+    だから (block-temp を数える案は temp が finally で消えるため観測窓が要る)。
+    """
+    seen: list[tuple[tuple[int, int], ...]] = []
+    original = csv_exporter.plan_blocks
+
+    def spy(runs, block_cols):  # type: ignore[no-untyped-def]
+        blocks = original(runs, block_cols)
+        seen.append(blocks)
+        return blocks
+
+    # g05 は 5 列 (要クォート名・単位行)。列数が最も多い部類のケースで、
+    # block_cols=1 なら 5 ブロックになるはず。
+    case = _CASES_BY_ID["g05_quoting_japanese_units"]
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(csv_exporter, "plan_blocks", spy)
+        actual = export_case(case, tmp_path, block_cols=1)
+
+    assert actual == _golden_path(case.case_id).read_bytes()
+    assert len(seen) == 1, seen
+    assert len(seen[0]) > 1, (
+        f"block_cols=1 でもブロックが 1 個しか作られていない: {seen[0]} — "
+        "ゴールデンの複数ブロック駆動 (G1) が空虚"
+    )
+    # 反 vacuous の裏側: 既定 (自動決定) では 1 ブロックであることも見る。
+    # 両方が同じ数なら「block_cols が効いていない」ことの直接証拠になる。
+    seen.clear()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(csv_exporter, "plan_blocks", spy)
+        export_case(case, tmp_path, block_cols=None)
+    assert len(seen[0]) == 1, seen
 
 
 # ─── 生成器の上書き拒否 (spec G1) ────────────────────────────────────────────
