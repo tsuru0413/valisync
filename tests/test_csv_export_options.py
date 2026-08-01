@@ -22,7 +22,8 @@ def _sig(name: str, ts: list[float], vs: list[float], unit: str = "") -> Signal:
 
 
 def _read(p: Path) -> list[str]:
-    return p.read_text(encoding="utf-8").splitlines()
+    # supersede(E-4b §5.1-2): 出力に UTF-8 BOM が付いたため読み口のみ utf-8-sig 化 (期待値不変)
+    return p.read_text(encoding="utf-8-sig").splitlines()
 
 
 def test_default_options_match_current_behavior(tmp_path: Path) -> None:

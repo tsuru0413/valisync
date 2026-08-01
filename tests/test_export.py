@@ -27,7 +27,8 @@ def test_export_single_signal_writes_header_and_rows(tmp_path):
 
     CsvExporter().export([sig], out)
 
-    lines = out.read_text(encoding="utf-8").splitlines()
+    # supersede(E-4b §5.1-2): 出力に UTF-8 BOM が付いたため読み口のみ utf-8-sig 化 (期待値不変)
+    lines = out.read_text(encoding="utf-8-sig").splitlines()
     assert (
         lines[0] == "timestamp,speed"
     )  # Req 7.2, 7.3: timestamp first col + signal name
@@ -43,7 +44,8 @@ def test_export_multiple_signals_share_columns(tmp_path):
 
     CsvExporter().export([a, b], out)
 
-    lines = out.read_text(encoding="utf-8").splitlines()
+    # supersede(E-4b §5.1-2): 出力に UTF-8 BOM が付いたため読み口のみ utf-8-sig 化 (期待値不変)
+    lines = out.read_text(encoding="utf-8-sig").splitlines()
     assert lines[0] == "timestamp,a,b"
     assert lines[1] == "0.0,1.0,3.0"
     assert lines[2] == "1.0,2.0,4.0"
@@ -57,7 +59,8 @@ def test_export_unified_timeline_uses_empty_cells_for_missing_samples(tmp_path):
 
     CsvExporter().export([a, b], out, use_unified_timeline=True)
 
-    lines = out.read_text(encoding="utf-8").splitlines()
+    # supersede(E-4b §5.1-2): 出力に UTF-8 BOM が付いたため読み口のみ utf-8-sig 化 (期待値不変)
+    lines = out.read_text(encoding="utf-8-sig").splitlines()
     assert lines[0] == "timestamp,a,b"
     assert lines[1] == "0.0,10.0,"  # b missing at t=0
     assert lines[2] == "1.0,,21.0"  # a missing at t=1
@@ -88,7 +91,8 @@ def test_export_shared_timeline_non_monotonic_sorted_rows(tmp_path):
 
     CsvExporter().export([sig], out, use_unified_timeline=False)
 
-    lines = out.read_text(encoding="utf-8").strip().splitlines()
+    # supersede(E-4b §5.1-2): 出力に UTF-8 BOM が付いたため読み口のみ utf-8-sig 化 (期待値不変)
+    lines = out.read_text(encoding="utf-8-sig").strip().splitlines()
     rows = [tuple(float(x) for x in line.split(",")) for line in lines[1:]]
     ts_col = [ts for ts, _v in rows]
     assert ts_col == sorted(ts_col)

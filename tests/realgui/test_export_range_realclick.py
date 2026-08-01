@@ -75,7 +75,8 @@ def _real_click_widget(widget) -> None:  # type: ignore[no-untyped-def]
 
 
 def _read_timestamps(path: Path) -> list[float]:
-    lines = path.read_text(encoding="utf-8").splitlines()
+    # supersede(E-4b §5.1-2): 出力に UTF-8 BOM が付いたため読み口のみ utf-8-sig 化 (期待値不変)
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
     assert lines and lines[0].startswith("timestamp,"), f"想定外のヘッダ: {lines[:1]}"
     return [float(line.split(",", 1)[0]) for line in lines[1:] if line]
 

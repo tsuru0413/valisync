@@ -158,7 +158,8 @@ def test_session_exports_expanded_column(tmp_path: Path) -> None:
     out = tmp_path / "col.csv"
     session.export_csv([col], out)
 
-    lines = out.read_text(encoding="utf-8").splitlines()
+    # supersede(E-4b §5.1-2): 出力に UTF-8 BOM が付いたため読み口のみ utf-8-sig 化 (期待値不変)
+    lines = out.read_text(encoding="utf-8-sig").splitlines()
     assert lines[0] == f"timestamp,{key}::Mat[0]"
     assert len(lines) == 5  # ヘッダ + 4 行
 
@@ -169,4 +170,5 @@ def test_session_export_allows_signal_without_loaded_group(tmp_path: Path) -> No
     session = Session()
     out = tmp_path / "derived.csv"
     session.export_csv([_scalar_signal()], out)
-    assert out.read_text(encoding="utf-8").splitlines()[0] == "timestamp,Plain"
+    # supersede(E-4b §5.1-2): 出力に UTF-8 BOM が付いたため読み口のみ utf-8-sig 化 (期待値不変)
+    assert out.read_text(encoding="utf-8-sig").splitlines()[0] == "timestamp,Plain"

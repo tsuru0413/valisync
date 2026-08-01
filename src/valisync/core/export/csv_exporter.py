@@ -255,7 +255,14 @@ class CsvExporter:
             dir=str(output_path.parent), prefix=".tmp_", suffix=".csv"
         )
         try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            # UTF-8 BOM つきで書く (E-4b B1・spec §5.1-2)。ヘッダは
+            # csv_header_names のファイルキー併記や日本語信号名を含みうるため、
+            # BOM が無いと Excel(ja) が cp932 と誤認して化ける。pandas は
+            # utf-8-sig 相当で自動除去し、自製品の CsvLoader は既に utf-8-sig
+            # 読み (csv_loader.py:46) なので往復は無修正で生存する。
+            # BOM はストリーム先頭の 1 回だけ (utf-8-sig の IncrementalEncoder が
+            # first フラグを持つ) なので、write を 2 回に分けても二重に付かない。
+            with os.fdopen(fd, "w", encoding="utf-8-sig", newline="") as f:
                 f.write("\n".join(lines))
                 f.write("\n")
             os.replace(tmp_name, output_path)
