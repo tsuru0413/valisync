@@ -46,6 +46,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from valisync.core.export.csv_exporter import ExportRequest, estimate_output_bytes
+from valisync.core.export.estimate import (
+    ExportEstimate,
+    disk_shortfall,
+    estimate_export,
+)
 from valisync.core.loaders.csv_format_detector import CsvFormatDetector
 from valisync.core.models.format_def import FormatDefinition
 from valisync.core.models.load_result import Diagnostic
@@ -62,7 +68,7 @@ from valisync.gui.theme.tokens import ThemeMode
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
 from valisync.gui.viewmodels.diagnostics_vm import DiagnosticsViewModel
-from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
+from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM, _fmt_size
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 from valisync.gui.viewmodels.signal_preview_vm import SignalPreviewVM
@@ -76,6 +82,7 @@ from valisync.gui.views.collapsible_dock_title_bar import CollapsibleDockTitleBa
 from valisync.gui.views.csv_format_dialog import CsvFormatDialog
 from valisync.gui.views.data_explorer_view import DataExplorerView
 from valisync.gui.views.diagnostics_view import DiagnosticsView
+from valisync.gui.views.export_confirm import confirm_body, needs_confirmation
 from valisync.gui.views.export_csv_dialog import ExportCsvDialog
 from valisync.gui.views.file_browser_view import FileBrowserView
 from valisync.gui.views.graph_area_view import GraphAreaView
@@ -202,6 +209,11 @@ class MainWindow(QMainWindow):
         self.app_vm.set_busy_predicate(self._export_controller.is_busy)
         # 拒否モーダルは DI (テストから差し替え可能 — _default_confirm と同規約)。
         self._notify_blocked: Callable[[str], None] = self._default_blocked_modal
+        # B2: 続行可否は人が決める。ダイアログ型は QMessageBox + DI (file_browser_view
+        # の _confirm_fn と同規約) — realgui は実ボタンを押し、Layer B は差し替える。
+        self._confirm_export_fn: Callable[[ExportEstimate], bool] = (
+            self._default_confirm_export
+        )
         # LD-01: CSV フォーマット解決 (検出して確認ダイアログ)。テストで差し替え可能。
         self._csv_format_resolver: Callable[[Path], FormatDefinition | None] = (
             self._default_csv_format_resolver
@@ -975,6 +987,30 @@ class MainWindow(QMainWindow):
         )
         if req is None:
             return
+        est = estimate_export(self.app_vm.session, req.keys, req.options)
+        self._run_export(req, est)
+
+    def _run_export(self, req: ExportRequest, est: ExportEstimate) -> None:
+        """D5 検査 -> 確認 -> 投入。**拒否は D5 のディスク不足のみ** (B2)。
+
+        見積を引数で受けるのは、キャンセル時に **開始前の値** を再掲する (B6) ため
+        — 後から計算し直すと、unload 済みのファイルでは値が変わる/出せなくなる。
+        """
+        # **GUI 門番は core 門番を上界包含する** (順序逆転の構造排除・I-3)。
+        # core (`csv_exporter._require_disk_space`) は粗い `_EST_BYTES_PER_CELL = 12`
+        # で判定するので、GUI の推定 (実測校正済みの ~5.6 B/セル) だけを見ると
+        # 「GUI の D5 を通過 -> 確認 Yes -> core で ValueError」という窓が開く。
+        # 両者の大きい方で判定すれば、GUI を通ったものは必ず core も通る。
+        need_bytes = max(est.est_bytes, estimate_output_bytes(est.rows, est.columns))
+        shortfall = disk_shortfall(req.output_path, need_bytes)
+        if shortfall > 0:
+            # 唯一の拒否。訊く前に落とす — 「はい」と答えても書けないので。
+            self._notify_blocked(
+                S.EXPORT_DISK_SHORT_TMPL.format(shortfall=_fmt_size(shortfall))
+            )
+            return
+        if needs_confirmation(est) and not self._confirm_export_fn(est):
+            return
         session = self.app_vm.session
         self._export_controller.submit(
             lambda: session.export_csv(
@@ -991,6 +1027,25 @@ class MainWindow(QMainWindow):
             ),
             on_error=self._on_export_error,
         )
+
+    def _default_confirm_export(self, est: ExportEstimate) -> bool:
+        # 標準ボタンのラベルを本文の動詞へ合わせるため、question() でなく
+        # QMessageBox を明示構築する (file_browser_view._default_confirm と同型)。
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(S.EXPORT_CONFIRM_TITLE)
+        box.setText(confirm_body(est))
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        yes_button = box.button(QMessageBox.StandardButton.Yes)
+        no_button = box.button(QMessageBox.StandardButton.No)
+        assert yes_button is not None
+        assert no_button is not None
+        yes_button.setText(S.EXPORT_CONFIRM_YES)
+        no_button.setText(S.EXPORT_CONFIRM_NO)
+        return box.exec() == QMessageBox.StandardButton.Yes
 
     def _on_export_error(self, err: Exception) -> None:
         # FB-01 同様: 失敗を握りつぶさない (ステータス+モーダル)。

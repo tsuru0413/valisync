@@ -336,6 +336,22 @@ class Session:
         """
         return self._groups.column_names_of(key, display_name)
 
+    def channel_master(self, channel_key: str) -> np.ndarray | None:
+        """``"{group_key}::{物理チャンネル表示名}"`` の master (**鋳造しない**)。
+
+        見積 (E-4b T-UX) が union と空セル率を出す唯一の入口。値は読まない
+        (master はロード時点で既にメモリに在る)。
+        """
+        group_key, sep, display = channel_key.partition(KEY_SEPARATOR)
+        if not sep:
+            return None
+        return self._groups.channel_master(group_key, display)
+
+    def is_lazy_channel(self, channel_key: str) -> bool:
+        """そのチャンネルの読みが **まだ発生していない** か (見積の読み項の母数)。"""
+        group_key, sep, _display = channel_key.partition(KEY_SEPARATOR)
+        return bool(sep) and self._groups.is_lazy_group(group_key)
+
     def total_column_count(self, key: str) -> int:
         """グループの数値列総数 (KeyError if unknown)。表示件数の母数 (U2)。"""
         return self._groups.total_column_count(key)

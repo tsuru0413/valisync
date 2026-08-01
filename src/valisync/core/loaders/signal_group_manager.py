@@ -3,7 +3,10 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from types import MappingProxyType
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
+
+if TYPE_CHECKING:
+    import numpy as np
 
 from valisync.core.loaders.column_names import (
     ColumnPath,
@@ -639,6 +642,39 @@ class SignalGroupManager:
         if record is None:
             return (display_name,)
         return tuple(leaf_names(display_name, record.spec))
+
+    def channel_master(self, group_key: str, display_name: str) -> np.ndarray | None:
+        """物理チャンネルの master 配列 (**鋳造しない・値を読まない**)。
+
+        見積 (E-4b T-UX) が union と空セル率を出すための唯一の入口。``resolve`` で
+        代用すると列を鋳造して LRU の枠を食う (``has_column`` の docstring と同じ理由)。
+        鋳造列は親の master を **同一オブジェクトのまま** 共有するので、ここで返す
+        配列は列がどれであっても identity dedup の同じ 1 本になる (spec §5.4)。
+
+        **ColumnRecord を持たないグループ (CSV/Derived) だけ**、信号名の線形走査へ
+        落ちる。それらは ``physical_channel`` metadata を載せないので物理索引が空で、
+        かつ 1 信号 = 1 列なので信号名がそのままチャンネル名になる (``scan_masters``
+        の ``metadata.get("physical_channel", sig.name)`` フォールバックと同型)。
+        **表を持つグループ (MDF) では走査しない**のが load-bearing: prod の
+        330,004 列が全部解決不能な形 (アンロード直後など) になったとき、1 キューに
+        つき 4,324 信号を走査すると 1.4e9 回の比較 = 見積が固まる。
+        """
+        sig = self._physical_by_name.get(group_key, {}).get(display_name)
+        if sig is None and not self._column_records.get(group_key):
+            group = self._groups.get(group_key)
+            if group is not None:
+                sig = next((s for s in group.signals if s.name == display_name), None)
+        return None if sig is None else sig.timestamps
+
+    def is_lazy_group(self, group_key: str) -> bool:
+        """このグループの samples が **まだファイル側に在る** か (handle を持つか)。
+
+        見積の読みコスト項の母数。CSV/Derived は EagerValues で既に実体化済みなので
+        0 秒 — ここを一様に cold 扱いすると、CSV だけの小さな出力でも確認ダイアログが
+        「5 秒かかります」と嘘をつく。
+        """
+        group = self._groups.get(group_key)
+        return group is not None and group.handle is not None
 
     def total_column_count(self, group_key: str) -> int:
         """グループの数値列総数 (未知 key は ``group()`` と同じく KeyError)。

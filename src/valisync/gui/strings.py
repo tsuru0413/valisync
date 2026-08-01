@@ -124,6 +124,24 @@ EXPORT_COLUMN_PLACEHOLDER: Final = "…"
 EXPORT_CONTAINER_ROW_TOOLTIP: Final = "展開して列を選択してください"
 EXPORT_UNRESOLVED_ERROR_TMPL: Final = "選択した列を読み出せません（{n} 件・例: {name}）"
 
+# ── エクスポート確認 (E-4b・B2 / spec §5.5) ──────────────────────────────────
+# 桁区切りは付けない (既存決定・CHANNEL_HEADER_COUNT_TMPL と同規約)。列数/行数/
+# 空セル率は **正確値**、サイズと時間は **推定値** — 読者がその区別を付けられるよう
+# 推定側にだけ「推定」を冠する (B2)。空セル率は理由まで書かないと「壊れている」と
+# 読まれる (spec §5.5 の文言例をそのまま採用)。
+EXPORT_CONFIRM_TITLE: Final = "エクスポートの確認"
+EXPORT_CONFIRM_BODY_TMPL: Final = (
+    "{columns} 列 × {rows} 行を書き出します。\n"
+    "推定サイズ: 約 {size}／推定時間: 約 {duration}\n"
+    "出力の約 {empty} % は空セルです（信号ごとに記録周期が異なるため）。"
+)
+EXPORT_CONFIRM_YES: Final = "書き出す"  # 本文動詞と一致 (CONFIRM_CLOSE_YES と同規約)
+EXPORT_CONFIRM_NO: Final = "キャンセル"
+EXPORT_DISK_SHORT_TMPL: Final = (
+    "保存先の空き容量が足りません（あと約 {shortfall} 必要です）。"
+    "出力範囲を狭めるか列を減らしてください。"
+)
+
 # ── ダイアログ: 信号プレビュー (signal_preview_window・R-05 em ダッシュ) ─────
 PREVIEW_UNAVAILABLE: Final = "この信号はプレビューできません"
 PREVIEW_TITLE_TMPL: Final = "信号プレビュー — {key}"
