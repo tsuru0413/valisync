@@ -301,6 +301,29 @@ class Session:
         """名前空間つきキーを Signal へ解決する (列キーは要求時に鋳造・E-1)."""
         return self._groups.resolve(key)
 
+    def channel_key_of(self, column_key: str) -> str | None:
+        """列キー -> ``"{group_key}::{物理チャンネル表示名}"`` (**鋳造しない**)。
+
+        E-4b の「列 -> チャンネル」解決の**唯一の入口**。見積 (T-UX) のチャンネル
+        単価計算・ブロック割当・計測器がすべてここを通る。2 実装持つと「見積が
+        数えたチャンネル」と「実際に読むチャンネル」がずれ、読み項が桁で外れる。
+        """
+        group_key, sep, _bare = column_key.partition(KEY_SEPARATOR)
+        if not sep:
+            return None
+        return self._groups.channel_key_of(group_key, column_key)
+
+    def resolve_signal_transient(self, key: str) -> Signal | None:
+        """列キーを **帳簿に載せずに** Signal へ解決する (エクスポート専用・E-4b)。
+
+        ``CsvExporter`` の列ブロックが 1 列ずつ呼び、ブロック終端で参照を落とす。
+        ``resolve_signal`` を使うと鋳造列が LRU に載り、全列エクスポートで定常が
+        容量ぶん (512 本) 常駐する / 範囲エクスポートでは 1 本も落ちない
+        (spec §5.3 MG-1)。GUI の表示・プロットからは**呼んではならない**
+        (pin の対象にならないため、次の render で必ず作り直しになる)。
+        """
+        return self._groups.resolve_transient(key)
+
     def column_names_of(self, key: str, display_name: str) -> tuple[str, ...]:
         """物理チャンネル 1 本の列名を順序どおり返す (名前空間なし・E-3)。
 

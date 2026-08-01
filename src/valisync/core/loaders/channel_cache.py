@@ -292,6 +292,20 @@ class ChannelSampleCache:
         return self._reserved
 
     @property
+    def available_bytes(self) -> int:
+        """LRU が今使ってよいバイト数 (``budget - reserved``・下限 0)。
+
+        E-4b のブロックサイズ決定 (D3「予算 - 現在の pin 済み」) の唯一の入口。
+        呼び出し側に ``budget`` と ``reserved`` を別々に読ませないのは、その間に
+        pin の push が挟まると両者が別時点の値になり、**予算を超えるブロック幅が
+        計算できてしまう**から。``_capacity_for(0)`` と同じ式で、最低容量の床は
+        掛けない (床は「1 エントリを載せ切る」ためのもので、ブロック幅の根拠では
+        ない)。
+        """
+        with self._lock:
+            return max(0, self._budget - self._reserved)
+
+    @property
     def bytes_held(self) -> int:
         """保持中のバイト数 (= 各エントリの ``samples.nbytes`` の総和)。
 

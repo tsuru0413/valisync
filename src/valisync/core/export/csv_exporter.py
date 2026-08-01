@@ -3,13 +3,30 @@ from __future__ import annotations
 import math
 import os
 import tempfile
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
+from valisync.core.export.timeline import column_on_union
 from valisync.core.models import Signal
+
+# ブロック幅の下限/上限 (spec D3)。下限 16 は「予算を守れない」ではなく **進める**
+# ための床で、union が極端に長い (= 1 列が予算を超える) ときでも 16 列ずつ進む。
+# 上限 512 は E-4a の鋳造列 LRU 容量と同じ数で、1 ブロックの同時生存が
+# 「プロット中の全列」を超えないための目安。
+_MIN_BLOCK_COLS = 16
+_MAX_BLOCK_COLS = 512
+# 行ループ内でキャンセル要求を見る間隔 [I8]。``Event.is_set()`` は ~50 ns なので
+# 毎行でも払えるが、1,024 行ごとにすると最も広いブロック (512 列 ~150 us/行) でも
+# 応答は ~0.15 s に収まり、狭いブロックでは分岐そのものが消える。
+_CANCEL_ROW_INTERVAL = 1024
+# 何行ぶん溜めてから write するか。1 行ずつ write すると prod (12,012 行 x 8,253
+# ブロック = 99M 回) で write のオーバーヘッドだけが積み上がる。1,024 行 x 512 列で
+# バッファは ~2.4 MB に収まる。
+_FLUSH_ROWS = 1024
 
 #: Header name for the leading timestamp column (Req 7.3).
 _TIMESTAMP_HEADER = "timestamp"
@@ -37,6 +54,12 @@ EXPORT_HEADER_LENGTH_ERROR_TMPL = (
     "ヘッダ名の本数 ({got}) が列数 ({want}) と一致しません。"
 )
 EXPORT_UNRESOLVED_KEYS_ERROR_TMPL = "{n} 件の列を解決できませんでした (例: '{name}')。ファイルが閉じられた可能性があります。"
+#: ブロック writer が 1 列を解決できなかったときの文言 (エクスポート中にファイルが
+#: アンロードされた場合)。上の複数形と別なのは、writer が最初の 1 本で中断するため
+#: (全列を数え上げてから報告すると、その数え上げ自体が 330,004 列の再走査になる)。
+EXPORT_UNRESOLVABLE_KEY_ERROR_TMPL = (
+    "列 '{key}' を解決できません (ファイルがアンロードされた可能性があります)。"
+)
 
 
 @dataclass(frozen=True)
@@ -196,6 +219,118 @@ class ExportRequest:
     extra_signals: tuple[Signal, ...] = ()
 
 
+class ExportCancelled(Exception):
+    """協調キャンセルで中断した。
+
+    **temp の削除と出力ファイルの不在は送出側でなく捕捉側の責務** — ブロック
+    writer は自分が書いていた temp を消さない (temp 一式の寿命はエクスポート全体を
+    束ねる ``export()`` が持ち、そこの ``finally`` が一括で消す)。個々の writer にも
+    消させると「誰が消したか」が 2 か所になり、部分削除の競合が入る。
+    """
+
+
+@dataclass(frozen=True)
+class MasterScan:
+    """列を **値を読まずに** 前走査した結果 (union と割り当ての材料)。
+
+    ``masters`` は identity dedup 済み (spec §5.4)・``runs`` は物理チャンネル
+    ごとの列数 (keys の並び順)・``max_master_len`` はブロック幅の見積に使う
+    「1 列が実体化しうる最大サンプル数」。
+    """
+
+    masters: tuple[np.ndarray, ...]
+    runs: tuple[int, ...]
+    max_master_len: int
+
+
+def scan_masters(
+    columns: Sequence[tuple[str, Signal | None]],
+    resolve: Callable[[str], Signal | None],
+) -> MasterScan:
+    """列を 1 周して master と物理チャンネルの区切りを集める (**値を読まない**)。
+
+    ここで解決した Signal は**その場で捨てる** — 保持すると 330,004 本が同時生存
+    して E-4b が消そうとしているメモリがそのまま戻る。鋳造自体は I/O を伴わない
+    (``LazyMdfValues`` は遅延) ので、この前走査は master と metadata しか触らない。
+
+    区切りは ``(id(master), physical_channel)`` の変化点で採る。キー文字列を
+    parse しないのは、``Mat[0]`` のような列名が実チャンネル名と字面衝突しうる
+    から (E-3 の 1:1 契約が守るのは衝突の**拒否**であって、字面の一意性ではない)。
+    """
+    seen_masters: set[int] = set()
+    masters: list[np.ndarray] = []
+    runs: list[int] = []
+    max_len = 0
+    current: tuple[int, object] | None = None
+    for key, direct in columns:
+        sig = direct if direct is not None else resolve(key)
+        if sig is None:
+            raise ValueError(EXPORT_UNRESOLVABLE_KEY_ERROR_TMPL.format(key=key))
+        master = sig.timestamps
+        if id(master) not in seen_masters:
+            seen_masters.add(id(master))
+            masters.append(master)
+            max_len = max(max_len, len(master))
+        channel = (id(master), sig.metadata.get("physical_channel", sig.name))
+        if channel == current:
+            runs[-1] += 1
+        else:
+            runs.append(1)
+            current = channel
+        del sig  # 前走査は 1 本ずつ捨てる (同時生存 1 本)
+    return MasterScan(tuple(masters), tuple(runs), max_len)
+
+
+def block_columns(n_rows: int, max_master_len: int, budget_bytes: int) -> int:
+    """1 ブロックに載せる列数 (D3 の動的決定)。
+
+    1 列が同時に抱える実体は「union 行に整列した float64 値 (8 B/行) + 存在
+    フラグ (1 B/行)」で、これは**ブロックの終わりまで**生きる (行ループが全列を
+    横断するため)。加えて 1 列ぶんの ``sorted_view`` (時刻 + 値 = 16 B/サンプル)
+    が整列の間だけ生きる。合計を予算で割ったものが上限。
+
+    **値を ``tolist()`` してはならない**: Python float は 32 B/セルで、この式の
+    3.5 倍を食う (512 列 x 12,012 行 = 200 MB)。numpy 配列のまま持ち、セル書式化は
+    書き出しの瞬間に 1 セルずつ行う。
+    """
+    per_col = n_rows * 9 + max_master_len * 16
+    if per_col <= 0:
+        return _MAX_BLOCK_COLS  # 行 0 本 (範囲外エクスポート) — 幅は制約にならない
+    return max(_MIN_BLOCK_COLS, min(_MAX_BLOCK_COLS, budget_bytes // per_col))
+
+
+def plan_blocks(runs: Sequence[int], block_cols: int) -> tuple[tuple[int, int], ...]:
+    """物理チャンネルの区切り ``runs`` を ``[start, stop)`` のブロックへ詰める。
+
+    **1 チャンネルの列は同じブロックへ**入れる (spec §5.3): チャンネルを跨いで
+    混ぜると、ブロックごとに別チャンネルの 2-D を読み直して evict 連鎖が
+    チャンネル数ぶんでなく列数ぶんになる。
+
+    ただし**単独で上限を超える run は分割する**。割ってよいのは E-4a の
+    チャンネルキャッシュが 2-D を保持しており、2 ブロック目の切り出しが select
+    ではなくヒットになるから — 「絶対に割らない」にすると幅 1,100 のチャンネルで
+    1 ブロックが上限の 2 倍を実体化する。
+    """
+    blocks: list[tuple[int, int]] = []
+    start = cur = 0
+    for run in runs:
+        if cur > start and cur - start + run > block_cols:
+            blocks.append((start, cur))
+            start = cur
+        cur += run
+        while cur - start > block_cols:
+            blocks.append((start, start + block_cols))
+            start += block_cols
+    if cur > start:
+        blocks.append((start, cur))
+    return tuple(blocks)
+
+
+def _check_cancel(cancel: threading.Event | None) -> None:
+    if cancel is not None and cancel.is_set():
+        raise ExportCancelled("エクスポートはキャンセルされました")
+
+
 class CsvExporter:
     """CSV exporter. Writes Signal data as a single CSV file.
 
@@ -327,6 +462,103 @@ class CsvExporter:
             cells.extend(_fmt_value(vs[i], opts) for vs in sorted_values)
             lines.append(_join(cells, opts))
         return lines
+
+    # ─── 列ブロックパイプライン (E-4b spec §5.3・export() へは Task 7 で配線) ───
+
+    @staticmethod
+    def _require_single_value_column(sig: Signal) -> None:
+        """1 時刻 1 値でない列 (配列/構造化の親) を拒否する (E-3 C-d)。
+
+        判定を ``sorted_view()`` ではなく ``values`` で行う理由は
+        ``_require_single_value_columns`` の docstring と同一 (構造化の親では
+        ``astype(np.float64)`` が先に生 TypeError を出す)。
+        """
+        values = sig.values
+        if values.ndim != 1 or values.dtype.names is not None:
+            raise ValueError(
+                EXPORT_MULTI_COLUMN_VALUES_ERROR_TMPL.format(name=sig.name)
+            )
+
+    def _write_time_temp(
+        self,
+        union_view: np.ndarray,
+        opts: CsvExportOptions,
+        temp_path: Path,
+        cancel: threading.Event | None,
+    ) -> None:
+        """時刻列を **幅 1 のブロック** として書く (マージ器に特別扱いを作らない)。"""
+        with open(temp_path, "w", encoding="utf-8", newline="") as f:
+            buf: list[str] = []
+            for i, ts in enumerate(union_view.tolist()):
+                if i % _CANCEL_ROW_INTERVAL == 0:
+                    _check_cancel(cancel)
+                buf.append(_join([_fmt(ts, opts)], opts))
+                if len(buf) >= _FLUSH_ROWS:
+                    f.write("\n".join(buf) + "\n")
+                    buf.clear()
+            if buf:
+                f.write("\n".join(buf) + "\n")
+
+    def _write_block_temp(
+        self,
+        columns: Sequence[tuple[str, Signal | None]],
+        *,
+        resolve: Callable[[str], Signal | None],
+        union_view: np.ndarray,
+        opts: CsvExportOptions,
+        temp_path: Path,
+        cancel: threading.Event | None,
+    ) -> list[str]:
+        """1 ブロックぶんのセル断片を *temp_path* へ書き、単位の側帯を返す。
+
+        1 行 = このブロックの列だけを区切りで繋いだ断片 (時刻も他ブロックも
+        含まない)。行数は必ず ``len(union_view)`` になる — マージ器の行数一致
+        assert (MG-6) が意味を持つのはこの不変条件があるから。
+
+        列の参照はこの関数を出る時点で 1 本も残らない (``aligned`` は
+        ``column_on_union`` が作った**新しい** numpy 配列だけを持ち、元 Signal を
+        掴まない)。これが G2/G5 の「同時生存 <= block_cols」の実装上の根拠。
+        """
+        aligned: list[tuple[np.ndarray, np.ndarray]] = []
+        units: list[str] = []
+        for key, direct in columns:
+            # ブロック境界だけでなく **各列の読みの前** で見る [I8]: cold な列は
+            # ~316 ms/列かかるので、境界だけだと block_cols x 316 ms の間 Event を
+            # 見ないことになる。
+            _check_cancel(cancel)
+            sig = direct if direct is not None else resolve(key)
+            if sig is None:
+                raise ValueError(EXPORT_UNRESOLVABLE_KEY_ERROR_TMPL.format(key=key))
+            # 拒否は**行組み立ての前**に置く (E-3 C-d の位置)。行ループへ入って
+            # からだと temp が既に開いており、部分的に書かれたファイルが残る。
+            self._require_single_value_column(sig)
+            ts, vs = sig.sorted_view()
+            aligned.append(column_on_union(ts, vs, union_view))
+            unit = sig.metadata.get("unit", "")
+            # production の mdf_loader は truthy ガードで None を載せないが
+            # (spec §13-2)、手組み metadata では None がありうる (§9-6)。
+            units.append(unit if isinstance(unit, str) else "")
+            del sig, ts, vs  # 明示解放 (次の列を読む前に落とす = 同時生存 1 本)
+        with open(temp_path, "w", encoding="utf-8", newline="") as f:
+            buf: list[str] = []
+            for i in range(len(union_view)):
+                if i % _CANCEL_ROW_INTERVAL == 0:
+                    _check_cancel(cancel)
+                buf.append(
+                    _join(
+                        [
+                            _fmt_value(vals[i], opts) if present[i] else ""
+                            for vals, present in aligned
+                        ],
+                        opts,
+                    )
+                )
+                if len(buf) >= _FLUSH_ROWS:
+                    f.write("\n".join(buf) + "\n")
+                    buf.clear()
+            if buf:
+                f.write("\n".join(buf) + "\n")
+        return units
 
     def _atomic_write(self, output_path: Path, lines: list[str]) -> None:
         """Write lines to a temp file in the target dir, then atomically rename."""
