@@ -97,7 +97,7 @@ class ExportRequest:
 ```
 
 - `Session.export_csv(keys, output_path, options, header_resolver)` — Signal のリストを受けない。解決はブロック内で export 専用 resolve（§5.3）。
-- **ヘッダと値は同じ keys から導出**する。これが C1（M7: `signals` ↔ `header_names` の対応を守るテストがゼロ・`signals.reverse()` で全緑）の構造的な根治 — 対応が by construction になる。ゴールデン fixture（§7.1）が二重の防波堤。
+- **ヘッダと値は同じ keys から導出**する。これが C1（M7: `signals` ↔ `header_names` の対応を守るテストがゼロ〔既存の header_names テストは全て 1 列 fixture〕。`signals.reverse()` そのものは header_names=None の既存テスト 6 本が捕まえるが、**header_names 指定時**（GUI 経路）の対応崩しは無検出だった）の構造的な根治 — 対応が by construction になる。ゴールデン fixture（§7.1）が二重の防波堤。
 - **単位行は keys から導出できない**（各列の `metadata["unit"]` が要る）。**ブロックパス中に側帯収集**し、最終マージの先頭で書く。**マージ段での再 resolve は禁止**（330k 再 resolve は ~390 MB の一撃 — §10 契約）[MG-4]。
 - **keys の解決可能性検証は accept 時（worker 投入前）**に行い、既存 UX 契約（保存先を訊く前に missing 検出 — `export_csv_dialog.py:768-785`・test `:862-883` が pin）を保存する。worker 内で発生した dtype 縁例のみ B6 経路（全 temp 削除・ファイル無し）[I-4]。
 - **Derived 信号の扱い [I-3]**: 現行は `session.py:517-519` が素通しし `test_export.py` 5 本が固定するが、Derived は `SignalGroupManager` に登録されず keys で解決できない。**`ExportRequest.extra_signals: tuple[Signal, ...]`（escape hatch・既定空）を設け、Derived は Signal 直渡しを維持**する。keys 化の対象は解決可能な列のみ。プロット中の Derived が消えない（既存テスト 5 本が無編集で生存する）ことを T-API の受け入れに含める。
@@ -256,7 +256,7 @@ _selected: dict[str, ColumnSelection]               # キーは namespaced 物�
 4. `MDF.select(record_offset/record_count)` の実挙動（仮想グループ・LD-14 展開・`copy_master=False` との相互作用）— B3 spike の対象。
 5. 多段マージの temp 増幅の実係数 — 「2.3 ×」は設計値（§5.3）。T-M で検証。
 6. `metadata["unit"]` が `None` のときの `_header_rows` の挙動 — **production の mdf_loader は truthy ガード（`:159-161`）で None を載せない**（レビューで確認・§13-2）が、手組み metadata では TypeError になりうるので T-G の fixture に None unit を含めて確定させる。
-7. 変異 M1/M2/M3/M4/M6/M8 の「全緑」は静的分析ベース — T-G の sabotage で再実行して確認。
+7. T-G の変異表（`.superpowers/sdd/task-2-report.md` §3・**TG-1..TG-11** と改称）で置換。探索の M1..M8 の定義は復元不能（`.superpowers/sdd/` を含む全数検索で 0 件）。spec G7 の M5（インライン化）は T-G の表とは無関係の別番号。
 8. **oversize-skip 再デコード病 [I9]**: `channel_cache.py:144` の `size > budget` skip（D7）に該当する >256 MB の 2-D チャンネルが実在すると、ブロック内の列ごとに全 select が復活する（条件依存で 5-55 分/チャンネル）。prod_demo には無いが実データでの存在可能性を既知リスクとして記録。
 9. **master 本数の外挿**: デモの仮想グループ 5 個は人工事実。実 CANape の独立ラスタでは G = O(10²–10³) になりえ、union のコストと空セル率が変わる。T-M ではデモ値、実データ入手時に再測。
 

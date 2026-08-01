@@ -148,19 +148,29 @@ def build_options(inp: GoldenInput) -> CsvExportOptions:
     return replace(inp.options, header_names=tuple(header_map[k] for k in inp.keys))
 
 
-def export_case(case: GoldenCase, work_dir: Path) -> bytes:
+def export_case(
+    case: GoldenCase, work_dir: Path, block_cols: int | None = None
+) -> bytes:
     """1 ケースを現行 API で駆動して出力バイトを返す。
 
     生成器とテストが**この関数だけ**を共有する。ここに入力を組む処理と export
     呼び出しを閉じ込めることで、「生成時は unified・照合時は shared」のような
     ずれが起こりえなくなる。
+
+    ``block_cols`` (I2): T-G 時点では ``None`` のみが渡る (生成器も既定呼び出しも
+    未指定)。Task 7 が ``BLOCK_COLS_VARIANTS`` を複数値へ広げた瞬間、ここで
+    ``CsvExporter(block_cols=block_cols)`` を呼ぶ経路が生きて **TypeError** で
+    落ちる (今日の ``CsvExporter.__init__`` は ``block_cols`` を受け付けない) —
+    driver 側の追随を強制する仕掛けそのもの (``test_block_cols_handoff_is_not_forgotten``
+    と対になる)。
     """
     inp = case.build(work_dir)
     try:
         out = work_dir / f"{case.case_id}.csv"
-        CsvExporter().export(
-            inp.signals, out, inp.use_unified_timeline, build_options(inp)
+        exporter = (
+            CsvExporter() if block_cols is None else CsvExporter(block_cols=block_cols)
         )
+        exporter.export(inp.signals, out, inp.use_unified_timeline, build_options(inp))
         return out.read_bytes()
     finally:
         inp.close()
@@ -561,15 +571,24 @@ def _build_unified_cross_file_collision(work: Path) -> GoldenInput:
 # - prod 規模 (330,004 列): ゴールデンの目的はバイト表現の凍結であって規模の
 #   検証ではない。規模は G3/G4 (Task 11 の T-M) が担う。
 #
-# **T-G の sabotage で判明した穴 (意図ではなく発見・Task 6/7 への申し送り)**:
-# - **データ行のクォート適用サイトを守るゴールデンが 1 本も無い**。データセルは
-#   常に数値書式の産物 (数字・decimal・符号・e) で、``__post_init__`` が
-#   delimiter != decimal を保証するため、現実的なオプションでは**クォートを要する
-#   データセルが構造的に発生しない**。実測: ``_rows_*_timeline`` の 2 サイトだけ
-#   ``_join`` を素の ``delimiter.join`` へ落としても、ゴールデン 11 本 + 既存
-#   エクスポート系 65 本が**全緑**のまま (ヘッダ/単位行側だけを落とすと g05 が
-#   RED になるのと対照的)。書き経路を再構築する Task 6/7 がデータ行のクォートを
-#   落としても誰も落ちない — 落とさないことはレビューで担保するしかない。
+# **T-G の sabotage で判明した穴 (意図ではなく発見・I1 レビューで是正)**:
+# - **データ行のクォート適用サイトを守るゴールデンが T-G 時点では 1 本も無かった**。
+#   ただし穴の広さは「実装者の主張 (現実的なオプションではクォートを要する
+#   データセルが構造的に発生しない)」より**狭い** — I1 レビューで反証された:
+#   ``delimiter='-'`` は ``__post_init__`` の合法な入力で、float の repr は
+#   負値/指数表記で ``'-'``/``'+'`` を出すため、クォートを要するデータセルは
+#   構成可能。**ドロップ方向 (クォートすべきセルを非クォートで出す) は既定
+#   delimiter (数字の書式に現れない文字) の下でのみブラインド** — この方向は
+#   ``tests/test_golden_csv.py::test_data_cells_are_quoted_when_the_delimiter_can_appear_in_a_number``
+#   が唯一のオラクルとして塞ぐ。**過剰クォート方向 (クォート不要なセルまで
+#   クォートする) は g06 が守る** (``_quote`` を常時クォートへハードコードする
+#   変異=reviewer M11 で g06 が RED になることを実測済み)。
+#   実測 (既定 delimiter 下): ``_rows_*_timeline`` の 2 サイトだけ ``_join`` を
+#   素の ``delimiter.join`` へ落としても、ゴールデン 11 本 + 既存エクスポート系
+#   65 本が**全緑**のまま (ヘッダ/単位行側だけを落とすと g05 が RED になるのと
+#   対照的)。書き経路を再構築する Task 6/7 がデータ行のクォートを落としても、
+#   既定 delimiter のケースだけでは誰も落ちない — 非既定 delimiter の単体テストと
+#   g06 の両方を保つことがレビューでの担保点になる。
 GOLDEN_CASES: tuple[GoldenCase, ...] = (
     GoldenCase(
         "g01_shared_basic",

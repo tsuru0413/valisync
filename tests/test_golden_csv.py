@@ -6,8 +6,9 @@
 変えていないことの受け入れ条件になる。
 
 **再生成で黙らせない (spec G1)**: ``scripts/generate_golden_csv.py`` は既存
-ファイルがあると何も書かずに終了する。意図的な変更は対象を ``git rm`` して
-理由を docs/design.md 決定履歴へ記録してからの手動 supersede のみ。
+ファイルがあると何も書かずに終了する。意図的な変更はゴールデン **11 本すべて**
+を ``git rm`` して再生成する (生成は決定的なので、意図した 1 本だけが diff に
+出る) — 理由を docs/design.md 決定履歴へ記録してからの手動 supersede のみ (M2)。
 
 **ゴールデンだけでは足りない部分**: ゴールデンは「今こう出ている」を固める
 だけで、**オラクル自身が入力の何に反応するか**は語らない。列順を反転しても
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import difflib
 import inspect
+import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import replace
@@ -41,10 +43,14 @@ from tests.golden_csv_cases import (  # noqa: E402  (sys.path 調整の後でし
     ULP_EXPECTED_ROWS,
     GoldenCase,
     GoldenInput,
+    _sig,
     build_options,
     export_case,
 )
-from valisync.core.export.csv_exporter import CsvExporter  # noqa: E402
+from valisync.core.export.csv_exporter import (  # noqa: E402
+    CsvExporter,
+    CsvExportOptions,
+)
 
 _CASES_BY_ID = {c.case_id: c for c in GOLDEN_CASES}
 
@@ -66,8 +72,12 @@ def _diff_message(case: GoldenCase, expected: bytes, actual: bytes) -> str:
         f"expected CRLF={expected.count(b'\r\n')} / actual CRLF={actual.count(b'\r\n')}",
     ]
     diff = difflib.unified_diff(
-        expected.decode("utf-8-sig").splitlines(keepends=True),
-        actual.decode("utf-8-sig").splitlines(keepends=True),
+        # errors="replace": ここは診断の組み立て自体であり、エンコーディング退行
+        # (例: BOM 崩れで有効な UTF-8 でなくなる) が起きたときこそ差分を読みたい。
+        # 素の decode だと診断器自身が UnicodeDecodeError で落ち、本来のバイト差分
+        # (先頭バイト/CRLF 個数は head で既に出している) が一切見えなくなる。
+        expected.decode("utf-8-sig", errors="replace").splitlines(keepends=True),
+        actual.decode("utf-8-sig", errors="replace").splitlines(keepends=True),
         fromfile="golden",
         tofile="actual",
         n=2,
@@ -78,10 +88,13 @@ def _diff_message(case: GoldenCase, expected: bytes, actual: bytes) -> str:
 # ─── 本体: バイト一致 ────────────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("block_cols", BLOCK_COLS_VARIANTS, ids=lambda b: f"bc{b}")
 @pytest.mark.parametrize("case", GOLDEN_CASES, ids=lambda c: c.case_id)
-def test_golden_bytes_match(case: GoldenCase, tmp_path: Path) -> None:
+def test_golden_bytes_match(
+    case: GoldenCase, block_cols: int | None, tmp_path: Path
+) -> None:
     expected = _golden_path(case.case_id).read_bytes()
-    actual = export_case(case, tmp_path)
+    actual = export_case(case, tmp_path, block_cols=block_cols)
     assert actual == expected, _diff_message(case, expected, actual)
 
 
@@ -112,12 +125,32 @@ def test_all_goldens_start_with_a_bom_and_use_lf_line_endings() -> None:
         # 改行変換** で、エクスポータは無実 — `core.autocrlf=true` の Windows が
         # checkout で LF -> CRLF に化けさせる (実測で再現済み)。生成器は上書きを
         # 拒否するので「作り直して直す」は効かない。`.gitattributes` の
-        # `tests/golden_csv/*.csv -text` が生きているかをまず見ること。
+        # `tests/golden_csv/** -text` が生きているかをまず見ること。
         assert b"\r" not in raw, (
             f"{case.case_id}: CR を検出。.gitattributes の -text が効いていない "
             "可能性が高い (git の改行変換であってエクスポータの退行ではない)"
         )
         assert raw.endswith(b"\n"), case.case_id  # 末尾改行あり (据え置き決定)
+
+
+def test_goldens_are_pinned_against_git_eol_conversion() -> None:
+    """`.gitattributes` の `-text` が外れたことを検出できる唯一の場所 (I3)。
+
+    CI (ubuntu) は ``core.autocrlf`` が既定で無効なので、この破壊は構造的に
+    観測できない — 落ちるのは Windows 環境 (本開発機・Windows CI があれば) だけ。
+    それでも `.gitattributes` の記述ミス (typo・パターン漏れ) はここでしか
+    捕まらないので、`git check-attr` で実際の適用結果を直接見る。
+    保護されているときの出力は ``: text: unset``、外れると ``: text: unspecified``
+    になる (どちらも実測で確認済み)。
+    """
+    out = subprocess.run(
+        ["git", "check-attr", "text", "--", str(_golden_path("g01_shared_basic"))],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert out.rstrip().endswith(": text: unset"), out
 
 
 def test_ulp_split_row_count_is_frozen() -> None:
@@ -260,17 +293,51 @@ def test_empty_selection_fails_loudly_and_writes_no_file(tmp_path: Path) -> None
         assert not out.exists()
 
 
+# ─── I1 (レビュー指摘): データ行クォート抜けの検出 ───────────────────────────
+
+
+def test_data_cells_are_quoted_when_the_delimiter_can_appear_in_a_number(
+    tmp_path: Path,
+) -> None:
+    """データ行の _join を落とすと RED になる唯一のオラクル (T-G sabotage M4b)。
+
+    ゴールデン 11 本と既存 65 本は、既定 delimiter では数値セルに区切り文字が
+    構造的に現れないため、_rows_*_timeline の _join を素の delimiter.join へ
+    落としても全緑になる (実測)。float の repr は負値/指数で '-' と '+' を出すので、
+    合法な delimiter='-' がこの穴を塞ぐ最小の入力。
+    """
+    out = tmp_path / "d.csv"
+    sig = _sig("mf4_1::v", [0.0, 1.0], [-1.5, 1e300])
+    CsvExporter().export([sig], out, False, CsvExportOptions(delimiter="-"))
+    # header_names 未指定なので header セルは raw name ("mf4_1::v")。
+    # -1.5 の repr は '-1.5' -> delimiter '-' を含むのでクォート必須。
+    # 1e300 の repr は '1e+300' -> '-' を含まないので non-quoted のまま (正しい)。
+    assert out.read_bytes() == (
+        b'\xef\xbb\xbftimestamp-mf4_1::v\n0.0-"-1.5"\n1.0-1e+300\n'
+    )
+
+
 # ─── Task 7 への申し送りガード ───────────────────────────────────────────────
 
 
 def test_block_cols_handoff_is_not_forgotten() -> None:
-    """spec G1「ゴールデンは複数ブロック (境界跨ぎ) で駆動」を強制する。
+    """spec G1「ゴールデンは複数ブロック (境界跨ぎ) で駆動」の**片翼**を強制する (I2)。
+
+    このアサーション単体が強制できるのは「``__init__`` に ``block_cols`` が現れた
+    ら ``BLOCK_COLS_VARIANTS`` を複数値へ広げること」という**名指し**だけ —
+    広げた後に driver (``export_case``) が実際にその値を ``CsvExporter`` へ渡して
+    境界跨ぎで export し直すかは、ここだけでは見ていない。その追随を強制するのは
+    ``test_golden_bytes_match`` に足した
+    ``@pytest.mark.parametrize("block_cols", BLOCK_COLS_VARIANTS, ...)`` の側で、
+    ``export_case`` が ``block_cols`` を ``CsvExporter`` へ渡さない限り、variants を
+    広げた瞬間に **コンストラクタの ``TypeError``** でゴールデン全本が RED になる。
+    両方が揃って初めて G1 (複数ブロックでの実駆動) を強制する。
 
     T-G 時点で ``block_cols`` は存在しない。Task 7 が列ブロック化したとき、
     ゴールデンを 1 ブロックのまま走らせても**バイトは一致する** — つまり
     「境界跨ぎで駆動する」という受け入れ条件は、忘れても誰も落ちない。
     ``block_cols`` が現れた瞬間にここが RED になり、``BLOCK_COLS_VARIANTS`` の
-    拡張と driver の追随を強制する。
+    拡張が名指しで強制される。
 
     **見るのは ``__init__``**: Task 6/7 は ``block_cols`` を **コンストラクタの
     注入口** に置く (``export()`` の署名は共有インターフェース契約で凍結されて

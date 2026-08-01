@@ -3330,8 +3330,10 @@ def test_export_csv_writes_columns_in_key_order(tmp_path: Path) -> None:
     """出力列順 = keys の順（spec §10）。**逆順を渡すと逆順で出る**。
 
     「ヘッダと値は同じ keys から導出」の by-construction 性の直接検証でもある。
-    旧 API は signals と header_names を別々に運んでいて、`signals.reverse()` で
-    全緑になる形の穴（C1/M7）があった。
+    旧 API は signals と header_names を別々に運んでいて、header_names 指定時
+    （GUI 経路）の対応崩しを守るテストが無かった（C1/M7）。header_names=None の
+    既存テスト 6 本は `signals.reverse()` を捕まえるが、header_names 指定時は
+    無検出だった。
     """
     session = Session()
     key = session.load(write_mdf4_2d(tmp_path)).key
@@ -4058,9 +4060,11 @@ Signal のリストから **名前空間つき列キー** へ替える (D1・spe
 列はキーで運び実体化は書き手へ委ねる。
 
 ヘッダは `header_resolver` (callable) で **同じ keys から** 導出する。旧形は
-signals と `CsvExportOptions.header_names` を別々に運んでおり、対応を守る
-テストが 1 本も無く `signals.reverse()` で全緑になる穴 (C1/M7) があった —
-by construction に変えることが構造的な根治になる。既定は passthrough
+signals と `CsvExportOptions.header_names` を別々に運んでおり、header_names
+指定時 (GUI 経路) の対応崩しを守るテストが 1 本も無かった (C1/M7 —
+header_names=None の既存テスト 6 本は `signals.reverse()` を捕まえるが
+header_names 指定時は無検出だった)。by construction に変えることが構造的な
+根治になる。既定は passthrough
 (`list(keys)`) で、直呼び経路 (テスト/scripted/realgui) の現行ヘッダバイトを
 そのまま保存する。GUI は csv_header_names を束ねたモジュール関数を注入する
 (core は gui を import しない・C-5)。resolver をクロージャでなくモジュール関数に

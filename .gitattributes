@@ -8,4 +8,8 @@
 #
 # `-text` で改行変換だけを無効化する。`binary` にしないのは、ゴールデンを意図的に
 # supersede するときの `git diff` を人が読める形で残したいから。
-tests/golden_csv/*.csv -text
+#
+# パターンは `**` (`.csv` 限定でない) — `*.csv` だと将来 golden_csv/ 配下に
+# 非 .csv ファイル (README・拡張子違いの fixture 等) を置いたときに素通しして
+# 同じ改行変換の穴が再発する (M4)。
+tests/golden_csv/** -text
