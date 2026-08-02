@@ -191,9 +191,19 @@ def _click_cancel_with_retries(
     効いていなければ撃ち直す。``BusyOverlay`` は親追従の透過オーバーレイで
     親 resize 直後は ``cover()`` が stale になりうる (`busy_overlay.py:66-70`
     に記録済みの既往) ので、単発クリックはこの窓に当たると届かない。
+
+    Task 11 再レビュー N5 是正: 各試行の頭で overlay の可視性を確認する。
+    retry の途中で export が自然完走し overlay が隠れると、
+    ``real_click_widget`` が使う保存済み座標 (もう cancel_button は無い) へ
+    実 OS クリックを送り続けることになり、その下にある何か (デスクトップ等)
+    へ迷子のクリックが飛ぶ。overlay が隠れた時点で cancel は届いていない
+    (Event 未発火) と判断して早期に諦め、判定は呼び出し元の
+    ``run.cancel.is_set()`` assert に委ねる。
     """
     for _ in range(attempts):
         if run.cancel.is_set():
+            return
+        if window.busy_overlay.isHidden():
             return
         real_click_widget(window.busy_overlay.cancel_button)
         settle_deadline = time.perf_counter() + settle_s

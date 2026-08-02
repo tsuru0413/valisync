@@ -18,23 +18,43 @@ memory: gui_realgui_synthetic_click_mislabeled_layer_c。
 ソーステキストにはプリミティブが直接現れなくなるため、これらもプリミティブ
 と同格の Layer C 証拠として認識する (実体は `_realgui_input.py` 側で
 プリミティブへ委譲しているので、判定基準「入力の出所」自体は変わらない)。
+
+**Task 11 再レビュー N4 是正**: 上記 M6 の名前 widen は呼び出しテキストの
+正規表現一致だけで判定しており、`real_click_widget`/`double_click` という
+**名前**が現れさえすれば Layer C 証拠として認めてしまっていた。これだと
+realgui ファイルが `_realgui_input` から import せず同名のローカル合成
+スタブ (例: `def real_click_widget(w): qtbot.mouseClick(...)`) を定義して
+呼び出しても素通りする — ガードの存在意義 (Layer B の Layer C 偽装を機械的
+に落とす) を骨抜きにする抜け道になる。是正: 呼び出し名のマッチを「実際に
+`tests.realgui._realgui_input` から import された名前 (エイリアス後の
+ローカル束縛名)」の集合へ限定する (`_imported_real_input_names` — AST の
+`ImportFrom` ノードだけを見るので、ローカル定義はここに現れない)。
 """
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
 _REALGUI_DIR = Path(__file__).resolve().parent.parent / "realgui"
+_INPUT_MODULE = "tests.realgui._realgui_input"
 
-# 実 OS 入力プリミティブ(at/key/wheel/set_window_pos/drive_qdrag)or 画面取得
-# (grabWindow)、または `_realgui_input.py` の共有コンポーズ関数
-# (real_click_widget/double_click — 内部でプリミティブへ委譲する)を
-# 使っていれば Layer C とみなす。`\bkey\(` は実 key() にマッチし合成
-# `qtbot.keyClick(` にはマッチしない(key の後が Click で ( が来ないため)。
-_REAL_INPUT = re.compile(
-    r"\b(?:at|key|wheel|set_window_pos|drive_qdrag|real_click_widget|double_click)\("
-    r"|\.grabWindow\("
+# 実 OS 入力プリミティブ(at/key/wheel/set_window_pos/drive_qdrag)、または
+# `_realgui_input.py` の共有コンポーズ関数(real_click_widget/double_click —
+# 内部でプリミティブへ委譲する)。**この名前が使われているだけでは Layer C
+# 証拠にしない** — `_imported_real_input_names` で `_INPUT_MODULE` からの
+# import 出所を確認した名前だけを対象にする(N4)。
+_PRIMITIVE_NAMES = frozenset(
+    {
+        "at",
+        "key",
+        "wheel",
+        "set_window_pos",
+        "drive_qdrag",
+        "real_click_widget",
+        "double_click",
+    }
 )
 
 # 実入力へ未移行の既知合成 realgui。新規追加は禁止・移行して空にするのが目標。
@@ -47,18 +67,46 @@ def _realgui_test_files() -> list[Path]:
     return sorted(_REALGUI_DIR.glob("test_*.py"))
 
 
+def _imported_real_input_names(path: Path) -> set[str]:
+    """`_INPUT_MODULE` から import されたプリミティブ名(エイリアス後のローカル
+    束縛名)を返す。ローカルで同名定義された偽装スタブは `ImportFrom` に現れ
+    ないためここには含まれない(N4 の核心)。"""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == _INPUT_MODULE:
+            for alias in node.names:
+                if alias.name in _PRIMITIVE_NAMES:
+                    names.add(alias.asname or alias.name)
+    return names
+
+
+def _uses_real_input(path: Path) -> bool:
+    """実 OS 入力プリミティブの呼び出し(import 出所を確認済みの名前のみ)、
+    または画面取得(grabWindow)を使っていれば True。"""
+    text = path.read_text(encoding="utf-8")
+    if ".grabWindow(" in text:
+        return True
+    # `\bkey\(` は実 key() にマッチし合成 `qtbot.keyClick(` にはマッチしない
+    # (key の後が Click で ( が来ないため)。
+    return any(
+        re.search(rf"\b{re.escape(name)}\(", text)
+        for name in _imported_real_input_names(path)
+    )
+
+
 def test_realgui_tests_drive_real_os_input() -> None:
     """realgui テストは実 OS 入力(or grabWindow)を使うこと(allowlist を除く)。"""
     offenders = [
         f.name
         for f in _realgui_test_files()
-        if not _REAL_INPUT.search(f.read_text(encoding="utf-8"))
-        and f.name not in _KNOWN_SYNTHETIC
+        if not _uses_real_input(f) and f.name not in _KNOWN_SYNTHETIC
     ]
     assert not offenders, (
         f"tests/realgui/ の realgui テストが実 OS 入力(at/key/wheel/set_window_pos/"
-        f"drive_qdrag)や grabWindow を使わず合成入力(qtbot/QTest)に依存している: "
-        f"{offenders}. "
+        f"drive_qdrag)や grabWindow を使わず合成入力(qtbot/QTest)に依存している、"
+        f"または real_click_widget/double_click を名乗るが _realgui_input からの"
+        f"import が確認できない: {offenders}. "
         "tests/realgui/ は Layer C(実 OS 入力). 合成入力の配線検証は tests/gui/(Layer B)へ "
         "移すか、_realgui_input の実入力プリミティブで駆動すること. "
         "詳細: .claude/skills/gui-verify/ の Layer C 判定基準."
@@ -71,8 +119,7 @@ def test_known_synthetic_allowlist_has_no_stale_entries() -> None:
     stale = [
         name
         for name in _KNOWN_SYNTHETIC
-        if name not in existing
-        or _REAL_INPUT.search((_REALGUI_DIR / name).read_text(encoding="utf-8"))
+        if name not in existing or _uses_real_input(_REALGUI_DIR / name)
     ]
     assert not stale, (
         f"_KNOWN_SYNTHETIC の項目が実入力化(or 削除)済み: {stale}. "
