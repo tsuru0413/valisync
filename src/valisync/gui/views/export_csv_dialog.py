@@ -1003,9 +1003,13 @@ class ExportCsvDialog(QDialog):
         # list[Signal] をそのまま要求に載せていて、prod 330,004 列で ~390 MB を
         # 出口の手前で確定させていた。鋳造は E-4a の LRU (容量 512) に載るので
         # 同時生存は 512 本で頭打ちになり、参照を落とせば残らない。
-        # (Task 6 でここは `resolve_transient` へ差し替わり、帳簿にも載らなくなる。)
+        # MG-1 (spec §10): ここは検証だけで実出力ではないので `resolve_signal`
+        # (LRU 帳簿つき) ではなく `resolve_signal_transient` を呼ぶ — 帳簿つきだと
+        # 全列 accept で ~326k 鋳造が LRU recency を総なめし、pin されていない
+        # 閲覧済み列を追い出す (全体レビュー Important-1・Task 4 の繰越が Task 6
+        # の Files リストに載らず落ちていた分の是正)。
         session = self._app_vm.session
-        missing = [k for k in keys if session.resolve_signal(k) is None]
+        missing = [k for k in keys if session.resolve_signal_transient(k) is None]
         if missing:
             # 旧実装はここが素の KeyError でダイアログごとクラッシュしていた。
             # 無言で落とすと「選んだのに出ていない CSV」になるので、出力せずに

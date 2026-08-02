@@ -71,6 +71,17 @@ class _FakeSession:
         )
 
     def resolve_signal(self, key: str) -> Signal | None:
+        # MG-1 門番 (全体レビュー Important-1): `_on_accept` は帳簿つきの
+        # `resolve_signal` を呼んではならない (LRU に鋳造が積み上がり非 pin の
+        # 閲覧済み列を追い出す) — ここを呼んだら退行として即座に落とす。
+        # tests/core/test_export_bridge_golden.py `_KeyedSession` と同じ形
+        # (override するのは transient 側だけ)。
+        raise AssertionError(
+            "MG-1: _on_accept は resolve_signal_transient を読むこと "
+            "(LRU 帳簿経路への退行)"
+        )
+
+    def resolve_signal_transient(self, key: str) -> Signal | None:
         self.resolve_calls += 1
         return self.resolvable.get(key)
 
