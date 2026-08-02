@@ -392,6 +392,18 @@ class Session:
         group_key, sep, _display = channel_key.partition(KEY_SEPARATOR)
         return bool(sep) and self._groups.is_lazy_group(group_key)
 
+    def channel_leaf_count(self, channel_key: str) -> int:
+        """``"{group_key}::{物理チャンネル表示名}"`` の総リーフ数 (**鋳造しない**)。
+
+        見積 (E-4b T-M・Task 11 レビュー C1 是正) が読み単価のクラス分け
+        (scalar=1 / wide=2+) をする唯一の入口。未知キー / 名前空間の無いキーは
+        1 (= scalar 相当・安全側) を返す。
+        """
+        group_key, sep, display = channel_key.partition(KEY_SEPARATOR)
+        if not sep:
+            return 1
+        return self._groups.channel_leaf_count(group_key, display)
+
     def total_column_count(self, key: str) -> int:
         """グループの数値列総数 (KeyError if unknown)。表示件数の母数 (U2)。"""
         return self._groups.total_column_count(key)

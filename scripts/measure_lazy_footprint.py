@@ -1628,6 +1628,7 @@ def export_range_residency(session: Any, keys: list[str], out: Path) -> tuple[in
 
     alive: weakref.WeakSet = weakref.WeakSet()
     base = session.export_resolver()
+    minted_keys: set[str] = set()
 
     def watched(key: str):  # type: ignore[no-untyped-def]
         sig = base(key)
@@ -1644,6 +1645,18 @@ def export_range_residency(session: Any, keys: list[str], out: Path) -> tuple[in
         # 恒久容器 (`_selector is None`) は対象から除く。
         if getattr(sig._values_source, "_selector", None) is not None:
             alive.add(sig)
+            # M3 是正 (Task 11 レビュー): 「鋳造された列」を **キー単位の集合**
+            # で数える (呼び出し回数ではない)。恒久容器を返すだけの scalar
+            # キー (4,004 本ぶん) は鋳造していないので `len(keys)`
+            # (=330,004・全選択列数) を "minted" と呼ぶのは誤称だった。
+            # **単純なカウンタでは二重計上する**: `CsvExporter.export` は
+            # `scan_masters` (前走査・master だけ見る) と実書き込みの 2 段で
+            # 同じキーを 2 回 `resolve` するため、`resolve_transient` は
+            # 呼び出しごとに毎回**再鋳造**する (`_resolved_by_key` へ登録
+            # しない設計・E-4b MG-1) — カウンタ実装で実測したところ
+            # 652,000 (= 326,000 の厳密 2 倍) になり、二重計上を機械的に
+            # 実証した (`.superpowers/sdd/task-11-report.md` 修正ラウンド)。
+            minted_keys.add(key)
         return sig
 
     # 1 行だけ出す範囲 (spec §1 の「カーソル A-B で 1 行 = 6.523 s / 114.5 MiB 常駐」
@@ -1656,11 +1669,10 @@ def export_range_residency(session: Any, keys: list[str], out: Path) -> tuple[in
     # の WHY コメント参照)。
     options = CsvExportOptions(time_start=t0, time_end=t0, use_unified_timeline=True)
     CsvExporter().export(ExportRequest(tuple(keys), out, options, list), watched)
-    minted = len(keys)
     gc.collect()
     # alive に残るのは「まだ誰かが参照している鋳造列」。block_cols + ε を超えたら
     # ブロック終端の参照解放が効いていない (G5 の判定は呼び出し側 main が行う)。
-    return minted, len(alive)
+    return len(minted_keys), len(alive)
 
 
 def _distinct_masters(session: Any, keys: list[str]) -> list[Any]:
@@ -1737,6 +1749,63 @@ class UssPeakSampler(threading.Thread):
         self._running = False
 
 
+def read_class_calibration(
+    session: Any, key: str, cls: str, sample_n: int, seed: int = 0
+) -> None:
+    """C1 是正 (レビュー): cold select 単価をチャンネルクラス別 (scalar/wide) に測る。
+
+    旧 ``_READ_S_PER_COLD_CHANNEL`` (0.316 s/channel) は「幅 1,100 の最広チャンネル
+    1 本」(``_widest_channel``) の cold select を **全チャンネル (4,004 scalar +
+    320 wide) に一律適用**しており、scalar 側で ~21 倍の過大見積を生んでいた —
+    scalar と wide は物理チャンネルの構造 (asammdf が 1 回の decode で読む単位) が
+    根本的に違う (spike §9-4: prod scalar 0.67ms 対 prod wide 338.2ms・~480 倍差)。
+    ここでは ``_select_samples`` (E-4a T5 が確立した測定手法 = ``handle.mdf.select``・
+    ``copy_master=False``・チャンネルキャッシュを経由しない直接呼び出し) を同じ形で
+    再現し、クラス別の単価を測り直す。
+
+    **fresh process が必須**: 呼び出し側 CLI (``--read-class scalar`` /
+    ``--read-class wide``) を**別プロセスで 2 回**起動して測る。同一プロセス内で
+    両クラスを連続測定すると、先に測ったクラスの OS ページキャッシュ/asammdf
+    内部バッファの温まりが後続クラスの計測へ漏れ、フェアな比較にならない
+    (このシリーズが計測の鉄則で繰り返し踏んだ罠と同型)。
+    """
+    import random
+
+    from valisync.core.loaders.column_names import leaf_count
+
+    records = session._groups.column_records(key)
+    assert records, f"{key} に列レコードが無い (ロード失敗?)"
+    want_wide = cls == "wide"
+    pool = [
+        (display, record)
+        for display, record in records.items()
+        if (leaf_count(record.spec) > 1) == want_wide
+    ]
+    assert pool, f"クラス {cls} のチャンネルが 0 本 (records={len(records)})"
+    handle = _handle_of(session, key)
+    rng = random.Random(seed)
+    sample = rng.sample(pool, min(sample_n, len(pool)))
+    widths = [leaf_count(record.spec) for _display, record in sample]
+    times: list[float] = []
+    for _display, record in sample:
+        t0 = time.perf_counter()
+        _select_samples(
+            handle, record.raw_base_name, record.group_index, record.channel_index
+        )
+        times.append(time.perf_counter() - t0)
+    times.sort()
+    n = len(times)
+    mean = sum(times) / n
+    print(
+        f"READ_CLASS class={cls} n={n}/{len(pool)} mean_ms={mean * 1000:.4f} "
+        f"median_ms={times[n // 2] * 1000:.4f} min_ms={times[0] * 1000:.4f} "
+        f"max_ms={times[-1] * 1000:.4f} mean_leaf_count={sum(widths) / n:.1f} "
+        "subject=prod_demo cold handle.mdf.select copy_master=False "
+        "ignore_value2text_conversions=True (E-4a チャンネルキャッシュ非経由)",
+        flush=True,
+    )
+
+
 def export_main() -> None:
     """``--export`` 段のディスパッチャ (spec §11・T-M)。``--core`` と同型の early return。
 
@@ -1767,6 +1836,15 @@ def export_main() -> None:
     if "--uss-limit" in sys.argv:
         idx = sys.argv.index("--uss-limit")
         uss_limit = float(sys.argv[idx + 1])
+    read_class: str | None = None
+    if "--read-class" in sys.argv:
+        idx = sys.argv.index("--read-class")
+        read_class = sys.argv[idx + 1]
+        assert read_class in ("scalar", "wide"), read_class
+    sample_n = 200
+    if "--sample-n" in sys.argv:
+        idx = sys.argv.index("--sample-n")
+        sample_n = int(sys.argv[idx + 1])
 
     print(f"loading {TARGET.name} ...", flush=True)
     session = Session()
@@ -1774,6 +1852,14 @@ def export_main() -> None:
     outcome = session.load(TARGET)
     print(f"  loaded in {time.perf_counter() - t0:.2f}s", flush=True)
     key = outcome.key
+
+    if read_class is not None:
+        # C1 是正の再測定専用パス — 全列キーの列挙 (330,004 本の文字列生成) は
+        # このパスでは不要なので飛ばす (計測対象そのものへ余計な前処理コストを
+        # 足さない)。
+        read_class_calibration(session, key, read_class, sample_n)
+        return
+
     all_keys = _export_all_keys(session, key)
     print(f"  columns (all, 全物理チャンネル) = {len(all_keys):,}", flush=True)
 

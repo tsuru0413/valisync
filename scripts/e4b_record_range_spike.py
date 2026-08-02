@@ -7,7 +7,7 @@
   (キー空間に窓が無く、後続の全期間読みが切り詰められた配列を引く。_column_of の
   検証は長さ比較だけなので、同長の別窓は素通しする = サイレント誤データ)
 
-quick_demo (170 MB) に対して 4 形を測る: 全期間 select / 窓 select (先頭 10%) /
+既定は quick_demo (170 MB) に対して 4 形を測る: 全期間 select / 窓 select (先頭 10%) /
 2-D チャンネルの窓 select / copy_master=False x 窓。判断は「読む量 (wall と
 process I/O) が窓の比率どおり縮むか」で行い、縮まないなら不採用にして理由を
 spec §9-4 へ追記する。
@@ -17,8 +17,15 @@ spec §9-4 へ追記する。
 や ``LazyMdfValues`` は経由しない (この spike が答えたいのは asammdf 自身が窓読みを
 実際に縮めるかどうかであって、その上の層の挙動ではない)。
 
+**M2 是正 (Task 11 レビュー)**: spec §9-4 の不採用判断は quick_demo の 2-D (8
+leaves) だけでは判断材料として弱く、実際に判断の決め手になったのは
+`Prod10Wide_0000` (1,100 leaves) での prod_demo 補足測定だった。当初この補足測定は
+ファイルを直接編集しないと再現できなかった (`TARGET` が quick_demo 固定) —
+``--target`` でファイルを差し替え可能にし、prod の証拠を再現可能にする。
+
 Run:
     uv run --with psutil python scripts/e4b_record_range_spike.py
+    uv run --with psutil python scripts/e4b_record_range_spike.py --target demo_data/prod_demo.mf4
 """
 
 from __future__ import annotations
@@ -32,7 +39,16 @@ from typing import Any
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
-TARGET = REPO / "demo_data" / "quick_demo.mf4"
+_DEFAULT_TARGET = REPO / "demo_data" / "quick_demo.mf4"
+
+
+def _resolve_target() -> Path:
+    """既定は quick_demo・``--target <path>`` で任意ファイルへ差し替える (M2)。"""
+    if "--target" in sys.argv:
+        idx = sys.argv.index("--target")
+        return Path(sys.argv[idx + 1])
+    return _DEFAULT_TARGET
+
 
 try:
     import psutil
@@ -113,16 +129,17 @@ def _report(p: Probe, *, baseline: Probe | None, expect_ratio: float | None) -> 
 
 
 def main() -> None:
-    if not TARGET.exists():
-        print(f"MISSING: {TARGET} (run scripts/generate_demo_mf4.py --profile quick)")
+    target = _resolve_target()
+    if not target.exists():
+        print(f"MISSING: {target} (run scripts/generate_demo_mf4.py --profile quick)")
         raise SystemExit(1)
 
     from valisync.core.loaders.column_names import leaf_count
     from valisync.core.session import Session
 
-    print(f"loading {TARGET.name} ...", flush=True)
+    print(f"loading {target.name} ...", flush=True)
     session = Session()
-    outcome = session.load(TARGET)
+    outcome = session.load(target)
     key = outcome.key
     handle = session.group_signals(key)[0]._values_source._handle
     records = session._groups.column_records(key)

@@ -19,13 +19,17 @@ test_export_csv_dialog.py のラジオ/ガード配線) は境界値・型・シ
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 import pytest
 from pytestqt.qtbot import QtBot
 
-from tests.realgui._realgui_input import LDOWN, LUP, at, skip_unless_real_display
+from tests.realgui._realgui_input import (
+    pump_n,
+    read_export_rows,
+    real_click_widget,
+    skip_unless_real_display,
+)
 from valisync.gui import strings as S
 
 pytestmark = pytest.mark.realgui
@@ -37,17 +41,9 @@ _DT = 0.25  # power-of-two step -> exact binary float, no rounding at boundaries
 _CURSOR_A = 2.0
 _CURSOR_B = 6.0
 
-
-def _pump(dt: float = 0.03) -> None:
-    from PySide6.QtWidgets import QApplication
-
-    QApplication.processEvents()
-    time.sleep(dt)
-
-
-def _pump_n(n: int, dt: float = 0.02) -> None:
-    for _ in range(n):
-        _pump(dt)
+# M6 (Task 11 レビュー是正): _pump/_pump_n/_real_click_widget/_read_rows は
+# tests/realgui/_realgui_input へ共有昇格した (pump/pump_n/real_click_widget/
+# read_export_rows)。呼び出し側の挙動・期待値は 1 つも変えていない。
 
 
 def _write_csv(path: Path) -> None:
@@ -58,46 +54,9 @@ def _write_csv(path: Path) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _phys_center(widget, local_center):  # type: ignore[no-untyped-def]
-    gp = widget.mapToGlobal(local_center)
-    dpr = widget.devicePixelRatioF()
-    return round(gp.x() * dpr), round(gp.y() * dpr)
-
-
-def _real_click_widget(widget) -> None:  # type: ignore[no-untyped-def]
-    from PySide6.QtCore import QPoint
-
-    x, y = _phys_center(widget, QPoint(widget.width() // 2, widget.height() // 2))
-    at(x, y, LDOWN)
-    _pump()
-    at(x, y, LUP)
-    _pump_n(4)
-
-
-def _read_rows(path: Path) -> list[list[str]]:
-    """全列を読む (G8 supersede)。
-
-    **supersede 記録**: 旧 `_read_timestamps` は時刻列だけを読んでいたため、値列が
-    全部空/全部ずれていても緑だった (spec §6 G8: 「時刻列しか読まない」を全列読みへ
-    強化する)。時刻の assert は下の `_read_timestamps` がそのまま残す (既存の
-    期待内容は 1 文字も変えない) — ここは列数と非空セルの存在を**足す**だけ。
-    BOM 読み口は spec §5.1-2 の 26 サイトのうちの 1 つ (utf-8-sig)。
-    """
-    lines = path.read_text(encoding="utf-8-sig").splitlines()
-    assert lines and lines[0].startswith("timestamp,"), f"想定外のヘッダ: {lines[:1]}"
-    header = lines[0].split(",")
-    rows = [line.split(",") for line in lines[1:] if line]
-    for row in rows:
-        assert len(row) == len(header), f"列数がヘッダと不一致: {len(row)}"
-    assert any(cell for row in rows for cell in row[1:]), (
-        "値列が全部空 (時刻だけの出力)"
-    )
-    return rows
-
-
 def _read_timestamps(path: Path) -> list[float]:
     # supersede(E-4b §5.1-2): 出力に UTF-8 BOM が付いたため読み口のみ utf-8-sig 化 (期待値不変)
-    return [float(row[0]) for row in _read_rows(path)]
+    return [float(row[0]) for row in read_export_rows(path)]
 
 
 def test_export_cursor_range_realclick_writes_bounded_file(
@@ -159,7 +118,7 @@ def test_export_cursor_range_realclick_writes_bounded_file(
     window.raise_()
     window.activateWindow()
     qtbot.waitExposed(window)
-    _pump_n(4)
+    pump_n(4)
 
     panel = window.graph_area_vm.active_panel()
     cursor_state = window.graph_area_vm.active_tab().cursor_state
@@ -190,7 +149,7 @@ def test_export_cursor_range_realclick_writes_bounded_file(
         dlg.raise_()
         dlg.activateWindow()
         qtbot.waitExposed(dlg)
-        _pump_n(3)
+        pump_n(3)
         return dlg
 
     initial = {vehspd, engspeed}
@@ -201,7 +160,7 @@ def test_export_cursor_range_realclick_writes_bounded_file(
     dlg_all._save_path_provider = lambda: str(out_all)  # モーダル QFileDialog 回避
     ok_all = dlg_all._buttons.button(QDialogButtonBox.StandardButton.Ok)
     assert ok_all.isEnabled()
-    _real_click_widget(ok_all)
+    real_click_widget(ok_all)
     qtbot.waitUntil(lambda: dlg_all._result is not None, timeout=2000)
     req_all = dlg_all._result
     assert req_all is not None
@@ -221,7 +180,7 @@ def test_export_cursor_range_realclick_writes_bounded_file(
     # ── (2) [カーソル A–B] を実クリックで選択 -> 実 OK クリックで確定 ──────
     dlg_cur = _open_dialog(initial)
     assert dlg_cur._range_cursor.isEnabled(), "A/B 両設置済みなのに disabled"
-    _real_click_widget(dlg_cur._range_cursor)
+    real_click_widget(dlg_cur._range_cursor)
     qtbot.waitUntil(lambda: dlg_cur._range_cursor.isChecked(), timeout=2000)
     assert dlg_cur._range_cursor.isChecked(), (
         "実クリックでカーソル A-B ラジオが選択されない"
@@ -236,7 +195,7 @@ def test_export_cursor_range_realclick_writes_bounded_file(
     out_cursor = tmp_path / "export_cursor.csv"
     dlg_cur._save_path_provider = lambda: str(out_cursor)
     ok_cur = dlg_cur._buttons.button(QDialogButtonBox.StandardButton.Ok)
-    _real_click_widget(ok_cur)
+    real_click_widget(ok_cur)
     qtbot.waitUntil(lambda: dlg_cur._result is not None, timeout=2000)
     req_cur = dlg_cur._result
     assert req_cur is not None

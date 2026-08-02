@@ -72,7 +72,10 @@ def _dense_session(tmp_path: Path) -> tuple[Session, list[str]]:
 
     ``_two_rate_session`` と **セル総数が同じ** (10 x 2 = 20) で非空セル数だけが
     違う (20 対 12) — 書き項の 2 項モデル (基礎項 x 全セル + 増分項 x 値セル) を
-    「1 項 x 全セル」から区別できる唯一の形。
+    「1 項 x 全セル」から区別できる形の 1 つ (**旧「唯一の形」という記述は
+    Task 11 レビュー I1 で supersede** — 本 fixture は非空セル数も一緒に動くので
+    BASE 項だけを孤立させられない。BASE 単独の識別は
+    ``_sparse_with_extra_empty_channel_session`` を使う)。
     """
     path = tmp_path / "dense.mf4"
     stamps = [round(i * 0.01, 4) for i in range(10)]
@@ -96,6 +99,49 @@ def _dense_session(tmp_path: Path) -> tuple[Session, list[str]]:
     session = Session()
     key = session.load(path).key
     return session, [f"{key}::A", f"{key}::B"]
+
+
+def _sparse_with_extra_empty_channel_session(
+    tmp_path: Path,
+) -> tuple[Session, list[str]]:
+    """``_two_rate_session`` に「選択窓の外にしか値を持たない」3 本目を足す。
+
+    Task 11 レビュー I1 是正: 2 項モデルの **BASE 項だけ**を孤立させる fixture。
+    ``Ghost`` の唯一のサンプルは選択窓 (呼び出し側が渡す
+    ``time_start=0.0, time_end=0.09``) の外にあるので、union には入るが
+    ``row_range`` のスライスで消え、Ghost が寄与する非空セルは常に 0
+    (nonempty_cells は Fast/Slow だけの場合と厳密に同じ 12 のまま)。一方で
+    Ghost は「選択された列」なので columns が +1 され、その列の 10 行ぶんが
+    まるごと空セルとして total_cells に乗る (20 -> 30)。VALUE 項の母数を
+    動かさずに BASE 項の母数だけを動かせる、唯一 (かつ最小) の形。
+    """
+    path = tmp_path / "sparse_ghost.mf4"
+    write_mdf4(
+        path,
+        [
+            {
+                "name": "Fast",
+                "bus_type": CAN,
+                "timestamps": [round(i * 0.01, 4) for i in range(10)],
+                "values": [float(i) for i in range(10)],
+            },
+            {
+                "name": "Slow",
+                "bus_type": CAN,
+                "timestamps": [0.0, 0.05],
+                "values": [100.0, 200.0],
+            },
+            {
+                "name": "Ghost",
+                "bus_type": CAN,
+                "timestamps": [100.0],  # 選択窓 (0.0-0.09) の外 -> 常に非空セル 0
+                "values": [1.0],
+            },
+        ],
+    )
+    session = Session()
+    key = session.load(path).key
+    return session, [f"{key}::Fast", f"{key}::Slow", f"{key}::Ghost"]
 
 
 def _eager_csv_session(tmp_path: Path) -> tuple[Session, list[str]]:
@@ -306,12 +352,16 @@ def test_write_term_charges_empty_and_value_cells_differently(tmp_path: Path) ->
     """書き項は **2 項** (全セル基礎 + 値セル増分)。空セルは値セルより安い。
 
     ``_write_block_temp`` の行ループは空セルなら ``""`` を置くだけで、
-    ``vals[i]`` の索引も repr も払わない (実測: 333.6 ns 対 1,056.4 ns)。
-    1 つの単価を全セルに掛けると **空セルの多い出力ほど過大**に見積もる —
-    prod (セルの 66% が空) では 2.19 倍・18 分の待ちを 40 分と提示していた。
+    ``vals[i]`` の索引も repr も払わない。1 つの単価を全セルに掛けると
+    **空セルの多い出力ほど過大**に見積もる — prod (セルの 66% が空) は顕著な例。
 
-    2 つの fixture は **セル総数が同一** (20) で非空セル数だけが違う (12 対 20)
-    ので、1 項モデルでは両者が**厳密に等しく**なる = このテストが唯一の識別点。
+    2 つの fixture は **セル総数が同一** (20) で非空セル数だけが違う (12 対 20)。
+    **旧「唯一の識別点」という記述は Task 11 レビュー I1 で supersede**:
+    ``sparse.est_write_s > 0.0`` は sparse 自体が非空セルを 12 個持つため
+    BASE=0 (1 項モデルへ縮退) でも成立してしまう vacuous な assert だった
+    (レビュアーが ``estimate.py`` から ``total_cells * BASE`` の項を丸ごと
+    削除して実証・43 件 green のまま)。BASE 項単独の識別は
+    ``test_base_term_is_load_bearing_for_empty_only_columns`` が担う。
     """
     sparse_session, sparse_keys = _two_rate_session(tmp_path)
     dense_session, dense_keys = _dense_session(tmp_path)
@@ -322,9 +372,70 @@ def test_write_term_charges_empty_and_value_cells_differently(tmp_path: Path) ->
     assert sparse.empty_ratio == pytest.approx(0.4)
     assert dense.empty_ratio == pytest.approx(0.0)
     assert dense.est_write_s > sparse.est_write_s
-    # 基礎項が残っていること (増分項だけにすると空セルが 0 秒になり、空セルが
-    # 支配的な出力の待ちを今度は過小に提示する)。
-    assert sparse.est_write_s > 0.0
+
+
+def test_base_term_is_load_bearing_for_empty_only_columns(tmp_path: Path) -> None:
+    """BASE 項単独の識別点 (Task 11 レビュー I1 是正)。
+
+    ``_sparse_with_extra_empty_channel_session`` は非空セル数 (VALUE 項の母数)
+    を厳密に固定したまま、選択窓の外にしか値を持たない列を 1 本追加して
+    空セルだけを増やす (total_cells 20 -> 30・nonempty_cells は 12 のまま)。
+    差分は BASE 項だけに帰属するので、``sabotage`` (BASE を 0 にする/削除する)
+    が確実に検出される — 実装の内部定数と突き合わせる直接形にすることで、
+    値そのものの取り違え (符号違い・桁違い) も同時に捕まえる。
+    """
+    import valisync.core.export.estimate as est_mod
+
+    opts = CsvExportOptions(time_start=0.0, time_end=0.09)
+    base_session, base_keys = _two_rate_session(tmp_path)
+    ghost_session, ghost_keys = _sparse_with_extra_empty_channel_session(tmp_path)
+    without_ghost = estimate_export(base_session, base_keys, opts)
+    with_ghost = estimate_export(ghost_session, ghost_keys, opts)
+
+    assert without_ghost.rows == with_ghost.rows == 10
+    assert without_ghost.columns == 2
+    assert with_ghost.columns == 3
+
+    def _nonempty(est: ExportEstimate) -> float:
+        return est.rows * est.columns * (1.0 - est.empty_ratio)
+
+    # 非空セル数 (VALUE 項の母数) は不変 — Ghost は選択窓の外にしか値を
+    # 持たないので、追加された列は非空セルを 1 つも持ち込まない。
+    assert _nonempty(without_ghost) == pytest.approx(_nonempty(with_ghost))
+    assert _nonempty(without_ghost) == pytest.approx(12.0)
+
+    delta_write_s = with_ghost.est_write_s - without_ghost.est_write_s
+    # 追加された 10 個の空セルぶんだけ増える — VALUE 項の寄与はゼロなので、
+    # この差分は BASE 単価そのもの (符号・桁の取り違えもここで割れる)。
+    assert delta_write_s == pytest.approx(10 * est_mod._WRITE_S_PER_CELL_BASE)
+    assert delta_write_s > 0.0, "BASE が 0 (または負) — 2 項モデルが縮退している"
+
+
+def test_read_term_uses_channel_class_specific_unit_cost(tmp_path: Path) -> None:
+    """読み単価は scalar/wide でクラス分けされている (Task 11 レビュー C1 是正)。
+
+    1 チャンネル 1 リーフ (scalar) と 1 チャンネル 16 リーフ (wide) を同じ
+    単価で数えると、実測 ~480 倍差 (spike §9-4) のある実コストのどちらかで
+    必ず桁が外れる。fixture ごとの読み項が対応するクラス定数と厳密に
+    一致することを直接検定し、単一単価への回帰・クラス取り違え (scalar/wide
+    が逆) の回帰の両方を検出する。
+    """
+    import valisync.core.export.estimate as est_mod
+
+    scalar_session, scalar_keys = _two_rate_session(tmp_path)  # Fast, Slow は scalar
+    wide_session, wide_keys = _wide_session(tmp_path)  # 1 物理チャンネル (16 リーフ)
+
+    scalar_est = estimate_export(scalar_session, scalar_keys, CsvExportOptions())
+    wide_est = estimate_export(wide_session, wide_keys, CsvExportOptions())
+
+    assert scalar_est.est_read_s == pytest.approx(
+        2 * est_mod._READ_S_PER_COLD_SCALAR_CHANNEL
+    )
+    assert wide_est.est_read_s == pytest.approx(est_mod._READ_S_PER_COLD_WIDE_CHANNEL)
+    # sabotage 耐性: 定数を入れ替えたら (scalar/wide を逆にしたら) 必ずどちらかが割れる。
+    assert (
+        est_mod._READ_S_PER_COLD_SCALAR_CHANNEL != est_mod._READ_S_PER_COLD_WIDE_CHANNEL
+    )
 
 
 def test_channel_columns_hint_gives_the_identical_estimate(tmp_path: Path) -> None:

@@ -13,6 +13,14 @@ master 部分集合 0% 空セル) で検定済み**である (spec §5.5「係�
 という方針は据え置き — 検定後の現在値は実測の裏付けがある。出典と算術を定数の隣に
 残すのは、次に測り直すときに「何を測り直せばよいか」が数字だけからは復元できない
 ため。
+
+**Task 11 レビュー是正 (2026-08-02・4 度目の罠)**: 初版の読み項は「幅 1,100 の
+最広チャンネル 1 本」の cold select 単価を**全チャンネルへ一律適用**しており、
+scalar チャンネル (4,004/4,324 本) で ~21 倍の過大見積になっていた
+(旧「自己無矛盾性チェック」は read_a を仮定した恒等式で、読み単価そのものの
+証拠ではなかった — レビュー C1)。読み項は scalar/wide の**チャンネルクラス**別に
+分け、書き項の 2x2 較正はこの是正後の読み項で解き直した。詳細は各定数の直上
+コメント。
 """
 
 from __future__ import annotations
@@ -45,29 +53,38 @@ __all__ = [
     "estimate_export",
 ]
 
-# 読み: E-4a T5 実測の cold 1 列 316 ms。E-4a 以降の読みは **物理チャンネル単位**
-# (1 select + k スライス) なので、これは「列単価」ではなく **チャンネル単価** として
-# 使う。spec §5.5 の字面 (cold 列数 x 列単価) をそのまま実装すると、幅 1,100 の
-# チャンネルを 1,100 回読む前提になり prod 全列で ~29 時間 (§1 の外挿 18.4 分の
-# ~95 倍) を提示する = 見積が桁で嘘をつく。
+# 読み: E-4a 以降の読みは **物理チャンネル単位** (1 select + k スライス) なので、
+# これは「列単価」ではなく **チャンネル単価** として使う。spec §5.5 の字面
+# (cold 列数 x 列単価) をそのまま実装すると、幅 1,100 のチャンネルを 1,100 回
+# 読む前提になり prod 全列で ~29 時間 (330,004 列 x 旧単価 0.316 s ≈ 104,281 s ―
+# **Task 11 実測 (46-48 分) の ~38 倍**。§1 の初版はここを未検証の 18.4 分
+# 外挿と比較して「~95 倍」としていたが、その外挿自体が実測で反証されている
+# ので比較基準は実測値に差し替える) を提示する = 見積が桁で嘘をつく。
 #
-# **Task 11 (T-M・2026-08-02) が prod_demo 実測で検定し、この値を維持することを
-# 確認した** — 主語つきの検算 (下の VALUE 較正の副産物): 全列実走 (prod_demo・
-# 330,004 列・4,324 物理チャンネル) の実測総 wall 2,903.7 s から、検定済み
-# `_WRITE_S_PER_CELL_VALUE` で書き時間を逆算すると読み時間は 1,361.8 s に落ち着き、
-# 4,324 チャンネルで割ると 0.3149 s/channel — 本定数 (0.316) と 0.3% 差の完全な
-# 自己無矛盾。単一チャンネル (Prod10Wide_0000) の独立オラクル実測 (キャッシュを
-# 明示的に落としてからの cold 単発 select) も 414.5 ms で同じ桁 (この値だけ
-# チャンネル単位でなく単発測定なのでブロック走査分の固定費 ~45 ms 込みで乖離は
-# 許容範囲)。読み項は改定しない。
-_READ_S_PER_COLD_CHANNEL: Final = 0.316
+# **Task 11 レビュー是正 (2026-08-02・C1)**: 初版はここを単一定数 0.316 s/channel
+# (E-4a T5 が測った「幅 1,100 の最広チャンネル 1 本」の cold select) にして
+# 全チャンネルへ一律適用していたが、scalar (1 リーフ) と wide (2+ リーフ) は
+# asammdf の decode コストが構造的に別物 (~480 倍差・spike §9-4: prod scalar
+# 0.67ms 対 prod wide 338.2ms) で、単一単価は scalar 側 (4,324 本中 4,004 本) を
+# ~21 倍過大にしていた (旧「自己無矛盾性チェック」は read_a を仮定して VALUE を
+# 逆算し、その VALUE で read_a を再現するだけの恒等式 — 読み単価そのものの
+# 独立検証にはなっていなかった)。
+#
+# **再測定 (prod_demo・fresh process per class・全数 = サンプリング誤差ゼロ)**:
+# ``handle.mdf.select`` を ``copy_master=False`` で直接呼ぶ (E-4a T5 の測定手法・
+# チャンネルキャッシュを経由しない・``scripts/measure_lazy_footprint.py
+# --export --read-class {scalar|wide}``)。
+#   scalar (leaf_count==1・n=4,004/4,004 全数) 平均 5.5474 ms
+#   wide   (leaf_count>1・n=320/320 全数・平均 leaf_count=1,018.8) 平均 160.61 ms
+#   (レビュアーの 25/200 本サンプル実測 5.74ms/127.7ms と同じ桁・全数測定は
+#   wide 側が右に裾を引く分布 (最大 575.8ms) なのでサンプル平均よりやや高い)。
+_READ_S_PER_COLD_SCALAR_CHANNEL: Final = 0.00555
+_READ_S_PER_COLD_WIDE_CHANNEL: Final = 0.161
 
-# 書き: **2 項モデルの形は維持するが、BASE は実測により事実上ゼロと判明**。
-# 空セルと値セルは構造的に単価が違う — `_write_block_temp` の行ループは
-# `_fmt_value(vals[i], opts) if present[i] else ""` で、空セルは `present[i]` の
-# 索引と "" だけ、値セルはそれに加えて `vals[i]` の索引・float 化・shortest
-# round-trip repr・最小クォートを払う、という**構造上の主張は今も正しい**。
-# しかし実測はその差を「無視できるほど小さい」と示した (下記)。
+# 書き: **2 項モデル** (全セル基礎項 + 値セル増分項)。空セルと値セルは構造的に
+# 単価が違う — `_write_block_temp` の行ループは `_fmt_value(vals[i], opts) if
+# present[i] else ""` で、空セルは `present[i]` の索引と "" だけ、値セルはそれに
+# 加えて `vals[i]` の索引・float 化・shortest round-trip repr・最小クォートを払う。
 #
 # **Task 11 (T-M・2026-08-02) 実測較正**: 空セル率が異なる 2 点を prod_demo 1 点
 # 実走の副産物として同一ファイルから取った (I10 — 読み支配/書き支配の 2 形を
@@ -81,25 +98,26 @@ _READ_S_PER_COLD_CHANNEL: Final = 0.316
 #       点 (a) の裏で、書き支配の点 (b) は 2 倍以上外れていた** — I10 が警告した
 #       とおり、合算だけの検定では見逃す桁のズレがここに出る)。
 #
-# 較正は 2x2 連立 (total_cells*BASE + nonempty_cells*VALUE = write_time) を解く。
-# write_time は各点の actual_wall から読み時間 (点 (a) は本定数 x 4,324 channels・
-# 点 (b) は上の独立オラクル実測 414.5 ms) を差し引いて得る。**解は両点とも BASE が
-# 僅かに負** (-3.5e-9 〜 -7.4e-9 s/セル・VALUE の 1000 分の 1 未満) になった —
-# 物理的に不能 (負の所要時間) なので、これは「BASE はノイズ内で 0 と統計的に
-# 区別できない」ことの実測的証拠と解釈し、**BASE を 0 へクランプ**して VALUE のみ
-# 各点から逆算 (VALUE = write_time / nonempty_cells) した:
-#   点 (a) 由来 VALUE = 1.1369e-6 / 点 (b) 由来 VALUE = 1.1436e-6 (差 0.6%
-#   — 独立な 2 点が高い精度で一致 = BASE=0 モデルの裏付け)。単純平均 1.1403e-6
-#   を採用。この VALUE (BASE=0) で両点の time_ratio を再計算すると 0.998 〜
-#   1.009 (旧係数の 1.18 〜 2.32 から大幅に改善し、ほぼ 1.0)。
+# **Task 11 レビュー是正 (2026-08-02・C1)**: 較正は 2x2 連立
+# (total_cells*BASE + nonempty_cells*VALUE = write_time) を解く。write_time は
+# 各点の actual_wall から読み時間 (点 (a) = 4,004*SCALAR + 320*WIDE ≈ 73.61 s・
+# 点 (b) = 1*WIDE ≈ 0.161 s — 上の再測定済みチャンネルクラス単価を使う) を
+# 差し引いて得る。初版は read_a を旧の一律単価 (0.316 x 4,324 = 1,366.4 s) で
+# 差し引いており、write_time_a が ~1,464 s 過小になって BASE が偽の負値
+# (物理的に不能) に落ち、それを 0 へクランプしていた — **BASE=0 は読み項の
+# 過大推定が書き項の較正へ漏れた結果**であって実測ではなかった (レビュー指摘)。
+# 是正後の read_a (~73.6 s) で解き直すと:
+#   BASE = 4.815e-7 s/セル ・ VALUE = 6.813e-7 s/セル (負値なし・クランプ不要)。
+#   点 (a)/(b) の actual_wall を厳密に再現 (2x2 連立の定義上・残差 0)。
+#   **削除済みだった独立 micro-bench** (空セル 333.6 ns・値セル増分 722.8 ns =
+#   3.336e-7 / 7.228e-7 s/セル) と桁・比率とも近い (旧 BASE=0 が見せていた
+#   「BASE は無視できる」という結論は読み項の仮定が言わせていたに過ぎない)。
 #
 # **既知の限界 (advisory)**: 2 点とも空セル率 0-66% の範囲でしか検証していない。
-# BASE=0 は空セルの走査コストそのものが 0 という意味ではなく、この範囲では
-# VALUE 項の誤差に埋もれて測定不能という意味 — 空セル率が 90% 超のような
-# 極端な出力では書き時間をやや過小に見積もる可能性がある (受け入れ基準 G4/G5 は
-# この範囲外を要求しないため出荷は妨げない)。
-_WRITE_S_PER_CELL_BASE: Final = 0.0
-_WRITE_S_PER_CELL_VALUE: Final = 1.14e-6
+# 空セル率が 90% 超のような極端な出力では外挿誤差が広がりうる (受け入れ基準
+# G4/G5 はこの範囲外を要求しないため出荷は妨げない)。
+_WRITE_S_PER_CELL_BASE: Final = 4.815e-7
+_WRITE_S_PER_CELL_VALUE: Final = 6.813e-7
 
 # 値セルの平均文字数。spec §1 で「uint8 量子化の repr 長 4.57 文字」を実測済み
 # (初版の 18.63 は反証された)。**Task 11 (T-M) が prod_demo 実測で再検定**:
@@ -211,10 +229,11 @@ def estimate_export(
     # 2) チャンネル -> master。identity dedup は union と同じ規則 (spec §5.4)。
     def _masters_of(
         table: dict[str, int],
-    ) -> tuple[dict[int, np.ndarray], dict[int, int], int, int]:
+    ) -> tuple[dict[int, np.ndarray], dict[int, int], int, int, int]:
         masters: dict[int, np.ndarray] = {}
         cols_per_master: dict[int, int] = {}
-        lazy_channels = 0
+        lazy_scalar_channels = 0
+        lazy_wide_channels = 0
         resolved_cols = 0
         for channel, n_cols in table.items():
             master = session.channel_master(channel)
@@ -231,12 +250,28 @@ def estimate_export(
                 # (過大) へ倒れる。キャッシュを覗いて減算しないのは、pin の増減で
                 # 見積が呼ぶたびに変わる数字になるより、常に上限を出す方が
                 # 「思ったより早く終わった」に倒れて B2 の目的に合うため。
-                lazy_channels += 1
-        return masters, cols_per_master, lazy_channels, resolved_cols
+                # **Task 11 レビュー C1 是正**: scalar/wide でチャンネル単価が
+                # ~480 倍違うので、ここでクラスを分けて数える (単一単価一律の
+                # 過大見積を再導入しない)。
+                if session.channel_leaf_count(channel) > 1:
+                    lazy_wide_channels += 1
+                else:
+                    lazy_scalar_channels += 1
+        return (
+            masters,
+            cols_per_master,
+            lazy_scalar_channels,
+            lazy_wide_channels,
+            resolved_cols,
+        )
 
-    masters, cols_per_master, lazy_channels, resolved_cols = _masters_of(
-        cols_per_channel
-    )
+    (
+        masters,
+        cols_per_master,
+        lazy_scalar_channels,
+        lazy_wide_channels,
+        resolved_cols,
+    ) = _masters_of(cols_per_channel)
     if used_hint and resolved_cols != columns:
         # 関連性の破れ (T8 再レビュー Minor 1): 総和の一致は「量」しか見ておらず、
         # 総和が合っていてもキーが誤っていれば channel_master が解決できない列が
@@ -250,7 +285,9 @@ def estimate_export(
         for key in key_tuple:
             channel = session.channel_key_of(key) or key
             cols_per_channel[channel] = cols_per_channel.get(channel, 0) + 1
-        masters, cols_per_master, lazy_channels, _ = _masters_of(cols_per_channel)
+        masters, cols_per_master, lazy_scalar_channels, lazy_wide_channels, _ = (
+            _masters_of(cols_per_channel)
+        )
 
     union = union_timeline(list(masters.values()))
     # 行範囲は **Task 5 の `row_range` をそのまま消費する** (自前で searchsorted を
@@ -299,9 +336,14 @@ def estimate_export(
         rows=rows,
         empty_ratio=empty_ratio,
         est_bytes=int(header_bytes + per_row * rows),
-        est_read_s=lazy_channels * _READ_S_PER_COLD_CHANNEL,
+        # クラス別単価 (レビュー C1 是正): 単一単価一律だと scalar 側が
+        # ~21 倍過大になる (定数コメント参照)。
+        est_read_s=(
+            lazy_scalar_channels * _READ_S_PER_COLD_SCALAR_CHANNEL
+            + lazy_wide_channels * _READ_S_PER_COLD_WIDE_CHANNEL
+        ),
         # 全セルに掛かる基礎項 + 値セルにだけ掛かる増分項。1 項にすると空セルが
-        # 支配的な出力 (prod は 66% が空) で 2.19 倍の過大報告になる。
+        # 支配的な出力 (prod は 66% が空) で過大/過小いずれかに桁で寄る。
         est_write_s=(
             total_cells * _WRITE_S_PER_CELL_BASE
             + nonempty_cells * _WRITE_S_PER_CELL_VALUE

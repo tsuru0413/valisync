@@ -684,6 +684,23 @@ class SignalGroupManager:
         group = self._groups.get(group_key)
         return group is not None and group.handle is not None
 
+    def channel_leaf_count(self, group_key: str, display_name: str) -> int:
+        """物理チャンネル 1 本の数値リーフ本数 (**鋳造しない・名前を生成しない**)。
+
+        Task 11 レビュー C1 是正: 見積の読み単価はチャンネル**クラス**
+        (scalar=1 リーフ / wide=2+ リーフ) で 480 倍差がある (spike §9-4:
+        prod scalar 0.67ms 対 prod wide 338.2ms) ので、単一単価を全チャンネルへ
+        掛けると scalar 側が桁で過大になる。この索引は ``total_column_count``
+        (グループ全体の総リーフ数) と同じ ``leaf_count(record.spec)`` を**チャンネル
+        1 本単位**で返す — 名前列挙 (``column_names_of``) と違い leaf_count は
+        構造の深さだけを辿るので (再帰は軸長の掛け算・struct のフィールド和)、幅
+        1,100 のチャンネルでも 1,100 本の文字列を作らない。
+        表を持たないグループ (CSV/Derived・未知チャンネル) は 1 信号 = 1 列なので
+        常に 1。
+        """
+        record = self._column_records.get(group_key, {}).get(display_name)
+        return 1 if record is None else leaf_count(record.spec)
+
     def total_column_count(self, group_key: str) -> int:
         """グループの数値列総数 (未知 key は ``group()`` と同じく KeyError)。
 

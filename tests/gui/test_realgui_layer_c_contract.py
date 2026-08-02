@@ -10,6 +10,14 @@ Layer C の定義境界は「入力の出所」: 実 OS 入力プリミティブ
 `drive_qdrag`)または画面取得(`grabWindow`)を使うのが Layer C。
 合成入力しか使わないなら Layer B の偽装。
 memory: gui_realgui_synthetic_click_mislabeled_layer_c。
+
+**Task 11 レビュー M6 是正**: `real_click_widget`/`double_click` は
+`_realgui_input.py` 内でプリミティブ (`at`) を組んだ**共有コンポーズ関数**
+(旧: 各 realgui ファイルが `_real_click`/`_real_click_widget` を module-local
+に重複実装していた — 重複を解消して共有昇格した)。呼び出し側ファイルの
+ソーステキストにはプリミティブが直接現れなくなるため、これらもプリミティブ
+と同格の Layer C 証拠として認識する (実体は `_realgui_input.py` 側で
+プリミティブへ委譲しているので、判定基準「入力の出所」自体は変わらない)。
 """
 
 from __future__ import annotations
@@ -20,10 +28,13 @@ from pathlib import Path
 _REALGUI_DIR = Path(__file__).resolve().parent.parent / "realgui"
 
 # 実 OS 入力プリミティブ(at/key/wheel/set_window_pos/drive_qdrag)or 画面取得
-# (grabWindow)を使っていれば Layer C とみなす。`\bkey\(` は実 key() にマッチし
-# 合成 `qtbot.keyClick(` にはマッチしない(key の後が Click で ( が来ないため)。
+# (grabWindow)、または `_realgui_input.py` の共有コンポーズ関数
+# (real_click_widget/double_click — 内部でプリミティブへ委譲する)を
+# 使っていれば Layer C とみなす。`\bkey\(` は実 key() にマッチし合成
+# `qtbot.keyClick(` にはマッチしない(key の後が Click で ( が来ないため)。
 _REAL_INPUT = re.compile(
-    r"\b(?:at|key|wheel|set_window_pos|drive_qdrag)\(|\.grabWindow\("
+    r"\b(?:at|key|wheel|set_window_pos|drive_qdrag|real_click_widget|double_click)\("
+    r"|\.grabWindow\("
 )
 
 # 実入力へ未移行の既知合成 realgui。新規追加は禁止・移行して空にするのが目標。
