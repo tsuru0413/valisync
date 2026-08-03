@@ -176,7 +176,12 @@ def test_export_dialog_file_row_realclick_selects_all_columns_without_minting(
     _pump_n(4)
 
     assert mgr.mint_count == 0, f"ダイアログを開くだけで鋳造された: {mgr.mint_count}"
-    assert dlg._selected == {}, "初期選択が空でない (前提が崩れている)"
+    # E-4b Task 3 supersede: `_selected` は「列 1 本 = 1 エントリ」から
+    # 「物理チャンネル 1 行 = 1 エントリ」へ圧縮された (spec §5.6・prod 54-57 MB
+    # -> ~0.5 MB) ので `len(dlg._selected)` はもう選択列数ではない。**期待値
+    # (n_columns との等号・文言) は 1 つも変えず**、読み口だけを列数を返す
+    # `selected_count()` へ機械的に付け替える (BOM 読み口 26 本と同じ扱い)。
+    assert dlg.selected_count() == 0, "初期選択が空でない (前提が崩れている)"
 
     tree = dlg._tree
     file_item = tree.topLevelItem(0)
@@ -184,10 +189,10 @@ def test_export_dialog_file_row_realclick_selects_all_columns_without_minting(
 
     # ── (1) ファイル行のチェックボックスを実クリック → 全列が選択される ──
     _real_click_checkbox(tree, file_item)
-    qtbot.waitUntil(lambda: len(dlg._selected) == n_columns, timeout=3000)
-    assert len(dlg._selected) == n_columns, (
+    qtbot.waitUntil(lambda: dlg.selected_count() == n_columns, timeout=3000)
+    assert dlg.selected_count() == n_columns, (
         f"ファイル行の実チェックで全列が選択されない: "
-        f"{len(dlg._selected)}/{n_columns} (未展開コンテナの列が漏れている疑い)"
+        f"{dlg.selected_count()}/{n_columns} (未展開コンテナの列が漏れている疑い)"
     )
     assert mgr.mint_count == 0, (
         f"ファイル行チェックが列を鋳造した (C-b 違反): {mgr.mint_count}"
@@ -195,10 +200,10 @@ def test_export_dialog_file_row_realclick_selects_all_columns_without_minting(
 
     # ── (2) もう一度実クリック → 全解除 (一方通行でない) ──
     _real_click_checkbox(tree, file_item)
-    qtbot.waitUntil(lambda: len(dlg._selected) == 0, timeout=3000)
-    assert dlg._selected == {}, (
+    qtbot.waitUntil(lambda: dlg.selected_count() == 0, timeout=3000)
+    assert dlg.selected_count() == 0, (
         f"2 回目の実チェックで解除されない (PartiallyChecked 貼り付きの"
-        f"一方通行バグ): 残 {len(dlg._selected)}"
+        f"一方通行バグ): 残 {dlg.selected_count()}"
     )
     assert mgr.mint_count == 0, f"解除が列を鋳造した: {mgr.mint_count}"
 
@@ -221,8 +226,8 @@ def test_export_dialog_file_row_realclick_selects_all_columns_without_minting(
         f"コンテナ行の実クリックでチェックが変わった (C-a 違反): "
         f"{before} -> {container.checkState(0)}"
     )
-    assert dlg._selected == {}, (
-        f"コンテナ行の実クリックで選択が発生した: {sorted(dlg._selected)[:5]}"
+    assert dlg.selected_count() == 0, (
+        f"コンテナ行の実クリックで選択が発生した: {dlg._checked_keys()[:5]}"
     )
     assert mgr.mint_count == 0, (
         f"全経路を通して鋳造 0 でなければならない: {mgr.mint_count}"

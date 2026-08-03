@@ -850,7 +850,7 @@ def _channel_cache(session: Any) -> Any:
 
 
 def _handle_of(session: Any, key: str) -> Any:
-    """グループの MdfHandle (キャッシュキー ``(id(handle), gi, ci)`` の第 1 成分)。"""
+    """グループの MdfHandle (キャッシュキー ``(handle.serial, gi, ci)`` の第 1 成分)。"""
     return session.group_signals(key)[0]._values_source._handle
 
 
@@ -931,7 +931,9 @@ def column_read_latency(
     mgr = session._groups
     cache = _channel_cache(session)
     handle = _handle_of(session, key)
-    hid = id(handle)
+    # 旧: id(handle)。serial 化 (E-4b) 後に id のまま残すと 1 件もヒットせず
+    # **例外を出さずに 0** を刷る — 計測器の追随漏れは常にサイレントになる。
+    hid = handle.serial
 
     display, width = _widest_channel(session, key)
     col_keys = _column_keys_of(session, key, display)
@@ -1436,9 +1438,495 @@ def core_footprint() -> None:
     )
 
 
+# ─── E-4b: エクスポート書き込み経路の実測 (T-M・spec §11) ─────────────────────
+
+
+def export_estimate_check(session: Any, keys: list[str], out: Path) -> dict[str, float]:
+    """B2 の係数を **読み項と書き項に分けて** 検定する (spec §7.4)。
+
+    分けて測るのが要点 (I10): 合算だけ合っていても、読み支配ケース (カーソル A-B x
+    全列) と書き支配ケース (全期間 x 全列) のどちらかが桁で外れていることがある。
+
+    **単価を記録するときは主語 (何がそのバイト/秒を作ったか) を必ず併記する** —
+    この系列は同じ罠を 3 度踏んでいる (T4 の未タッチページ 17-25 倍 / 増分B の
+    3.0-4.8 us/signal 対 実 8-27 us / channel_cache の warm-allocator 2 倍)。
+    """
+    from valisync.core.export.csv_exporter import (
+        CsvExporter,
+        CsvExportOptions,
+        ExportRequest,
+    )
+    from valisync.core.export.estimate import estimate_export
+
+    # prod_demo は複数レートの混在 (master が同一でないチャンネルを含む) — 素の
+    # CsvExportOptions() は `_require_shared_timeline` に即座に拒否される
+    # (較正の初回実行で実測済み: ValueError「選択した信号が同一の時間軸を共有して
+    # いません」)。実 GUI (ExportCsvDialog) の統合タイムラインチェックボックスは
+    # **既定 checked=True** なので、これが実ユーザーが踏む経路と一致する唯一の
+    # 選択。est 側の数字には影響しない (`estimate_export` は use_unified_timeline
+    # を見ない契約 — 単一 master の点 (b) では unified の有無で union が不変)。
+    options = CsvExportOptions(use_unified_timeline=True)
+    t0 = time.perf_counter()
+    est = estimate_export(session, keys, options)
+    estimate_wall = time.perf_counter() - t0
+
+    request = ExportRequest(
+        keys=tuple(keys), output_path=out, options=options, header_resolver=list
+    )
+    marks: list[tuple[int, float]] = []
+    t1 = time.perf_counter()
+    CsvExporter().export(
+        request,
+        session.export_resolver(),
+        progress=lambda d, t: marks.append((d, time.perf_counter())),
+    )
+    wall = time.perf_counter() - t1
+    actual_bytes = out.stat().st_size
+    # 最初のブロックが終わるまでが「読み支配」区間の代理指標。
+    first_block_s = (marks[0][1] - t1) if marks else wall
+    return {
+        "estimate_wall_s": estimate_wall,
+        "est_rows": est.rows,
+        "est_columns": est.columns,
+        "est_empty_ratio": est.empty_ratio,
+        "est_bytes": est.est_bytes,
+        "actual_bytes": actual_bytes,
+        "bytes_ratio": actual_bytes / max(1, est.est_bytes),
+        "est_read_s": est.est_read_s,
+        "est_write_s": est.est_write_s,
+        "actual_wall_s": wall,
+        "actual_first_block_s": first_block_s,
+        "time_ratio": wall / max(1e-9, est.est_read_s + est.est_write_s),
+    }
+
+
+def export_full_run(
+    session: Any, keys: list[str], out: Path, uss_limit_mb: float
+) -> None:
+    """G4: prod 全列エクスポートが OOM せず完走し、**中身が正しい**ことまで見る。
+
+    「完走した」だけでは空のファイルでも緑になる (spec §6 G4)。行数 = union 長・
+    列数 = keys 長・ランダム 100 セルの独立オラクル照合を併置する。
+
+    ``uss_limit_mb`` は **判定走行とは別の走行から供給する** (同一走行から閾値を得る
+    循環の禁止・G4)。呼び出し側 (main) が --uss-limit で受け取り、既定値を持たない。
+    """
+    import random
+
+    from valisync.core.export.csv_exporter import (
+        CsvExporter,
+        CsvExportOptions,
+        ExportRequest,
+    )
+    from valisync.core.export.timeline import union_timeline
+
+    # ゼロ件で「完走した」と刷る黙った合格を禁止する (E-3 T9 の穴と同型)。
+    assert len(keys) >= 1000, f"測定対象が {len(keys)} 列しかない — 全列走行ではない"
+
+    peak = [uss_mb()]
+
+    def progress(done: int, total: int) -> None:
+        peak[0] = max(peak[0], uss_mb())
+
+    request = ExportRequest(
+        keys=tuple(keys),
+        output_path=out,
+        # 実 GUI 既定 (統合タイムライン checked=True) と揃える — export_estimate_check
+        # の WHY コメント参照。全列 (prod_demo は複数レート混在) では必須。
+        options=CsvExportOptions(use_unified_timeline=True),
+        header_resolver=list,
+    )
+    t0 = time.perf_counter()
+    CsvExporter().export(request, session.export_resolver(), progress=progress)
+    wall = time.perf_counter() - t0
+
+    # --- 内容検証 (「完走した」だけでは空ファイルでも緑) ---------------------
+    masters = _distinct_masters(session, keys)
+    union = union_timeline(masters)
+    n_union = int(union.size)
+    rng = random.Random(20260801)  # 固定 seed: 落ちたセルを再現できるようにする
+    samples = [
+        (rng.randrange(n_union), rng.randrange(1, len(keys) + 1)) for _ in range(100)
+    ]
+    header, n_rows, picked = _scan_output(out, {r for r, _c in samples})
+    assert n_rows == n_union, (n_rows, n_union)
+    assert len(header) == len(keys) + 1, (len(header), len(keys) + 1)
+
+    for r, c in samples:
+        got = picked[r][c]
+        want = _oracle_cell(session, keys[c - 1], float(union[r]))
+        assert got == want, (
+            f"row={r} col={c} key={keys[c - 1]} got={got!r} want={want!r}"
+        )
+
+    print(
+        f"G4 OK  columns={len(keys):,} rows={n_rows:,} "
+        f"bytes={out.stat().st_size:,} wall={wall:.1f}s USS_peak={peak[0]:,.0f}MB "
+        f"(limit {uss_limit_mb:,.0f}MB — 別走行から供給)",
+        flush=True,
+    )
+    assert peak[0] <= uss_limit_mb, (peak[0], uss_limit_mb)
+
+
+def _oracle_cell(session: Any, column_key: str, t: float) -> str:
+    """列 *column_key* の時刻 *t* におけるセルを **名前引き経路** で独立に作る。
+
+    E-3 以前の読み経路 (mdf.select + dict(_flatten(...))) をそのまま使うので、
+    E-4a の位置パスにも E-4b のブロック機構にも依存しない。時刻が無い列は空セル
+    (完全一致セマンティクス — tolerance を入れると照合が甘くなる)。
+
+    **非有限値も空セル** (Task 1 の是正 1・1')。ここを ``repr(float(...))`` の
+    ままにすると、demo データに NaN/±inf が 1 つでも乗った瞬間に
+    ``'nan' != ''`` の**誤 RED** が出る (production が正しいのにゲートが落ちる)。
+    """
+    import math
+
+    import numpy as np
+
+    from valisync.core.loaders.mdf_loader import _flatten
+
+    channel = session.channel_key_of(column_key)
+    assert channel is not None, column_key
+    group_key, _sep, display = channel.partition("::")
+    record = session._groups.column_records(group_key)[display]
+    handle = session._groups.group(group_key).handle
+    with handle.lock:
+        asig = handle.mdf.select(
+            [(record.raw_base_name, record.group_index, record.channel_index)],
+            raw=False,
+            ignore_value2text_conversions=True,
+            copy_master=False,
+        )[0]
+    leaf = column_key.split("::", 1)[1][len(display) :]
+    columns = dict(_flatten(record.raw_base_name, asig.samples))
+    values = columns[f"{record.raw_base_name}{leaf}"]
+    ts = np.asarray(asig.timestamps)
+    idx = int(np.searchsorted(ts, t, side="left"))
+    if idx >= ts.size or ts[idx] != t:
+        return ""  # このレートには当該時刻のサンプルが無い = 空セル
+    value = float(values[idx])
+    if not math.isfinite(value):
+        return ""  # 非有限は欠測と同じ空セル (Task 1 の是正 1/1')
+    return repr(value)
+
+
+def export_range_residency(session: Any, keys: list[str], out: Path) -> tuple[int, int]:
+    """G5: カーソル A-B (1 行) エクスポート後の鋳造列常駐を **weakref で** 数える。
+
+    ``resolved_keys()`` も ``bytes_held`` も使わない (spec §10): 前者は LRU の帳簿で
+    export 専用 resolve に構造的に盲目で、後者は pin されない列を数えない。実装自身の
+    カウンタに頼らない独立オラクルが要る (E-4a の教訓)。
+    """
+    import gc
+    import weakref
+
+    from valisync.core.export.csv_exporter import (
+        CsvExporter,
+        CsvExportOptions,
+        ExportRequest,
+    )
+
+    alive: weakref.WeakSet = weakref.WeakSet()
+    base = session.export_resolver()
+    minted_keys: set[str] = set()
+
+    def watched(key: str):  # type: ignore[no-untyped-def]
+        sig = base(key)
+        # T11 prod 実測で発見: スカラー (LD-14 展開不要) チャンネルの
+        # resolve_transient は「既に帳簿に在る列はそのまま返す」経路
+        # (signal_group_manager.py) を通り、ロード時点から**恒久生存**する
+        # 物理チャンネル容器 Signal をそのまま返す (鋳造しない・transient_mint_count
+        # も動かない)。これはエクスポートが作った残留ではなく、ファイルを開いた瞬間
+        # から常に「生きている」— 未選別の weakref オラクルは prod_demo (scalar
+        # チャンネル 4,004 本) で必ず alive>=4,004 の床が乗り、G5 が測ろうとして
+        # いる「ブロック終端の参照解放」を実測不能にする (実測: 未修正のまま judge
+        # 走行で alive=4,004・block_cols=512 に対し常に OVER)。G5 が見たいのは
+        # **LD-14 展開で鋳造された列** (`_selector` を持つ) の残留だけなので、
+        # 恒久容器 (`_selector is None`) は対象から除く。
+        if getattr(sig._values_source, "_selector", None) is not None:
+            alive.add(sig)
+            # M3 是正 (Task 11 レビュー): 「鋳造された列」を **キー単位の集合**
+            # で数える (呼び出し回数ではない)。恒久容器を返すだけの scalar
+            # キー (4,004 本ぶん) は鋳造していないので `len(keys)`
+            # (=330,004・全選択列数) を "minted" と呼ぶのは誤称だった。
+            # **単純なカウンタでは二重計上する**: `CsvExporter.export` は
+            # `scan_masters` (前走査・master だけ見る) と実書き込みの 2 段で
+            # 同じキーを 2 回 `resolve` するため、`resolve_transient` は
+            # 呼び出しごとに毎回**再鋳造**する (`_resolved_by_key` へ登録
+            # しない設計・E-4b MG-1) — カウンタ実装で実測したところ
+            # 652,000 (= 326,000 の厳密 2 倍) になり、二重計上を機械的に
+            # 実証した (`.superpowers/sdd/task-11-report.md` 修正ラウンド)。
+            minted_keys.add(key)
+        return sig
+
+    # 1 行だけ出す範囲 (spec §1 の「カーソル A-B で 1 行 = 6.523 s / 114.5 MiB 常駐」
+    # の再現形)。t0 を閉区間の両端に置くので出力は 1 行になる。
+    masters = _distinct_masters(session, keys)
+    t0 = float(masters[0][0])
+    # unified=True: 全列 (複数レート混在) を渡すと `_require_shared_timeline` は
+    # union の切り出し (row_range) より前に生 master を比較するため、範囲が 1 行に
+    # 絞られていても素の CsvExportOptions() では拒否される (export_estimate_check
+    # の WHY コメント参照)。
+    options = CsvExportOptions(time_start=t0, time_end=t0, use_unified_timeline=True)
+    CsvExporter().export(ExportRequest(tuple(keys), out, options, list), watched)
+    gc.collect()
+    # alive に残るのは「まだ誰かが参照している鋳造列」。block_cols + ε を超えたら
+    # ブロック終端の参照解放が効いていない (G5 の判定は呼び出し側 main が行う)。
+    return len(minted_keys), len(alive)
+
+
+def _distinct_masters(session: Any, keys: list[str]) -> list[Any]:
+    """列キー集合が触る master を identity dedup で集める (**値を読まない**)。"""
+    seen: dict[int, Any] = {}
+    for key in keys:
+        channel = session.channel_key_of(key)
+        if channel is None:
+            continue
+        master = session.channel_master(channel)
+        if master is not None:
+            seen.setdefault(id(master), master)
+    return list(seen.values())
+
+
+def _scan_output(
+    path: Path, wanted: set[int]
+) -> tuple[list[str], int, dict[int, list[str]]]:
+    """~10 GB の CSV を **1 パスのストリームで** 走査し、ヘッダ・行数・指定行だけ返す。
+
+    行を全部リストへ溜めると計測器自身が 10 GB を抱え、測ろうとしているピークを
+    自分で作る (E-4a T5 の「対照が測定対象を汚す」と同型の罠)。保持するのは
+    ``wanted`` の 100 行だけ。
+    """
+    picked: dict[int, list[str]] = {}
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        header = f.readline().rstrip("\n").split(",")
+        count = 0
+        for line in f:
+            if not line.strip():
+                continue
+            if count in wanted:
+                picked[count] = line.rstrip("\n").split(",")
+            count += 1
+    return header, count, picked
+
+
+def _export_all_keys(session: Any, key: str) -> list[str]:
+    """全列のキー (この 1 ファイルの全物理チャンネル分。**名前だけで作る = 鋳造しない**)。
+
+    ``ExportCsvDialog._select_all`` (C-b) と同じ規約 — 列挙は ColumnSpec 由来の
+    名前で行い、``resolve()`` は実際に値が要るときまで呼ばない。
+    """
+    out: list[str] = []
+    for sig in session.group_signals(key):
+        out.extend(_column_keys_of(session, key, _orig(sig.name)))
+    return out
+
+
+class UssPeakSampler(threading.Thread):
+    """USS ピークを粗い周期でサンプリングする背景スレッド (calibrate 走行専用)。
+
+    ``PeakSampler`` (RSS・20ms 周期) と違い、USS の読み出しは working set を歩く
+    ぶん高価 (module docstring 参照)。20-40 分級の全列書き出し中に張り続けるので、
+    周期を秒オーダーへ粗くして計測対象そのものへの負荷を無視できる水準に保つ
+    (n_units ~648 の progress コールバックそのものへ 20ms 周期のスレッドを重ねると
+    サンプリング自体が観測対象を歪めかねない)。
+    """
+
+    def __init__(self, interval_s: float = 2.0) -> None:
+        super().__init__(daemon=True)
+        self.peak = uss_mb()
+        self._interval = interval_s
+        self._running = True
+
+    def run(self) -> None:
+        while self._running:
+            current = uss_mb()
+            if current > self.peak:
+                self.peak = current
+            time.sleep(self._interval)
+
+    def stop(self) -> None:
+        self._running = False
+
+
+def read_class_calibration(
+    session: Any, key: str, cls: str, sample_n: int, seed: int = 0
+) -> None:
+    """C1 是正 (レビュー): cold select 単価をチャンネルクラス別 (scalar/wide) に測る。
+
+    旧 ``_READ_S_PER_COLD_CHANNEL`` (0.316 s/channel) は「幅 1,100 の最広チャンネル
+    1 本」(``_widest_channel``) の cold select を **全チャンネル (4,004 scalar +
+    320 wide) に一律適用**しており、scalar 側で ~21 倍の過大見積を生んでいた —
+    scalar と wide は物理チャンネルの構造 (asammdf が 1 回の decode で読む単位) が
+    根本的に違う (spike §9-4: prod scalar 0.67ms 対 prod wide 338.2ms・~480 倍差)。
+    ここでは ``_select_samples`` (E-4a T5 が確立した測定手法 = ``handle.mdf.select``・
+    ``copy_master=False``・チャンネルキャッシュを経由しない直接呼び出し) を同じ形で
+    再現し、クラス別の単価を測り直す。
+
+    **fresh process が必須**: 呼び出し側 CLI (``--read-class scalar`` /
+    ``--read-class wide``) を**別プロセスで 2 回**起動して測る。同一プロセス内で
+    両クラスを連続測定すると、先に測ったクラスの OS ページキャッシュ/asammdf
+    内部バッファの温まりが後続クラスの計測へ漏れ、フェアな比較にならない
+    (このシリーズが計測の鉄則で繰り返し踏んだ罠と同型)。
+    """
+    import random
+
+    from valisync.core.loaders.column_names import leaf_count
+
+    records = session._groups.column_records(key)
+    assert records, f"{key} に列レコードが無い (ロード失敗?)"
+    want_wide = cls == "wide"
+    pool = [
+        (display, record)
+        for display, record in records.items()
+        if (leaf_count(record.spec) > 1) == want_wide
+    ]
+    assert pool, f"クラス {cls} のチャンネルが 0 本 (records={len(records)})"
+    handle = _handle_of(session, key)
+    rng = random.Random(seed)
+    sample = rng.sample(pool, min(sample_n, len(pool)))
+    widths = [leaf_count(record.spec) for _display, record in sample]
+    times: list[float] = []
+    for _display, record in sample:
+        t0 = time.perf_counter()
+        _select_samples(
+            handle, record.raw_base_name, record.group_index, record.channel_index
+        )
+        times.append(time.perf_counter() - t0)
+    times.sort()
+    n = len(times)
+    mean = sum(times) / n
+    print(
+        f"READ_CLASS class={cls} n={n}/{len(pool)} mean_ms={mean * 1000:.4f} "
+        f"median_ms={times[n // 2] * 1000:.4f} min_ms={times[0] * 1000:.4f} "
+        f"max_ms={times[-1] * 1000:.4f} mean_leaf_count={sum(widths) / n:.1f} "
+        "subject=prod_demo cold handle.mdf.select copy_master=False "
+        "ignore_value2text_conversions=True (E-4a チャンネルキャッシュ非経由)",
+        flush=True,
+    )
+
+
+def export_main() -> None:
+    """``--export`` 段のディスパッチャ (spec §11・T-M)。``--core`` と同型の early return。
+
+    子コマンド:
+      ``--calibrate``       : 較正走行。書き項 2 項モデル (est.py の BASE/VALUE) は
+                               1 点では 2 係数を決められない (T8 再レビュー) ので、
+                               空セル率が異なる 2 点 (全列 ~66% / 単一 master 部分
+                               集合 ~0%) で ``export_estimate_check`` を回す。点 (a)
+                               (全列) の 1 回の書き出しに USS ピークサンプラーを
+                               重ねて P_A も同時に得る (全列書き出しを 2 度払わない)。
+      ``--uss-limit <MB>``  : 判定走行。G4 (全列完走+内容照合) を **較正走行とは
+                               別の走行** として実行し (同一走行から閾値を得る循環
+                               の禁止・G4)、続けて G5 (範囲エクスポート後の常駐) を
+                               同じプロセス内で測る。
+    """
+    from valisync.core.export.csv_exporter import block_columns
+    from valisync.core.session import Session
+
+    if not TARGET.exists():
+        print(f"MISSING: {TARGET} (run scripts/generate_demo_mf4.py --profile hils)")
+        raise SystemExit(1)
+
+    scratch = TARGET.parent / "export_scratch"  # demo_data 配下 = gitignore 済み
+    scratch.mkdir(exist_ok=True)
+
+    calibrate = "--calibrate" in sys.argv
+    uss_limit: float | None = None
+    if "--uss-limit" in sys.argv:
+        idx = sys.argv.index("--uss-limit")
+        uss_limit = float(sys.argv[idx + 1])
+    read_class: str | None = None
+    if "--read-class" in sys.argv:
+        idx = sys.argv.index("--read-class")
+        read_class = sys.argv[idx + 1]
+        assert read_class in ("scalar", "wide"), read_class
+    sample_n = 200
+    if "--sample-n" in sys.argv:
+        idx = sys.argv.index("--sample-n")
+        sample_n = int(sys.argv[idx + 1])
+
+    print(f"loading {TARGET.name} ...", flush=True)
+    session = Session()
+    t0 = time.perf_counter()
+    outcome = session.load(TARGET)
+    print(f"  loaded in {time.perf_counter() - t0:.2f}s", flush=True)
+    key = outcome.key
+
+    if read_class is not None:
+        # C1 是正の再測定専用パス — 全列キーの列挙 (330,004 本の文字列生成) は
+        # このパスでは不要なので飛ばす (計測対象そのものへ余計な前処理コストを
+        # 足さない)。
+        read_class_calibration(session, key, read_class, sample_n)
+        return
+
+    all_keys = _export_all_keys(session, key)
+    print(f"  columns (all, 全物理チャンネル) = {len(all_keys):,}", flush=True)
+
+    if calibrate:
+        display, width = _widest_channel(session, key)
+        subset_keys = _column_keys_of(session, key, display)
+        print(
+            f"\n=== CALIBRATE point (b): 単一 master 部分集合 "
+            f"(channel={display}, cols={width}, 空セル率 ~0%) ===",
+            flush=True,
+        )
+        res_b = export_estimate_check(session, subset_keys, scratch / "calib_b.csv")
+        for k, v in res_b.items():
+            print(f"  {k} = {v}")
+
+        print(
+            "\n=== CALIBRATE point (a): 全列 (空セル率 高) "
+            "+ USS ピーク (P_A) 同時観測 ===",
+            flush=True,
+        )
+        sampler = UssPeakSampler()
+        sampler.start()
+        res_a = export_estimate_check(session, all_keys, scratch / "calib_a.csv")
+        sampler.stop()
+        sampler.join(timeout=5.0)
+        for k, v in res_a.items():
+            print(f"  {k} = {v}")
+        print(f"  USS_peak(P_A) = {sampler.peak:,.0f} MB", flush=True)
+        return
+
+    if uss_limit is None:
+        print(
+            "ERROR: --uss-limit <MB> が必要です "
+            "(判定走行は較正走行 --calibrate の P_A から別途供給する)"
+        )
+        raise SystemExit(2)
+
+    print(
+        f"\n=== JUDGE G4: 全列完走 + 内容照合 (uss_limit={uss_limit:,.0f} MB) ===",
+        flush=True,
+    )
+    export_full_run(session, all_keys, scratch / "judge_full.csv", uss_limit)
+
+    print("\n=== JUDGE G5: カーソル A-B (1 行) 常駐 ===", flush=True)
+    minted, alive = export_range_residency(
+        session, all_keys, scratch / "judge_range.csv"
+    )
+    masters = _distinct_masters(session, all_keys)
+    max_master_len = max((len(m) for m in masters), default=0)
+    budget = _channel_cache(session).available_bytes
+    bc = block_columns(1, max_master_len, budget)
+    epsilon = 8  # ブロック終端の参照解放に僅かな遅延があっても許容する緩衝
+    verdict = "OK" if alive <= bc + epsilon else "OVER"
+    print(
+        f"G5 residual columns = {alive} (<= block_cols={bc}+eps{epsilon})  "
+        f"minted={minted}  [{verdict}]",
+        flush=True,
+    )
+    assert alive <= bc + epsilon, (alive, bc, epsilon)
+
+
 def main() -> None:
     if "--core" in sys.argv:
         core_footprint()
+        return
+    if "--export" in sys.argv:
+        export_main()
         return
 
     # QSettings isolation (never touch the real registry) — must happen before

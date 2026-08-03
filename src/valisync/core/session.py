@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+import threading
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -9,8 +10,12 @@ import numpy as np
 from valisync.core.downsampler.downsampler import Downsampler
 from valisync.core.export.csv_exporter import (
     EXPORT_CONTAINER_CHANNEL_ERROR_TMPL,
+    EXPORT_SOURCE_LOST_TMPL,
     CsvExporter,
     CsvExportOptions,
+    ExportRequest,
+    ExportSourceLost,
+    passthrough_header_names,
 )
 from valisync.core.formula.engine import FormulaEngine
 from valisync.core.interpolation.interpolator import InterpolationMethod, Interpolator
@@ -20,6 +25,7 @@ from valisync.core.loaders.mdf_loader import MdfLoader
 from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR, SignalGroupManager
 from valisync.core.models import FormatDefinition, Signal, SignalGroup
 from valisync.core.models.load_result import Diagnostic, LoadCancelled
+from valisync.core.models.sample_source import SampleReadError
 from valisync.core.statistics.range_stats import RangeStatistics, StatisticsResult
 from valisync.core.sync.synchronizer import TimeSynchronizer
 
@@ -160,7 +166,12 @@ class Session:
         self._interpolator = Interpolator()
         self._statistics = RangeStatistics()
         self._downsampler = Downsampler()
-        self._exporter = CsvExporter()
+        # budget_fn は**呼び出し時に読む** — pin の増減 (プロット操作) を次の
+        # エクスポートのブロック幅へ反映させるため (D3「予算 - 現在の pin 済み」)。
+        # 値で渡すと Session 構築時点の空き予算が恒久に焼き付く。
+        self._exporter = CsvExporter(
+            budget_fn=lambda: self._channel_cache.available_bytes
+        )
         self._derived: list[_DerivedRecord] = []
 
     @property
@@ -298,6 +309,65 @@ class Session:
         """名前空間つきキーを Signal へ解決する (列キーは要求時に鋳造・E-1)."""
         return self._groups.resolve(key)
 
+    def channel_key_of(self, column_key: str) -> str | None:
+        """列キー -> ``"{group_key}::{物理チャンネル表示名}"`` (**鋳造しない**)。
+
+        E-4b の「列 -> チャンネル」解決の**唯一の入口**。見積 (T-UX) のチャンネル
+        単価計算・ブロック割当・計測器がすべてここを通る。2 実装持つと「見積が
+        数えたチャンネル」と「実際に読むチャンネル」がずれ、読み項が桁で外れる。
+        """
+        group_key, sep, _bare = column_key.partition(KEY_SEPARATOR)
+        if not sep:
+            return None
+        return self._groups.channel_key_of(group_key, column_key)
+
+    def resolve_signal_transient(self, key: str) -> Signal | None:
+        """列キーを **帳簿に載せずに** Signal へ解決する (エクスポート専用・E-4b)。
+
+        ``CsvExporter`` の列ブロックが 1 列ずつ呼び、ブロック終端で参照を落とす。
+        ``resolve_signal`` を使うと鋳造列が LRU に載り、全列エクスポートで定常が
+        容量ぶん (512 本) 常駐する / 範囲エクスポートでは 1 本も落ちない
+        (spec §5.3 MG-1)。GUI の表示・プロットからは**呼んではならない**
+        (pin の対象にならないため、次の render で必ず作り直しになる)。
+        """
+        return self._groups.resolve_transient(key)
+
+    def export_resolver(self) -> Callable[[str], Signal]:
+        """エクスポート専用の列解決器 (**帳簿に載せない**・decay を loud にする)。
+
+        unload との競合契約 (spec §5.7 [I7c]): GUI 側の busy ガード
+        (``AppViewModel.unload_file`` の述語) は維持したうえで、core 側の振る舞いを
+        **クラッシュではなく decay** として定義する。``None`` と ``SampleReadError``
+        のどちらも ``ExportSourceLost`` へ畳むのは、呼び出し側 (パイプライン) に
+        「None なら何を書くか」という 2 つ目の分岐を作らせないため — 部分的に
+        空セルで埋めた CSV が出るくらいなら、何も残さない方が正しい (B6)。
+
+        **必ず ``resolve_signal_transient`` を呼ぶ** (``resolve_signal`` ではない):
+        鋳造列を LRU 帳簿へ載せると全列エクスポートの定常が容量ぶん (512 本) 常駐し、
+        選択列 < 512 の範囲エクスポートでは 1 本も evict されない (spec §5.3 MG-1)。
+        この 1 点は ``tests/core/test_export_bridge_golden.py`` の ``_KeyedSession``
+        が門番で、帳簿経路へ退行すると 11 本が RED になる。
+
+        **戻り値の Signal は「読める」ことまでは保証しない**: 鋳造は I/O を伴わず
+        (``_mint_column`` は ``LazyMdfValues`` を組むだけ)、閉じたハンドルでも
+        Signal は返る。読みの最中に閉じられた場合の decay は
+        ``CsvExporter._export_request`` の ``except SampleReadError`` が受ける —
+        ここの ``except`` は「解決そのものが読みを始めた」将来形への保険。
+        """
+
+        def resolve(key: str) -> Signal:
+            try:
+                sig = self.resolve_signal_transient(key)
+            except SampleReadError as exc:
+                raise ExportSourceLost(
+                    str(exc), key=key, source_file=exc.source_file
+                ) from exc
+            if sig is None:
+                raise ExportSourceLost(EXPORT_SOURCE_LOST_TMPL.format(key=key), key=key)
+            return sig
+
+        return resolve
+
     def column_names_of(self, key: str, display_name: str) -> tuple[str, ...]:
         """物理チャンネル 1 本の列名を順序どおり返す (名前空間なし・E-3)。
 
@@ -305,6 +375,34 @@ class Session:
         鋳造 (``resolve_signal``) を誘発しないので、展開していない親にも使える。
         """
         return self._groups.column_names_of(key, display_name)
+
+    def channel_master(self, channel_key: str) -> np.ndarray | None:
+        """``"{group_key}::{物理チャンネル表示名}"`` の master (**鋳造しない**)。
+
+        見積 (E-4b T-UX) が union と空セル率を出す唯一の入口。値は読まない
+        (master はロード時点で既にメモリに在る)。
+        """
+        group_key, sep, display = channel_key.partition(KEY_SEPARATOR)
+        if not sep:
+            return None
+        return self._groups.channel_master(group_key, display)
+
+    def is_lazy_channel(self, channel_key: str) -> bool:
+        """そのチャンネルの読みが **まだ発生していない** か (見積の読み項の母数)。"""
+        group_key, sep, _display = channel_key.partition(KEY_SEPARATOR)
+        return bool(sep) and self._groups.is_lazy_group(group_key)
+
+    def channel_leaf_count(self, channel_key: str) -> int:
+        """``"{group_key}::{物理チャンネル表示名}"`` の総リーフ数 (**鋳造しない**)。
+
+        見積 (E-4b T-M・Task 11 レビュー C1 是正) が読み単価のクラス分け
+        (scalar=1 / wide=2+) をする唯一の入口。未知キー / 名前空間の無いキーは
+        1 (= scalar 相当・安全側) を返す。
+        """
+        group_key, sep, display = channel_key.partition(KEY_SEPARATOR)
+        if not sep:
+            return 1
+        return self._groups.channel_leaf_count(group_key, display)
 
     def total_column_count(self, key: str) -> int:
         """グループの数値列総数 (KeyError if unknown)。表示件数の母数 (U2)。"""
@@ -440,10 +538,9 @@ class Session:
         # (AppViewModel.unload_file の述語ガード)。
         cached: tuple[np.ndarray, ...] = ()
         if group.handle is not None:
-            # **close の前**に落とす (spec §5.7)。キーは id(handle) を含むだけで
-            # ハンドルを所有しないので、エントリを残したままハンドルが死ぬと、
-            # 次のロードが同じアドレスを再利用したときに古いファイルの 2-D を
-            # 引き当てる (長さが合えば例外も出ない = 値の無言すり替え)。
+            # **close の前**に落とす (spec §5.7)。E-4b でキーを serial 化したので
+            # 「id 再利用で別ファイルの 2-D を引き当てる」経路は**構造的に消えた**が、
+            # この順序は維持する — 残る根拠は **解放のペーシング** である。
             #
             # E-4a: 回収した配列は捨てずに呼び出し側へ渡す。close() は自ハンドルの
             # エントリを ChannelSampleCache から落として**その場で同期解放**するので、
@@ -466,7 +563,7 @@ class Session:
                 if group.handle.cache is not None
                 else self._channel_cache
             )
-            cached = cache.drop_handle(id(group.handle))
+            cached = cache.drop_handle(group.handle.serial)
             group.handle.close()
         return RemovalResult(
             removed=True,
@@ -501,26 +598,118 @@ class Session:
 
     def export_csv(
         self,
-        signals: list[Signal],
+        keys: Sequence[str],
         output_path: Path,
-        use_unified_timeline: bool = False,
         options: CsvExportOptions | None = None,
+        *,
+        header_resolver: Callable[[Sequence[str]], list[str]] | None = None,
+        extra_signals: Sequence[Signal] = (),
+        progress: Callable[[int, int], None] | None = None,
+        cancel: threading.Event | None = None,
     ) -> None:
-        self._reject_container_channels(signals)
-        self._exporter.export(signals, output_path, use_unified_timeline, options)
+        """名前空間つき列キーで CSV を書き出す (E-4b spec §5.2・D1)。
 
-    def _reject_container_channels(self, signals: list[Signal]) -> None:
+        **Signal のリストは受けない** — prod 330,004 列を Signal で運ぶと出口に
+        立つ前に ~390 MB を確定させる。解決は書き手 (列ブロック) が 1 列ずつ行い、
+        ブロック終端で参照を落とす。
+
+        *header_resolver* 既定は passthrough (``list(keys)``) で、直呼び経路の
+        現行ヘッダバイトを保存する。GUI は ``csv_header_names`` を束ねた resolver を
+        注入する (core は gui を import しない — C-5)。
+        *extra_signals* は Derived の escape hatch (spec §5.2 [I-3])。
+
+        Minor 1 (T4 レビュー): *options* に ``header_names`` を自分で詰めて渡しても
+        **無視される**。keys 境界はヘッダを常に *header_resolver* (未指定なら
+        passthrough) から導出する契約 (spec §10・ヘッダと値を同じ keys から作る)
+        で、``ExportRequest`` 経路は ``header_names`` を 1 度も読まない。
+        E-4b Task 7 supersede: ``header_names`` フィールド自体は残った —
+        ``CsvExporter.export`` の **legacy overload の唯一のヘッダ搬送路**として
+        存続する (spec §5.1-4 [MG-7] の「別持ちを廃止」は本境界に限って達成)。
+        ここを loud-fail にする案は、``header_names`` を設定してこの経路を呼ぶ
+        現存の呼び出し元が無いため引き続き見送る。
+
+        Task 9: *progress* / *cancel* は素通しで ``export_csv_request`` へ渡す
+        (実体はあちら)。keys 形にも口を開けるのは、GUI の ``_run_export`` が
+        この形で呼んでおり、進捗/キャンセルだけのために呼び出し形を変えると
+        「要求の全フィールドが転送される」ことを固定している既存テストが
+        呼び出し経路ごと見えなくなるため。
+        """
+        if isinstance(options, bool):
+            # 旧署名 (signals, path, use_unified_timeline, options) から移行し
+            # 損ねた呼び出し。黙って options 扱いすると `opts.delimiter` の
+            # AttributeError になるだけで原因が読めない。
+            raise TypeError(
+                "export_csv の第 3 引数は CsvExportOptions です "
+                "(use_unified_timeline は options.use_unified_timeline へ移動 — "
+                "E-4b spec §5.2)"
+            )
+        request = ExportRequest(
+            keys=tuple(keys),
+            output_path=output_path,
+            options=options if options is not None else CsvExportOptions(),
+            header_resolver=(
+                header_resolver
+                if header_resolver is not None
+                else passthrough_header_names
+            ),
+            extra_signals=tuple(extra_signals),
+        )
+        self.export_csv_request(request, progress=progress, cancel=cancel)
+
+    def export_csv_request(
+        self,
+        request: ExportRequest,
+        *,
+        progress: Callable[[int, int], None] | None = None,
+        cancel: threading.Event | None = None,
+    ) -> None:
+        """組み立て済みの *request* をそのまま書き出す (progress/cancel つき)。
+
+        `export_csv(keys, ...)` との違いは 2 点だけ: **要求を組み直さない**
+        (GUI が `header_resolver` まで決めた `ExportRequest` を持っているので、
+        keys へ分解して組み直すと resolver が既定へ落ちてヘッダが変わる) と、
+        **progress/cancel を通す**こと。GUI 経路がこの 2 つをパイプラインへ
+        届ける唯一の口で、これが無いと `ExportRun` の進捗もキャンセルも
+        `CsvExporter` に到達しない (キャンセルボタンが押せるのに効かない)。
+
+        解決は `export_resolver()` (中身は `resolve_signal_transient`) — 鋳造列を
+        LRU 帳簿へ載せない (載せると全列エクスポートの定常が容量ぶん 512 本になり、
+        選択列 < 512 の範囲エクスポートでは 1 本も evict されない・spec §5.3 MG-1)。
+
+        **Task 10b (spec §5.7 [I7c])**: `resolve_signal_transient` を直接渡さず
+        `export_resolver()` を挟むのは、欠落キーを `scan_masters` の ValueError
+        (= 想定外の内部エラー) ではなく `ExportSourceLost` (= 想定内の decay) に
+        するため。ValueError のままだと GUI はエラーモーダルを出すだけで、
+        「診断 1 件」を誰も出さない。**差し替え点は本メソッドの 1 箇所だけ**
+        (`export_csv` はここへ委譲するので二重管理にならない)。
+        """
+        self._reject_container_channels(
+            (*request.keys, *(s.name for s in request.extra_signals))
+        )
+        self._exporter.export(
+            request,
+            self.export_resolver(),
+            progress=progress,
+            cancel=cancel,
+        )
+
+    def _reject_container_channels(self, keys: Sequence[str]) -> None:
         """配列/構造体チャンネルの親を、値を読む前に拒否する (E-3 C-d)。
 
         GUI のダイアログは親行をチェック不可にしている (C-a) が、scripted /
         realgui は ``session.export_csv`` を直呼びするため、ここが実効的な唯一の
-        防波堤になる。所属グループが引けない Signal (Derived・アンロード済み) は
+        防波堤になる。所属グループが引けないキー (Derived・アンロード済み) は
         列構造を知りようがないので通す — 判定不能を拒否に倒すと Derived_Signal の
         エクスポートが全滅する (最後の砦は CsvExporter 側の 1 時刻 1 値検査)。
+
+        E-4b: 判定材料が Signal から **キー** へ変わっただけで、述語も文言も不変。
+        値を読まない (ColumnRecord 由来) ので 0.1 ms fail-fast も維持される。
+        extra_signals の名前もここへ流す — escape hatch を guard の抜け道に
+        しないため。
         """
         loaded = set(self.group_keys())
-        for sig in signals:
-            group_key, sep, bare = sig.name.partition(KEY_SEPARATOR)
+        for key in keys:
+            group_key, sep, bare = key.partition(KEY_SEPARATOR)
             if not sep or group_key not in loaded:
                 continue
             # 述語は is_container_channel と同一 — ここでインライン展開するのは、

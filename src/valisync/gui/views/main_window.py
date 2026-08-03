@@ -46,6 +46,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from valisync.core.export.csv_exporter import (
+    ExportRequest,
+    ExportSourceLost,
+    estimate_output_bytes,
+)
+from valisync.core.export.estimate import (
+    ExportEstimate,
+    disk_shortfall,
+    estimate_export,
+)
 from valisync.core.loaders.csv_format_detector import CsvFormatDetector
 from valisync.core.models.format_def import FormatDefinition
 from valisync.core.models.load_result import Diagnostic
@@ -62,7 +72,7 @@ from valisync.gui.theme.tokens import ThemeMode
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.viewmodels.channel_browser_vm import ChannelBrowserVM
 from valisync.gui.viewmodels.diagnostics_vm import DiagnosticsViewModel
-from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM
+from valisync.gui.viewmodels.file_browser_vm import FileBrowserVM, _fmt_size
 from valisync.gui.viewmodels.graph_area_vm import GraphAreaVM
 from valisync.gui.viewmodels.graph_panel_vm import GraphPanelVM
 from valisync.gui.viewmodels.signal_preview_vm import SignalPreviewVM
@@ -76,6 +86,7 @@ from valisync.gui.views.collapsible_dock_title_bar import CollapsibleDockTitleBa
 from valisync.gui.views.csv_format_dialog import CsvFormatDialog
 from valisync.gui.views.data_explorer_view import DataExplorerView
 from valisync.gui.views.diagnostics_view import DiagnosticsView
+from valisync.gui.views.export_confirm import confirm_body, needs_confirmation
 from valisync.gui.views.export_csv_dialog import ExportCsvDialog
 from valisync.gui.views.file_browser_view import FileBrowserView
 from valisync.gui.views.graph_area_view import GraphAreaView
@@ -202,11 +213,18 @@ class MainWindow(QMainWindow):
         self.app_vm.set_busy_predicate(self._export_controller.is_busy)
         # 拒否モーダルは DI (テストから差し替え可能 — _default_confirm と同規約)。
         self._notify_blocked: Callable[[str], None] = self._default_blocked_modal
+        # B2: 続行可否は人が決める。ダイアログ型は QMessageBox + DI (file_browser_view
+        # の _confirm_fn と同規約) — realgui は実ボタンを押し、Layer B は差し替える。
+        self._confirm_export_fn: Callable[[ExportEstimate], bool] = (
+            self._default_confirm_export
+        )
         # LD-01: CSV フォーマット解決 (検出して確認ダイアログ)。テストで差し替え可能。
         self._csv_format_resolver: Callable[[Path], FormatDefinition | None] = (
             self._default_csv_format_resolver
         )
-        self.busy_overlay.cancel_requested.connect(self._load_controller.cancel_active)
+        # 旧: connect(self._load_controller.cancel_active) — **恒久配線**だったので
+        # エクスポート中のキャンセルボタンは押しても何も起きなかった (spec §5.5-1)。
+        self.busy_overlay.cancel_requested.connect(self._cancel_busy_operations)
         self.data_explorer: DataExplorerView | None = None
 
         # ── File Browser dock (right top) ────────────────────────────────────
@@ -641,7 +659,7 @@ class MainWindow(QMainWindow):
             # = GUI スレッドなので、QTimer を持つ enqueue をここで呼んでよい。
             # なお本経路はエクスポートガードの対象外: このグループは register_loaded を
             # 通らず、エクスポートツリーの唯一のソース (app_vm.loaded_file_keys ->
-            # export_csv_dialog.py:114) に載らないためエクスポート中になり得ない。
+            # ExportCsvDialog._build_tree) に載らないためエクスポート中になり得ない。
             # 鋳造列も渡す (E-3 の 2 サイト目): session.load はグループ登録の**後**に
             # キャンセルが確定するので、その窓で resolve された列は実在しうる。
             # キャッシュ配列 (E-4a) も同様 — 完走したロードの窓で読まれた列があれば
@@ -955,6 +973,11 @@ class MainWindow(QMainWindow):
         )
         panel = self.graph_area_vm.active_panel()
         cursor_state = self.graph_area_vm.active_tab().cursor_state
+        # 見積を O(1) 化するための {物理チャンネルキー: 選択列数}。ダイアログは
+        # 選択をこの単位で持っている (spec §5.6) ので確定時に書き戻してもらう —
+        # 見積側で keys から組み直すと prod 330,004 列で 2.6 s、つまり
+        # 「エクスポートを押すと 3 秒固まる」を GUI スレッドで作ることになる。
+        channel_columns: dict[str, int] = {}
         req = ExportCsvDialog.ask(
             self.app_vm,
             initial,
@@ -963,21 +986,183 @@ class MainWindow(QMainWindow):
             cursor_a=cursor_state.cursor_t,
             cursor_b=cursor_state.cursor_t_b,
             offset_for=panel.offset_for,
+            # E-4b spec §5.6 [I5]: ガードは「オフセット辞書側 -> 選択集合」へ
+            # 反転した。列ごとの probe は `_select_all` の O(1) 化で消えるので、
+            # 少数側 (今 0 でないオフセットを持つキー) を列挙する口を渡す。
+            # signal 側は名前空間つき列キー・file 側はグループキーで、
+            # ダイアログはどちらの形も解釈する。
+            offset_keys=lambda: (
+                *self.app_vm.signal_offsets,
+                *self.app_vm.file_offsets,
+            ),
+            channel_columns_out=channel_columns,
         )
         if req is None:
             return
+        # `ask` を差し替えたテスト経路では空のまま — 見積側の合計一致検査が
+        # 自力解決へ落とすので、ここで分岐は要らない。
+        est = estimate_export(
+            self.app_vm.session,
+            req.keys,
+            req.options,
+            channel_columns=channel_columns,
+        )
+        self._run_export(req, est)
+
+    def _run_export(self, req: ExportRequest, est: ExportEstimate) -> None:
+        """実行中ガード -> D5 検査 -> 確認 -> 投入。
+
+        拒否は 2 種 (再レビュー trailer で B2 の記述を supersede): **実行中の
+        export がある** (I3 — キャンセル待ち窓での 2 本目受理を防ぐ) と
+        **D5 のディスク不足**。B2 の「拒否は D5 のみ」は I3 導入前の記述。
+        なお `estimate_export` は `export_csv` 側でこの前に走るため、busy 窓の
+        Ctrl+E はダイアログ完遂と見積のコストを払ってから弾かれる (既知・許容)。
+
+        見積を引数で受けるのは、キャンセル時に **開始前の値** を再掲する (B6) ため
+        — 後から計算し直すと、unload 済みのファイルでは値が変わる/出せなくなる。
+        """
+        # I3 (T9 レビュー是正): cancel は Event を立てるだけで worker の停止を
+        # 待たない非対称設計 (§1 衝突3) — 押した直後は `is_busy()` がまだ True の
+        # 窓が実在する (reviewer 実測。「同時 export は起きない」という記録は
+        # 実測に反していた)。D5 より前で弾くのは、その窓で 2 本目を通してしまうと
+        # `ExportController._active` に worker が 2 本並び、1 本目の cancel が
+        # 2 本目の overlay 文言/ボタンまで巻き込むため。
+        if self._export_controller.is_busy():
+            self._notify_blocked(S.EXPORT_ALREADY_RUNNING)
+            return
+        # **GUI 門番は core 門番を上界包含する** (順序逆転の構造排除・I-3)。
+        # core (`csv_exporter._require_disk_space`) は粗い `_EST_BYTES_PER_CELL = 12`
+        # で判定するので、GUI の推定 (実測校正済みの ~5.6 B/セル) だけを見ると
+        # 「GUI の D5 を通過 -> 確認 Yes -> core で ValueError」という窓が開く。
+        # 両者の大きい方で判定すれば、GUI を通ったものは必ず core も通る。
+        need_bytes = max(est.est_bytes, estimate_output_bytes(est.rows, est.columns))
+        shortfall = disk_shortfall(req.output_path, need_bytes)
+        if shortfall > 0:
+            # 唯一の拒否。訊く前に落とす — 「はい」と答えても書けないので。
+            self._notify_blocked(
+                S.EXPORT_DISK_SHORT_TMPL.format(shortfall=_fmt_size(shortfall))
+            )
+            return
+        if needs_confirmation(est) and not self._confirm_export_fn(est):
+            return
         session = self.app_vm.session
+        # 進捗/キャンセルのハンドルは submit の **前** に取る (callable を組むのが
+        # 呼び出し側なので、submit 後では進捗を差し込む窓が無い)。
+        run = self._export_controller.prepare()
         self._export_controller.submit(
             lambda: session.export_csv(
-                req.signals, req.output_path, req.use_unified_timeline, req.options
+                req.keys,
+                req.output_path,
+                req.options,
+                header_resolver=req.header_resolver,
+                extra_signals=req.extra_signals,
+                progress=run.progress,
+                cancel=run.cancel,
             ),
+            run=run,
             busy=self.busy_overlay,
             label=req.output_path.name,
             on_success=lambda: self.set_status_message(
                 f"エクスポートしました: {req.output_path.name}"
             ),
             on_error=self._on_export_error,
+            on_cancelled=lambda exc: self._on_export_cancelled(exc, est),
         )
+
+    def _cancel_busy_operations(self) -> None:
+        """BusyOverlay のキャンセルを **実行中の全操作** へ配る (spec §5.5-1)。
+
+        「今アクティブなのはどれか」をルータ側に持たない: 各コントローラは自分の
+        active 集合を既に持っており、アイドルなら cancel_active は no-op。ルータに
+        状態を作ると 2 つ目の真実になり必ず腐る — 旧実装が load へ恒久配線されて
+        いたのがまさにその腐り方だった。
+        """
+        self._load_controller.cancel_active()
+        self._export_controller.cancel_active()
+
+    def _on_export_cancelled(self, exc: Exception, est: ExportEstimate) -> None:
+        """B6: 中止を告げ、**開始前の見積値** を再掲して削り方を促す。
+
+        中止後に測り直さないのは、unload 済み/範囲変更後では値が変わってしまい、
+        「なぜ止めたのか」の手がかりにならないため。
+
+        エラー面 (モーダル) へは流さない — ユーザーが押した中止は正常系で、
+        `LoadCancelled` がステータス行だけで終わるのと同型。
+
+        **Task 10b (spec §5.7 [I7c])**: `ExportSourceLost` (= unload との競合で
+        元ファイルが読めなくなった decay) は `ExportCancelled` のサブクラスなので
+        ここへ届くが、ユーザー起点の中止と**別扱い**にする:
+
+        - ユーザー起点 = ステータス行のみ (本人が押したので理由は自明)。
+        - decay = ステータス行 + **診断 1 件**。押していないのに出力が無いので、
+          「なぜ出力が無いのか」を後から辿れる記録が要る (ステータス行は次の操作で
+          上書きされ、数秒で消える)。
+
+        M2 (T9 レビュー是正): 診断は `self.diagnostics_vm.add(source, [Diagnostic(...)])`
+        を使う (`app_vm.add_diagnostic` は存在しない — T9 実測)。
+        """
+        if isinstance(exc, ExportSourceLost):
+            # メッセージは例外が運んできたものをそのまま出す — decay の理由は
+            # 「閉じられた」以外に I/O 失敗もありうるので (csv_exporter の
+            # `except SampleReadError` を参照)、ここで文言を作り直すと原因を
+            # 誤って断定する。signal_name には失われた列/チャンネルを入れる。
+            #
+            # I1 (Task 10b レビュー是正): 診断の宛先 (source) はフルパスでなく
+            # basename ― `_handle_sample_read_error` (L623) の「basename・
+            # 無ければ定数」規約をここにも適用する。`exc.source_file` は
+            # mid-read decay (csv_exporter の `except SampleReadError`) では
+            # 実測でフルパスが載るが、解決器 None 経路 (グループが session から
+            # 既に消えている) では None のまま ― この場合だけ定数ラベルへ
+            # フォールバックする。
+            source = (
+                Path(exc.source_file).name if exc.source_file else S.EXPORT_DIAG_SOURCE
+            )
+            # Minor 1 (Task 10b レビュー是正・コントローラ裁定で signal_name も
+            # 対象化): exc.key の形は入口によって 2 通り (解決器 None 経路 =
+            # "group::bare" の namespaced 形 / mid-read 経路 = 既に bare)。E-0
+            # の「対象列は raw チャンネル名表示・`::` 全撤去」契約は message
+            # だけでなく signal_name (診断ドックの「対象」列がそのまま描画する
+            # ― diagnostics_view.py:235) にも及ぶ ― namespaced な文字列を
+            # そのまま出すと内部キーの実装詳細が診断へ漏れる。bare な mid-read
+            # 側は split_key が事実上の no-op (置換対象なし) なので挙動は不変。
+            # bare 化ロジックを message/signal_name の 2 箇所で重複させない。
+            message = str(exc)
+            bare_key: str | None = exc.key
+            if exc.key:
+                candidate = split_key(exc.key)[1]
+                if candidate != exc.key:
+                    message = message.replace(exc.key, candidate)
+                bare_key = candidate
+            self.diagnostics_vm.add(
+                source,
+                [Diagnostic(level="error", message=message, signal_name=bare_key)],
+            )
+            self.set_status_message(S.EXPORT_SOURCE_LOST_STATUS)
+            return
+        self.set_status_message(
+            S.EXPORT_CANCELLED_TMPL.format(
+                columns=est.columns, rows=est.rows, size=_fmt_size(est.est_bytes)
+            )
+        )
+
+    def _default_confirm_export(self, est: ExportEstimate) -> bool:
+        # 標準ボタンのラベルを本文の動詞へ合わせるため、question() でなく
+        # QMessageBox を明示構築する (file_browser_view._default_confirm と同型)。
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(S.EXPORT_CONFIRM_TITLE)
+        box.setText(confirm_body(est))
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        yes_button = box.button(QMessageBox.StandardButton.Yes)
+        no_button = box.button(QMessageBox.StandardButton.No)
+        assert yes_button is not None
+        assert no_button is not None
+        yes_button.setText(S.EXPORT_CONFIRM_YES)
+        no_button.setText(S.EXPORT_CONFIRM_NO)
+        return box.exec() == QMessageBox.StandardButton.Yes
 
     def _on_export_error(self, err: Exception) -> None:
         # FB-01 同様: 失敗を握りつぶさない (ステータス+モーダル)。

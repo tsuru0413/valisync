@@ -432,7 +432,9 @@ def test_container_channel_shares_its_buffer_with_the_cache_entry(
         container = session.resolve_signal(f"{key}::Mat")
         assert container is not None
         values = container.values  # 容器読み (selector なし) を発火させる
-        (entry,) = session.channel_cache.drop_handle(id(handle))
+        # E-4b: キーの第 1 成分は id(handle) から handle.serial へ (期待は不変・
+        # 引き当て方だけが追随する)。
+        (entry,) = session.channel_cache.drop_handle(handle.serial)
         assert values is entry, (
             "容器の値がキャッシュ実体と同一バッファでない "
             "(凍結が put より後ろへ回っている・S11)"
@@ -466,7 +468,7 @@ def test_dropping_the_channel_frees_the_2d_because_the_column_is_independent(
         assert col is not None
         np.testing.assert_array_equal(col.values, [0, 1, 2, 3])
 
-        dropped = session.channel_cache.drop_handle(id(handle))
+        dropped = session.channel_cache.drop_handle(handle.serial)  # E-4b: serial 化
         assert len(dropped) == 1, "読んだチャンネルの 2-D が載っていない (setup 失敗)"
         ref = weakref.ref(_buffer_owner(dropped[0]))
         del dropped
@@ -523,9 +525,13 @@ def test_unload_drops_the_channel_entries_before_close(
 ) -> None:
     """アンロードでキャッシュのエントリが残らない、かつ **close の前**に残る (I2)。
 
-    キーは ``id(handle)`` を含むだけでハンドルを**所有しない**ので、残したまま
-    ハンドルが死ぬと、新しいファイルのハンドルが同じアドレスを再利用したときに
-    古いファイルの 2-D を引き当てる (値が黙って入れ替わる)。
+    **supersede (E-4b)**: 旧理由は「キーは ``id(handle)`` なので、残したまま
+    ハンドルが死ぬと新しいハンドルが同じアドレスを再利用して古いファイルの 2-D を
+    引き当てる」だった。キーが ``handle.serial`` になった今その窓は構造的に無い —
+    残る理由は **解放のペーシング** である (close() は自ハンドルのエントリを
+    その場で同期解放するので、順序を逆にすると 13.2 MB/本 が teardown の三軸
+    ペーシングを迂回して GUI スレッドで解放される)。守るべき順序は変わらないので
+    テストの期待は 1 行も変えない。
 
     ``bytes_held > 0`` → ``bytes_held == 0`` だけでは**順序**を見ていない — この
     テスト名が主張する「close の前」を drop_handle を close の**後**へ動かす変異でも

@@ -101,15 +101,25 @@ def test_exporter_writes_nothing_when_rejected(
 ) -> None:
     """拒否したら 1 行も組み立てず、ファイルも残さない (**ガードの位置** の pin)。
 
-    ``assert not out.exists()`` **だけでは落ちない**: ``_atomic_write`` は mkstemp の
-    兄弟ファイルへ書いて ``BaseException`` で unlink するので、ガードを
-    ``os.replace`` の直前まで下げても出力ファイルは現れない。それでも 2-D 親の
-    全行を組み立てる = ガードが防いでいるコストそのものを払っている (M-2)。
-    なので位置を直接観測する: 行組み立ては ``Signal.sorted_view()`` を通るので、
-    拒否時にその呼び出しが **1 度も無い** ことを見る (拒否判定自体は ``.values``
-    を読むので、この観測点は判定と混ざらない)。
-    sabotage: ``_require_single_value_columns`` の呼び出しを ``export`` 冒頭から
-    ``_atomic_write`` の ``os.replace`` 直前へ移すと sorted_view が呼ばれて RED。
+    ``assert not out.exists()`` **だけでは落ちない**: ``export()`` の ``finally``
+    (csv_exporter.py の全 temp 掃除・B6) が失敗時も temp を全部消すので、ガードを
+    ``os.replace`` (最終段マージの直前) まで下げても出力ファイルは現れない。
+    それでも 2-D 親の全行を組み立てる = ガードが防いでいるコストそのものを
+    払っている (M-2)。なので位置を直接観測する: 行組み立ては
+    ``Signal.sorted_view()`` を通るので、拒否時にその呼び出しが **1 度も無い**
+    ことを見る (拒否判定自体は ``.values`` を読むので、この観測点は判定と
+    混ざらない)。
+
+    **E-4b Task 7 supersede (レビュー M5)**: 旧単一実装 ``_atomic_write``
+    (mkstemp の兄弟ファイルへ書いて ``BaseException`` で unlink する形) と、
+    export 冒頭で全信号を一括検査していた旧 ``_require_single_value_columns``
+    (複数形) は、Task 7 の列ブロック化でどちらも消えた。現行のガードは
+    ``_require_single_value_column`` (単数形) — ``_write_block_temp`` の中で
+    列を 1 本読むたびに行組み立ての前で呼ぶ。掃除役も個々の writer でなく
+    ``export()`` の ``finally`` 1 か所に一本化されている。構造は変わったが
+    「行組み立て前に拒否する」不変条件は保たれており、下の assert 自体は変えていない。
+    sabotage: ``_require_single_value_column`` の呼び出しを ``_write_block_temp``
+    の行組み立ての前から後ろへ移すと sorted_view が呼ばれて RED。
     """
     seen: list[str] = []
     original = Signal.sorted_view
@@ -140,8 +150,11 @@ def test_session_rejects_container_channel_without_reading_values(
     key = session.load(write_mdf4_2d(tmp_path)).key
     parent = next(s for s in session.group_signals(key) if s.name == f"{key}::Mat")
 
+    # E-4b Task 4 supersede: Session.export_csv の第 1 引数は **列キー** になった
+    # (D1・spec §5.2 — Signal のリストは受けない)。期待 (ValueError と match の
+    # "Mat[0]") は 1 文字も変えず、渡し方だけを機械的に付け替える。
     with pytest.raises(ValueError, match=r"Mat\[0\]"):
-        session.export_csv([parent], tmp_path / "out.csv")
+        session.export_csv([parent.name], tmp_path / "out.csv")
 
     # 判定に sig.values.ndim を使うとここが materialized になる
     # (prod では 1 本 96 MB のチャンネル全読み = 遅延展開の利得を捨てる)。
@@ -156,9 +169,12 @@ def test_session_exports_expanded_column(tmp_path: Path) -> None:
     assert col is not None
 
     out = tmp_path / "col.csv"
-    session.export_csv([col], out)
+    # E-4b Task 4 supersede: 列キーを渡す形へ (D1・spec §5.2)。ヘッダ期待
+    # `timestamp,{key}::Mat[0]` は既定 resolver (passthrough) で**バイト不変**。
+    session.export_csv([col.name], out)
 
-    lines = out.read_text(encoding="utf-8").splitlines()
+    # supersede(E-4b §5.1-2): 出力に UTF-8 BOM が付いたため読み口のみ utf-8-sig 化 (期待値不変)
+    lines = out.read_text(encoding="utf-8-sig").splitlines()
     assert lines[0] == f"timestamp,{key}::Mat[0]"
     assert len(lines) == 5  # ヘッダ + 4 行
 
@@ -168,5 +184,9 @@ def test_session_export_allows_signal_without_loaded_group(tmp_path: Path) -> No
     判定不能を拒否に倒すと Derived_Signal のエクスポートが全滅する。"""
     session = Session()
     out = tmp_path / "derived.csv"
-    session.export_csv([_scalar_signal()], out)
-    assert out.read_text(encoding="utf-8").splitlines()[0] == "timestamp,Plain"
+    # E-4b Task 4 supersede: Derived は SignalGroupManager に登録されず keys で
+    # 解決できないので escape hatch (extra_signals) 経由になる (spec §5.2 [I-3])。
+    # 出力バイトの期待は不変 (ヘッダは Signal 自身の名前)。
+    session.export_csv([], out, extra_signals=[_scalar_signal()])
+    # supersede(E-4b §5.1-2): 出力に UTF-8 BOM が付いたため読み口のみ utf-8-sig 化 (期待値不変)
+    assert out.read_text(encoding="utf-8-sig").splitlines()[0] == "timestamp,Plain"

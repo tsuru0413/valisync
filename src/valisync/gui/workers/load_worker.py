@@ -23,6 +23,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from valisync.core.session import LoadCancelled, LoadOutcome
 from valisync.gui import strings as S
+from valisync.gui.views.busy_overlay import acquire_busy, release_busy
 
 if TYPE_CHECKING:
     from valisync.gui.viewmodels.load_task import LoadTask
@@ -128,7 +129,11 @@ class LoadController(QObject):
             if busy is not None:
                 busies.add(busy)
         for busy in busies:
-            busy.hide()
+            # E-4b: hide() 直呼びをやめる。1 インスタンスを export と共有しており、
+            # 直に隠すとエクスポート中の overlay まで消える (spec §5.5-2)。
+            # 所有者が自分だけなら release がそのまま hide になるので、既存の
+            # 「ソフト側は即時解放」契約 (test_load_worker.py) は保たれる。
+            release_busy(busy, self)
 
     def _pop(
         self, worker: LoadWorker
@@ -155,13 +160,14 @@ class LoadController(QObject):
             if b is busy and w not in self._cancelled
         ]
         if not labels:
-            busy.hide()
+            release_busy(busy, self)
             return
         if len(labels) == 1:
-            busy.set_message(S.BUSY_LOADING_TMPL.format(label=labels[0] or "ファイル"))
+            message = S.BUSY_LOADING_TMPL.format(label=labels[0] or "ファイル")
         else:
-            busy.set_message(S.BUSY_LOADING_MULTI_TMPL.format(n=len(labels)))
-        busy.show()
+            message = S.BUSY_LOADING_MULTI_TMPL.format(n=len(labels))
+        # 同一 owner の再取得 = 文言更新 (件数が変わるたびに呼ばれる)。
+        acquire_busy(busy, self, message)
 
     def _finish(
         self,

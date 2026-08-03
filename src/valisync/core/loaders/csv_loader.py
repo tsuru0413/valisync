@@ -210,6 +210,21 @@ class CsvLoader:
                 range(format_def.signal_start_column, format_def.signal_end_column + 1)
             ):
                 val_str = row[col]
+                if not val_str.strip():
+                    # 空セル = 欠測として受理する (E-4b B1・spec §5.1-1 の対の修正)。
+                    # エクスポータが欠測と非有限を空セルで書くようになったので、
+                    # ここを ValueError にしたままだと**自製品の出力を自製品が
+                    # 読めない** (prod の統合タイムライン出力はセルの 66% が空)。
+                    #
+                    # 診断は出さない: 空セルは valisync 自身の出力における欠測の
+                    # 正規表現であり、再取込のたびに全信号へ warning が出る。
+                    # 値の破損を表明する 'nan'/'inf' の**文字列**は下の
+                    # nonfinite_counts で従来どおり警告する (LD-06)。
+                    #
+                    # タイムスタンプ列は対象外 (上の分岐のまま) — 時刻の欠測は
+                    # 時間軸そのものの破損で、行として意味を成さない。
+                    values_lists[sig_idx].append(float("nan"))
+                    continue
                 try:
                     val = float(val_str)
                 except ValueError:
@@ -232,6 +247,11 @@ class CsvLoader:
 
         # --- Build Signal objects ---
         timestamps = np.array(timestamps_list, dtype=np.float64)
+        # read-only にすると Signal.__init__ (signal.py:83) がコピーせず**共有**する
+        # ため、CSV グループでも「1 グループ = master 1 個」になる。writeable のままだと
+        # 列ごとにコピーが生まれ、E-4b の union identity dedup が構造的に 1 件も効かない
+        # (spec §5.4 [I-9])。mdf_loader.py:431 の master 凍結と同型。
+        timestamps.flags.writeable = False
         abs_path = str(file_path.resolve())
 
         # LD-04: 非単調/重複はファイル単位で1件の warning(全列が同一時間軸)

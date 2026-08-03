@@ -7,8 +7,8 @@ CsvFormatDialog.ask を前例に、ファイル別の信号ツリー(初期チ�
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Iterable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -31,11 +31,22 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from valisync.core.export.csv_exporter import CsvExportOptions
+from valisync.core.export.csv_exporter import (
+    CsvExportOptions,
+    ExportRequest,  # 再輸出: `from ...export_csv_dialog import ExportRequest` を
+    # 使う既存テスト/realgui の import 経路を保存する (型は core の
+    # ものが唯一の真実・E-4b spec §5.2)。
+)
 from valisync.core.loaders.signal_group_manager import KEY_SEPARATOR
 from valisync.core.models import Signal
 from valisync.gui import strings as S
-from valisync.gui.display_names import csv_header_names, display_names
+from valisync.gui.display_names import (
+    csv_header_resolver,  # 再輸出: Minor 3 (T4 レビュー) で display_names.py へ
+    # 移動 (Qt-free core テストが Qt を import する dialog モジュールへ依存する
+    # のを避けるため)。既存の import 経路 (`from ...export_csv_dialog import
+    # csv_header_resolver`) を壊さないために ExportRequest と同じ形で再輸出する。
+    display_names,
+)
 from valisync.gui.theme import qss
 
 if TYPE_CHECKING:
@@ -61,6 +72,38 @@ _COL_ROLE = _KEY_ROLE + 2  # 葉のみ: その行の中での列インデック�
 _PLACEHOLDER_ROLE = _KEY_ROLE + 3  # 未展開コンテナのダミー子の目印
 
 
+@dataclass(frozen=True, slots=True)
+class ColumnSelection:
+    """1 物理チャンネル行の選択状態 (E-4b spec §5.6)。
+
+    三態は **ALL / PARTIAL / NONE**。NONE は「``_selected`` にエントリが無い」で
+    表し、空の PARTIAL は決して作らない — さもないと「なし」が行数ぶんの
+    エントリを持ち、圧縮の目的 (すべて選択 = 行数ぶんの ~0.5 MB) が消える。
+
+    ALL に列 index を持たせないのが核心: prod は 4,324 行 / 330,004 列で、
+    「すべて選択」を列ごとに持つと実測 54-57 MB (spec §1)。ALL は
+    :data:`_ALL` 1 個を全行で共有するので、行あたりのコストは dict のスロットと
+    キー文字列の参照だけになる。
+
+    **順序は持たない** — 出力列順はツリー walk (``_checked_keys``) が導出する
+    契約で、選択の表現に順序を持たせない (spec §10・順序はチェック順ではない)。
+    """
+
+    is_all: bool
+    indices: frozenset[int] = frozenset()
+
+    def contains(self, col_index: int) -> bool:
+        return self.is_all or col_index in self.indices
+
+    def count(self, total: int) -> int:
+        """この行の選択列数 (*total* = 行の全列数)。"""
+        return total if self.is_all else len(self.indices)
+
+
+#: ALL の唯一のインスタンス。frozen + slots なので全行で共有して安全。
+_ALL = ColumnSelection(is_all=True)
+
+
 @dataclass(slots=True)
 class _ChannelRow:
     """1 物理チャンネル行が展開前に知っている全て。**列名は保持しない**。
@@ -74,6 +117,10 @@ class _ChannelRow:
     phys: str
     count: int
     single_key: str | None  # count == 1 のときだけ実列キー (合成ハンドルではない)
+    #: `_selected` / `_row_by_sel_key` の共有キー (名前空間つき物理チャンネルキー)。
+    #: 行ごとに 1 本だけ作り、以降は組み直さない (打鍵ごと・行ごとの f-string を
+    #: 作らないための唯一の措置 — prod は 4,324 行)。
+    sel_key: str = ""
     # 直近に評価したフィルタ文字列とその結果 (_row_matches のメモ)。同一クエリの
     # 再評価で列名を作り直さないためだけの覚え書きで、行の同一性には関与しない。
     matched: str | None = None
@@ -102,16 +149,6 @@ def _physical_channels(signals: list[Signal]) -> list[str]:
     return out
 
 
-@dataclass(frozen=True)
-class ExportRequest:
-    """ExportCsvDialog が返す確定要求。"""
-
-    signals: list[Signal]
-    output_path: Path
-    use_unified_timeline: bool
-    options: CsvExportOptions
-
-
 class ExportCsvDialog(QDialog):
     def __init__(
         self,
@@ -123,6 +160,7 @@ class ExportCsvDialog(QDialog):
         cursor_a: float | None = None,
         cursor_b: float | None = None,
         offset_for: Callable[[str], float] | None = None,
+        offset_keys: Callable[[], Iterable[str]] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("CSV エクスポート")
@@ -146,21 +184,33 @@ class ExportCsvDialog(QDialog):
         # via the app-global signal/file offset dicts) re-evaluated against the
         # CURRENT checked set on every _validate() — see _update_range_radios().
         self._offset_for = offset_for
+        self._offset_keys = offset_keys
 
-        # 選択の真実は **ダイアログ側の集合** (U1)。未展開の列は QTreeWidgetItem を
+        # 選択の真実は **ダイアログ側** (U1)。未展開の列は QTreeWidgetItem を
         # 持たないので「木を数えて選択集合を作る」実装は原理的に成立しない。
-        # 値は (行, 列) — 出力列順を木の並びに保つための添字で、ハッシュ順に
-        # 依存すると PYTHONHASHSEED ごとに CSV の列順が変わる。
-        self._selected: dict[str, tuple[int, int]] = {}
-        # 行ごとの選択列数。三態表示を O(1) で出すため (未展開の 262k 列を
-        # 数え直さない唯一の手段)。
-        self._selected_per_row: dict[int, int] = {}
-        # 選択中でオフセットを持つキー。_offset_active_for_checked を O(1) にする
-        # ためだけの覚え書き (_selected_per_row と同じ考え方)。ファイル行 1 クリックは
-        # 行ごとに 1 回ずつ _validate() を通るので、そこで毎回 _selected 全体を
-        # 走査すると prod (4,324 行 / 264,004 列) では行数 x 列数 = 10 億回の
-        # offset_for 呼び出しになる。キーは追加時に 1 度だけ問い合わせる。
-        self._offset_keys: set[str] = set()
+        # 表現は **物理チャンネル 1 行 = 1 エントリ** (E-4b spec §5.6) — 列ごとに
+        # (行, 列) を持つ旧形は prod で 54-57 MB だった。出力列順は
+        # `_checked_keys()` のツリー walk が導出する (この表は順序を持たない)。
+        self._selected: dict[str, ColumnSelection] = {}
+        # 総選択列数 (O(1))。`len(self._selected)` は **行数** であって列数では
+        # ないので、フッター/`_validate` はこちらを見る。
+        self._total = 0
+        # ファイルごとの選択列数。ファイルオフセット (グループキー) が選択集合に
+        # 触れているかを O(1) で答えるためだけの覚え書き (`_set_row` が唯一の
+        # **増分** 更新者 — 一括リセットは `_select_none` が `.clear()` で直接
+        # 行う)。走査で答えると、ファイル行 1 クリック (行ごとに `_validate()`
+        # を通る) が prod で 行数 x 行数 回の走査になる。
+        self._total_per_file: dict[str, int] = {}
+        # 選択キー -> 行番号。列キーから所属行を最長一致で引く唯一の索引
+        # (`_row_of_key`)。行数ぶん (prod 4,324) しか無い。
+        self._row_by_sel_key: dict[str, int] = {}
+        # legacy 経路: `offset_keys` を注入しない呼び出し側 (F-0 の DI 形のまま
+        # 構築する撮影ツール・既存テスト) 向けに、旧来の「キーが入る瞬間に 1 度
+        # 問い合わせて覚える」方式を残す。prod (main_window) は `offset_keys` を
+        # 注入するので O(1) 経路を通る。両者の同値は
+        # tests/gui/test_export_offset_guard_reversal.py が固定する。
+        self._legacy_offset = offset_keys is None and offset_for is not None
+        self._legacy_offset_hits: set[str] = set()
         self._rows: list[_ChannelRow] = []
         # 表示同期中フラグ: 自分で setCheckState/setFlags した分を「ユーザー操作」
         # として拾い戻さないための門。複数経路から入るので受け口 1 箇所で弾く。
@@ -328,14 +378,18 @@ class ExportCsvDialog(QDialog):
                 names = session.column_names_of(file_key, phys)
                 row_index = len(self._rows)
                 single = prefix + names[0] if len(names) == 1 else None
-                self._rows.append(_ChannelRow(file_key, phys, len(names), single))
+                sel_key = prefix + phys
+                self._rows.append(
+                    _ChannelRow(file_key, phys, len(names), single, sel_key)
+                )
+                self._row_by_sel_key[sel_key] = row_index
                 if wanted:
                     for col_index, name in enumerate(names):
                         if name in wanted:
                             self._add_selection(row_index, col_index, prefix + name)
                     # 1 列行はコンテナではない (プレースホルダも子も持たない) ので
                     # 合成対象から外す — 展開すべき列がそもそも無い。
-                    if single is None and self._selected_per_row.get(row_index):
+                    if single is None and self._row_count(row_index):
                         auto_expand.append(row_index)
                 item = QTreeWidgetItem(top, [""])  # テキストは display_names 確定後
                 item.setData(0, _ROW_ROLE, row_index)
@@ -389,6 +443,8 @@ class ExportCsvDialog(QDialog):
         row = self._rows[row_index]
         prefix = f"{row.file_key}{KEY_SEPARATOR}"
         names = self._column_names(row_index)
+        # 行の選択状態は 1 度だけ引く (列ごとに dict を引き直さない)。
+        sel = self._selected.get(row.sel_key)
         was, self._syncing = self._syncing, True
         try:
             children: list[QTreeWidgetItem] = []
@@ -402,7 +458,7 @@ class ExportCsvDialog(QDialog):
                 child.setCheckState(
                     0,
                     Qt.CheckState.Checked
-                    if key in self._selected
+                    if sel is not None and sel.contains(col_index)
                     else Qt.CheckState.Unchecked,
                 )
                 children.append(child)
@@ -455,20 +511,115 @@ class ExportCsvDialog(QDialog):
         prefix = f"{row.file_key}{KEY_SEPARATOR}"
         return tuple(prefix + n for n in self._column_names(row_index))
 
-    def _add_selection(self, row_index: int, col_index: int, key: str) -> None:
-        if key in self._selected:
-            return
-        self._selected[key] = (row_index, col_index)
-        self._selected_per_row[row_index] = self._selected_per_row.get(row_index, 0) + 1
-        if self._offset_for is not None and self._offset_for(key) != 0.0:
-            self._offset_keys.add(key)
+    def _row_count(self, row_index: int) -> int:
+        """この行の選択列数 (0 = 未選択)。"""
+        row = self._rows[row_index]
+        sel = self._selected.get(row.sel_key)
+        return 0 if sel is None else sel.count(row.count)
 
-    def _drop_selection(self, key: str) -> None:
-        pos = self._selected.pop(key, None)
-        if pos is None:
+    def _set_row(self, row_index: int, sel: ColumnSelection | None) -> None:
+        """行の選択状態を差し替える (``_selected`` への **唯一の増分** 書き口)。
+
+        総数カウンタ (`_total` / `_total_per_file`) をここでしか動かさないので、
+        「経路を 1 つ足したらカウンタだけ更新し忘れる」形の破綻が構造的に起きない。
+        *sel* が None、または空の PARTIAL ならエントリを消す (NONE = 不在)。
+
+        **唯一の書き口ではない**: 一括リセットは `_select_none` が
+        `_selected.clear()` / `_total = 0` / `_total_per_file.clear()` で
+        1 行ずつでなく直接行う (行数ぶんの `_set_row` 呼び出しを避けるため)。
+        """
+        row = self._rows[row_index]
+        before = self._row_count(row_index)
+        if sel is None or (not sel.is_all and not sel.indices):
+            self._selected.pop(row.sel_key, None)
+            after = 0
+        else:
+            self._selected[row.sel_key] = sel
+            after = sel.count(row.count)
+        delta = after - before
+        if delta:
+            self._total += delta
+            self._total_per_file[row.file_key] = (
+                self._total_per_file.get(row.file_key, 0) + delta
+            )
+
+    def channel_columns(self) -> dict[str, int]:
+        """``{名前空間つき物理チャンネルキー: 選択列数}`` (見積へ渡すヒント)。
+
+        ``estimate_export`` は本来これを ``keys`` から `channel_key_of` で
+        組み直すが、prod の 330,004 列では **2.6 s** かかり、GUI スレッドで
+        呼ぶ `MainWindow.export_csv` が「押すと 3 秒固まる」になる。選択の表現は
+        既に物理チャンネル 1 行 = 1 エントリ (spec §5.6) なので、ここでは
+        **作るのではなく持っているものを渡す** (行数ぶん = prod 4,324 の走査)。
+
+        キーが `channel_key_of` の返り値と一致するのは偶然ではない: 行キーは
+        `{file_key}::{physical_channel}` で組まれており (`_build_tree`)、これは
+        `column_records` のキー空間 = `channel_key_of` が返す表示名と同一。
+        表を持たないグループ (CSV/Derived) では 1 信号 = 1 列なので、行キーは
+        列キーそのもの = 見積側の `or key` フォールバックと一致する。
+        合計が ``len(keys)`` と一致しない表は見積側が無視して解決し直す
+        (取り違えで「正確値」が黙って嘘をつくのを防ぐ安全網)。
+        """
+        return {
+            row.sel_key: n
+            for row_index, row in enumerate(self._rows)
+            if (n := self._row_count(row_index))
+        }
+
+    def selected_count(self) -> int:
+        """総選択 **列** 数 (O(1))。
+
+        `len(self._selected)` は圧縮後 **行数** を返すので、テスト/realgui は
+        必ずこちらを読む (E-4b spec §5.6 の単位変更点)。
+        """
+        return self._total
+
+    def _add_selection(self, row_index: int, col_index: int, key: str) -> None:
+        row = self._rows[row_index]
+        sel = self._selected.get(row.sel_key)
+        if sel is not None and sel.contains(col_index):
             return
-        self._selected_per_row[pos[0]] -= 1
-        self._offset_keys.discard(key)
+        merged = frozenset({col_index}) if sel is None else sel.indices | {col_index}
+        # 全列そろったら ALL へ畳む — 畳まないと「列を 1 本ずつ全部チェック」が
+        # 旧形と同じ列数ぶんの int を抱える (圧縮が効くのは一括経路だけになる)。
+        self._set_row(
+            row_index,
+            _ALL if len(merged) >= row.count else ColumnSelection(False, merged),
+        )
+        self._note_legacy_offset(key)
+
+    def _drop_selection(self, row_index: int, col_index: int, key: str) -> None:
+        row = self._rows[row_index]
+        sel = self._selected.get(row.sel_key)
+        if sel is None or not sel.contains(col_index):
+            return
+        base = frozenset(range(row.count)) if sel.is_all else sel.indices
+        self._set_row(row_index, ColumnSelection(False, base - {col_index}))
+        self._legacy_offset_hits.discard(key)
+
+    def _select_row_all(self, row_index: int) -> None:
+        """行を丸ごと選択する (**O(1)** — 列名を 1 本も作らない)。"""
+        self._set_row(row_index, _ALL)
+        if self._legacy_offset:
+            # legacy 経路だけが列名を要する (旧挙動の完全保存)。prod は
+            # `offset_keys` 注入側なのでここには入らない。
+            for key in self._column_keys(row_index):
+                self._note_legacy_offset(key)
+
+    def _clear_row(self, row_index: int) -> None:
+        was_selected = self._row_count(row_index) > 0
+        self._set_row(row_index, None)
+        if self._legacy_offset and was_selected:
+            for key in self._column_keys(row_index):
+                self._legacy_offset_hits.discard(key)
+
+    def _note_legacy_offset(self, key: str) -> None:
+        if (
+            self._legacy_offset
+            and self._offset_for is not None
+            and self._offset_for(key) != 0.0
+        ):
+            self._legacy_offset_hits.add(key)
 
     def _set_state(self, item: QTreeWidgetItem, state: Qt.CheckState) -> None:
         was, self._syncing = self._syncing, True
@@ -481,7 +632,7 @@ class ExportCsvDialog(QDialog):
         """行のチェック表示を選択数カウンタから作り直す (表示専用・O(1))。"""
         row_index = item.data(0, _ROW_ROLE)
         row = self._rows[row_index]
-        n = self._selected_per_row.get(row_index, 0)
+        n = self._row_count(row_index)
         if n == 0:
             state = Qt.CheckState.Unchecked
         elif n >= row.count:
@@ -492,16 +643,18 @@ class ExportCsvDialog(QDialog):
 
     def _sync_row_children(self, row_item: QTreeWidgetItem) -> None:
         """1 行ぶんの表示 (合成済みの列 + 行自身の三態) を _selected から作り直す。"""
+        row_index = row_item.data(0, _ROW_ROLE)
+        sel = self._selected.get(self._rows[row_index].sel_key)
         for j in range(row_item.childCount()):
             child = row_item.child(j)
             assert child is not None
-            key = child.data(0, _KEY_ROLE)
-            if key is None:
+            col_index = child.data(0, _COL_ROLE)
+            if col_index is None:
                 continue  # プレースホルダ
             self._set_state(
                 child,
                 Qt.CheckState.Checked
-                if key in self._selected
+                if sel is not None and sel.contains(col_index)
                 else Qt.CheckState.Unchecked,
             )
         self._refresh_row_state(row_item)
@@ -532,11 +685,9 @@ class ExportCsvDialog(QDialog):
         で組む (C-b: resolve は呼ばない) ので 264k 鋳造にはならない。
         """
         if item.checkState(0) == Qt.CheckState.Checked:
-            for col_index, key in enumerate(self._column_keys(row_index)):
-                self._add_selection(row_index, col_index, key)
+            self._select_row_all(row_index)
         else:
-            for key in self._column_keys(row_index):
-                self._drop_selection(key)
+            self._clear_row(row_index)
         self._sync_row_children(item)
         self._validate()
 
@@ -554,7 +705,7 @@ class ExportCsvDialog(QDialog):
         if item.checkState(0) == Qt.CheckState.Checked:
             self._add_selection(item.data(0, _ROW_ROLE), item.data(0, _COL_ROLE), key)
         else:
-            self._drop_selection(key)
+            self._drop_selection(item.data(0, _ROW_ROLE), item.data(0, _COL_ROLE), key)
         parent = item.parent()
         if parent is not None and parent.data(0, _ROW_ROLE) is not None:
             # コンテナの三態を更新 (そこから先はファイル行へ Qt が伝播する)。
@@ -562,12 +713,29 @@ class ExportCsvDialog(QDialog):
         self._validate()
 
     def _checked_keys(self) -> list[str]:
-        """出力集合 (フィルタ非依存・木の並び順)。
+        """出力集合 (フィルタ非依存・**ツリー表示順**)。
 
-        並びは (行, 列) = ファイル順 -> ローダー順 -> 列順。set のハッシュ順で
-        並べると PYTHONHASHSEED ごとに CSV の列順が変わる。
+        `self._rows` はファイル順 -> ローダー順に積まれているので、その添字順に
+        走査するだけでツリー表示順になる。行内は列 index の昇順 (ALL は
+        `_column_keys` の並びそのまま・PARTIAL は明示 sort)。
+
+        **チェック順ではない** (spec §10)。旧形は `_selected` の値 (行, 列)
+        を sort して同じ順を作っていたが、その運搬者は E-4b で消えた — 順序は
+        「選択の表現」ではなく「木」から導出する、が本増分の設計判断
+        (spec §5.6 [I4])。列キーの生成はここが唯一の一括点で、prod では
+        330,004 本 ≈ 25.1 MB の一過性 tuple になる (spec §1 の帳簿)。
         """
-        return sorted(self._selected, key=lambda k: self._selected[k])
+        out: list[str] = []
+        for row_index, row in enumerate(self._rows):
+            sel = self._selected.get(row.sel_key)
+            if sel is None:
+                continue
+            keys = self._column_keys(row_index)
+            if sel.is_all:
+                out.extend(keys)
+            else:
+                out.extend(keys[i] for i in sorted(sel.indices))
+        return out
 
     def _select_all(self) -> None:
         """全列を選択する — **鋳造しない** (C-b)。
@@ -577,15 +745,15 @@ class ExportCsvDialog(QDialog):
         選択列 1 本ずつ行う。
         """
         for row_index in range(len(self._rows)):
-            for col_index, key in enumerate(self._column_keys(row_index)):
-                self._add_selection(row_index, col_index, key)
+            self._select_row_all(row_index)
         self._sync_widget_states()
         self._validate()
 
     def _select_none(self) -> None:
         self._selected.clear()
-        self._selected_per_row.clear()
-        self._offset_keys.clear()
+        self._total = 0
+        self._total_per_file.clear()
+        self._legacy_offset_hits.clear()
         self._sync_widget_states()
         self._validate()
 
@@ -684,28 +852,96 @@ class ExportCsvDialog(QDialog):
                 precision=precision,
                 time_start=time_start,
                 time_end=time_end,
+                # E-4b spec §5.2 [M-1]: 統合タイムラインは独立引数をやめて
+                # options に載せる (境界の真実を 1 つにする)。
+                use_unified_timeline=self._unified.isChecked(),
             )
         except ValueError as exc:
             self._error.setText(str(exc))
             return None
 
-    def _offset_active_for_checked(self) -> bool:
-        """True iff any *currently checked* signal carries a non-zero offset.
+    def _row_of_key(self, key: str) -> int | None:
+        """列キーの所属行を **最長一致** で引く (列名を 1 本も生成しない)。
 
-        I2 fix (task-3-review.md #1): reactive over the checked set, not a
-        static open-time snapshot — the tree lists every loaded file/signal
-        (spec §1.2), and offsets are app-global (spec §2.1), so a signal added
-        to the selection in-dialog must be able to (re)trigger this guard.
-        ``offset_for is None`` means the caller injected nothing (back-compat
-        default) — treated as "no offsets exist" for every key.
-
-        オフセットの有無はキーが選択集合へ入る瞬間に 1 度だけ問い合わせて
-        `_offset_keys` に覚える (_add_selection/_drop_selection)。ここで毎回
-        `_selected` を走査すると、ファイル行 1 クリック (行ごとに _validate() を
-        通る) が prod で 行数 x 列数 = 10 億回の offset_for 呼び出しになる。
-        リアクティブ性 (選択集合の変化に追随) は集合の出入りで保たれる。
+        物理チャンネル表示名は列キーの接頭辞 (``Mat`` -> ``Mat[0]`` /
+        ``Pos`` -> ``Pos.x``)。`SignalGroupManager._mint_column` と同じ最長一致
+        規則で、走査は行索引 (prod 4,324 エントリ) への dict 参照だけ。
+        ファイル接頭辞より短い所では打ち切る — 別ファイルの選択キーへ字面で
+        滑り込むのを構造的に断つ。
         """
-        return bool(self._offset_keys)
+        group_key, sep, _bare = key.partition(KEY_SEPARATOR)
+        if not sep:
+            return None
+        floor = len(group_key) + len(KEY_SEPARATOR)
+        for i in range(len(key), floor, -1):
+            row_index = self._row_by_sel_key.get(key[:i])
+            if row_index is not None:
+                return row_index
+        return None
+
+    def _selection_touches(self, key: str) -> bool:
+        """*key* (列キー **または** グループキー) が現在の選択集合に触れているか。"""
+        group_key, sep, _bare = key.partition(KEY_SEPARATOR)
+        if not sep:
+            # ファイルオフセットのキー = グループキー。そのファイルの列が 1 本でも
+            # 選ばれていれば触れている (O(1))。
+            return self._total_per_file.get(key, 0) > 0
+        row_index = self._row_of_key(key)
+        if row_index is None:
+            return False
+        sel = self._selected.get(self._rows[row_index].sel_key)
+        if sel is None:
+            return False
+        if sel.is_all:
+            return True  # 列名を 1 本も作らずに決着 (「すべて選択」の支配的経路)
+        names = self._column_names(row_index)  # PARTIAL のときだけ 1 行ぶん生成
+        bare = key[len(group_key) + len(KEY_SEPARATOR) :]
+        try:
+            col_index = names.index(bare)
+        except ValueError:
+            return False
+        return col_index in sel.indices
+
+    def _offset_active_for_checked(self) -> bool:
+        """True iff *現在チェック中* の信号のどれかが 0 でないオフセットを持つ。
+
+        **方向が反転している** (E-4b spec §5.6 [I5]): 旧実装は「選択へ入る瞬間に
+        キーごとに `offset_for` を問い合わせて覚える」だったが、`_select_all` /
+        ファイル行チェックが O(1) になった今、キーが個別に通る瞬間はもう無い。
+        代わりに **オフセット辞書側 (少数 — 実運用で高々数十)** を走査し、
+        選択集合と交差するかを見る。リアクティブ性 (選択集合の変化に追随) は
+        `_validate()` 経由の毎回評価で保たれる。
+
+        `offset_keys` 未注入 (F-0 の DI 形のまま構築する呼び出し側) は legacy 経路。
+        `offset_for is None` は「オフセットは存在しない」(後方互換の既定)。
+
+        既知の非対称 (安全側): ファイルオフセット (グループキー) は、そのファイル
+        内に「ファイル +1 / 信号 -1」で相殺された信号があっても触れていると答える
+        (= 過保護に disabled)。旧実装はキーごとに合成値を見ていたのでここだけ
+        厳密だった。エクスポート可否ではなく **範囲ラジオの enabled** の話なので、
+        過保護側へ倒すことを設計判断として受容する。
+
+        もう一つの既知の非対称 (同じく安全側): `_row_of_key` は誤解決しても
+        `_selection_touches` を誤って True にする方向 (= 過保護に disabled) に
+        しか転ばない。到達可能性は無い — `_offset_keys()` が返しうるキーは
+        (a) グループキー (セパレータ無しの分岐で決着)、(b) ロード済みファイルの
+        列キー (最長一致が所属物理チャンネル行へ解決する = 設計どおりの経路。
+        `_build_tree` は物理チャンネル単位で行を作るため `Mat[0]` 形の列キーは
+        自分の行を持たず、接頭辞 walk がその所属先へ届くのが正規動作)、
+        (c) 行を 1 つも持たないグループのキー (Derived / unload 済み —
+        `_row_by_sel_key` の全照会が外れて None) のいずれか。誤解決には
+        「ロード済みファイル内でどの物理チャンネルにも属さないキー」が要るが、
+        records<->signals の 1:1 不変条件 (ローダーが loud-fail で守る) が
+        それを作らせない。
+        """
+        if self._offset_keys is None:
+            return bool(self._legacy_offset_hits)
+        for key in self._offset_keys():
+            if self._offset_for is not None and self._offset_for(key) == 0.0:
+                continue  # 合成して 0 (相殺) はオフセット無しと同じ
+            if self._selection_touches(key):
+                return True
+        return False
 
     def _update_range_radios(self) -> None:
         """Re-apply [現在の表示範囲]/[カーソル A-B] enabled+tooltip state.
@@ -738,7 +974,7 @@ class ExportCsvDialog(QDialog):
     def _validate(self) -> None:
         self._update_range_radios()
         opts = self._current_options()
-        n = len(self._selected)
+        n = self._total
         if opts is not None:
             self._error.setText("" if n else S.EXPORT_NO_SELECTION_ERROR)
         ok = opts is not None and bool(n)
@@ -759,20 +995,21 @@ class ExportCsvDialog(QDialog):
 
     def _on_accept(self) -> None:
         opts = self._current_options()
-        keys = self._checked_keys()
+        keys = tuple(self._checked_keys())
         if opts is None or not keys:
             return
-        # 選択列を **ここで初めて** 実体化する (C-b: 選択は名前だけ・実体は出口で
-        # 1 本ずつ)。鋳造は Signal オブジェクトを作るだけで値は読まない
-        # (LazyMdfValues) ので、保存先を訊く前に失敗を確定させてよい。
-        signals: list[Signal] = []
-        missing: list[str] = []
-        for k in keys:
-            sig = self._app_vm.session.resolve_signal(k)
-            if sig is None:
-                missing.append(k)
-            else:
-                signals.append(sig)
+        # 解決可能性の検証は **保存先を訊く前** (spec §5.2・既存 UX 契約)。
+        # E-4b: 結果の Signal は **保持しない** — 旧実装はここで作った
+        # list[Signal] をそのまま要求に載せていて、prod 330,004 列で ~390 MB を
+        # 出口の手前で確定させていた。鋳造は E-4a の LRU (容量 512) に載るので
+        # 同時生存は 512 本で頭打ちになり、参照を落とせば残らない。
+        # MG-1 (spec §10): ここは検証だけで実出力ではないので `resolve_signal`
+        # (LRU 帳簿つき) ではなく `resolve_signal_transient` を呼ぶ — 帳簿つきだと
+        # 全列 accept で ~326k 鋳造が LRU recency を総なめし、pin されていない
+        # 閲覧済み列を追い出す (全体レビュー Important-1・Task 4 の繰越が Task 6
+        # の Files リストに載らず落ちていた分の是正)。
+        session = self._app_vm.session
+        missing = [k for k in keys if session.resolve_signal_transient(k) is None]
         if missing:
             # 旧実装はここが素の KeyError でダイアログごとクラッシュしていた。
             # 無言で落とすと「選んだのに出ていない CSV」になるので、出力せずに
@@ -787,15 +1024,15 @@ class ExportCsvDialog(QDialog):
         if not path:
             return  # 保存ダイアログをキャンセル
         # E-0: CSV ヘッダ名は選択集合(+ "timestamp" 母集合注入)内の衝突時のみ
-        # qualified — core(csv_exporter)は名前を計算せず、渡された名前をそのまま
-        # 書くだけ(core→gui import の層違反を作らない・spec §1.2)。
-        header_map = csv_header_names(keys)
-        opts = replace(opts, header_names=tuple(header_map[k] for k in keys))
+        # qualified — core(csv_exporter)は名前を計算せず、渡された resolver を
+        # 呼ぶだけ(core→gui import の層違反を作らない・spec §1.2)。
+        # E-4b: 名前を**先に計算して options へ詰める**のをやめ、keys と同じ
+        # 場所から導出する callable を載せる (ヘッダと値の対応が by construction)。
         self._result = ExportRequest(
-            signals=signals,
+            keys=keys,
             output_path=Path(path),
-            use_unified_timeline=self._unified.isChecked(),
             options=opts,
+            header_resolver=csv_header_resolver,
         )
         self.accept()
 
@@ -810,7 +1047,16 @@ class ExportCsvDialog(QDialog):
         cursor_a: float | None = None,
         cursor_b: float | None = None,
         offset_for: Callable[[str], float] | None = None,
+        offset_keys: Callable[[], Iterable[str]] | None = None,
+        channel_columns_out: dict[str, int] | None = None,
     ) -> ExportRequest | None:
+        """モーダルを回して ``ExportRequest`` を返す (キャンセルは None)。
+
+        *channel_columns_out* を渡すと、確定時にそこへ :meth:`channel_columns`
+        を書き込む。返り値の型を変えない (tuple 化しない) のは、`ask` を
+        差し替えて `ExportRequest` を直接返す既存の呼び出し側/テストを
+        壊さないため — それらは表を受け取らず、見積は自力の解決へ落ちる。
+        """
         dlg = cls(
             app_vm,
             initial_selected,
@@ -819,7 +1065,10 @@ class ExportCsvDialog(QDialog):
             cursor_a=cursor_a,
             cursor_b=cursor_b,
             offset_for=offset_for,
+            offset_keys=offset_keys,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
+            if channel_columns_out is not None:
+                channel_columns_out.update(dlg.channel_columns())
             return dlg._result
         return None

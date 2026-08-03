@@ -1,0 +1,15 @@
+# ゴールデン CSV は**バイト凍結**された成果物 (E-4b Task 2 / spec §7.1)。
+#
+# Windows の `core.autocrlf=true` (本リポジトリの実測既定) は checkout のたびに
+# LF -> CRLF 変換を掛ける。実測: g01 が 268 -> 274 バイト (CRLF 6 個) へ化け、
+# test_golden_bytes_match と行末 LF の大域テストが**新規 clone のたびに全滅**する。
+# しかも生成器は上書きを拒否する設計なので、踏んだ人には回復手段が無い
+# (「再生成して黙らせる」を封じたことが逆に詰みを作る)。
+#
+# `-text` で改行変換だけを無効化する。`binary` にしないのは、ゴールデンを意図的に
+# supersede するときの `git diff` を人が読める形で残したいから。
+#
+# パターンは `**` (`.csv` 限定でない) — `*.csv` だと将来 golden_csv/ 配下に
+# 非 .csv ファイル (README・拡張子違いの fixture 等) を置いたときに素通しして
+# 同じ改行変換の穴が再発する (M4)。
+tests/golden_csv/** -text

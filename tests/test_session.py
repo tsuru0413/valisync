@@ -324,7 +324,8 @@ def test_recovery_reads_the_cache_the_handle_actually_carries(tmp_path: Path) ->
     try:
         other = ChannelSampleCache()
         arr = np.zeros((4, 3), dtype=np.uint8)
-        assert other.put((id(handle), 999, 0), arr) is True
+        # E-4b: キー第 1 成分は handle.serial (期待は不変・引き当て方だけ追随)。
+        assert other.put((handle.serial, 999, 0), arr) is True
         handle.cache = other  # ハンドルだけが別帳簿を提げた状態
 
         result = session.remove_group(key)
@@ -375,9 +376,10 @@ def test_close_releases_the_handles_cached_arrays_from_the_budget(
 ) -> None:
     """回収されない close 経路 (ローダーのエラー/キャンセル) でも予算が返る。
 
-    キーは id(handle) なので、閉じたハンドルのエントリを残すと害が 2 つある:
-    予算が恒久的に目減りし、かつ id が再利用されたとき新しいハンドルが別ファイルの
-    配列を引く (memory gui_id_reuse_flake_object_recreation の形)。
+    **supersede (E-4b)**: 旧理由は 2 つ (予算の目減り / id 再利用で別ファイルの
+    配列を引く) だったが、キーが handle.serial になったので後者は構造的に消えた。
+    残るのは **予算の恒久的な目減り** — 回収されない close 経路でエントリが滞留
+    すると 256 MB 予算が黙って痩せる。期待 (bytes_held == 0) は変えない。
     """
     session, key, handle = _loaded_2d_with_a_cached_channel(tmp_path)
     try:
@@ -447,8 +449,12 @@ def test_apply_offset_delegates_to_core():
 def test_export_csv_delegates_to_core(tmp_path):
     sig = _derived("speed", [0.0, 1.0], [10.0, 20.0])
     out = tmp_path / "e.csv"
-    Session().export_csv([sig], out)
-    assert out.read_text(encoding="utf-8").splitlines()[0] == "timestamp,speed"
+    # E-4b Task 4 supersede: Derived は SignalGroupManager に登録されず keys で
+    # 解決できないので escape hatch (extra_signals) 経由になる (spec §5.2 [I-3])。
+    # 出力バイトの期待 ("timestamp,speed") は不変 (ヘッダは Signal 自身の名前)。
+    Session().export_csv([], out, extra_signals=[sig])
+    # supersede(E-4b §5.1-2): 出力に UTF-8 BOM が付いたため読み口のみ utf-8-sig 化 (期待値不変)
+    assert out.read_text(encoding="utf-8-sig").splitlines()[0] == "timestamp,speed"
 
 
 # ─── LoadOutcome / diagnostics (FB-02 foundation) ─────────────────────────────

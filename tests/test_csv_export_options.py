@@ -22,7 +22,8 @@ def _sig(name: str, ts: list[float], vs: list[float], unit: str = "") -> Signal:
 
 
 def _read(p: Path) -> list[str]:
-    return p.read_text(encoding="utf-8").splitlines()
+    # supersede(E-4b §5.1-2): 出力に UTF-8 BOM が付いたため読み口のみ utf-8-sig 化 (期待値不変)
+    return p.read_text(encoding="utf-8-sig").splitlines()
 
 
 def test_default_options_match_current_behavior(tmp_path: Path) -> None:
@@ -75,8 +76,14 @@ def test_session_passthrough(tmp_path: Path) -> None:
     from valisync.core.session import Session
 
     out = tmp_path / "d.csv"
+    # E-4b Task 4 supersede: Derived は SignalGroupManager に登録されず keys で
+    # 解決できないので escape hatch (extra_signals) 経由になる (spec §5.2 [I-3])。
+    # 出力バイトの期待 ("timestamp;v") は不変 (ヘッダは Signal 自身の名前)。
     Session().export_csv(
-        [_sig("v", [0.0], [1.5])], out, options=CsvExportOptions(delimiter=";")
+        [],
+        out,
+        CsvExportOptions(delimiter=";"),
+        extra_signals=[_sig("v", [0.0], [1.5])],
     )
     assert _read(out)[0] == "timestamp;v"
 
@@ -142,6 +149,19 @@ def test_empty_delimiter_rejected() -> None:
 def test_empty_decimal_rejected() -> None:
     with pytest.raises(ValueError):
         CsvExportOptions(decimal="")
+
+
+def test_quote_char_as_delimiter_rejected() -> None:
+    # `_quote` は `"` を新たに特別扱いする (RFC 4180 最小クォート・spec §5.1-3)。
+    # delimiter に `"` を許すと、クォート判定の `"` in cell が delimiter 自身と
+    # 衝突し出力が壊れる。
+    with pytest.raises(ValueError):
+        CsvExportOptions(delimiter='"')
+
+
+def test_quote_char_as_decimal_rejected() -> None:
+    with pytest.raises(ValueError):
+        CsvExportOptions(decimal='"')
 
 
 # --- header_names (E-0, spec §1.2 — GUI-computed display header override) ----
@@ -342,3 +362,19 @@ def test_time_range_prod_scale_unified_timeline_row_count_correct(
     assert len(data_lines) == 11  # union covers 100000..100010 inclusive
     assert data_lines[0].split(",")[0] == "100000.0"
     assert data_lines[-1].split(",")[0] == "100010.0"
+
+
+# --- I3 (T4 レビュー): 旧署名の非対称ガード ------------------------------------
+
+
+def test_options_unified_true_with_positional_false_raises(tmp_path: Path) -> None:
+    """options.use_unified_timeline=True が位置引数 False (既定) と矛盾すると
+    黙って共有タイムラインへ落ちる — 旧署名では位置引数が唯一の真実 (56 の
+    直呼びサイトに実在する罠)。loud-fail で構造的に踏めなくする。"""
+    s = _sig("speed", [0.0, 1.0], [10.0, 20.0])
+    out = tmp_path / "d.csv"
+    with pytest.raises(ValueError, match="矛盾"):
+        CsvExporter().export(
+            [s], out, options=CsvExportOptions(use_unified_timeline=True)
+        )
+    assert not out.exists()

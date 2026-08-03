@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import numpy as np
@@ -20,7 +21,11 @@ from tests.mdf4_helpers import write_mdf4_2d
 from valisync.core.models import Delimiter, FormatDefinition, Signal
 from valisync.gui import strings as S
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
-from valisync.gui.views.export_csv_dialog import ExportCsvDialog, ExportRequest
+from valisync.gui.views.export_csv_dialog import (
+    ExportCsvDialog,
+    ExportRequest,
+    csv_header_resolver,
+)
 
 
 class _FakeSession:
@@ -66,6 +71,17 @@ class _FakeSession:
         )
 
     def resolve_signal(self, key: str) -> Signal | None:
+        # MG-1 門番 (全体レビュー Important-1): `_on_accept` は帳簿つきの
+        # `resolve_signal` を呼んではならない (LRU に鋳造が積み上がり非 pin の
+        # 閲覧済み列を追い出す) — ここを呼んだら退行として即座に落とす。
+        # tests/core/test_export_bridge_golden.py `_KeyedSession` と同じ形
+        # (override するのは transient 側だけ)。
+        raise AssertionError(
+            "MG-1: _on_accept は resolve_signal_transient を読むこと "
+            "(LRU 帳簿経路への退行)"
+        )
+
+    def resolve_signal_transient(self, key: str) -> Signal | None:
         self.resolve_calls += 1
         return self.resolvable.get(key)
 
@@ -159,13 +175,17 @@ def test_ask_builds_request_from_widgets(qtbot: QtBot, tmp_path: Path) -> None:
     dlg._on_accept()
     req = dlg._result
     assert isinstance(req, ExportRequest)
-    assert {s.name for s in req.signals} == {"csv_1::a", "csv_1::b"}
+    # E-4b Task 4 supersede: 要求は **列キー** を運ぶ (D1・spec §5.2)。右辺は不変。
+    assert set(req.keys) == {"csv_1::a", "csv_1::b"}
     assert req.output_path == target
     assert req.options.delimiter == ";"
     assert req.options.unit_row is True
-    # E-0: header_names carries the bare display names (no collision — both
-    # are from the same file "csv_1"), same order as req.signals/_checked_keys.
-    assert req.options.header_names == ("a", "b")
+    # E-0: ヘッダは bare display name (no collision — both are from the same
+    # file "csv_1"), same order as req.keys/_checked_keys.
+    # E-4b Task 4 supersede: 名前は options.header_names に**先に詰めない**で
+    # header_resolver として運ぶようになった (ヘッダと値を同じ keys から導出)。
+    # 期待値 ("a", "b") は 1 文字も変えず、読み口だけを resolver 適用へ移す。
+    assert req.header_resolver(req.keys) == ["a", "b"]
 
 
 # --- E-0: 葉テキスト/フィルタは display name (UX-19) -------------------------
@@ -855,7 +875,8 @@ def test_accept_resolves_only_the_selected_columns(
 
     req = dlg._result
     assert isinstance(req, ExportRequest)
-    assert [s.name for s in req.signals] == ["mf4_1::Mat[1]"]
+    # E-4b Task 4 supersede: 要求は **列キー** を運ぶ (D1・spec §5.2)。右辺は不変。
+    assert list(req.keys) == ["mf4_1::Mat[1]"]
     assert app_vm.session.resolve_calls == 1
 
 
@@ -883,7 +904,9 @@ def test_unresolvable_column_reports_instead_of_raising(qtbot: QtBot) -> None:
     assert "Mat[1]" in dlg._error.text()
 
 
-def test_checked_keys_follow_tree_order_not_hash_order(qtbot: QtBot) -> None:
+def test_checked_keys_follow_tree_order_not_hash_order(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
     """出力列順は木の並び (ファイル順 -> ローダー順 -> 列順)。
 
     選択の真実が set になったので、素の sorted()/ハッシュ順で出すと CSV の
@@ -899,6 +922,38 @@ def test_checked_keys_follow_tree_order_not_hash_order(qtbot: QtBot) -> None:
         "mf4_1::Mat[2]",
         "mf4_1::Clean",
     ]
+    # I1 fix (T4 レビュー): 上の assert は _checked_keys() 自体を直接見ているので
+    # 「ツリー walk -> _on_accept 内の keys -> request.keys」という運搬の中間リンク
+    # を通らない。_on_accept が `sorted(self._checked_keys())` へ変異しても
+    # (95 passed・実測) 上のassertは _checked_keys() を直接呼ぶので拾えない —
+    # request.keys 側を独立に確認する必要がある。
+    dlg._save_path_provider = lambda: str(tmp_path / "o.csv")
+    dlg._on_accept()
+    assert dlg._result is not None
+    assert list(dlg._result.keys) == [
+        "mf4_1::Mat[0]",
+        "mf4_1::Mat[1]",
+        "mf4_1::Mat[2]",
+        "mf4_1::Clean",
+    ]
+
+
+def test_header_resolver_is_the_module_function_not_a_closure(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    """resolver が self を捕まえた lambda に変わると、ダイアログと QTreeWidget
+    (prod 330k 行) が export 全期間 GC されない — その退行の唯一のオラクル。
+
+    「レビューで見るしかない」は反証済み (T4 レビュー I2): 決定的 3 assert で足りる。
+    """
+    assert inspect.isfunction(csv_header_resolver)
+    assert csv_header_resolver.__closure__ is None
+    dlg = ExportCsvDialog(_app_vm(), initial_selected={"csv_1::a"})
+    qtbot.addWidget(dlg)
+    dlg._save_path_provider = lambda: str(tmp_path / "o.csv")
+    dlg._on_accept()
+    assert dlg._result is not None
+    assert dlg._result.header_resolver is csv_header_resolver
 
 
 def test_real_mdf_array_channel_is_one_row_with_lazy_columns(

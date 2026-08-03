@@ -79,6 +79,16 @@ BUSY_LOADING_TMPL: Final = "{label} を読み込み中…"
 BUSY_LOADING_MULTI_TMPL: Final = "{n} ファイルを読み込み中…"
 BUSY_EXPORTING_TMPL: Final = "{label} をエクスポート中…"
 
+# ── BusyOverlay の ETA / エクスポート中止 (E-4b・spec §5.5-3 / B6) ────────────
+# 「計測中…」は最初のブロックが終わるまでの表示 = 0 除算ガードの人向けの顔。
+# 「仕上げ処理中…」は末尾のマージ段 — 進捗の単位は等重でないので、そこで線形
+# 外挿の数字を出すと「残り 約 0 秒」と言いながら数分回る (csv_exporter の
+# `n_units` コメントが根拠)。数字を出さないことが正しい表示。
+BUSY_ETA_MEASURING: Final = "残り時間: 計測中…"
+BUSY_ETA_TMPL: Final = "残り時間: 約 {eta}"
+BUSY_ETA_FINISHING: Final = "仕上げ処理中…"
+BUSY_EXPORT_CANCELLING: Final = "エクスポートを中止しています…"
+
 # ── ステータスバー: 読込完了時の診断誘導 (判断点 #13) ────────────────────────
 STATUS_DIAG_ALERT_TMPL: Final = f" ・ ⚠ 警告/エラー {{n}} 件（{REF_DIAGNOSTICS}）"
 STATUS_DIAG_INFO_TMPL: Final = f" ・ ℹ 情報 {{n}} 件（{REF_DIAGNOSTICS}）"
@@ -123,6 +133,48 @@ EXPORT_COLUMN_PLACEHOLDER: Final = "…"
 # 「拒否は disabled 表示 + ツールチップ」の規約に合わせて理由を出す。
 EXPORT_CONTAINER_ROW_TOOLTIP: Final = "展開して列を選択してください"
 EXPORT_UNRESOLVED_ERROR_TMPL: Final = "選択した列を読み出せません（{n} 件・例: {name}）"
+
+# ── エクスポート確認 (E-4b・B2 / spec §5.5) ──────────────────────────────────
+# 桁区切りは付けない (既存決定・CHANNEL_HEADER_COUNT_TMPL と同規約)。列数/行数/
+# 空セル率は **正確値**、サイズと時間は **推定値** — 読者がその区別を付けられるよう
+# 推定側にだけ「推定」を冠する (B2)。空セル率は理由まで書かないと「壊れている」と
+# 読まれる (spec §5.5 の文言例をそのまま採用)。
+EXPORT_CONFIRM_TITLE: Final = "エクスポートの確認"
+EXPORT_CONFIRM_BODY_TMPL: Final = (
+    "{columns} 列 × {rows} 行を書き出します。\n"
+    "推定サイズ: 約 {size}／推定時間: 約 {duration}\n"
+    "出力の約 {empty} % は空セルです（信号ごとに記録周期が異なるため）。"
+)
+EXPORT_CONFIRM_YES: Final = "書き出す"  # 本文動詞と一致 (CONFIRM_CLOSE_YES と同規約)
+EXPORT_CONFIRM_NO: Final = "キャンセル"
+EXPORT_DISK_SHORT_TMPL: Final = (
+    "保存先の空き容量が足りません（あと約 {shortfall} 必要です）。"
+    "出力範囲を狭めるか列を減らしてください。"
+)
+# 中止後は **開始前の見積値** をそのまま再掲する (B6)。中止後に測り直さないのは、
+# unload 済み/範囲変更後では値が変わってしまい「なぜ止めたのか」の手がかりに
+# ならないため。桁区切りは付けない (EXPORT_CONFIRM_BODY_TMPL と同規約)。
+EXPORT_CANCELLED_TMPL: Final = (
+    "エクスポートを中止しました（{columns} 列 × {rows} 行・推定 {size}）。"
+    "出力範囲を狭めるか列を減らして再実行してください。"
+)
+# I3 (T9 レビュー是正): cancel は Event を立てるだけで worker の停止を待たない
+# 非対称設計 (衝突3・spec §5.5-1) なので、押した直後は `ExportController.is_busy()`
+# がまだ True の窓が実在する。その窓で 2 本目の export を弾く。
+EXPORT_ALREADY_RUNNING: Final = (
+    "エクスポートを実行中です。完了または中止が終わるまでお待ちください。"
+)
+# [I7c] decay (元ファイルが閉じられた) は**ユーザーが押した中止と別文言**にする。
+# EXPORT_CANCELLED_TMPL の「範囲を狭めるか列を減らして再実行」は decay には
+# 誤った助言で (狭めても閉じたファイルは読めない)、ユーザーを的外れな操作へ誘導する。
+EXPORT_SOURCE_LOST_STATUS: Final = (
+    "⛔ エクスポートを中止しました（元ファイルが閉じられました）。"
+    "ファイルを開き直してから再実行してください。"
+)
+# 診断の「データソース」列に出すラベル。実ファイル名を使わないのは、decay の時点で
+# そのグループは既に session から消えており source_name が引けないため
+# (SAMPLE_READ_ERROR_SOURCE と同じ「サブシステム名で代用する」規約)。
+EXPORT_DIAG_SOURCE: Final = "エクスポート"
 
 # ── ダイアログ: 信号プレビュー (signal_preview_window・R-05 em ダッシュ) ─────
 PREVIEW_UNAVAILABLE: Final = "この信号はプレビューできません"

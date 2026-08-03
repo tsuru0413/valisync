@@ -90,6 +90,12 @@ def _loaded(tmp_path: Path, cols: int) -> tuple[Session, str]:
     return session, key
 
 
+def _tiny_session(tmp_path: Path) -> Session:
+    """列 0 件テスト用の最小セッション (中身は使わない — 引数検査だけを踏む)。"""
+    session, _key = _loaded(tmp_path, cols=2)
+    return session
+
+
 def test_widest_channel_is_the_array_channel(mlf, tmp_path):
     """「同一広幅チャンネルの隣接 5 列」の主語 — 勝者が別チャンネルなら測定が別物になる。"""
     session, key = _loaded(tmp_path, cols=12)
@@ -235,3 +241,17 @@ def test_cache_saturation_refuses_when_the_budget_is_never_reached(mlf, tmp_path
 
     with pytest.raises(AssertionError, match="予算に到達しなかった"):
         mlf.cache_saturation(session, key)
+
+
+def test_export_full_run_refuses_a_zero_column_subject(mlf, tmp_path) -> None:
+    """列 0 件で「完走した」と刷るのを禁止する (E-3 T9 の穴を --export 段でも塞ぐ)。"""
+    with pytest.raises(AssertionError, match="測定対象"):
+        mlf.export_full_run(_tiny_session(tmp_path), [], tmp_path / "o.csv", 1e9)
+
+
+def test_export_full_run_requires_an_externally_supplied_limit(mlf) -> None:
+    """USS 上限に既定値を持たせない (判定走行から閾値を得る循環の禁止・G4)。"""
+    import inspect
+
+    sig = inspect.signature(mlf.export_full_run)
+    assert sig.parameters["uss_limit_mb"].default is inspect.Parameter.empty

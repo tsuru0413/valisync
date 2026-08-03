@@ -138,7 +138,13 @@ class AppViewModel(Observable):
 
     @property
     def loaded_file_keys(self) -> list[str]:
-        """List of keys (paths) for all currently loaded files."""
+        """読み込み済み全ファイルの **グループキー** (KEY_SEPARATOR の左側)。
+
+        E-4b: 旧 docstring の "keys (paths)" は誤り。ここが返すのは
+        ``Session.load`` が採番したグループキー ("mf4_1" 等) で、ファイルパスでは
+        ない。エクスポートツリーのファイル行はこの順で並び、その順が出力列順の
+        第 1 キーになる (spec §10) ので、パスと読み違えると列順の議論がずれる。
+        """
         return list(self._loaded_keys)
 
     def set_active_file(self, key: str | None) -> None:

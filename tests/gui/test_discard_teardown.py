@@ -222,7 +222,7 @@ def test_cached_channel_arrays_are_handed_to_the_teardown_service(tmp_path) -> N
     arr = np.zeros((256, 8), dtype=np.uint8)
     # 実在しない group_index を使う (実読みが載せたエントリを踏まない)。
     assert handle.cache is not None
-    assert handle.cache.put((id(handle), 999, 0), arr) is True
+    assert handle.cache.put((handle.serial, 999, 0), arr) is True  # E-4b: serial 化
 
     app_vm.unload_file(key)
 
@@ -245,7 +245,7 @@ def test_discard_also_hands_the_cached_arrays(qtbot, tmp_path) -> None:  # type:
     handle = win.app_vm.session._groups.group(outcome.key).handle
     assert handle is not None and handle.cache is not None
     arr = np.zeros((256, 8), dtype=np.uint8)
-    assert handle.cache.put((id(handle), 999, 0), arr) is True
+    assert handle.cache.put((handle.serial, 999, 0), arr) is True  # E-4b: serial 化
 
     discard(outcome)
 

@@ -19,18 +19,23 @@ from collections import OrderedDict
 import numpy as np
 
 CacheKey = tuple[int, int, int]
-"""キー = ``(id(handle), group_index, channel_index)``。
+"""キー = ``(handle.serial, group_index, channel_index)``。
 
 **名前をキーにしない** (spec §5.3): 生名は LD-08 重複で一意でなく (mdf_loader の
 ``name_total[base_name] > 1`` — 既存 fixture ``Mat2`` がその形)、表示名はファイル間で
-一意でない。``Session`` は 1 キャッシュを全ファイルで共有するので、handle を含めないと
+一意でない。``Session`` は 1 キャッシュを全ファイルで共有するので、ハンドルを含めないと
 2 ファイル比較で同じ曲線が 2 本描かれる (長さが同じなら sample_source の長さ検証も
 通り、例外も出ない = サイレント誤データ)。
 
-**前提条件**: ``id()`` は生存中のオブジェクト間でのみ一意で、閉じたハンドルの id は
-次のロードが再利用しうる (実測 100% 再利用・memory gui_id_reuse_flake_object_recreation)。
-``MdfHandle.close()`` の**前**に ``drop_handle()`` でそのファイルのエントリを外すことが
-キー一意性の前提になる。
+**``id(handle)`` から ``handle.serial`` へ (E-4b・spec §5.7-1)**: id は生存中の
+オブジェクト間でのみ一意で、閉じたハンドルのアドレスは次のロードが再利用する
+(実測 100% 再利用・memory gui_id_reuse_flake_object_recreation)。旧キーの一意性は
+「close の前に drop_handle を呼ぶ」という**手順**でしか守られておらず、手順を 1 箇所
+忘れれば別ファイルの 2-D を無言で返した (``test_handle_serial.py`` の production 経路
+テストが id 版で 100% 要素不一致になることで実証済み)。serial (プロセス単調 int) は
+ハンドルの生死と無関係なので、この窓は構造的に存在しない。``drop_handle`` を close の
+前に呼ぶ契約自体は維持する — 根拠が「キーの一意性」から「解放のペーシング」へ
+変わっただけである。
 """
 
 _DEFAULT_BUDGET_BYTES = 256 * 1024 * 1024  # ユーザー決定 U3
@@ -46,8 +51,8 @@ class ChannelSampleCache:
 
     **``handle.lock`` は絶対に取らない** (spec §11 の保存契約: 「キャッシュヒットは
     handle.lock を取らない」は E-3 の test-lock)。予算はプロセス単位・``handle.lock`` は
-    ファイル単位なので後者では守れない。このクラスが見るのは ``id(handle)`` の int だけで
-    ハンドル自体を参照しないため、構造的に取りようがない。予算の増減は自前の小さな
+    ファイル単位なので後者では守れない。このクラスが見るのは ``handle.serial`` の int
+    だけでハンドル自体を参照しないため、構造的に取りようがない。予算の増減は自前の小さな
     lock で守る (``MdfHandle._close_lock`` と同型・読み直列化 lock とは別物)。
     ロック順は ``handle.lock`` -> ``_lock`` の一方向のみで、逆順を作る API は置かない
     (このクラスは ndarray しか触らないので I/O を lock 下で呼ぶ経路が無い)。
@@ -104,12 +109,19 @@ class ChannelSampleCache:
         """命中なら配列 (最近使用へ更新)、不在なら None。
 
         不在は ``misses`` を 1 増やす。**正しい関係は等式でなく ``misses >= select``**。
-        production が select を呼ぶ唯一の理由がここの None なので下限は必ず立つが、
-        **等号は「同一キーへの miss が直列化されているとき」に限る**: 兄弟列は別々の
-        ``LazyMdfValues`` インスタンスなので per-instance の fast path では畳まれず、
-        2 スレッドが同じ物理チャンネルの別列を読むと **miss は 2・select は 1**
-        (``handle.lock`` 下の同一キー再チェックが 1 回に畳む) になる。これは E-4a が
-        最適化しようとしているワークロードそのものなので、等式を仮定してはならない。
+        production が select を呼ぶ唯一の理由がここの None なので下限は必ず立つ。
+        上振れ (miss > select) が起きるのは **同じ列 (同じ ``LazyMdfValues``
+        インスタンス) を 2 スレッドが同時に読んだとき**だけで、``handle.lock`` 下の
+        ``if self._cache is not None`` 再チェックが 2 本目の select を畳む。
+
+        **兄弟列は畳まれない (E-4b で是正)**: 旧記述は「同一チャンネルの別列の
+        同時読みが select 1 回に畳まれる」と書いていたが、そんな機構は実装に無い —
+        ``sample_source.array()`` の lock 内には**同一インスタンスの** ``_cache``
+        再チェックしか無く、同ファイルのコメントが明示的に逆を書いている
+        (「lock 内で channel_cache を引き直さない … 代償は同一チャンネルの別列を
+        同時に読み始めた稀なケースで select が 1 本余分に走ること」)。兄弟列の
+        同時読みは **miss 2 / select 2** になる。E-4b の並列度をこの記述から
+        決めると外すので是正した (本増分のブロック処理は spec §5.7-4 のとおり**直列**)。
 
         **T6 の ①gate は上界 (``misses <= N``) で書くこと** — 直列でも並行でも健全な
         のは上界だけである (spec §8)。
@@ -206,8 +218,8 @@ class ChannelSampleCache:
         ``RemovalResult.cached_arrays`` に載せ ``TeardownService`` の三軸ペーシングへ通す。
 
         **``MdfHandle.close()`` より前に呼ぶこと**: 逆順だと teardown へ渡す前に
-        キャッシュだけが取り残され会計から漏れる。加えて ``CacheKey`` の一意性自体が
-        「close 前に外すこと」を前提にしている (id 再利用)。
+        キャッシュだけが取り残され会計から漏れる。E-4b の serial 化以降、この順序の
+        根拠は**ペーシングのみ**になった (キーの一意性はハンドルの生死に依存しない)。
 
         eviction ではないので ``evictions`` は増やさない — 予算圧と unload を混ぜると
         予算の効きが読めなくなる。
@@ -278,6 +290,20 @@ class ChannelSampleCache:
         production 相当の構成では何も起きず、配線が外れても緑のまま通る。
         """
         return self._reserved
+
+    @property
+    def available_bytes(self) -> int:
+        """LRU が今使ってよいバイト数 (``budget - reserved``・下限 0)。
+
+        E-4b のブロックサイズ決定 (D3「予算 - 現在の pin 済み」) の唯一の入口。
+        呼び出し側に ``budget`` と ``reserved`` を別々に読ませないのは、その間に
+        pin の push が挟まると両者が別時点の値になり、**予算を超えるブロック幅が
+        計算できてしまう**から。``_capacity_for(0)`` と同じ式で、最低容量の床は
+        掛けない (床は「1 エントリを載せ切る」ためのもので、ブロック幅の根拠では
+        ない)。
+        """
+        with self._lock:
+            return max(0, self._budget - self._reserved)
 
     @property
     def bytes_held(self) -> int:

@@ -62,6 +62,62 @@ def skip_unless_real_display() -> None:
         pytest.skip(reason)
 
 
+def pump(dt: float = 0.03) -> None:
+    """QApplication のイベントを 1 回処理して短く眠る。
+
+    M6 (Task 11 レビュー): ``test_export_confirm_cancel_realclick.py`` /
+    ``test_export_range_realclick.py`` の module-local ``_pump`` が同一実装を
+    重複させていたのを共有昇格したもの (既存 2 サイト目の挙動は不変)。
+    """
+    QApplication.processEvents()
+    time.sleep(dt)
+
+
+def pump_n(n: int, dt: float = 0.02) -> None:
+    for _ in range(n):
+        pump(dt)
+
+
+def real_click_widget(widget) -> None:  # type: ignore[no-untyped-def]
+    """ウィジェット中心を実 OS クリック (press -> pump -> release -> pump x4)。
+
+    M6 (Task 11 レビュー): 上記 2 ファイルの module-local ``_real_click`` /
+    ``_real_click_widget`` を共有昇格したもの。
+    """
+    from PySide6.QtCore import QPoint
+
+    center = QPoint(widget.width() // 2, widget.height() // 2)
+    gp = widget.mapToGlobal(center)
+    dpr = widget.devicePixelRatioF()
+    x, y = round(gp.x() * dpr), round(gp.y() * dpr)
+    at(x, y, LDOWN)
+    pump()
+    at(x, y, LUP)
+    pump_n(4)
+
+
+def read_export_rows(path) -> list[list[str]]:  # type: ignore[no-untyped-def]
+    """エクスポート CSV を全列読みする共有オラクル (G8 supersede・M6 で共有昇格)。
+
+    **I3 (Task 11 レビュー) が塞いだ穴を両サイトへ適用**: 値セルが全部空
+    (時刻だけの出力) でも列数さえ合えば緑になっていた旧 assert を、非空セルの
+    存在チェックで閉じる。BOM 読み口 (utf-8-sig) は spec §5.1-2 の規約どおり。
+    """
+    from pathlib import Path
+
+    text = Path(path).read_text(encoding="utf-8-sig")
+    lines = text.splitlines()
+    assert lines and lines[0].startswith("timestamp,"), f"想定外のヘッダ: {lines[:1]}"
+    header = lines[0].split(",")
+    rows = [line.split(",") for line in lines[1:] if line]
+    for row in rows:
+        assert len(row) == len(header), f"列数がヘッダと不一致: {len(row)}"
+    assert any(cell for row in rows for cell in row[1:]), (
+        "値列が全部空 (時刻だけの出力)"
+    )
+    return rows
+
+
 def to_phys(view, sx: float, sy: float) -> tuple[int, int]:
     """view の scene 座標 (sx, sy) → 物理スクリーンピクセル（DPR スケール）。"""
     vp = view.plot_widget.mapFromScene(QPoint(int(sx), int(sy)))

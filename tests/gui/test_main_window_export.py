@@ -10,7 +10,7 @@ from valisync.core.export.csv_exporter import CsvExportOptions
 from valisync.core.models import Signal
 from valisync.gui.viewmodels.app_viewmodel import AppViewModel
 from valisync.gui.views import main_window as mw_mod
-from valisync.gui.views.export_csv_dialog import ExportRequest
+from valisync.gui.views.export_csv_dialog import ExportRequest, csv_header_resolver
 from valisync.gui.views.main_window import MainWindow
 
 
@@ -28,19 +28,26 @@ def test_export_csv_runs_export_with_request(
     mw = MainWindow(AppViewModel())
     qtbot.addWidget(mw)
     target = tmp_path / "out.csv"
-    sig = Signal(
-        name="csv_1::a",
+    # E-4b Task 4 supersede: ExportRequest は **列キー + header_resolver** を運ぶ
+    # (D1・spec §5.2 — Signal のリストは受けない)。Signal fixture が不要になった。
+    # Minor 2 (T4 レビュー): extra_signals は空タプルのままだと `() is ()` が
+    # CPython の空タプル共有により無条件で真になり、下の identity assert が
+    # 中身を見ずに常に通る vacuous なガードになっていた。1 本の Derived Signal を
+    # 持たせて実際に運搬されることを確かめる。
+    extra_sig = Signal(
+        name="derived::x",
         timestamps=np.array([0.0]),
         values=np.array([1.0]),
-        file_format="CSV",
+        file_format="Derived",
         bus_type="",
         source_file="",
     )
     req = ExportRequest(
-        signals=[sig],
+        keys=("csv_1::a",),
         output_path=target,
-        use_unified_timeline=False,
         options=CsvExportOptions(delimiter=";"),
+        header_resolver=csv_header_resolver,
+        extra_signals=(extra_sig,),
     )
     # ダイアログを差し替え (要求を返す)
     monkeypatch.setattr(
@@ -53,10 +60,15 @@ def test_export_csv_runs_export_with_request(
     )
     mw.export_csv()
     qtbot.waitUntil(lambda: len(calls) == 1, timeout=3000)
-    args, _kwargs = calls[0]
-    assert args[0] == [sig] and args[1] == target
-    # 4引数転送の回帰捕捉 (Task 5 Minor): use_unified_timeline/options も転送されること
-    assert args[2] is req.use_unified_timeline and args[3] is req.options
+    args, kwargs = calls[0]
+    assert args[0] == ("csv_1::a",) and args[1] == target
+    # 「要求の全フィールドが転送されること」という契約の意図は保存する
+    # (E-4b Task 4 supersede: 旧 4 位置引数のうち use_unified_timeline は
+    # options.use_unified_timeline へ移り、header_resolver/extra_signals が
+    # キーワードで加わった — 転送漏れの回帰捕捉という役目は同じ)。
+    assert args[2] is req.options
+    assert kwargs["header_resolver"] is req.header_resolver
+    assert kwargs["extra_signals"] is req.extra_signals
 
 
 def test_export_csv_cancel_does_nothing(qtbot: QtBot, monkeypatch) -> None:
@@ -135,6 +147,40 @@ def test_export_csv_offset_for_resolves_selected_signal_offset(
     offset_for = captured["offset_for"]
     assert callable(offset_for)
     assert offset_for("csv_1::speed") == 1.0
+    # I2 fix (task-3-review.md #1): `offset_keys` が注入されて初めて prod は
+    # 反転済み (Task 3) のガード経路を通る — 未注入だと legacy 経路へ黙って
+    # 戻ってしまうのに、このファイルにはその配線を確認する assert が無かった。
+    assert set(captured["offset_keys"]()) == {"csv_1::speed"}
+
+
+def test_export_csv_offset_keys_carries_both_offset_sources(
+    qtbot: QtBot, monkeypatch
+) -> None:
+    """`offset_keys` lambda は signal 辞書と file 辞書の**両方**を運ぶ。
+
+    再レビュー是正 (2026-08-01): 上のテストは signal スコープしか張らないため
+    lambda から `*file_offsets` を消しても緑のまま (実測 gui 1556 全緑)。
+    その退行では `_selection_touches` のセパレータ無し分岐 (グループキー専用)
+    が production で死に、ファイル単位の R14 オフセットが range-radio ガード
+    (F-0/UX-28 契約) を黙って失う。group スコープ適用は実効オフセットを
+    置き換えるため既存テストへは追記できず、専用テストで両源を束縛する。
+    """
+    mw = MainWindow(AppViewModel())
+    qtbot.addWidget(mw)
+    panel = mw.graph_area_vm.active_panel()
+    panel.add_signal("csv_1::speed")
+    # group 適用は同グループの signal オフセットを吸収して消す (R14 の
+    # 「ファイル全体に適用」の意味論) ので、group -> signal の順で両辞書を残す。
+    mw.app_vm.apply_offset("csv_1::speed", 2.0, "group")
+    mw.app_vm.apply_offset("csv_1::speed", 1.0, "signal")
+
+    captured = _capture_ask_kwargs(monkeypatch, mw_mod)
+    mw.export_csv()
+
+    keys = set(captured["offset_keys"]())
+    # 片側だけの assert はもう片側の削除に盲目 — 両源を明示的に要求する。
+    assert "csv_1" in keys, keys  # file 辞書由来 (グループキー)
+    assert any("::" in k for k in keys), keys  # signal 辞書由来が空でないこと
 
 
 def test_export_csv_offset_for_is_app_global_not_scoped_to_initial_selection(

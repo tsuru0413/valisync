@@ -3,6 +3,10 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from types import MappingProxyType
+from typing import TYPE_CHECKING, NamedTuple
+
+if TYPE_CHECKING:
+    import numpy as np
 
 from valisync.core.loaders.column_names import (
     ColumnPath,
@@ -48,6 +52,21 @@ _MIN_EVICTABLE_COLUMNS = 1
 _RESOLVED_EVICT_DIVISOR = 8
 
 
+class _ChannelHit(NamedTuple):
+    """列キーを所有する物理チャンネルの探索結果 (``_owning_channel`` の返り値)。
+
+    ``rest`` が空文字 = 渡されたキーが **表示名そのもの** (物理チャンネルであって
+    列ではない)。そのときだけ ``path`` は None になる — 鋳造器はここで打ち切り、
+    チャンネル解決器 (``channel_key_of``) は「自分自身が所有者」として答える、
+    という**唯一の非対称**がこのフィールドに集約されている。
+    """
+
+    display: str
+    rest: str
+    record: ColumnRecord
+    path: ColumnPath | None
+
+
 class SignalGroupManager:
     """Manages loaded Signal_Groups under unique per-load keys.
 
@@ -65,6 +84,10 @@ class SignalGroupManager:
         self._namespaced_list: list[Signal] | None = None
         self._namespaced_map: dict[str, Signal] | None = None
         self._namespaced_by_key: dict[str, list[Signal]] = {}
+        # 名前空間キャッシュの世代 (E-4b)。lost-update (古いスナップショットの
+        # 焼き付け) を閉じるための唯一の観測点で、_invalidate_namespaced が増やし
+        # _ensure_namespaced / group_signals が commit 前に照合する。
+        self._namespaced_gen = 0
         # 鋳造した列 Signal (E-1)。**_invalidate_namespaced() に相乗りさせない** —
         # 相乗りすると 2 ファイル目のロードごとに全プロット列がフルチャンネル再読み
         # (実測 0.73-1.18 s/列) になる純粋な回帰。切り離しは remove(key) と
@@ -80,6 +103,10 @@ class SignalGroupManager:
         # (prod 4,324) を払うから。
         self._physical_by_name: dict[str, dict[str, Signal]] = {}
         self.mint_count = 0
+        # export 専用 resolve の鋳造回数 (MG-1)。**mint_count とは別勘定**にする —
+        # mint_count は「帳簿に載った鋳造」の数で、既存テストがその意味で pin して
+        # いる。transient を混ぜると全列エクスポートで 330k 増えて意味が壊れる。
+        self.transient_mint_count = 0
         # ─── 鋳造列 LRU (E-4a・D4) ────────────────────────────────────────────
         self._resolved_capacity = max(1, resolved_capacity)
         # 名前空間つき列キーの recency 順 (dict の挿入順 = 古い順)。値は使わない。
@@ -107,15 +134,25 @@ class SignalGroupManager:
         prefix = _FORMAT_KEY_PREFIX.get(group.file_format)
         if prefix is None:
             raise ValueError(f"unsupported file_format: {group.file_format!r}")
-        self._counters[prefix] = self._counters.get(prefix, 0) + 1
-        key = f"{prefix}_{self._counters[prefix]}"
-        self._groups[key] = group
-        self._physical_by_name[key] = self._index_physical(group)
-        if column_records:
-            # 呼び出し側の dict と縁を切る (ローダーの一時表が後から変わっても
-            # 登録済みグループの列構造は動かない)。物理チャンネル数ぶんなので安い。
-            self._column_records[key] = dict(column_records)
-        self._invalidate_namespaced()
+        # E-4b (spec §5.7-2): 連番の read-modify-write と表の更新を **_resolved_lock 下**
+        # で不可分にする。今日ロック外なので、2 ファイル同時ドロップで同じキーが
+        # 2 グループへ割り当たり後勝ちで 1 つ消える (消えたグループは _groups から
+        # 辿れず、その handle は remove -> close へ到達できない = ファイルが開いたまま)。
+        # ロード経路 (LoadWorker -> session.load -> add) にこの lock の再入は無い。
+        with self._resolved_lock:
+            self._counters[prefix] = self._counters.get(prefix, 0) + 1
+            key = f"{prefix}_{self._counters[prefix]}"
+            self._physical_by_name[key] = self._index_physical(group)
+            if column_records:
+                # 呼び出し側の dict と縁を切る (ローダーの一時表が後から変わっても
+                # 登録済みグループの列構造は動かない)。物理チャンネル数ぶんなので安い。
+                self._column_records[key] = dict(column_records)
+            # 書き順は「内部表 -> _groups[key] -> _invalidate_namespaced」(I7b)。
+            # 「最後に書く」の字義どおり (invalidate -> _groups) にすると、invalidate 後の
+            # 間隙で走った再構築が **新グループを含まない** map を焼き付け、次の
+            # invalidate までそのファイルの信号が引けない。
+            self._groups[key] = group
+            self._invalidate_namespaced()
         return key
 
     def remove(self, key: str) -> tuple[SignalGroup, tuple[Signal, ...]]:
@@ -144,9 +181,14 @@ class SignalGroupManager:
             for column_key in table:
                 self._resolved_order.pop(column_key, None)
             columns = tuple(table.values())
-        self._column_records.pop(key, None)
-        self._physical_by_name.pop(key, None)
-        self._invalidate_namespaced()
+            # E-4b: 副表の掃除と無効化も **lock の中** (add() と対称にする)。
+            # _mint_column はロック下でこの 2 表を読むので、外に置くと「読みながら
+            # 消える」窓が残る。無効化を外に出すと、_groups から消えてから世代が
+            # 上がるまでの間隙で走った再構築が「消えたグループを含む map」を
+            # 焼き付ける (= 閉じたのに信号が引ける)。
+            self._column_records.pop(key, None)
+            self._physical_by_name.pop(key, None)
+            self._invalidate_namespaced()
         return group, columns
 
     @property
@@ -196,16 +238,22 @@ class SignalGroupManager:
         return result
 
     def _invalidate_namespaced(self) -> None:
-        """Drop the namespaced caches; rebuilt lazily on next access."""
+        """Drop the namespaced caches; rebuilt lazily on next access.
+
+        **呼び出し側が ``_resolved_lock`` を保持していること** (E-4b)。世代の +1 が
+        非アトミックなうえ、これと ``_groups`` の書きが別トランザクションだと
+        lost-update の窓が残る。
+        """
         self._namespaced_list = None
         self._namespaced_map = None
         self._namespaced_by_key = {}
+        self._namespaced_gen += 1
         # NOTE: _resolved_by_key はここで**捨てない** (Critical 1)。捨てると 2 ファイル目の
         # ロードごとに全プロット列が新オブジェクト (空キャッシュ) となり、次の render で
         # フルチャンネル再読み (実測 0.73-1.18 s/列) が走る。切り離しは remove(key) と
         # E-4a の LRU evict のみ。
 
-    def _ensure_namespaced(self) -> None:
+    def _ensure_namespaced(self) -> tuple[list[Signal], dict[str, Signal]]:
         """Build and cache the namespaced signal list/map once (idempotent).
 
         The expensive work — creating one namespaced Signal wrapper per signal
@@ -214,14 +262,92 @@ class SignalGroupManager:
         every signal (duplicate namespaced names included); the map is keyed by
         name with last-wins dedupe, matching the historical ``signals()``-to-dict
         behaviour its callers relied on.
+
+        **先頭 2 行 (lock なし高速路) はペアの世代整合を保証しない** (Minor 3):
+        ``self._namespaced_list`` と ``self._namespaced_map`` を別々に読むので、
+        その間に別スレッドの invalidate → 再構築 → commit が挟まると、古い世代の
+        list と新しい世代の map を組にして返しうる。今日の呼び出し側 (``signals()``
+        / ``signal_map()``) はどちらか一方しか消費しないので実害は無いが、将来
+        両方を**同時に**消費する呼び出し側を足すなら、下のロック付き経路
+        (list/map を同じ ``with`` の中で読む) を通すこと — ペアの整合が要るなら
+        高速路を素通りしてはならない。
+
+        E-4b (spec §5.7-3): 反復は **スナップショット** に対して行い、書き戻しは
+        **世代照合つき** で行う。旧実装は無ロックで ``self._groups.items()`` を直に
+        回しており、export worker の resolve が ~18 分走る本増分では
+        ``dictionary changed size during iteration`` が窓ではなく常態になる。
+
+        ビルドを lock の中でやらないのは、O(全信号) のラッパ構築が export worker の
+        取る lock を占有し、正しさの修正が待ちの回帰に化けるため。ただしスナップ
+        ショットだけでは **lost-update** (古いスナップショットを構築後に焼き付け、
+        新グループが次の invalidate まで見えない) が残るので、commit 時の世代照合で
+        閉じる。**この 2 段構えが「ロックにしない」ことの対価**であり、片方だけでは
+        不完全。
+
+        **無ロック経路は 2 回まで、3 回目は lock 下で作り切る** (I1・実測):
+        「ロックにしない」対価には裏があり、add churn がビルド時間より速いと
+        無ロック経路は commit のたびに世代がずれて**無限に負け続ける** — 修正前は
+        進行の保証が無く、``resolve()`` (GUI の render パスと 18 分走る export
+        worker の両方が通る最もホットな経路) がスレッドを握ったまま戻らない。
+        実測 (prod 形 4,324 チャンネル・ロック外ビルド 1 回 76 ms・add 間隔 0.5 ms の
+        連続 churn): 修正前は resolve() が 2 秒に 1 回しか完了せず最大待ち
+        3,113 ms、``attempt >= 3`` の前進保証を入れた後は 7,852 完了・最大待ち
+        163 ms。3 回目に限り lock を手放さずスナップショット取得から commit まで
+        終わらせる (下の実装参照) — ``add()``/``remove()`` も同じ lock を取るので
+        その中では churn が起こりえず必ず前進する。「O(全信号) の構築を lock 下で
+        やらない」という上の意図は *毎回* ではなく *通常経路 (attempt 1-2)* の話
+        として保たれる: 3 回目に限り、正しさ (有界な前進) を lock 保持時間より
+        優先する。
+
+        **値を返すのが契約** (brief の ``-> None`` からの意図的逸脱・報告済み):
+        呼び出し側が ``self._namespaced_map`` を**もう一度**読む形にすると、その
+        1 バイトコードの隙に別スレッドの add/remove が invalidate して None になり、
+        ``resolve()`` (E-4b で最もホットな経路) が AttributeError で落ちる。返り値
+        経由なら呼び出し側は自分が見たスナップショットを握り続けられる。
         """
-        if self._namespaced_list is not None:
-            return
-        result: list[Signal] = []
-        for key, group in self._groups.items():
-            result.extend(self._namespaced(key, group))
-        self._namespaced_list = result
-        self._namespaced_map = {sig.name: sig for sig in result}
+        cached_list = self._namespaced_list
+        cached_map = self._namespaced_map
+        if cached_list is not None and cached_map is not None:
+            return cached_list, cached_map
+        attempt = 0
+        while True:
+            attempt += 1
+            with self._resolved_lock:
+                cached_list = self._namespaced_list
+                cached_map = self._namespaced_map
+                if cached_list is not None and cached_map is not None:
+                    return cached_list, cached_map
+                gen = self._namespaced_gen
+                # lock 下なので安全 (C の原子性には依存しない — この行を with の
+                # 外へ出さないこと。Minor 2)。
+                snapshot = list(self._groups.items())
+                if attempt >= 3:
+                    # 前進保証 (I1): ここへ来るのは無ロック経路が 2 回とも churn に
+                    # 負けた後だけ。lock を握ったまま作り切る — add()/remove() も
+                    # この lock を取るので、この中では二度と負けない。_namespaced()
+                    # は Signal ラッパの構築のみで I/O を行わないので lock 下で
+                    # 呼んでよい (docstring の測定値・上のコメント参照)。
+                    built = [s for k, g in snapshot for s in self._namespaced(k, g)]
+                    built_map = {sig.name: sig for sig in built}
+                    self._namespaced_list = built
+                    self._namespaced_map = built_map
+                    return built, built_map
+            result: list[Signal] = []
+            for group_key, group in snapshot:
+                result.extend(self._namespaced(group_key, group))
+            mapping = {sig.name: sig for sig in result}
+            with self._resolved_lock:
+                if self._namespaced_gen != gen:
+                    continue  # 途中で add/remove が入った — 作り直す (lost-update 閉鎖)
+                cached_list = self._namespaced_list
+                cached_map = self._namespaced_map
+                if cached_list is not None and cached_map is not None:
+                    # 同世代で別スレッドが先に commit 済み — 正典を返す
+                    # (同じ入力から作った等価物なので、どちらでも値は同じ)。
+                    return cached_list, cached_map
+                self._namespaced_list = result
+                self._namespaced_map = mapping
+                return result, mapping
 
     def group_signals(self, key: str) -> list[Signal]:
         """Namespaced signals for a single group (KeyError if key is unknown).
@@ -230,19 +356,30 @@ class SignalGroupManager:
         Cached per key on the same invalidation lifecycle as the whole-session
         caches (FU-08); rebuilt only after add()/remove(). Prevents the
         per-call rebuild of every namespaced wrapper (FU-11).
+
+        E-4b: per-key キャッシュにも ``_ensure_namespaced`` と同じ lost-update が
+        あるので、書き戻しは世代照合つきで行う (下のコメント参照)。
         """
-        group = self._groups[key]  # 未知 key は従来どおり KeyError
-        cached = self._namespaced_by_key.get(key)
+        with self._resolved_lock:
+            group = self._groups[key]  # 未知 key は従来どおり KeyError
+            cached = self._namespaced_by_key.get(key)
+            gen = self._namespaced_gen
         if cached is None:
             cached = self._namespaced(key, group)
-            self._namespaced_by_key[key] = cached
+            with self._resolved_lock:
+                # remove 済みキーの復活を防ぐ (復活すると「閉じたのに信号が引ける」
+                # 状態が次の invalidate まで残る)。防御的 — 今日は世代照合だけで
+                # 足りる (全 `_groups` 変異が同一 lock 下で invalidate を呼ぶため、
+                # 世代不変 ⇒ 在籍不変)。在籍再確認は将来 invalidate を伴わない変異が
+                # 入った場合の保険。
+                if self._namespaced_gen == gen and key in self._groups:
+                    self._namespaced_by_key[key] = cached
         return list(cached)  # 防御コピー(signals() と同契約) — Signal は共有
 
     def signals(self) -> list[Signal]:
         """Return every signal across all groups, name-spaced by its group key."""
-        self._ensure_namespaced()
-        assert self._namespaced_list is not None
-        return list(self._namespaced_list)
+        namespaced, _mapping = self._ensure_namespaced()
+        return list(namespaced)
 
     def signal_map(self) -> Mapping[str, Signal]:
         """読み取り専用 ``{namespaced_name: Signal}`` ビュー (FU-08 でキャッシュ)。
@@ -255,9 +392,8 @@ class SignalGroupManager:
         キーの列挙は 330k 列を鋳造して ~390 MB を再導入するため提供しない —
         ``dict(signal_map())`` は使ってはならない。
         """
-        self._ensure_namespaced()
-        assert self._namespaced_map is not None
-        return _ResolvingMap(self._namespaced_map, self.resolve)
+        _namespaced, mapping = self._ensure_namespaced()
+        return _ResolvingMap(mapping, self.resolve)
 
     def resolve(self, key: str) -> Signal | None:
         """名前空間つきキーを Signal へ解決する (無ければ列として鋳造を試みる)。
@@ -271,9 +407,8 @@ class SignalGroupManager:
         値・名前・時刻軸は同じで、読みも T2 のチャンネルキャッシュに当たるため
         安い。列 Signal を ``is`` で追跡するコードを書いてはならない。
         """
-        self._ensure_namespaced()
-        assert self._namespaced_map is not None
-        hit = self._namespaced_map.get(key)
+        _namespaced, mapping = self._ensure_namespaced()
+        hit = mapping.get(key)
         if hit is not None:
             return hit
         group_key = key.split(KEY_SEPARATOR, 1)[0]
@@ -303,6 +438,49 @@ class SignalGroupManager:
             self._resolved_order[key] = None
             self.mint_count += 1
             self._evict_resolved()
+            return minted
+
+    def resolve_transient(self, key: str) -> Signal | None:
+        """エクスポート専用の列解決 (**帳簿に載せない** — E-4b MG-1)。
+
+        ``resolve()`` との違いはただ 1 点、鋳造した列を ``_resolved_by_key`` /
+        ``_resolved_order`` へ**登録しない**こと。生存はブロックローカルの参照だけ
+        になり、参照を落とせばその場で消える。
+
+        **なぜ LRU に任せられないか**: 全列エクスポート (330,004 列) を ``resolve()``
+        で回すと、容量 512 の LRU の定常が 512 本 = G2 の上限を常時超える。しかも
+        選択列が 512 未満の範囲エクスポートでは **1 本も evict されず**、現状の
+        114.5 MiB 残留がそのまま残る (spec §5.3)。「LRU に任せる」は機構レス。
+
+        **既に帳簿に在る列は作り直さず、そのまま返す** (二重実体化を避ける) が、
+        recency は**動かさない**。動かすと全列エクスポートが LRU の順序表を総なめ
+        して、GUI が次に読む列の追い出し順序が壊れる。
+
+        pin・evict・``mint_count`` のいずれにも触れないので、D4 の identity 契約
+        (pin 中は同一オブジェクト) は不変。
+        """
+        # 10a (spec §5.7-3・PR 1d51f85) supersede: `self._ensure_namespaced()` を
+        # discard-return で呼び `assert self._namespaced_map is not None` する形は
+        # コンパイルもテストも通るが、assert 直後の 1 バイトコードの隙に別スレッドの
+        # add/remove が invalidate すると再び None に戻り `.get` が NoneType.get で
+        # 落ちる窓を再導入する。返り値経由の形を崩さないこと。
+        _namespaced, mapping = self._ensure_namespaced()
+        hit = mapping.get(key)
+        if hit is not None:
+            return hit  # 物理チャンネルは既存オブジェクト (鋳造経路に入らない)
+        group_key = key.split(KEY_SEPARATOR, 1)[0]
+        with self._resolved_lock:
+            # 在籍判定を lock の中で行う理由は resolve() と同一 (E-4a T3 レビュー M3)。
+            # E-4b では export ワーカーがこの経路を ~18 分走らせるので、窓が常態化する。
+            if group_key not in self._groups:
+                return None
+            # ``setdefault`` ではなく ``get`` (帳簿に空エントリすら作らない)。
+            cached = self._resolved_by_key.get(group_key, {}).get(key)
+            if cached is not None:
+                return cached  # _touch しない (上記の WHY)
+            minted = self._mint_column(group_key, key)
+            if minted is not None:
+                self.transient_mint_count += 1
             return minted
 
     def resolved_keys(self, group_key: str) -> frozenset[str]:
@@ -465,6 +643,64 @@ class SignalGroupManager:
             return (display_name,)
         return tuple(leaf_names(display_name, record.spec))
 
+    def channel_master(self, group_key: str, display_name: str) -> np.ndarray | None:
+        """物理チャンネルの master 配列 (**鋳造しない・値を読まない**)。
+
+        見積 (E-4b T-UX) が union と空セル率を出すための唯一の入口。``resolve`` で
+        代用すると列を鋳造して LRU の枠を食う (``has_column`` の docstring と同じ理由)。
+        鋳造列は親の master を **同一オブジェクトのまま** 共有するので、ここで返す
+        配列は列がどれであっても identity dedup の同じ 1 本になる (spec §5.4)。
+
+        **ColumnRecord を持たないグループ (CSV/Derived) だけ**、信号名の線形走査へ
+        落ちる。それらは ``physical_channel`` metadata を載せないので物理索引が空で、
+        かつ 1 信号 = 1 列なので信号名がそのままチャンネル名になる (``scan_masters``
+        の ``metadata.get("physical_channel", sig.name)`` フォールバックと同型)。
+        **表を持つグループ (MDF) では走査しない**のが load-bearing: prod の
+        330,004 列が全部解決不能な形 (アンロード直後など) になったとき、1 キューに
+        つき 4,324 信号を走査すると 1.4e9 回の比較 = 見積が固まる。
+
+        **残る限界 (既知・繰越)**: 表を持たないグループでは 1 チャンネル = 1 列
+        なので、全列を見積もると走査は「列数 x 信号数」= O(N^2) になる。本機実測
+        (見積全体・`estimate_export`): 500 列 5.9 ms / 2,000 列 74.8 ms /
+        5,000 列 458 ms。**`estimate_export(channel_columns=...)` の表を渡しても
+        消えない** (表が消すのは列 -> チャンネル解決の方で、走査はチャンネルごとに
+        残る — 同条件で 5.3 / 67.5 / 442 ms)。実 ADAS CSV の列幅 (数十〜数百) では
+        無視できるが、数千列の CSV が現れたら `_physical_by_name` と同型の索引が要る。
+        """
+        sig = self._physical_by_name.get(group_key, {}).get(display_name)
+        if sig is None and not self._column_records.get(group_key):
+            group = self._groups.get(group_key)
+            if group is not None:
+                sig = next((s for s in group.signals if s.name == display_name), None)
+        return None if sig is None else sig.timestamps
+
+    def is_lazy_group(self, group_key: str) -> bool:
+        """このグループの samples が **まだファイル側に在る** か (handle を持つか)。
+
+        見積の読みコスト項の母数。CSV/Derived は EagerValues で既に実体化済みなので
+        0 秒 — ここを一様に cold 扱いすると、CSV だけの小さな出力でも確認ダイアログが
+        「5 秒かかります」と嘘をつく。
+        """
+        group = self._groups.get(group_key)
+        return group is not None and group.handle is not None
+
+    def channel_leaf_count(self, group_key: str, display_name: str) -> int:
+        """物理チャンネル 1 本の数値リーフ本数 (**鋳造しない・名前を生成しない**)。
+
+        Task 11 レビュー C1 是正: 見積の読み単価はチャンネル**クラス**
+        (scalar=1 リーフ / wide=2+ リーフ) で 480 倍差がある (spike §9-4:
+        prod scalar 0.67ms 対 prod wide 338.2ms) ので、単一単価を全チャンネルへ
+        掛けると scalar 側が桁で過大になる。この索引は ``total_column_count``
+        (グループ全体の総リーフ数) と同じ ``leaf_count(record.spec)`` を**チャンネル
+        1 本単位**で返す — 名前列挙 (``column_names_of``) と違い leaf_count は
+        構造の深さだけを辿るので (再帰は軸長の掛け算・struct のフィールド和)、幅
+        1,100 のチャンネルでも 1,100 本の文字列を作らない。
+        表を持たないグループ (CSV/Derived・未知チャンネル) は 1 信号 = 1 列なので
+        常に 1。
+        """
+        record = self._column_records.get(group_key, {}).get(display_name)
+        return 1 if record is None else leaf_count(record.spec)
+
     def total_column_count(self, group_key: str) -> int:
         """グループの数値列総数 (未知 key は ``group()`` と同じく KeyError)。
 
@@ -519,6 +755,57 @@ class SignalGroupManager:
             # 長い方が別チャンネルとして実在しても、短い方が正しい親でありうる。
         return False
 
+    def _owning_channel(self, group_key: str, display_key: str) -> _ChannelHit | None:
+        """*display_key* を所有する物理チャンネルを最長一致で確定する。
+
+        ``_mint_column`` の探索ループ**そのもの**を切り出したもの — 鋳造器と
+        チャンネル解決器 (``channel_key_of``) はここだけを共有する。**2 実装に
+        してはならない**: 見積 (E-4b T-UX) が数えるチャンネルとブロック割当が
+        使うチャンネルがずれ、見積の読み項が桁で嘘をつく。
+
+        **鋳造しない・値を読まない**ので見積・計測器から呼べる。返り値が
+        ``rest == ""`` のときは「表示名そのもの = チャンネルであって列ではない」で、
+        打ち切り条件も ``_mint_column`` と同一 — ``continue`` にすると実チャンネル
+        ``A[0]`` が配列 ``A`` の列 0 と字面衝突したとき短い親へ滑り、**別チャンネルの
+        値を例外なしで返す**。
+        """
+        records = self._column_records.get(group_key)
+        if not records:
+            return None
+        for i in range(len(display_key), 0, -1):
+            record = records.get(display_key[:i])
+            if record is None:
+                continue
+            rest = display_key[i:]
+            if not rest:
+                return _ChannelHit(display_key[:i], "", record, None)
+            # 二重名の契約: 表示名は dedup 済み名から、selector は **生チャンネル名**
+            # から導く。両者は同じ suffix を共有する (ローダーの out_leaves と
+            # sel_leaves は同一構造を同順に走査する)。dedup 済み表示名で parse_leaf を
+            # 引くと "W[1][2]" の "[1]" を W 自身の配列インデックスとして消費し、
+            # 解決不能になるか別チャンネルの列を返す。
+            raw_leaf = f"{record.raw_base_name}{rest}"
+            if parse_leaf(raw_leaf, {record.raw_base_name: record.spec}) is None:
+                continue  # 消費しきれない / 非数値リーフ = この親では解決不能
+            path = _leaf_path(record, rest)
+            if path is None:
+                continue  # 名前は通ったが位置が引けない = この親では解決不能
+            return _ChannelHit(display_key[:i], rest, record, path)
+        return None
+
+    def channel_key_of(self, group_key: str, column_key: str) -> str | None:
+        """``"{group_key}::{物理チャンネル表示名}"`` (解決不能なら None・**鋳造しない**)。
+
+        幅 k のチャンネルの列は k 本とも同じ 1 キーへ落ちる — 見積がチャンネル単位で
+        読み時間を数えられる根拠そのもの (列ごとに別キーを返すと幅 1,100 の
+        チャンネルで読み項が 1,100 倍に見える)。
+        """
+        _prefix, sep, display_key = column_key.partition(KEY_SEPARATOR)
+        if not sep:
+            return None  # 名前空間の無いキーは列キーではない (_mint_column と同じ)
+        hit = self._owning_channel(group_key, display_key)
+        return None if hit is None else f"{group_key}{KEY_SEPARATOR}{hit.display}"
+
     def _mint_column(self, group_key: str, key: str) -> Signal | None:
         """列キーから Signal を鋳造する (解決できなければ None)。
 
@@ -534,66 +821,50 @@ class SignalGroupManager:
         handle = group.handle
         if handle is None:
             return None  # CSV/Derived は LD-14 の列文法を持たない
-        records = self.column_records(group_key)
         # 親は **表示名** (LD-08 dedup 済み) の最長一致で確定する。表示名は物理
         # チャンネルごとに一意なので、parse_leaf 単体では避けられない生名衝突
         # (同名 2 チャンネルが同じ spec キーを共有する・column_names.parse_leaf の
-        # precondition) をここで断てる。
-        for i in range(len(display_key), 0, -1):
-            record = records.get(display_key[:i])
-            if record is None:
-                continue
-            rest = display_key[i:]
-            if not rest:
-                # 表示名そのもの = 物理チャンネル (容器またはスカラー) であって列
-                # ではない。ここで **打ち切る** のが要点 (T7 の第 2 の防波堤):
-                # `continue` にすると、実チャンネル `A[0]` が配列 `A` の列 0 と
-                # 字面衝突したとき、より短い親 `A` がヒットして **別チャンネルの
-                # 値を例外なしで返す**。今日この経路が踏まれないのは resolve() が
-                # _namespaced_map を先に見るからで、その前提は「レコードのキー集合
-                # == 発行された Signal 名」という 1:1 不変条件 — 述語ではない。
-                # 1:1 が崩れた瞬間に誤データの入口になるので、鋳造器自身でも断つ。
-                return None
-            # 二重名の契約: 表示名は dedup 済み名から、selector は **生チャンネル名**
-            # から導く。両者は同じ suffix を共有する (ローダーの out_leaves と
-            # sel_leaves は同一構造を同順に走査する)。dedup 済み表示名で parse_leaf を
-            # 引くと "W[1][2]" の "[1]" を W 自身の配列インデックスとして消費し、
-            # 解決不能になるか別チャンネルの列を返す。
-            raw_leaf = f"{record.raw_base_name}{rest}"
-            if parse_leaf(raw_leaf, {record.raw_base_name: record.spec}) is None:
-                continue  # 消費しきれない / 非数値リーフ = この親では解決不能
-            path = _leaf_path(record, rest)
-            if path is None:
-                continue  # 名前は通ったが位置が引けない = この親では解決不能
-            parent = self._physical_signal(group_key, display_key[:i])
-            if parent is None:
-                return None
-            return Signal(
-                name=key,
-                # master は親と**同一オブジェクト**を渡す (source_info の
-                # id(s.timestamps) dedup が同一性に依存する)。ローダーが read-only
-                # 化済みなので Signal.__init__ はコピーしない。
-                timestamps=parent.timestamps,
-                values_source=LazyMdfValues(
-                    handle,
-                    record.raw_base_name,
-                    record.group_index,
-                    record.channel_index,
-                    length=len(parent.timestamps),
-                    # 名前は永続キー・位置は読み経路。両方渡すのが列の契約。
-                    selector=(raw_leaf,),
-                    path=path,
-                ),
-                file_format=parent.file_format,
-                bus_type=parent.bus_type,
-                source_file=parent.source_file,
-                metadata={
-                    k: v
-                    for k, v in parent.metadata.items()
-                    if k not in _UNINHERITED_METADATA
-                },
-            )
-        return None
+        # precondition) をここで断てる。探索は `_owning_channel` に 1 実装だけ置く
+        # (見積・計測器と共有する — 2 実装にすると数えるチャンネルがずれる)。
+        hit = self._owning_channel(group_key, display_key)
+        if hit is None or hit.path is None:
+            # path is None = 表示名そのもの = 物理チャンネル (容器またはスカラー)
+            # であって列ではない。ここで **打ち切る** のが要点 (T7 の第 2 の防波堤):
+            # 探索を続けると、実チャンネル `A[0]` が配列 `A` の列 0 と字面衝突した
+            # とき、より短い親 `A` がヒットして **別チャンネルの値を例外なしで
+            # 返す**。今日この経路が踏まれないのは resolve() が _namespaced_map を
+            # 先に見るからで、その前提は「レコードのキー集合 == 発行された Signal
+            # 名」という 1:1 不変条件 — 述語ではない。1:1 が崩れた瞬間に誤データの
+            # 入口になるので、鋳造器自身でも断つ。
+            return None
+        parent = self._physical_signal(group_key, hit.display)
+        if parent is None:
+            return None
+        return Signal(
+            name=key,
+            # master は親と**同一オブジェクト**を渡す (source_info の
+            # id(s.timestamps) dedup が同一性に依存する)。ローダーが read-only
+            # 化済みなので Signal.__init__ はコピーしない。
+            timestamps=parent.timestamps,
+            values_source=LazyMdfValues(
+                handle,
+                hit.record.raw_base_name,
+                hit.record.group_index,
+                hit.record.channel_index,
+                length=len(parent.timestamps),
+                # 名前は永続キー・位置は読み経路。両方渡すのが列の契約。
+                selector=(f"{hit.record.raw_base_name}{hit.rest}",),
+                path=hit.path,
+            ),
+            file_format=parent.file_format,
+            bus_type=parent.bus_type,
+            source_file=parent.source_file,
+            metadata={
+                k: v
+                for k, v in parent.metadata.items()
+                if k not in _UNINHERITED_METADATA
+            },
+        )
 
     @staticmethod
     def _index_physical(group: SignalGroup) -> dict[str, Signal]:

@@ -25,6 +25,12 @@ class Signal:
     """
 
     __slots__ = (
+        # G2/G5 (E-4b spec §6) の生存オラクルが weakref を要求する。__slots__ に
+        # __weakref__ が無いと weakref.ref(sig) が TypeError になり、**帳簿以外の
+        # 観測手段が 1 つも無くなる** (resolved_keys は export 専用 resolve に
+        # 構造的に盲目・bytes_held は pin されない列に無関係 = spec §10 で使用禁止)。
+        # コストはインスタンスあたりポインタ 1 本 (prod の常駐 4,324 個で ~35 KB)。
+        "__weakref__",
         "_finite_view_cache",
         "_monotonic",
         "_range_stat_index_cache",
