@@ -412,6 +412,10 @@ class SignalGroupManager:
         if hit is not None:
             return hit
         group_key = key.split(KEY_SEPARATOR, 1)[0]
+        # with の手前で束縛する (channel_cache.put と同型)。with 内の最終文である
+        # ことに依存すると、将来 with 内の末尾に分岐が増えたときに束縛未到達の
+        # 経路が生まれ UnboundLocalError になる (レビュー M2)。
+        evicted: list[Signal] = []
         with self._resolved_lock:
             # グループ在籍の判定は **lock の中** で行う (E-4a T3 レビュー M3)。外で
             # 判定すると、判定を通ったスレッドが lock 待ちで止まっている間に別の
@@ -506,6 +510,9 @@ class SignalGroupManager:
         減らないので、外れたキーが後から別の列に当たることはない)。
         """
         pinned = frozenset(keys)
+        # with の手前で束縛する (resolve() と同型・レビュー M2 — 理由は resolve()
+        # のコメント参照)。
+        evicted: list[Signal] = []
         with self._resolved_lock:
             self._pinned = pinned
             evicted = self._evict_resolved()
@@ -600,9 +607,10 @@ class SignalGroupManager:
         参照を持ち越し、そこで初めて手放すこと (``resolve`` / ``set_pinned_columns``
         の ``del evicted``)。ここで参照を落とすと、鋳造列が抱える実体 (値配列 +
         ``sorted_view`` が作る float64 ビュー・prod 実測 ~108 KB/列) の dealloc が
-        この lock の保持下で走る。E-4b でエクスポートワーカーが同じ lock を ~18 分
-        取り続ける経路になった (E-4b spec F6 = defer 根拠の失効) ので、GUI の
-        ``resolve()`` がその dealloc を待つ。ロック順は保たれるのでデッドロックには
+        この lock の保持下で走る。E-4b でエクスポートワーカーが同じ lock の取り手に
+        なった (``resolve_transient`` 経由で ~18 分にわたり繰り返し取得する。
+        E-4b spec F6 = defer 根拠の失効) ので、GUI の ``resolve()`` がその dealloc
+        を待つ。ロック順は保たれるのでデッドロックには
         ならず、**症状は待ち時間だけで数字にも出ない** — ``channel_cache.
         _evict_oldest`` が同じ理由で同じ形をしている。test-lock は
         ``test_resolved_column_lru.py::test_evicted_columns_are_freed_outside_the_lock``

@@ -335,6 +335,11 @@ def _drop_via_resolve_minting(wide: LoadResult) -> list[bool]:
     for i in range(1, 8):
         assert mgr.resolve(f"{key}::Wide[{i}]") is not None
     assert mgr.resolved_evictions > 0, "evict が起きていない (setup 失敗 = 反 vacuous)"
+    # probe 列自身が evict されていることを mgr 生存中に pin する。ここを欠くと
+    # 「何かが evict された」しか見ておらず、probe 列だけが生き残って mgr の
+    # フレーム破棄で lock 非保持下に __del__ すると observed == [False] のまま
+    # 両 param とも vacuous に緑になる (レビュー I1・newest-first 改竄で実証済み)。
+    assert observed, "probe 列が evict されていない (test が空回りしている)"
     return observed
 
 
@@ -354,6 +359,8 @@ def _drop_via_unpinning(wide: LoadResult) -> list[bool]:
     assert mgr.resolved_evictions == 0, "pin 中に落ちた (setup 前提が崩れている)"
     mgr.set_pinned_columns(set())
     assert mgr.resolved_evictions > 0, "unpin で落ちていない (反 vacuous)"
+    # 同上 (resolve_minting 側と同じ反 vacuous ガード・レビュー I1)。
+    assert observed, "probe 列が evict されていない (test が空回りしている)"
     return observed
 
 
