@@ -283,3 +283,87 @@ def _consume(rest: str, spec: ColumnSpec) -> ColumnSpec | None:
     if rest:
         return None
     return spec if spec.dtype_kind in _NUMERIC_KINDS else None
+
+
+@dataclass(frozen=True, slots=True)
+class LeafHit:
+    """``display_key`` を「物理チャンネル + リーフサフィックス」へ分けた解釈 1 つ。
+
+    ``rest`` が空文字 = 渡されたキーが **表示名そのもの** (物理チャンネルであって
+    列ではない)。``SignalGroupManager._ChannelHit`` の先頭 3 フィールドと同名・同義
+    で、**位置** (``ColumnPath``) だけがあちら側にある — 位置の解決は
+    ``ColumnRecord.path_index`` を触るのでマネージャの責務である。
+    """
+
+    display: str
+    rest: str
+    record: ColumnRecord
+
+
+def owning_candidates(
+    display_key: str, records: Mapping[str, ColumnRecord]
+) -> Iterator[LeafHit]:
+    """*display_key* を所有しうる物理チャンネルを **長い順** に列挙する。
+
+    **最長一致規則の単一実装** (E-4c G5)。解決側 (``SignalGroupManager.
+    _owning_channel`` — 最初に受理した候補で打ち切る) と検出側
+    (:func:`shadowed_leaf` — 自己ヒットの**次**を見る) がここだけを共有する。
+    規則を 2 箇所に書くと「消えた」と診断が言う列と解決器が実際に返す列がずれ、
+    **どちらも例外を出さずに**食い違う。
+
+    ``records`` のキー空間は **LD-08 dedup 済み表示名**
+    (``SignalGroupManager.column_records``)。``parse_leaf`` へ渡すのは
+    ``ColumnRecord.raw_base_name`` から作る**単一エントリ Mapping** であって、
+    表示名をそのまま生名キーの表へ渡してはならない (``parse_leaf`` の
+    precondition = 二重名の契約)。
+
+    ジェネレータなのは解決側が最初の受理で打ち切るため — 消費しなければ残りの
+    候補は 1 つも評価されず、抽出前の逐次ループと仕事量が完全に一致する。
+    """
+    for i in range(len(display_key), 0, -1):
+        record = records.get(display_key[:i])
+        if record is None:
+            continue
+        rest = display_key[i:]
+        if not rest:
+            yield LeafHit(display_key[:i], "", record)
+            continue
+        # 二重名の契約: 表示名は dedup 済み名から、selector は **生チャンネル名**
+        # から導く。両者は同じ suffix を共有する (ローダーの out_leaves と
+        # sel_leaves は同一構造を同順に走査する)。dedup 済み表示名で parse_leaf を
+        # 引くと "W[1][2]" の "[1]" を W 自身の配列インデックスとして消費し、
+        # 解決不能になるか別チャンネルの列を返す。
+        raw_leaf = f"{record.raw_base_name}{rest}"
+        if parse_leaf(raw_leaf, {record.raw_base_name: record.spec}) is None:
+            continue  # 消費しきれない / 非数値リーフ = この親では解決不能
+        yield LeafHit(display_key[:i], rest, record)
+
+
+def shadowed_leaf(
+    display_name: str, records: Mapping[str, ColumnRecord]
+) -> LeafHit | None:
+    """*display_name* が実チャンネルとして勝つとき、影に隠れる配列リーフを返す。
+
+    最長一致は長い方が勝つので、実チャンネル ``Mat[0]`` は配列 ``Mat`` の第 0 列に
+    **必ず**優先する (E-3 の test-lock 済み意図的仕様)。負けた側の列は列キーでは
+    二度と指せない = 到達不能になる。返すのは**負けた親**の解釈で、
+    ``display``/``rest`` が「どの配列の・どの位置か」を表す。
+
+    自己ヒット (``rest == ""``) を読み飛ばした**次の**候補を返すのが要点 — それが
+    ちょうど「実チャンネルが居なければ勝っていた解釈」である。さらに短い候補は
+    元々その次点にも負けているので、実チャンネル 1 本が隠す列は 1 本だけ
+    (= 衝突ペアあたり診断も 1 件)。
+
+    範囲外の添字 (幅 3 の配列に対する ``Mat[7]``) は ``parse_leaf`` の
+    ``int(index_text) < spec.axis_len`` で自然に落ち、到達不能列が存在しないので
+    None になる。*display_name* が ``records`` のキーでないとき (= 実チャンネル
+    ではないとき) も None — 呼び違いで「列キーが親の影になった」という無い事実を
+    作らないための防波堤。
+    """
+    if display_name not in records:
+        return None
+    for candidate in owning_candidates(display_name, records):
+        if not candidate.rest:
+            continue  # 自分自身 (最長一致で勝つ実チャンネル)
+        return candidate
+    return None

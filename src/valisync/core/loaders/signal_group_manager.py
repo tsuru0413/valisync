@@ -14,7 +14,7 @@ from valisync.core.loaders.column_names import (
     leaf_count,
     leaf_names,
     leaf_paths,
-    parse_leaf,
+    owning_candidates,
 )
 from valisync.core.models import Signal, SignalGroup, retained_bytes
 from valisync.core.models.sample_source import LazyMdfValues
@@ -758,6 +758,17 @@ class SignalGroupManager:
     def _owning_channel(self, group_key: str, display_key: str) -> _ChannelHit | None:
         """*display_key* を所有する物理チャンネルを最長一致で確定する。
 
+        探索そのものは ``column_names.owning_candidates`` に**単一実装**として
+        置いてある (E-4c G5) — 衝突検出 (``mdf_loader._shadow_diagnostics``) が
+        同じ walk を通るので、「この列が消えた」と診断が言う列と鋳造器が実際に
+        返す列が構造的にずれない。ここに残るのは**位置**の解決だけで、
+        ``ColumnRecord.path_index`` を触るためマネージャの責務である。
+
+        **``has_column`` の走査は畳まないこと** (意図的): あちらは
+        ``raw_base_name`` を一切参照しない独立オラクルで、
+        ``test_column_roundtrip.py`` の「生 selector 空間が表示空間へ漏れる」変異
+        クラスを resolve とは別の観測点から殺している。共有化するとその歯が抜ける。
+
         ``_mint_column`` の探索ループ**そのもの**を切り出したもの — 鋳造器と
         チャンネル解決器 (``channel_key_of``) はここだけを共有する。**2 実装に
         してはならない**: 見積 (E-4b T-UX) が数えるチャンネルとブロック割当が
@@ -772,25 +783,15 @@ class SignalGroupManager:
         records = self._column_records.get(group_key)
         if not records:
             return None
-        for i in range(len(display_key), 0, -1):
-            record = records.get(display_key[:i])
-            if record is None:
-                continue
-            rest = display_key[i:]
-            if not rest:
-                return _ChannelHit(display_key[:i], "", record, None)
-            # 二重名の契約: 表示名は dedup 済み名から、selector は **生チャンネル名**
-            # から導く。両者は同じ suffix を共有する (ローダーの out_leaves と
-            # sel_leaves は同一構造を同順に走査する)。dedup 済み表示名で parse_leaf を
-            # 引くと "W[1][2]" の "[1]" を W 自身の配列インデックスとして消費し、
-            # 解決不能になるか別チャンネルの列を返す。
-            raw_leaf = f"{record.raw_base_name}{rest}"
-            if parse_leaf(raw_leaf, {record.raw_base_name: record.spec}) is None:
-                continue  # 消費しきれない / 非数値リーフ = この親では解決不能
-            path = _leaf_path(record, rest)
+        for candidate in owning_candidates(display_key, records):
+            if not candidate.rest:
+                return _ChannelHit(candidate.display, "", candidate.record, None)
+            path = _leaf_path(candidate.record, candidate.rest)
             if path is None:
                 continue  # 名前は通ったが位置が引けない = この親では解決不能
-            return _ChannelHit(display_key[:i], rest, record, path)
+            return _ChannelHit(
+                candidate.display, candidate.rest, candidate.record, path
+            )
         return None
 
     def channel_key_of(self, group_key: str, column_key: str) -> str | None:
