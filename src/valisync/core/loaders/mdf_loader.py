@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -12,6 +12,7 @@ from valisync.core.loaders.column_names import (
     ColumnRecord,
     ColumnSpec,
     leaf_count,
+    shadowed_leaf,
     spec_from_probe,
 )
 from valisync.core.loaders.mdf_handle import MdfHandle
@@ -112,6 +113,51 @@ def _expansion_diagnostic(
             signal_name=display_name,
         )
     )
+
+
+def _shadow_diagnostics(
+    column_records: Mapping[str, ColumnRecord],
+    diagnostics: list[Diagnostic],
+) -> None:
+    """最長一致で影に隠れる配列リーフを info 診断にする (E-4c spec §3)。
+
+    実チャンネル ``Mat[0]`` が配列 ``Mat`` の第 0 列と字面衝突すると、最長一致
+    (E-3 の test-lock 済み意図的仕様) で実チャンネルが勝ち、**配列側のその列は
+    列キーでは二度と指せなくなる**。値は正しく読めるので error ではないが、列が
+    1 本消えたことをユーザーが知る手段が他に無い — info なら LD-12 の ``n_info``
+    側に計上されアラームにならない (spec §3.1 案 C)。
+
+    **判定は ``column_names.shadowed_leaf`` ただ 1 つ**。解決側
+    (``SignalGroupManager._owning_channel``) と同じ walk (``owning_candidates``)
+    を通るので、検出が「消えた」と言う列と解決器が実際に返す列は構造的に一致する。
+    規則を 2 箇所に書いたらそこがずれ、どちらも例外を出さない (spec §3.2 / G5)。
+
+    **``load()`` の末尾で呼ぶこと (``_load_group`` の末尾ではない)**: 衝突する
+    2 本は別のチャンネルグループに居るのが常態で (asammdf の 1 append = 1 グループ)、
+    ``_load_group`` の時点で ``column_records`` は**そこまでに処理したグループ分
+    しか無い**。親が後のグループに居る配置 (``Mat[0]`` を先に append) では走査が
+    親を見つけられず、**検出が append 順に依存して消える**。spec §3.4 の
+    「``_load_group`` 末尾」からの意図的逸脱で、理由はこの 1 点。
+
+    走査量は O(チャンネル数 x 名前長) の dict 参照 (prod 4,324 x ~30 = ~13 万回)。
+    ``parse_leaf`` まで進むのは短いプレフィクスが**実在する表示名だった**ときだけ
+    なので、通常ファイルではループの内側は 1 度も走らない。
+    """
+    for name in column_records:
+        shadow = shadowed_leaf(name, column_records)
+        if shadow is None:
+            continue
+        diagnostics.append(
+            Diagnostic(
+                level="info",
+                message=(
+                    f"信号 '{name}': 同名の実チャンネルが優先されるため、"
+                    f"配列 '{shadow.display}' の列 {shadow.rest} は"
+                    "列キーでは参照できません"
+                ),
+                signal_name=name,  # 勝った側 (診断ドックの「対象」列に整合)
+            )
+        )
 
 
 def _extract_value_labels(conversion: Any) -> dict[float, str] | None:
@@ -326,6 +372,10 @@ class MdfLoader:
                     ),
                 ),
             )
+
+        # 全グループを読み終えてから 1 回だけ走らせる (理由は _shadow_diagnostics
+        # の docstring — グループ末尾では表が未完成で、検出が append 順に消える)。
+        _shadow_diagnostics(column_records, diagnostics)
 
         if not signals:
             diagnostics.append(

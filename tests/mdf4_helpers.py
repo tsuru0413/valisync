@@ -798,6 +798,178 @@ def write_mdf4_two_wide_channels(
     return Path(path)
 
 
+# ─── 影に隠れる列 (E-4c spec §3) ──────────────────────────────────────────────
+#
+# 「最長一致で実チャンネルが勝ち、配列側のその列が列キーでは指せなくなる」配置。
+# **loud-fail (LD-08 の [i] 曖昧化が実チャンネル名と衝突する
+# write_mdf4_display_name_collision) とは別レジーム**である: あちらは表示名が
+# 完全一致してチャンネルが 1 本まるごと拒否されるが、こちらは表示名がすべて
+# 一意で誰も拒否されず、**配列の 1 列だけが静かに到達不能になる**。
+
+_SHADOW_TS = np.array([0.0, 0.1, 0.2, 0.3])
+# 列 i の値は [i, i+10, i+20, i+30] (write_mdf4_2d と同じ規則)。
+_SHADOW_MAT = np.array(
+    [[0, 1, 2], [10, 11, 12], [20, 21, 22], [30, 31, 32]], dtype=np.uint8
+)
+
+
+def _shadow_file(tmp_path: Path, name: str, scalar_name: str) -> Path:
+    """幅 3 の 2-D ``Mat`` + 1-D ``scalar_name`` + ``Clean`` を書く共有本体。
+
+    ``scalar_name`` を ``Mat[0]`` にすると衝突、``Mat[7]`` にすると範囲外
+    (到達不能列が存在しない) — 2 つの fixture の差はその 1 点だけなので、
+    「衝突あり/なし」の対照が名前 1 つの差に凝縮される。
+
+    1-D 側は dtype (float64 vs uint8)・unit (deg vs mm)・値をすべて親と別に
+    しておく: どちらが勝ったかを取り違えたら必ず露見する。
+    """
+    mdf = MDF(version="4.10")
+    try:
+        # 追加順は契約の一部: 配列 ``Mat`` を**先**に置く。実チャンネルが後から
+        # 来ても最長一致で勝つ (順序に依存しない) ことが検出側の前提。
+        mdf.append(
+            [ASignal(samples=_SHADOW_MAT, timestamps=_SHADOW_TS, name="Mat", unit="mm")]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([7.0, 8.0, 9.0, 10.0]),
+                    timestamps=_SHADOW_TS,
+                    name=scalar_name,
+                    unit="deg",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([1.0, 2.0, 3.0, 4.0]),
+                    timestamps=_SHADOW_TS,
+                    name="Clean",
+                )
+            ]
+        )
+        path = tmp_path / name
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
+def write_mdf4_shadowed_leaf(tmp_path: Path) -> Path:
+    """配列 ``Mat`` (3 列) と実チャンネル ``Mat[0]`` の共存 — 衝突 1 件の RED fixture."""
+    return _shadow_file(tmp_path, "shadowed.mf4", "Mat[0]")
+
+
+def write_mdf4_out_of_range_leaf_name(tmp_path: Path) -> Path:
+    """配列 ``Mat`` (3 列) と実チャンネル ``Mat[7]`` — **範囲外なので衝突 0 件**.
+
+    ``Mat[7]`` は字面こそ配列のリーフ名の形だが、幅 3 の配列に第 7 列は無い。
+    到達不能になる列が存在しないので診断も出してはならない (spec §3.2)。
+    """
+    return _shadow_file(tmp_path, "out_of_range.mf4", "Mat[7]")
+
+
+def write_mdf4_shadowed_leaf_at_last_valid_index(tmp_path: Path) -> Path:
+    """配列 ``Mat`` (3 列: 添字 0-2) と実チャンネル ``Mat[2]`` (最後の有効添字) — 衝突 1 件.
+
+    ``write_mdf4_out_of_range_leaf_name_at_boundary`` (``Mat[3]``) と対にして
+    ``parse_leaf`` の範囲チェック ``index < spec.axis_len`` の上限をちょうど
+    挟み撃ちする。``Mat[7]`` のような遠い範囲外では ``<=`` への劣化変異を
+    検出できない (7 は axis_len=3 よりずっと大きいので劣化しても引っかからない)。
+    """
+    return _shadow_file(tmp_path, "shadowed_last_index.mf4", "Mat[2]")
+
+
+def write_mdf4_out_of_range_leaf_name_at_boundary(tmp_path: Path) -> Path:
+    """配列 ``Mat`` (3 列) と実チャンネル ``Mat[3]`` (添字がちょうど 1 つ外) — 衝突 0 件.
+
+    ``Mat[3]`` は axis_len (3) と数値が一致するため、範囲チェックが
+    ``index < axis_len`` から ``index <= axis_len`` へ劣化した場合に唯一
+    誤って通ってしまう値。``write_mdf4_shadowed_leaf_at_last_valid_index``
+    (``Mat[2]``) と対で境界を固定する。
+    """
+    return _shadow_file(tmp_path, "out_of_range_boundary.mf4", "Mat[3]")
+
+
+def write_mdf4_multistage_shadow(tmp_path: Path) -> Path:
+    """多段名の衝突 2 件 — 判定が ``parse_leaf`` と同じ walk を使う証拠.
+
+    1. ``W[0][1]``: 同名 ``W`` の 2-D が LD-08 で ``W[0]``/``W[1]`` へ曖昧化された
+       うえで、文字どおり ``W[0][1]`` という 1-D 実チャンネルが同居する。親の
+       **表示名** (``W[0]``) と **生名** (``W``) が食い違う唯一の腕で、判定が
+       ``raw_base_name`` を使わずに表示名で ``parse_leaf`` を引くと解決不能に
+       落ちて検出が消える (二重名の契約)。
+    2. ``Nest.g[3]``: 構造化フィールド + 配列添字の **2 段**サフィックス。
+       ``parse_leaf`` の struct 分岐と array 分岐を両方通らないと検出できない。
+
+    ``Nest`` の (2,3) サブ配列が読み戻しで (6,) に潰れるのは asammdf の既知挙動
+    (``test_column_roundtrip.py`` の同旨の注記) — リーフは ``Nest.g[0..5]`` の
+    **1 段**になるので、``[3]`` は実在する位置である。
+    """
+    n = len(_SHADOW_TS)
+    nested = np.zeros(n, dtype=np.dtype([("g", "<u1", (2, 3))]))
+    for k in range(n):
+        nested["g"][k] = np.arange(6, dtype=np.uint8).reshape(2, 3) + 10 * k
+    mdf = MDF(version="4.10")
+    try:
+        # 実チャンネル "W[0][1]" を親 "W" (この下の2回の append) より**先**に置く
+        # のが本 fixture の唯一のゲート: 検出は load() の**末尾**で
+        # column_records 確定後に全実チャンネルを走査する設計 (spec §3.4) なので、
+        # 追加順に関わらず両方が確定済みの状態で判定できる。もし検出が group 単位
+        # の**都度**判定 (group-tail) に退行していたら、"W[0][1]" 登録時点では
+        # まだ "W" が存在せず衝突を見逃す — この順序を親→子に並べ替えると、
+        # group-tail 退行でも「たまたま」拾えてしまい被覆が無言で消える。
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([5.0, 6.0, 7.0, 8.0]),
+                    timestamps=_SHADOW_TS,
+                    name="W[0][1]",
+                    unit="deg",
+                )
+            ]
+        )
+        for base in (0, 100):
+            samples = np.array(
+                [
+                    [base + 0, base + 1],
+                    [base + 2, base + 3],
+                    [base + 4, base + 5],
+                    [base + 6, base + 7],
+                ],
+                dtype=np.uint8,
+            )
+            mdf.append(
+                [ASignal(samples=samples, timestamps=_SHADOW_TS, name="W", unit="m")]
+            )
+        mdf.append([ASignal(nested, _SHADOW_TS, name="Nest")])
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([1.5, 2.5, 3.5, 4.5]),
+                    timestamps=_SHADOW_TS,
+                    name="Nest.g[3]",
+                    unit="V",
+                )
+            ]
+        )
+        mdf.append(
+            [
+                ASignal(
+                    samples=np.array([1.0, 2.0, 3.0, 4.0]),
+                    timestamps=_SHADOW_TS,
+                    name="Clean",
+                )
+            ]
+        )
+        path = tmp_path / "multistage.mf4"
+        mdf.save(path, overwrite=True)
+    finally:
+        mdf.close()
+    return path
+
+
 def write_mdf3(tmp_path: Path, version: str = "3.30") -> Path:
     """asammdf で MDF 3.x 実ファイルを書き出す (LD-02 の版横断読み取り検証用)."""
     t = np.arange(0.0, 5.0, 0.1, dtype=np.float64)

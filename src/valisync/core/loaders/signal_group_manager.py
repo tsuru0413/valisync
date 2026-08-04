@@ -14,7 +14,7 @@ from valisync.core.loaders.column_names import (
     leaf_count,
     leaf_names,
     leaf_paths,
-    parse_leaf,
+    owning_candidates,
 )
 from valisync.core.models import Signal, SignalGroup, retained_bytes
 from valisync.core.models.sample_source import LazyMdfValues
@@ -412,6 +412,10 @@ class SignalGroupManager:
         if hit is not None:
             return hit
         group_key = key.split(KEY_SEPARATOR, 1)[0]
+        # with の手前で束縛する (channel_cache.put と同型)。with 内の最終文である
+        # ことに依存すると、将来 with 内の末尾に分岐が増えたときに束縛未到達の
+        # 経路が生まれ UnboundLocalError になる (レビュー M2)。
+        evicted: list[Signal] = []
         with self._resolved_lock:
             # グループ在籍の判定は **lock の中** で行う (E-4a T3 レビュー M3)。外で
             # 判定すると、判定を通ったスレッドが lock 待ちで止まっている間に別の
@@ -437,8 +441,12 @@ class SignalGroupManager:
             table[key] = minted
             self._resolved_order[key] = None
             self.mint_count += 1
-            self._evict_resolved()
-            return minted
+            evicted = self._evict_resolved()
+        # 最後の参照は lock の**外**で死ぬ (理由は _evict_resolved の docstring)。
+        # ここは GUI の render と E-4b のエクスポートワーカーが**両方**踏む最も
+        # ホットな経路で、lock 下で dealloc すると互いに待つ。
+        del evicted
+        return minted
 
     def resolve_transient(self, key: str) -> Signal | None:
         """エクスポート専用の列解決 (**帳簿に載せない** — E-4b MG-1)。
@@ -502,9 +510,14 @@ class SignalGroupManager:
         減らないので、外れたキーが後から別の列に当たることはない)。
         """
         pinned = frozenset(keys)
+        # with の手前で束縛する (resolve() と同型・レビュー M2 — 理由は resolve()
+        # のコメント参照)。
+        evicted: list[Signal] = []
         with self._resolved_lock:
             self._pinned = pinned
-            self._evict_resolved()
+            evicted = self._evict_resolved()
+        # channel_cache の put / set_reserved と同じ理由で lock の外まで持ち越す。
+        del evicted
 
     def pinned_columns(self) -> frozenset[str]:
         """現在 pin されている列キー集合 (introspection・鋳造しない)."""
@@ -587,8 +600,21 @@ class SignalGroupManager:
         self._resolved_order.pop(key, None)
         self._resolved_order[key] = None
 
-    def _evict_resolved(self) -> None:
-        """非 pin の鋳造列を古い順に落として容量へ収める (D4)。
+    def _evict_resolved(self) -> list[Signal]:
+        """非 pin の鋳造列を古い順に落として容量へ収め、**外した Signal を返す** (D4)。
+
+        **返り値を捨ててはならない** — 呼び出し側は ``_resolved_lock`` の外まで
+        参照を持ち越し、そこで初めて手放すこと (``resolve`` / ``set_pinned_columns``
+        の ``del evicted``)。ここで参照を落とすと、鋳造列が抱える実体 (値配列 +
+        ``sorted_view`` が作る float64 ビュー・prod 実測 ~108 KB/列) の dealloc が
+        この lock の保持下で走る。E-4b でエクスポートワーカーが同じ lock の取り手に
+        なった (``resolve_transient`` 経由で ~18 分にわたり繰り返し取得する。
+        E-4b spec F6 = defer 根拠の失効) ので、GUI の ``resolve()`` がその dealloc
+        を待つ。ロック順は保たれるのでデッドロックには
+        ならず、**症状は待ち時間だけで数字にも出ない** — ``channel_cache.
+        _evict_oldest`` が同じ理由で同じ形をしている。test-lock は
+        ``test_resolved_column_lru.py::test_evicted_columns_are_freed_outside_the_lock``
+        (2 経路とも回す)。
 
         **pin は決して落とさない**。pin が予算を超えても拒否せず、超過は
         :attr:`pinned_overflow` で観測する (spec §5.5)。pin だけで予算が埋まった
@@ -602,7 +628,7 @@ class SignalGroupManager:
         呼び出し側が ``_resolved_lock`` を保持していること。
         """
         if len(self._resolved_order) <= self._resolved_capacity:
-            return  # 予算内 — pin の数え直しすらしない (鋳造ホットパスの O(n) 回避)
+            return []  # 予算内 — pin の数え直しすらしない (鋳造ホットパスの O(n) 回避)
         pinned_live = sum(1 for k in self._resolved_order if k in self._pinned)
         room = max(self._resolved_capacity - pinned_live, _MIN_EVICTABLE_COLUMNS)
         slack = max(1, room // _RESOLVED_EVICT_DIVISOR)
@@ -610,13 +636,17 @@ class SignalGroupManager:
         unpinned = [k for k in self._resolved_order if k not in self._pinned]
         excess = len(unpinned) - keep
         if excess <= 0:
-            return
+            return []
+        evicted: list[Signal] = []
         for column_key in unpinned[:excess]:  # dict は挿入順 = 古い順
             del self._resolved_order[column_key]
             table = self._resolved_by_key.get(column_key.split(KEY_SEPARATOR, 1)[0])
             if table is not None:
-                table.pop(column_key, None)
+                dropped = table.pop(column_key, None)
+                if dropped is not None:
+                    evicted.append(dropped)
             self.resolved_evictions += 1
+        return evicted
 
     def column_records(self, group_key: str) -> Mapping[str, ColumnRecord]:
         """{LD-08 dedup 済み表示名: ColumnRecord} の読み取り専用ビュー (E-3)。
@@ -758,6 +788,17 @@ class SignalGroupManager:
     def _owning_channel(self, group_key: str, display_key: str) -> _ChannelHit | None:
         """*display_key* を所有する物理チャンネルを最長一致で確定する。
 
+        探索そのものは ``column_names.owning_candidates`` に**単一実装**として
+        置いてある (E-4c G5) — 衝突検出 (``mdf_loader._shadow_diagnostics``) が
+        同じ walk を通るので、「この列が消えた」と診断が言う列と鋳造器が実際に
+        返す列が構造的にずれない。ここに残るのは**位置**の解決だけで、
+        ``ColumnRecord.path_index`` を触るためマネージャの責務である。
+
+        **``has_column`` の走査は畳まないこと** (意図的): あちらは
+        ``raw_base_name`` を一切参照しない独立オラクルで、
+        ``test_column_roundtrip.py`` の「生 selector 空間が表示空間へ漏れる」変異
+        クラスを resolve とは別の観測点から殺している。共有化するとその歯が抜ける。
+
         ``_mint_column`` の探索ループ**そのもの**を切り出したもの — 鋳造器と
         チャンネル解決器 (``channel_key_of``) はここだけを共有する。**2 実装に
         してはならない**: 見積 (E-4b T-UX) が数えるチャンネルとブロック割当が
@@ -772,25 +813,15 @@ class SignalGroupManager:
         records = self._column_records.get(group_key)
         if not records:
             return None
-        for i in range(len(display_key), 0, -1):
-            record = records.get(display_key[:i])
-            if record is None:
-                continue
-            rest = display_key[i:]
-            if not rest:
-                return _ChannelHit(display_key[:i], "", record, None)
-            # 二重名の契約: 表示名は dedup 済み名から、selector は **生チャンネル名**
-            # から導く。両者は同じ suffix を共有する (ローダーの out_leaves と
-            # sel_leaves は同一構造を同順に走査する)。dedup 済み表示名で parse_leaf を
-            # 引くと "W[1][2]" の "[1]" を W 自身の配列インデックスとして消費し、
-            # 解決不能になるか別チャンネルの列を返す。
-            raw_leaf = f"{record.raw_base_name}{rest}"
-            if parse_leaf(raw_leaf, {record.raw_base_name: record.spec}) is None:
-                continue  # 消費しきれない / 非数値リーフ = この親では解決不能
-            path = _leaf_path(record, rest)
+        for candidate in owning_candidates(display_key, records):
+            if not candidate.rest:
+                return _ChannelHit(candidate.display, "", candidate.record, None)
+            path = _leaf_path(candidate.record, candidate.rest)
             if path is None:
                 continue  # 名前は通ったが位置が引けない = この親では解決不能
-            return _ChannelHit(display_key[:i], rest, record, path)
+            return _ChannelHit(
+                candidate.display, candidate.rest, candidate.record, path
+            )
         return None
 
     def channel_key_of(self, group_key: str, column_key: str) -> str | None:
