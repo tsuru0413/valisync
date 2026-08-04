@@ -50,18 +50,19 @@ Diagnostic(
     level="info",
     message=(
         f"信号 '{name}': 同名の実チャンネルが優先されるため、"
-        f"配列 '{parent}' の列 [{idx}] は列キーでは参照できません"
+        f"配列 '{parent}' の列 {position} は列キーでは参照できません"
     ),
     signal_name=name,
 )
 ```
 
 - `signal_name` は勝った側（実チャンネル名）。診断ドックの「対象」列・ダブルクリックジャンプの既存挙動に整合する。
-- 文言は表記規約 R-01..13（docs/design.md）に従う。`::` 内部キーは露出しない（E-0 契約）。
+- `position` は walk のサフィックス文字列（**プラン執筆時の実コード検証で修正**: 当初案の整数 `[{idx}]` は §3.2 が要求する多段名 `.g[3]` を表現できない。単段の正準ケース `Mat`/`Mat[0]` では `列 [0]` と同一表示）。struct 親（`Nest.g[3]` → 親 `Nest`）も同じ規則で衝突しうるが、文言テンプレートは共通とする。
+- 文言は表記規約 R-01..13（docs/design.md）に従う。`::` 内部キーは露出しない（E-0 契約）。本文言に全角括弧はなく `# noqa: RUF001` は不要（ruff 実測確認済み）。
 
 ### 3.4 発行地点
 
-`mdf_loader.py` の `_load_group` 末尾（`column_records` と `diagnostics` の両方がスコープにある地点）。CSV ローダーは対象外 — CSV に配列展開列は存在しない（`column_records` が空／spec なし）ため衝突が構造的に起きない。Derived も同様。
+`mdf_loader.py` の **`load()` 末尾**（全グループ処理後・`column_records` と `diagnostics` の両方が完全な唯一の地点）。**プラン執筆時の実コード検証で当初案「`_load_group` 末尾」から修正**: `column_records` はファイル全体のアキュムレータで `load()` が `_load_group` に渡し込む形（`mdf_loader.py:285, :299-310`）のため、各グループ末尾では**それまでに処理したグループの分しか**入っておらず、`mdf.append([sig])`＝1 チャンネル 1 グループの配置では衝突ペアは通常**別グループ**にいる — グループ末尾走査は append 順に依存して無言で取りこぼす。CSV ローダーは対象外 — CSV に配列展開列は存在しない（`column_records` が空／spec なし）ため衝突が構造的に起きない。Derived も同様。
 
 ## 4. AST 構造ガード（二層防御の上段）
 
@@ -135,7 +136,7 @@ CLAUDE.md 遅延ロード行と `docs/roadmap.md` E-4b 段落の「E-4a から�
 | G2 | 到達不能性の負 assert | shadow されたリーフが列キーで引けないことを直接 assert するテストが常設される |
 | G3 | AST ガード | 検出形 1–4 の一時違反ファイルが offenders 特定つき RED・クリーン tree で GREEN・allowlist 陳腐化 assert 常設 |
 | G4 | §12-2 | `_evict_resolved` の解放が `_resolved_lock` 外（観測子 assert）・両呼び出し経路・sabotage RED |
-| G5 | 規則の単一実装 | 最長一致規則の実装が 1 箇所（検出と解決が同一実装を参照）— grep で二重実装なし |
+| G5 | 規則の単一実装 | 最長一致規則の実装が 1 箇所（**検出と解決**が同一実装を参照）— grep で二重実装なし。**`has_column`（`signal_group_manager.py:747-756`）は対象外**: `test_column_roundtrip.py:611-616` が「2 つは別実装で連動しない」独立オラクルとして明文で保護しており、畳むとテストの歯が抜ける |
 | G6 | docs 正誤 | CLAUDE.md/roadmap の CacheKey 行が「E-4b で serial 化済み」に是正 |
 | G7 | 無回帰 | フルスイート・4 ゲート clean・既存挙動テスト（下段）無改変 |
 
