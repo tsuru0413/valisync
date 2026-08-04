@@ -9,7 +9,8 @@ identity 契約そのものの supersede は test_resolver.py が担う。
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import threading
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -282,3 +283,102 @@ def test_evicted_column_reread_does_not_touch_the_file_again(wide: LoadResult) -
     assert again is not first, "evict されていない (setup 失敗 = 反 vacuous)"
     assert np.array_equal(np.asarray(again.values), expected)
     assert calls == [], f"再鋳造がファイルを読み直した: {calls}"
+
+
+# ─── 解放は _resolved_lock の外 (E-4c §5・E-4 親 spec §12-2) ───────────────────
+
+
+class _LockProbe:
+    """解放される瞬間に「``_resolved_lock`` が握られていたか」を記録する番人。
+
+    ``threading.Lock`` は非再帰なので、保持中のスレッドが ``acquire(blocking=False)``
+    しても False が返る — これが「今 lock 下か」の直接観測になる
+    (``test_channel_cache.py`` の ``_LockProbeArray`` と同型)。
+
+    **ndarray サブクラスにしないのは取り付け口が違うから**: あちらは追い出される
+    実体が ndarray そのものなので観測子になれる。こちらで落ちるのは **Signal** で、
+    ``__slots__`` を持つため属性を足せず、値配列は ``LazyMdfValues`` の私有キャッシュ
+    の中にあって差し替えられない。Signal と寿命が完全に一致して外から書ける唯一の
+    口が ``metadata`` dict である (鋳造列の metadata は ``_mint_column`` が毎回
+    新しく作るので、親チャンネルと共有していない)。
+
+    参照は lock と記録用リストだけに留める (manager を参照すると循環になり、解放が
+    refcount でなく gc 任せ = 非決定になる)。
+    """
+
+    def __init__(self, lock: threading.Lock, observed: list[bool]) -> None:
+        self._lock = lock
+        self._observed = observed
+
+    def __del__(self) -> None:
+        acquired = self._lock.acquire(blocking=False)
+        self._observed.append(not acquired)
+        if acquired:
+            self._lock.release()
+
+
+def _probe_column(mgr: SignalGroupManager, column_key: str) -> list[bool]:
+    """*column_key* を鋳造し、その Signal へ観測子を仕込んで記録先を返す。"""
+    observed: list[bool] = []
+    sig = mgr.resolve(column_key)
+    assert sig is not None
+    sig.metadata["lock_probe"] = _LockProbe(mgr._resolved_lock, observed)
+    del sig  # 帳簿だけが持つ状態にする (以後の解放は必ず evict 由来)
+    return observed
+
+
+def _drop_via_resolve_minting(wide: LoadResult) -> list[bool]:
+    """**ホットパス**: 鋳造が容量を超えて古い列を落とす経路 (GUI の render)。"""
+    mgr = SignalGroupManager(resolved_capacity=2)
+    key = _register(mgr, wide)
+    observed = _probe_column(mgr, f"{key}::Wide[0]")
+    for i in range(1, 8):
+        assert mgr.resolve(f"{key}::Wide[{i}]") is not None
+    assert mgr.resolved_evictions > 0, "evict が起きていない (setup 失敗 = 反 vacuous)"
+    return observed
+
+
+def _drop_via_unpinning(wide: LoadResult) -> list[bool]:
+    """pin 集合の差し替え (``Session.set_pinned_columns``) が落とす経路。
+
+    ``resolve`` は鋳造のたびに evict するので、容量超過は **pin でしか作れない**:
+    5 本を pin して帳簿を容量 2 の上へ押し上げ、pin を外した瞬間に
+    ``set_pinned_columns`` 側の ``_evict_resolved`` が 4 本落とす。
+    """
+    mgr = SignalGroupManager(resolved_capacity=2)
+    key = _register(mgr, wide)
+    mgr.set_pinned_columns({f"{key}::Wide[{i}]" for i in range(5)})
+    observed = _probe_column(mgr, f"{key}::Wide[0]")
+    for i in range(1, 5):
+        assert mgr.resolve(f"{key}::Wide[{i}]") is not None
+    assert mgr.resolved_evictions == 0, "pin 中に落ちた (setup 前提が崩れている)"
+    mgr.set_pinned_columns(set())
+    assert mgr.resolved_evictions > 0, "unpin で落ちていない (反 vacuous)"
+    return observed
+
+
+@pytest.mark.parametrize(
+    "drop",
+    [_drop_via_resolve_minting, _drop_via_unpinning],
+    ids=["resolve_minting", "unpinning"],
+)
+def test_evicted_columns_are_freed_outside_the_lock(
+    drop: Callable[[LoadResult], list[bool]], wide: LoadResult
+) -> None:
+    """``_evict_resolved`` が外した列の解放は ``_resolved_lock`` の外で走る。
+
+    lock 下で最後の参照が死ぬ形だと、列 1 本ぶんの実体 (値配列 + ``sorted_view``
+    が作る float64 ビュー・prod 実測 ~108 KB/列) の dealloc がこの lock を握った
+    まま走る。E-4b でエクスポートワーカーが同じ lock の取り手になった (spec F6 =
+    defer 根拠の失効) ので、GUI の ``resolve()`` がその dealloc を待つ形になる。
+    **症状は待ち時間だけで会計にも数字にも出ない** — だから会計ではなく解放の
+    瞬間そのものを観測する。
+
+    **2 経路とも回す** (E-4a の同型テストが踏んだ轍 ``test_channel_cache.py:473-477``:
+    最初に塞いだ 1 経路だけを見ていて、残り 2 経路は両方 ``[True]`` だった)。
+    """
+    observed = drop(wide)
+
+    assert observed == [False], (
+        f"鋳造列の解放が _resolved_lock 保持下で走った: {observed}"
+    )

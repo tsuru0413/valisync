@@ -437,8 +437,12 @@ class SignalGroupManager:
             table[key] = minted
             self._resolved_order[key] = None
             self.mint_count += 1
-            self._evict_resolved()
-            return minted
+            evicted = self._evict_resolved()
+        # 最後の参照は lock の**外**で死ぬ (理由は _evict_resolved の docstring)。
+        # ここは GUI の render と E-4b のエクスポートワーカーが**両方**踏む最も
+        # ホットな経路で、lock 下で dealloc すると互いに待つ。
+        del evicted
+        return minted
 
     def resolve_transient(self, key: str) -> Signal | None:
         """エクスポート専用の列解決 (**帳簿に載せない** — E-4b MG-1)。
@@ -504,7 +508,9 @@ class SignalGroupManager:
         pinned = frozenset(keys)
         with self._resolved_lock:
             self._pinned = pinned
-            self._evict_resolved()
+            evicted = self._evict_resolved()
+        # channel_cache の put / set_reserved と同じ理由で lock の外まで持ち越す。
+        del evicted
 
     def pinned_columns(self) -> frozenset[str]:
         """現在 pin されている列キー集合 (introspection・鋳造しない)."""
@@ -587,8 +593,20 @@ class SignalGroupManager:
         self._resolved_order.pop(key, None)
         self._resolved_order[key] = None
 
-    def _evict_resolved(self) -> None:
-        """非 pin の鋳造列を古い順に落として容量へ収める (D4)。
+    def _evict_resolved(self) -> list[Signal]:
+        """非 pin の鋳造列を古い順に落として容量へ収め、**外した Signal を返す** (D4)。
+
+        **返り値を捨ててはならない** — 呼び出し側は ``_resolved_lock`` の外まで
+        参照を持ち越し、そこで初めて手放すこと (``resolve`` / ``set_pinned_columns``
+        の ``del evicted``)。ここで参照を落とすと、鋳造列が抱える実体 (値配列 +
+        ``sorted_view`` が作る float64 ビュー・prod 実測 ~108 KB/列) の dealloc が
+        この lock の保持下で走る。E-4b でエクスポートワーカーが同じ lock を ~18 分
+        取り続ける経路になった (E-4b spec F6 = defer 根拠の失効) ので、GUI の
+        ``resolve()`` がその dealloc を待つ。ロック順は保たれるのでデッドロックには
+        ならず、**症状は待ち時間だけで数字にも出ない** — ``channel_cache.
+        _evict_oldest`` が同じ理由で同じ形をしている。test-lock は
+        ``test_resolved_column_lru.py::test_evicted_columns_are_freed_outside_the_lock``
+        (2 経路とも回す)。
 
         **pin は決して落とさない**。pin が予算を超えても拒否せず、超過は
         :attr:`pinned_overflow` で観測する (spec §5.5)。pin だけで予算が埋まった
@@ -602,7 +620,7 @@ class SignalGroupManager:
         呼び出し側が ``_resolved_lock`` を保持していること。
         """
         if len(self._resolved_order) <= self._resolved_capacity:
-            return  # 予算内 — pin の数え直しすらしない (鋳造ホットパスの O(n) 回避)
+            return []  # 予算内 — pin の数え直しすらしない (鋳造ホットパスの O(n) 回避)
         pinned_live = sum(1 for k in self._resolved_order if k in self._pinned)
         room = max(self._resolved_capacity - pinned_live, _MIN_EVICTABLE_COLUMNS)
         slack = max(1, room // _RESOLVED_EVICT_DIVISOR)
@@ -610,13 +628,17 @@ class SignalGroupManager:
         unpinned = [k for k in self._resolved_order if k not in self._pinned]
         excess = len(unpinned) - keep
         if excess <= 0:
-            return
+            return []
+        evicted: list[Signal] = []
         for column_key in unpinned[:excess]:  # dict は挿入順 = 古い順
             del self._resolved_order[column_key]
             table = self._resolved_by_key.get(column_key.split(KEY_SEPARATOR, 1)[0])
             if table is not None:
-                table.pop(column_key, None)
+                dropped = table.pop(column_key, None)
+                if dropped is not None:
+                    evicted.append(dropped)
             self.resolved_evictions += 1
+        return evicted
 
     def column_records(self, group_key: str) -> Mapping[str, ColumnRecord]:
         """{LD-08 dedup 済み表示名: ColumnRecord} の読み取り専用ビュー (E-3)。
