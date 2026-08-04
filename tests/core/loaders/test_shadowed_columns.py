@@ -31,7 +31,9 @@ from tests.mdf4_helpers import (
     write_mdf4_2d,
     write_mdf4_multistage_shadow,
     write_mdf4_out_of_range_leaf_name,
+    write_mdf4_out_of_range_leaf_name_at_boundary,
     write_mdf4_shadowed_leaf,
+    write_mdf4_shadowed_leaf_at_last_valid_index,
 )
 from valisync.core.loaders.column_names import owning_candidates, shadowed_leaf
 from valisync.core.loaders.mdf_loader import MdfLoader
@@ -134,6 +136,24 @@ def test_out_of_range_leaf_name_is_not_a_collision(tmp_path: Path) -> None:
     with _loaded(write_mdf4_out_of_range_leaf_name(tmp_path)) as loaded:
         assert _shadow_diags(loaded.diagnostics) == []
         assert _unreachable(loaded) == []
+        # 反 vacuous: 空 == 空だけでは検出経路が丸ごと死んでいても pass する。
+        # Mat 3 + Mat[7] 1 + Clean 1 の母数 5 列を実在させ、走査自体が効いている
+        # ことを固定する (test_shadowed_leaf_is_actually_unreachable の姉妹 pin)。
+        assert loaded.session.total_column_count(loaded.key) == 5
+
+
+def test_shadowed_leaf_index_boundary_is_exclusive(tmp_path: Path) -> None:
+    """範囲チェックの上限境界を挟み撃ちする (T1-M4)。
+
+    幅 3 の ``Mat`` (添字 0-2) に対し、最後の有効添字 ``Mat[2]`` は衝突 1 件、
+    ちょうど 1 つ外の ``Mat[7]`` (test_out_of_range_leaf_name_is_not_a_collision)
+    は遠すぎて ``index < axis_len`` の ``<=`` への劣化変異を検出できない。
+    ``Mat[3]`` はその劣化変異が唯一誤って通す値なので、ここで直接固定する。
+    """
+    with _loaded(write_mdf4_shadowed_leaf_at_last_valid_index(tmp_path)) as loaded:
+        assert len(_shadow_diags(loaded.diagnostics)) == 1
+    with _loaded(write_mdf4_out_of_range_leaf_name_at_boundary(tmp_path)) as loaded:
+        assert _shadow_diags(loaded.diagnostics) == []
 
 
 def test_ordinary_file_emits_no_collision_info(tmp_path: Path) -> None:

@@ -870,6 +870,28 @@ def write_mdf4_out_of_range_leaf_name(tmp_path: Path) -> Path:
     return _shadow_file(tmp_path, "out_of_range.mf4", "Mat[7]")
 
 
+def write_mdf4_shadowed_leaf_at_last_valid_index(tmp_path: Path) -> Path:
+    """配列 ``Mat`` (3 列: 添字 0-2) と実チャンネル ``Mat[2]`` (最後の有効添字) — 衝突 1 件.
+
+    ``write_mdf4_out_of_range_leaf_name_at_boundary`` (``Mat[3]``) と対にして
+    ``parse_leaf`` の範囲チェック ``index < spec.axis_len`` の上限をちょうど
+    挟み撃ちする。``Mat[7]`` のような遠い範囲外では ``<=`` への劣化変異を
+    検出できない (7 は axis_len=3 よりずっと大きいので劣化しても引っかからない)。
+    """
+    return _shadow_file(tmp_path, "shadowed_last_index.mf4", "Mat[2]")
+
+
+def write_mdf4_out_of_range_leaf_name_at_boundary(tmp_path: Path) -> Path:
+    """配列 ``Mat`` (3 列) と実チャンネル ``Mat[3]`` (添字がちょうど 1 つ外) — 衝突 0 件.
+
+    ``Mat[3]`` は axis_len (3) と数値が一致するため、範囲チェックが
+    ``index < axis_len`` から ``index <= axis_len`` へ劣化した場合に唯一
+    誤って通ってしまう値。``write_mdf4_shadowed_leaf_at_last_valid_index``
+    (``Mat[2]``) と対で境界を固定する。
+    """
+    return _shadow_file(tmp_path, "out_of_range_boundary.mf4", "Mat[3]")
+
+
 def write_mdf4_multistage_shadow(tmp_path: Path) -> Path:
     """多段名の衝突 2 件 — 判定が ``parse_leaf`` と同じ walk を使う証拠.
 
@@ -891,6 +913,13 @@ def write_mdf4_multistage_shadow(tmp_path: Path) -> Path:
         nested["g"][k] = np.arange(6, dtype=np.uint8).reshape(2, 3) + 10 * k
     mdf = MDF(version="4.10")
     try:
+        # 実チャンネル "W[0][1]" を親 "W" (この下の2回の append) より**先**に置く
+        # のが本 fixture の唯一のゲート: 検出は load() の**末尾**で
+        # column_records 確定後に全実チャンネルを走査する設計 (spec §3.4) なので、
+        # 追加順に関わらず両方が確定済みの状態で判定できる。もし検出が group 単位
+        # の**都度**判定 (group-tail) に退行していたら、"W[0][1]" 登録時点では
+        # まだ "W" が存在せず衝突を見逃す — この順序を親→子に並べ替えると、
+        # group-tail 退行でも「たまたま」拾えてしまい被覆が無言で消える。
         mdf.append(
             [
                 ASignal(

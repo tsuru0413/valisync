@@ -22,6 +22,7 @@
 - **§12-1 鋳造列 LRU のバイト裁定** — 上限は構造的に有界（512 本 × prod 実測 ~108 KB/列 ≈ 55 MB）。本数縛りは「未展開列は 0 バイトでバイト予算が効かない」ための意図的設計（`signal_group_manager.py:34-41` に明記）。pin 側の実体バイトは `pinned_column_bytes` → `set_reserved` で予算計上済み。
 - **`put()` evict の非ペーシング同期解放**（1 回 27–34 ms になりうる）— 最悪 2 フレーム未満・解放は lock 外が test-lock 済み・`ChannelSampleCache` は TeardownService への参照を持たない設計で配線追加はコストに見合わない。
 - mmap フロア・MDF3・GUI 未帰属メモリ（親 spec §10 のまま）。
+- **interior-node 一致の診断 gap**（whole-branch review T1-M1 defer）— `shadowed_leaf` は §3.2 どおりリーフ名一致のみを検出する。実チャンネル名が配列の**中間ノード**（途中の親）に一致する配置は未検出のまま部分木ごと到達不能になりうる。LD-14 の真性多段親でのみ理論上到達可能で、asammdf がサブ配列を読み戻し時に潰す（既知挙動）ため実ファイル経由では現状再現不可 — 実害の窓は極小と判断し defer。
 
 ## 3. 衝突診断（load 時静的検出）
 
